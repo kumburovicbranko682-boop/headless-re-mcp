@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+import json
+import os
+import queue
+import subprocess
+import sys
+import time
+from collections import deque
+from collections.abc import Callable
+from pathlib import Path
+from threading import RLock, Thread
+from typing import Any, TextIO
+
+from headless_re_mcp.backends.common.subprocess_rpc import (
+    ManagedSubprocessMixin,
+    no_window_popen_kwargs,
+)
+from headless_re_mcp.config import Settings
+from headless_re_mcp.core.windows import describe_process_windows
+
+JsonObject = dict[str, Any]
+
+
+class IdaWorkerError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: JsonObject | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+        self.retryable = retryable
+
+    @classmethod
+    def from_payload(cls, payload: object) -> IdaWorkerError:
+        if not isinstance(payload, dict):
+            return cls("worker_protocol_error", "worker returned an invalid error payload")
+        details = payload.get("details")
+        return cls(
+            str(payload.get("code", "backend_error")),
+            str(payload.get("message", "IDA worker failed")),
+            details=details if isinstance(details, dict) else {},
+            retryable=bool(payload.get("retryable", False)),
+        )
+
+
+class IdaWorkerClient(ManagedSubprocessMixin):
+    def __init__(
+        self,
+        binary: Path,
+        settings: Settings,
+        *,
+        startup_timeout: float = 300.0,
+    ) -> None:
+        if settings.ida_home is None:
+            raise IdaWorkerError("backend_unavailable", "IDA home is not configured")
+
+        env = os.environ.copy()
+        env["PATH"] = f"{settings.ida_home}{os.pathsep}{env.get('PATH', '')}"
+        env["PYTHONUNBUFFERED"] = "1"
+        popen_kw = no_window_popen_kwargs()
+
+        self._process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "headless_re_mcp.backends.ida.worker",
+                str(binary.resolve(strict=True)),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+            **popen_kw,
+        )
+        self._messages: queue.Queue[JsonObject | None] = queue.Queue()
+        self._stdout_log: deque[str] = deque(maxlen=100)
+        self._stderr_log: deque[str] = deque(maxlen=100)
+        self._request_lock = RLock()
+        self._request_id = 0
+        self._closed = False
+        self._metadata: JsonObject = {}
+        self._capabilities: frozenset[str] = frozenset()
+        self._observed_windows: set[str] = set()
+
+        assert self._process.stdout is not None
+        assert self._process.stderr is not None
+        self._stdout_thread = Thread(
+            target=self._read_stdout,
+            args=(self._process.stdout,),
+            name=f"ida-worker-{self._process.pid}-stdout",
+            daemon=True,
+        )
+        self._stderr_thread = Thread(
+            target=self._read_stderr,
+            args=(self._process.stderr,),
+            name=f"ida-worker-{self._process.pid}-stderr",
+            daemon=True,
+        )
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+
+        try:
+            message = self._receive(
+                lambda item: item.get("event") in {"ready", "fatal"},
+                startup_timeout,
+            )
+            if message.get("event") == "fatal":
+                raise IdaWorkerError.from_payload(message.get("error"))
+            data = message.get("data")
+            if not isinstance(data, dict):
+                raise IdaWorkerError(
+                    "worker_protocol_error", "IDA worker ready event has no data object"
+                )
+            self._metadata = data
+            raw_capabilities = data.get("capabilities", [])
+            if isinstance(raw_capabilities, list):
+                self._capabilities = frozenset(str(item) for item in raw_capabilities)
+        except BaseException:
+            self.terminate()
+            raise
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return self._capabilities
+
+    @property
+    def metadata(self) -> JsonObject:
+        return dict(self._metadata)
+
+    @property
+    def analyzer_windows(self) -> tuple[str, ...]:
+        return tuple(sorted(self._observed_windows))
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        with self._request_lock:
+            if self._closed:
+                raise IdaWorkerError("session_closed", "IDA worker is closed")
+            if self._process.poll() is not None:
+                raise self._process_exit_error()
+
+            self._request_id += 1
+            request_id = self._request_id
+            payload = {"id": request_id, "command": command, "params": params or {}}
+            try:
+                assert self._process.stdin is not None
+                self._process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise self._process_exit_error() from exc
+
+            response = self._receive(lambda item: item.get("id") == request_id, timeout)
+            if response.get("ok") is not True:
+                raise IdaWorkerError.from_payload(response.get("error"))
+            data = response.get("data")
+            if not isinstance(data, dict):
+                raise IdaWorkerError(
+                    "worker_protocol_error", "IDA worker response has no data object"
+                )
+            return data
+
+    def close(self, *, timeout: float = 15.0) -> None:
+        with self._request_lock:
+            if self._closed:
+                return
+            try:
+                if self._process.poll() is None:
+                    self.request("close", timeout=timeout)
+            finally:
+                self._closed = True
+                if self._process.stdin is not None:
+                    self._process.stdin.close()
+                try:
+                    self._process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    self.terminate()
+
+    def terminate(self) -> None:
+        self._closed = True
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=5)
+
+    def _read_stdout(self, stream: TextIO) -> None:
+        try:
+            for line in stream:
+                stripped = line.rstrip("\r\n")
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    self._stdout_log.append(stripped)
+                    continue
+                if isinstance(payload, dict):
+                    self._messages.put(payload)
+                else:
+                    self._stdout_log.append(stripped)
+        finally:
+            self._messages.put(None)
+
+    def _read_stderr(self, stream: TextIO) -> None:
+        for line in stream:
+            self._stderr_log.append(line.rstrip("\r\n"))
+
+    def _receive(
+        self,
+        predicate: Callable[[JsonObject], bool],
+        timeout: float,
+    ) -> JsonObject:
+        deadline = time.monotonic() + timeout
+        while True:
+            self._observe_windows()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise IdaWorkerError(
+                    "worker_timeout",
+                    f"IDA worker did not respond within {timeout:g} seconds",
+                    details=self._diagnostics(),
+                    retryable=True,
+                )
+            try:
+                message = self._messages.get(timeout=min(0.05, remaining))
+            except queue.Empty:
+                if self._process.poll() is not None:
+                    raise self._process_exit_error() from None
+                continue
+            if message is None:
+                raise self._process_exit_error()
+            if predicate(message):
+                self._observe_windows()
+                return message
+            self._stdout_log.append(json.dumps(message, ensure_ascii=False))
+
+    def _observe_windows(self) -> None:
+        self._observed_windows.update(describe_process_windows(self._process.pid))
+        if self._observed_windows:
+            raise IdaWorkerError(
+                "analyzer_window_detected",
+                "IDA worker created an analyzer window",
+                details={"windows": sorted(self._observed_windows)},
+            )
+
+    def _process_exit_error(self) -> IdaWorkerError:
+        return IdaWorkerError(
+            "worker_exited",
+            f"IDA worker exited unexpectedly with code {self._process.poll()}",
+            details=self._diagnostics(),
+            retryable=True,
+        )
+
+    def _diagnostics(self) -> JsonObject:
+        return {
+            "pid": self._process.pid,
+            "exit_code": self._process.poll(),
+            "stdout": list(self._stdout_log),
+            "stderr": list(self._stderr_log),
+            "analyzer_windows": sorted(self._observed_windows),
+        }

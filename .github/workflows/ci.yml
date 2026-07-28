@@ -1,0 +1,55 @@
+﻿# Every-commit quality gate (M16.1) — no proprietary backends required.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: Ruff
+        run: python -m ruff check src tests
+
+      - name: Mypy strict
+        run: python -m mypy
+
+      - name: Compileall
+        run: python -m compileall -q src
+
+      - name: Pip check
+        run: python -m pip check
+
+      - name: Unit tests
+        run: python -m pytest tests/unit -q --tb=short
+
+      - name: License and lock consistency
+        run: |
+          if (-not (Test-Path LICENSE)) { throw "LICENSE missing" }
+          $lic = Get-Content LICENSE -Raw
+          if ($lic -notmatch "GNU GENERAL PUBLIC LICENSE") { throw "LICENSE is not full GPL-3.0 text" }
+          if (-not (Test-Path upstream.lock.json)) { throw "upstream.lock.json missing" }
+          Get-Content upstream.lock.json | ConvertFrom-Json | Out-Null
+          Write-Host "license+lock ok"
+
+      - name: Config generate smoke
+        run: |
+          python -m headless_re_mcp config generate --skip-doctor --no-examples | Out-File artifacts_ci_config.json -Encoding utf8
+          $j = Get-Content artifacts_ci_config.json -Raw | ConvertFrom-Json
+          if (-not $j.ok) { throw "config generate failed" }

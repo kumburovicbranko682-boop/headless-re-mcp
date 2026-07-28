@@ -1,0 +1,94 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "headless-re-mcp"
+version = "0.1.0"
+description = "Unified headless reverse-engineering MCP for IDA, x64dbg, and CLI backends"
+readme = "README.md"
+license = "GPL-3.0-only"
+requires-python = ">=3.11"
+authors = [{ name = "Headless RE-MCP contributors" }]
+dependencies = [
+  "mcp>=1.26.0",
+  "pydantic>=2.10",
+  "platformdirs>=4.3",
+]
+
+[project.optional-dependencies]
+ida = ["idapro>=0.0.10"]
+pe = ["pefile>=2024.8.26"]
+web = ["fastapi>=0.115", "uvicorn>=0.34"]
+test = ["pytest>=8.3", "pytest-asyncio>=0.25"]
+dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14"]
+
+[project.scripts]
+headless-re-mcp = "headless_re_mcp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/headless_re_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "integration: requires a locally installed analysis backend",
+  "headless: verifies no analyzer window is created",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# SQL / monkeypatch extension surfaces keep long literal lines by design.
+"src/headless_re_mcp/core/store/*.py" = ["E501"]
+"src/headless_re_mcp/core/service_ext.py" = ["E501"]
+"src/headless_re_mcp/mcp/server.py" = ["E501"]
+"src/headless_re_mcp/backends/ghidra/client.py" = ["E501"]
+"tests/integration/test_m5_unpack_live_gate.py" = ["E501"]
+"tests/integration/test_m10_ui_drive_gate.py" = ["E501", "B009"]
+"tests/integration/test_m11_optional_backends_gate.py" = ["E501", "F841"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["headless_re_mcp"]
+follow_imports_for_stubs = true
+
+[[tool.mypy.overrides]]
+module = [
+  "idapro",
+  "ida_auto",
+  "ida_hexrays",
+  "ida_idaapi",
+  "ida_ida",
+  "ida_funcs",
+  "ida_kernwin",
+  "ida_name",
+  "ida_nalt",
+  "ida_bytes",
+  "ida_ua",
+  "ida_xref",
+  "ida_entry",
+  "ida_segment",
+  "ida_gdl",
+  "ida_typeinf",
+  "ida_search",
+  "idautils",
+  "idc",
+  "frida",
+  "frida.*",
+  "numpy",
+  "numpy.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["headless_re_mcp.core.service_ext"]
+ignore_errors = true

@@ -1,0 +1,60 @@
+﻿# Windows real-backend gates (M16.2) — self-hosted / authorized runners only.
+name: windows-integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  gates:
+    runs-on: [self-hosted, Windows, headless-re]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment sanity
+        run: |
+          $required = @(
+            "HEADLESS_RE_X64DBG_HEADLESS_X64",
+            "HEADLESS_RE_X64DBG_HEADLESS_X86"
+          )
+          foreach ($k in $required) {
+            if (-not [Environment]::GetEnvironmentVariable($k)) { throw "missing $k" }
+          }
+          Write-Host "IDA gate binary optional via HEADLESS_RE_IDA_GATE_BINARY / HEADLESS_RE_IDA_HOME"
+
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: x64dbg headless gates
+        run: |
+          $env:PYTHONPATH = "src"
+          python -m headless_re_mcp gate-xdbg --architecture all
+
+      - name: Core integration gates
+        run: |
+          $env:PYTHONPATH = "src"
+          python -m pytest tests/integration/test_workflow_xdbg.py tests/integration/test_xdbg_rpc.py tests/integration/test_m10_ui_pid_gate.py tests/integration/test_m10_ui_interact_gate.py tests/integration/test_m12_persist_gate.py -vv --tb=short
+
+      - name: Optional IDA / UPX gates
+        run: |
+          $env:PYTHONPATH = "src"
+          if ($env:HEADLESS_RE_IDA_HOME) {
+            python -m pytest tests/integration/test_m8_static_batch1_gate.py -vv --tb=short
+          } else {
+            Write-Host "IDA not configured — skip IDA gate (not counted as pass)"
+          }
+          if ($env:HEADLESS_RE_UPX) {
+            python -m pytest tests/integration/test_m5_unpack_live_gate.py -vv --tb=short
+          } else {
+            Write-Host "UPX not configured — skip unpack live gate (not counted as pass)"
+          }
+
+      - name: Residue check hint
+        run: |
+          Write-Host "Gate tests assert analyzer_windows==[] and cleanup; review pytest output for leftovers."

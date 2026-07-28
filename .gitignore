@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+artifacts/*
+!artifacts/.gitkeep
+*.idb
+*.i64
+*.til
+*.nam
+*.dmp
+*.log
+native/**/out/
+fixtures/native/bin/
+
+# Challenge author keys must never ship
+**/AUTHOR_SECRET.txt
+**/AUTHOR_SECRET.*
+
+# Machine-local Cursor MCP config (use .cursor/mcp.json.example)
+.cursor/mcp.json
+
+# Upstream checkouts are local only; pin via upstream.lock.json + scripts/sync_upstream.ps1
+upstream/*
+!upstream/.gitkeep
+
+# external/ keeps docs; large packable binaries stay local / release-only
+external/x64dbg-x86/**
+!external/x64dbg-x86/README.md
+!external/x64dbg-x86/.gitkeep
+external/x64dbg-x64/**
+!external/x64dbg-x64/README.md
+!external/x64dbg-x64/.gitkeep
+external/optional/**
+!external/optional/README.md
+!external/optional/.gitkeep

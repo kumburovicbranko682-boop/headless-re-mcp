@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HRE · 实时工作流监控</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --void: #05070d;
+      --panel: rgba(10, 16, 28, 0.82);
+      --line: rgba(94, 234, 212, 0.18);
+      --line-strong: rgba(94, 234, 212, 0.45);
+      --text: #e8f1ff;
+      --muted: #7f93b0;
+      --cyan: #5eead4;
+      --amber: #f0b429;
+      --rose: #fb7185;
+      --ok: #4ade80;
+      --grid: rgba(94, 234, 212, 0.04);
+      --font-display: "Syne", "Noto Sans SC", sans-serif;
+      --font-ui: "Noto Sans SC", "JetBrains Mono", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      background:
+        radial-gradient(900px 480px at 12% -8%, rgba(94, 234, 212, 0.12), transparent 55%),
+        radial-gradient(700px 420px at 100% 0%, rgba(240, 180, 41, 0.08), transparent 50%),
+        linear-gradient(180deg, #070b14 0%, var(--void) 55%, #03050a 100%);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at center, #000 35%, transparent 80%);
+      z-index: 0;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,.08) 3px);
+      opacity: 0.35;
+      z-index: 0;
+    }
+    .shell { position: relative; z-index: 1; max-width: 1480px; margin: 0 auto; padding: 1rem 1.25rem 2rem; }
+    header.top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      align-items: end;
+      padding: 0.75rem 0 1.25rem;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 1.25rem;
+    }
+    .brand {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: clamp(1.55rem, 3vw, 2.2rem);
+      letter-spacing: 0.04em;
+      line-height: 1.05;
+      margin: 0;
+      background: linear-gradient(120deg, #fff 10%, var(--cyan) 55%, var(--amber) 120%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .brand small {
+      display: block;
+      margin-top: 0.4rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      font-family: var(--font-ui);
+      font-weight: 500;
+      background: none;
+      -webkit-background-clip: initial;
+      background-clip: initial;
+    }
+    .status-rail { display: flex; flex-wrap: wrap; gap: 0.45rem; justify-content: flex-end; align-items: center; }
+    .chip {
+      border: 1px solid var(--line);
+      background: rgba(8, 14, 24, 0.85);
+      padding: 0.35rem 0.65rem;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+    .chip.live { border-color: rgba(74, 222, 128, 0.45); color: var(--ok); }
+    .chip.live::before {
+      content: "";
+      display: inline-block;
+      width: 0.45rem; height: 0.45rem;
+      margin-right: 0.4rem;
+      background: var(--ok);
+      box-shadow: 0 0 10px rgba(74, 222, 128, 0.8);
+      animation: pulse 1.4s ease-in-out infinite;
+      vertical-align: middle;
+    }
+    .chip.bad { color: var(--rose); border-color: rgba(251, 113, 133, 0.45); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.85); }
+    }
+    .layout { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      header.top { grid-template-columns: 1fr; }
+      .status-rail { justify-content: flex-start; }
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+      position: relative;
+      overflow: hidden;
+    }
+    .panel::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
+    }
+    .panel-h {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.7rem 0.85rem;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      color: var(--cyan);
+    }
+    .panel-b { padding: 0.75rem 0.85rem; }
+    .sessions { max-height: calc(100vh - 10rem); overflow: auto; }
+    .sess {
+      width: 100%;
+      text-align: left;
+      border: 1px solid transparent;
+      background: rgba(6, 10, 18, 0.65);
+      color: var(--text);
+      padding: 0.7rem 0.75rem;
+      margin-bottom: 0.45rem;
+      cursor: pointer;
+      font-family: var(--font-mono);
+      transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+    .sess:hover { border-color: var(--line-strong); transform: translateX(2px); }
+    .sess.active {
+      border-color: var(--cyan);
+      background: linear-gradient(120deg, rgba(94, 234, 212, 0.12), rgba(10, 16, 28, 0.9));
+    }
+    .sess strong {
+      display: block;
+      font-family: var(--font-display);
+      font-size: 0.95rem;
+      letter-spacing: 0.04em;
+    }
+    .sess span { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 0.2rem; }
+    .row { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.65rem; }
+    button.btn {
+      border: 1px solid var(--line);
+      background: #101826;
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      padding: 0.45rem 0.7rem;
+      cursor: pointer;
+    }
+    button.btn:hover { border-color: var(--cyan); color: var(--cyan); }
+    button.btn.primary {
+      background: linear-gradient(120deg, rgba(94, 234, 212, 0.2), rgba(240, 180, 41, 0.12));
+      border-color: var(--line-strong);
+    }
+    button.btn.danger { border-color: rgba(251, 113, 133, 0.45); color: var(--rose); }
+    .grid-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 1rem; }
+    @media (max-width: 1100px) { .grid-main { grid-template-columns: 1fr; } }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.55rem; margin-bottom: 1rem; }
+    @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+    .metric {
+      border: 1px solid var(--line);
+      background: rgba(6, 10, 18, 0.75);
+      padding: 0.7rem 0.75rem;
+      min-height: 4.5rem;
+    }
+    .metric .k {
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.35rem;
+    }
+    .metric .v {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      font-weight: 700;
+      word-break: break-all;
+    }
+    .metric .v.ok { color: var(--ok); }
+    .metric .v.run { color: var(--cyan); }
+    .metric .v.warn { color: var(--amber); }
+    .metric .v.bad { color: var(--rose); }
+    .stream { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 0.35rem; }
+    .evt {
+      border-left: 2px solid var(--line-strong);
+      padding: 0.4rem 0.55rem;
+      background: rgba(5, 8, 14, 0.7);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+    }
+    .evt .t { color: var(--amber); font-size: 0.68rem; }
+    .evt .n { color: var(--cyan); font-weight: 600; }
+    .evt .d { color: var(--muted); margin-top: 0.15rem; white-space: pre-wrap; word-break: break-word; }
+    .workflow-node { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; color: var(--muted); }
+    .workflow-node .dot { width: 0.5rem; height: 0.5rem; border: 1px solid var(--line); background: #122; }
+    .workflow-node.on .dot {
+      background: var(--cyan);
+      border-color: var(--cyan);
+      box-shadow: 0 0 8px rgba(94, 234, 212, 0.7);
+    }
+    .workflow-node.on { color: var(--text); }
+    .empty { color: var(--muted); padding: 0.75rem 0; }
+    .art-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 220px; overflow: auto; }
+    .art {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      border: 1px solid var(--line);
+      padding: 0.45rem 0.55rem;
+      background: rgba(5, 8, 14, 0.65);
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+    }
+    .footer-note {
+      margin-top: 1rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+    }
+    .deps-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 280px; overflow: auto; }
+    .dep {
+      border: 1px solid var(--line);
+      padding: 0.5rem 0.6rem;
+      background: rgba(5, 8, 14, 0.65);
+    }
+    .dep .top { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; }
+    .dep .name { color: var(--text); font-weight: 600; }
+    .dep .badge {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      padding: 0.15rem 0.4rem;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .dep .badge.ok { color: var(--ok); border-color: rgba(74, 222, 128, 0.45); }
+    .dep .badge.miss { color: var(--rose); border-color: rgba(251, 113, 133, 0.45); }
+    .dep .badge.pack { color: var(--cyan); border-color: var(--line-strong); }
+    .dep .badge.ban { color: var(--amber); border-color: rgba(240, 180, 41, 0.45); }
+    .dep .path, .dep .note { color: var(--muted); font-size: 0.7rem; margin-top: 0.25rem; word-break: break-all; }
+    .dep .path { font-family: var(--font-mono); }
+
+    /* First-run wizard */
+    .wizard-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(2, 4, 10, 0.78);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .wizard-backdrop.open { display: flex; animation: fadeIn 0.25s ease; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .wizard {
+      width: min(720px, 100%);
+      max-height: min(92vh, 900px);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(160deg, rgba(14, 24, 40, 0.96), rgba(6, 10, 18, 0.98));
+      box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.08), 0 24px 80px rgba(0, 0, 0, 0.55);
+      position: relative;
+      overflow: hidden;
+      animation: slideUp 0.3s ease;
+    }
+    @keyframes slideUp {
+      from { transform: translateY(12px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .wizard::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--amber), transparent);
+    }
+    .wizard-head { padding: 1.25rem 1.35rem 0.5rem; }
+    .wizard-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      color: var(--cyan);
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .wizard-title {
+      font-family: var(--font-display);
+      font-size: 1.55rem;
+      font-weight: 800;
+      margin: 0 0 0.55rem;
+      letter-spacing: 0.02em;
+    }
+    .wizard-body {
+      padding: 0.35rem 1.35rem 1rem;
+      color: var(--muted);
+      line-height: 1.65;
+      min-height: 12rem;
+      overflow: auto;
+      flex: 1;
+    }
+    .wizard-foot-left { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .run-log {
+      margin-top: 0.65rem;
+      border: 1px solid var(--line);
+      background: #05080f;
+      color: #9fb4ce;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      padding: 0.55rem 0.65rem;
+      max-height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .checklist { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+    .checklist li { margin: 0.2rem 0; }
+    .checklist .ok { color: var(--ok); }
+    .checklist .bad { color: var(--rose); }
+    .checklist .warn { color: var(--amber); }
+    .wizard-body strong { color: var(--text); font-weight: 600; }
+    .wizard-body code {
+      font-family: var(--font-mono);
+      color: var(--amber);
+      font-size: 0.85em;
+    }
+    .wizard-body ul { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+    .wizard-body li { margin: 0.25rem 0; }
+    .wizard-steps {
+      display: flex;
+      gap: 0.35rem;
+      padding: 0 1.35rem;
+      margin-bottom: 0.75rem;
+    }
+    .wizard-steps i {
+      flex: 1;
+      height: 3px;
+      background: rgba(94, 234, 212, 0.12);
+    }
+    .wizard-steps i.on { background: var(--cyan); box-shadow: 0 0 8px rgba(94, 234, 212, 0.45); }
+    .wizard-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      padding: 0.85rem 1.35rem 1.2rem;
+      border-top: 1px solid var(--line);
+    }
+    .wizard-foot label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    .wizard-actions { display: flex; gap: 0.45rem; }
+    .setup-box {
+      margin-top: 0.75rem;
+      border: 1px solid var(--line);
+      background: rgba(5, 8, 14, 0.75);
+      padding: 0.75rem;
+    }
+    .setup-box label {
+      display: block;
+      color: var(--cyan);
+      font-size: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+    .setup-box input[type="text"] {
+      width: 100%;
+      background: #0a101c;
+      border: 1px solid var(--line);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      padding: 0.5rem 0.55rem;
+    }
+    .setup-cands { margin: 0.55rem 0; display: flex; flex-direction: column; gap: 0.3rem; }
+    .setup-cands button {
+      text-align: left;
+      border: 1px solid var(--line);
+      background: rgba(8, 14, 24, 0.9);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      padding: 0.4rem 0.5rem;
+      cursor: pointer;
+    }
+    .setup-cands button:hover { border-color: var(--cyan); color: var(--text); }
+    .setup-msg { margin-top: 0.55rem; font-size: 0.75rem; color: var(--muted); white-space: pre-wrap; }
+    .setup-msg.ok { color: var(--ok); }
+    .setup-msg.bad { color: var(--rose); }
+    .setup-check { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.55rem; color: var(--muted); font-size: 0.78rem; }
+    .mcp-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.55rem 0; }
+    .mcp-tabs button {
+      border: 1px solid var(--line);
+      background: rgba(8, 14, 24, 0.9);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      padding: 0.35rem 0.55rem;
+      cursor: pointer;
+    }
+    .mcp-tabs button.on {
+      color: var(--cyan);
+      border-color: var(--line-strong);
+      background: rgba(94, 234, 212, 0.1);
+    }
+    .mcp-pre {
+      margin: 0;
+      border: 1px solid var(--line);
+      background: #05080f;
+      color: #9fb4ce;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      padding: 0.65rem 0.75rem;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 6rem;
+    }
+    .mcp-meta {
+      color: var(--muted);
+      font-size: 0.72rem;
+      margin: 0.45rem 0 0.65rem;
+      line-height: 1.55;
+      word-break: break-all;
+    }
+    .mcp-meta .ok { color: var(--ok); }
+    .mcp-meta .warn { color: var(--amber); }
+    .mcp-meta .bad { color: var(--rose); }
+    .mcp-env {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      margin: 0.4rem 0 0.65rem;
+    }
+    .mcp-env span {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      border: 1px solid var(--line);
+      padding: 0.15rem 0.4rem;
+      color: var(--muted);
+    }
+    .mcp-env span.hit { color: var(--ok); border-color: rgba(74, 222, 128, 0.4); }
+    .mcp-env span.miss { color: var(--rose); border-color: rgba(251, 113, 133, 0.35); }
+  </style>
+</head>
+<body>
+  <div class="wizard-backdrop" id="wizard" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+    <div class="wizard">
+      <div class="wizard-head">
+        <div class="wizard-kicker" id="wizard-kicker">首次启动</div>
+        <h2 class="wizard-title" id="wizard-title">欢迎</h2>
+      </div>
+      <div class="wizard-steps" id="wizard-steps"></div>
+      <div class="wizard-body" id="wizard-body"></div>
+      <div class="wizard-foot">
+        <div class="wizard-foot-left">
+          <button class="btn danger" id="wizard-skip-all" type="button" data-i18n="wizard.skipAll">跳过向导</button>
+          <label id="wizard-skip-label">
+            <input type="checkbox" id="wizard-dont-show" />
+            <span data-i18n="wizard.dontShow">不再显示此向导</span>
+          </label>
+        </div>
+        <div class="wizard-actions">
+          <button class="btn" id="wizard-prev" type="button">上一步</button>
+          <button class="btn primary" id="wizard-next" type="button">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="shell">
+    <header class="top">
+      <div>
+        <h1 class="brand">
+          HEADLESS RE
+          <small data-i18n="brand.sub">实时工作流监控 · 本机回环</small>
+        </h1>
+      </div>
+      <div class="status-rail">
+        <span class="chip" id="chip-link">离线</span>
+        <span class="chip" id="chip-clock">--:--:--</span>
+        <span class="chip" id="chip-host">127.0.0.1</span>
+        <button class="btn" id="btn-lang" type="button">EN</button>
+        <button class="btn" id="btn-wizard" type="button" data-i18n="btn.wizard">向导</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="panel">
+        <div class="panel-h">
+          <span data-i18n="panel.sessions">会话</span>
+          <span id="sess-count">0</span>
+        </div>
+        <div class="panel-b">
+          <div class="row">
+            <button class="btn primary" id="btn-refresh" data-i18n="btn.sync">同步</button>
+            <button class="btn" id="btn-live" data-i18n="btn.liveOn">实时 · 开</button>
+          </div>
+          <div class="sessions" id="sessions"></div>
+        </div>
+      </aside>
+
+      <section>
+        <div class="metrics">
+          <div class="metric"><div class="k" data-i18n="metric.state">调试状态</div><div class="v" id="m-state">—</div></div>
+          <div class="metric"><div class="k" data-i18n="metric.pid">进程 PID</div><div class="v" id="m-pid">—</div></div>
+          <div class="metric"><div class="k" data-i18n="metric.stage">脱壳阶段</div><div class="v" id="m-stage">—</div></div>
+          <div class="metric"><div class="k" data-i18n="metric.rec">可恢复性</div><div class="v" id="m-rec">—</div></div>
+        </div>
+
+        <div class="grid-main">
+          <div class="panel">
+            <div class="panel-h"><span data-i18n="panel.workflow">工作流</span><span id="wf-flag">空闲</span></div>
+            <div class="panel-b">
+              <div id="workflow-nodes" class="empty"></div>
+              <pre id="workflow-json" class="empty" style="margin-top:0.75rem;white-space:pre-wrap;color:var(--muted);font-size:0.7rem;max-height:160px;overflow:auto;font-family:var(--font-mono);"></pre>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><span data-i18n="panel.events">调试事件</span><span id="evt-count">0</span></div>
+            <div class="panel-b">
+              <div class="stream" id="events"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><span data-i18n="panel.timeline">时间线</span><span id="tl-count">0</span></div>
+            <div class="panel-b">
+              <div class="stream" id="timeline"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><span data-i18n="panel.artifacts">产物</span><span id="art-count">0</span></div>
+            <div class="panel-b">
+              <div class="row">
+                <button class="btn danger" data-write="workflow.cancel" data-i18n="btn.cancelWf">取消工作流</button>
+                <button class="btn danger" data-write="unpack.cancel" data-i18n="btn.cancelUnpack">取消脱壳</button>
+                <button class="btn danger" data-write="session.close" data-i18n="btn.closeSession">关闭会话</button>
+                <button class="btn" data-write="artifacts.gc" data-i18n="btn.gc">清理产物</button>
+              </div>
+              <div class="art-list" id="artifacts"></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:1rem">
+          <div class="panel-h">
+            <span data-i18n="panel.deps">外部依赖</span>
+            <span id="deps-count">0/0</span>
+          </div>
+          <div class="panel-b">
+            <div class="row">
+              <button class="btn" id="btn-deps" type="button" data-i18n="btn.deps">刷新依赖</button>
+            </div>
+            <p class="empty" id="deps-policy" style="padding-top:0;padding-bottom:0.5rem"></p>
+            <div class="deps-list" id="deps-list"><div class="empty" data-i18n="empty.deps">加载依赖清单…</div></div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:1rem">
+          <div class="panel-h">
+            <span data-i18n="panel.mcp">MCP 配置导出</span>
+            <span id="mcp-ready">—</span>
+          </div>
+          <div class="panel-b">
+            <p class="empty" style="padding-top:0;padding-bottom:0.35rem" data-i18n="mcp.help">
+              自动识别本机 Python / IDA / x64dbg / 可选工具路径，生成可直接粘贴的 MCP 配置。
+            </p>
+            <div class="row">
+              <button class="btn primary" id="btn-mcp-detect" type="button" data-i18n="btn.mcpDetect">识别环境并生成</button>
+              <button class="btn" id="btn-mcp-copy" type="button" data-i18n="btn.mcpCopy">复制当前</button>
+              <button class="btn" id="btn-mcp-download" type="button" data-i18n="btn.mcpDownload">下载 JSON</button>
+              <button class="btn" id="btn-mcp-persist" type="button" data-i18n="btn.mcpPersist">写入配置目录</button>
+            </div>
+            <div class="mcp-meta" id="mcp-meta" data-i18n="mcp.idle">尚未生成。点击「识别环境并生成」。</div>
+            <div class="mcp-env" id="mcp-env"></div>
+            <div class="mcp-tabs" id="mcp-tabs">
+              <button type="button" data-client="cursor" class="on">Cursor</button>
+              <button type="button" data-client="vscode">VS Code</button>
+              <button type="button" data-client="claude_desktop">Claude</button>
+              <button type="button" data-client="stdio">stdio</button>
+            </div>
+            <pre class="mcp-pre" id="mcp-pre" data-i18n="mcp.preEmpty">{}</pre>
+          </div>
+        </div>
+        <p class="footer-note" data-i18n="footer">只读监控台 · 由 AnalysisService 驱动 · claims_universal_unpack=false</p>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const I18N = {
+      zh: {
+        "brand.sub": "实时工作流监控 · 本机回环",
+        "btn.wizard": "向导",
+        "btn.sync": "同步",
+        "btn.liveOn": "实时 · 开",
+        "btn.liveOff": "实时 · 关",
+        "btn.cancelWf": "取消工作流",
+        "btn.cancelUnpack": "取消脱壳",
+        "btn.closeSession": "关闭会话",
+        "btn.gc": "清理产物",
+        "btn.download": "下载",
+        "panel.sessions": "会话",
+        "panel.workflow": "工作流",
+        "panel.events": "调试事件",
+        "panel.timeline": "时间线",
+        "panel.artifacts": "产物",
+        "panel.deps": "外部依赖",
+        "btn.deps": "刷新依赖",
+        "empty.deps": "加载依赖清单…",
+        "deps.policy": "可打包：x64dbg → external/　｜　禁止打包：IDA　｜　可选 CLI 默认不随包",
+        "deps.present": "已就绪",
+        "deps.missing": "缺失",
+        "deps.packable": "可打包",
+        "deps.never": "禁打包",
+        "deps.optional": "可选",
+        "panel.mcp": "MCP 配置导出",
+        "btn.mcpDetect": "识别环境并生成",
+        "btn.mcpCopy": "复制当前",
+        "btn.mcpDownload": "下载 JSON",
+        "btn.mcpPersist": "写入配置目录",
+        "mcp.help": "自动识别本机 Python / IDA / x64dbg / 可选工具路径，生成可直接粘贴的 MCP 配置。",
+        "mcp.idle": "尚未生成。点击「识别环境并生成」。",
+        "mcp.preEmpty": "{}",
+        "mcp.working": "正在识别本机环境…",
+        "mcp.ready": "Doctor 就绪",
+        "mcp.partial": "部分就绪",
+        "mcp.copied": "已复制到剪贴板",
+        "mcp.copyFail": "复制失败，请手动选择文本",
+        "mcp.persisted": "已写入配置目录",
+        "mcp.needGenerate": "请先识别环境并生成配置",
+        "mcp.meta": "Python: {python}\n配置: {config}\n嵌入环境变量: {keys}\nDoctor: {doctor}",
+        "metric.state": "调试状态",
+        "metric.pid": "进程 PID",
+        "metric.stage": "脱壳阶段",
+        "metric.rec": "可恢复性",
+        "footer": "只读监控台 · 由 AnalysisService 驱动 · claims_universal_unpack=false",
+        "chip.live": "在线",
+        "chip.offline": "离线",
+        "wf.idle": "空闲",
+        "empty.sessions": "暂无活动会话。请先通过 MCP / CLI 创建分析会话。",
+        "empty.workflowPick": "选择左侧会话以加载工作流。",
+        "empty.workflowNone": "当前未打开工作流。",
+        "empty.workflowErr": "工作流不可用",
+        "empty.events": "等待调试事件…",
+        "empty.timeline": "尚无时间线记录。",
+        "empty.artifacts": "暂无产物。",
+        "empty.auth": "鉴权失败。请使用 /?token=… 打开本页。",
+        "confirm.write": "确认执行写操作：",
+        "alert.pickSession": "请先选择一个会话",
+        "wizard.dontShow": "不再显示此向导",
+        "wizard.prev": "上一步",
+        "wizard.next": "下一步",
+        "wizard.finish": "进入监控台",
+        "wizard.kicker": "安装向导 · Setup",
+        "wizard.skipAll": "跳过向导",
+        "wizard.run": "执行本步",
+        "wizard.running": "正在执行…",
+        "wizard.runOk": "本步完成",
+        "wizard.runFail": "本步失败",
+        "wizard.autoNext": "完成后自动进入下一步",
+        "setup.idaLabel": "IDA 安装目录",
+        "setup.idaPlaceholder": "例如 C:\\Program Files\\IDA Professional 9.x",
+        "setup.pickCand": "检测到的安装（点击填入）",
+        "setup.activate": "自动运行 py-activate-idalib.py（推荐）",
+        "setup.apply": "保存并自动配置",
+        "setup.skip": "稍后配置",
+        "setup.working": "正在配置…",
+        "setup.needPath": "请先填写或选择 IDA 路径",
+        "lang.switch": "EN",
+      },
+      en: {
+        "brand.sub": "Live Workflow Monitor · Loopback",
+        "btn.wizard": "Wizard",
+        "btn.sync": "Sync",
+        "btn.liveOn": "Live ON",
+        "btn.liveOff": "Live OFF",
+        "btn.cancelWf": "Cancel WF",
+        "btn.cancelUnpack": "Cancel Unpack",
+        "btn.closeSession": "Close Session",
+        "btn.gc": "GC",
+        "btn.download": "GET",
+        "panel.sessions": "Sessions",
+        "panel.workflow": "Workflow",
+        "panel.events": "Events",
+        "panel.timeline": "Timeline",
+        "panel.artifacts": "Artifacts",
+        "panel.deps": "External deps",
+        "btn.deps": "Refresh deps",
+        "empty.deps": "Loading dependency inventory…",
+        "deps.policy": "Packable: x64dbg → external/  |  Never: IDA  |  Optional CLIs not in default package",
+        "deps.present": "ready",
+        "deps.missing": "missing",
+        "deps.packable": "packable",
+        "deps.never": "never-bundle",
+        "deps.optional": "optional",
+        "panel.mcp": "MCP export",
+        "btn.mcpDetect": "Detect & generate",
+        "btn.mcpCopy": "Copy",
+        "btn.mcpDownload": "Download JSON",
+        "btn.mcpPersist": "Save to config dir",
+        "mcp.help": "Detect local Python / IDA / x64dbg / optional tools and emit paste-ready MCP JSON.",
+        "mcp.idle": "Not generated yet. Click Detect & generate.",
+        "mcp.preEmpty": "{}",
+        "mcp.working": "Detecting local environment…",
+        "mcp.ready": "Doctor ready",
+        "mcp.partial": "Partial",
+        "mcp.copied": "Copied to clipboard",
+        "mcp.copyFail": "Copy failed — select text manually",
+        "mcp.persisted": "Written under config directory",
+        "mcp.needGenerate": "Generate a config first",
+        "mcp.meta": "Python: {python}\nConfig: {config}\nEmbedded env: {keys}\nDoctor: {doctor}",
+        "metric.state": "Debuggee",
+        "metric.pid": "PID",
+        "metric.stage": "Unpack Stage",
+        "metric.rec": "Recoverability",
+        "footer": "Monitor only · AnalysisService backed · claims_universal_unpack=false",
+        "chip.live": "LIVE",
+        "chip.offline": "OFFLINE",
+        "wf.idle": "IDLE",
+        "empty.sessions": "No active sessions. Create one via MCP / CLI first.",
+        "empty.workflowPick": "Select a session to hydrate the graph.",
+        "empty.workflowNone": "Workflow not open.",
+        "empty.workflowErr": "Workflow unavailable",
+        "empty.events": "Awaiting debug events…",
+        "empty.timeline": "No timeline yet.",
+        "empty.artifacts": "No artifacts.",
+        "empty.auth": "Auth failed. Open with /?token=…",
+        "confirm.write": "Confirm write: ",
+        "alert.pickSession": "Select a session first",
+        "wizard.dontShow": "Don't show this wizard again",
+        "wizard.prev": "Back",
+        "wizard.next": "Next",
+        "wizard.finish": "Enter console",
+        "wizard.kicker": "Install Wizard · Setup",
+        "wizard.skipAll": "Skip wizard",
+        "wizard.run": "Run this step",
+        "wizard.running": "Running…",
+        "wizard.runOk": "Step completed",
+        "wizard.runFail": "Step failed",
+        "wizard.autoNext": "Auto-advance after success",
+        "setup.idaLabel": "IDA install directory",
+        "setup.idaPlaceholder": "e.g. C:\\Program Files\\IDA Professional 9.x",
+        "setup.pickCand": "Detected installs (click to fill)",
+        "setup.activate": "Run py-activate-idalib.py automatically (recommended)",
+        "setup.apply": "Save & configure",
+        "setup.skip": "Configure later",
+        "setup.working": "Configuring…",
+        "setup.needPath": "Enter or select an IDA path first",
+        "lang.switch": "中文",
+      },
+    };
+
+
+    const WIZARD_STEPS = {
+      zh: [
+        {
+          title: "Headless RE 安装向导",
+          kind: "info",
+          html:
+            "<p><strong>正式本地安装流程</strong>。本向导会实际探测环境、同步可打包的 x64dbg、配置 IDA（不打包）、运行 Doctor、写入配置并生成 MCP 片段。</p>" +
+            "<ul class='checklist'>" +
+            "<li>仅 loopback + token，不对外网暴露</li>" +
+            "<li>x64dbg headless 可放入 <code>external/</code> 随包</li>" +
+            "<li>IDA / Hex-Rays <strong>禁止</strong>打包，仅本机授权路径</li>" +
+            "<li><code>claims_universal_unpack=false</code></li>" +
+            "</ul>" +
+            "<p>可随时点左下角 <strong>跳过向导</strong> 进入监控台。</p>",
+        },
+        {
+          title: "① 运行环境检测",
+          kind: "run",
+          step: "environment",
+          html:
+            "<p>检测 Python ≥ 3.11、Web 依赖（FastAPI/Uvicorn）、仓库根目录与配置路径。</p>" +
+            "<p>点击下方 <strong>执行本步</strong> 开始实际探测。</p>",
+        },
+        {
+          title: "② 同步 x64dbg 到 external/",
+          kind: "run",
+          step: "sync_x64dbg",
+          html:
+            "<p>将构建产物 <code>artifacts/x64dbg-*/Release</code> 同步到可打包目录 <code>external/x64dbg-*</code>（整棵 Release，含 DLL）。若已存在则跳过复制。</p>" +
+            "<p><strong>不会</strong>触碰 IDA。</p>",
+        },
+        {
+          title: "③ 运行时路径探针",
+          kind: "run",
+          step: "probe_runtimes",
+          html:
+            "<p>核对 x64/x86 headless.exe 与 IDA <code>idalib.dll</code> 是否已可见于 Settings 自动发现路径。</p>",
+        },
+        {
+          title: "④ 配置本机 IDA",
+          kind: "ida_setup",
+          html:
+            "<p>提供已授权 IDA Professional 9.x 目录。写入 <code>config.json</code> 的 <code>ida_home</code>，并可运行官方 <code>py-activate-idalib.py</code>。<strong>不修改 IDA 安装树。</strong></p>",
+        },
+        {
+          title: "⑤ 运行 Doctor 体检",
+          kind: "run",
+          step: "doctor",
+          html:
+            "<p>执行完整 <code>run_doctor()</code>：Python / IDA idalib / x64dbg headless / 工具链及可选适配器。可能需要数十秒。</p>",
+        },
+        {
+          title: "⑥ 固化默认配置",
+          kind: "run",
+          step: "persist_defaults",
+          html:
+            "<p>将 http 绑定、artifact_root、已发现的 headless / IDA 路径写入用户 <code>config.json</code>。</p>",
+        },
+        {
+          title: "⑦ 生成 MCP 配置片段",
+          kind: "run",
+          step: "generate_mcp",
+          html:
+            "<p>按本机实际探测到的 Python / IDA / x64dbg 等路径生成 MCP 配置（嵌入 <code>HEADLESS_RE_*</code> 与必要时的 <code>PYTHONPATH</code>），并写入本机配置目录。也可稍后在监控台「MCP 配置导出」面板一键复制。</p>",
+        },
+        {
+          title: "⑧ 完成清单",
+          kind: "run",
+          step: "finalize",
+          html:
+            "<p>汇总缺失项与下一步命令。完成后可进入监控台；之后可用右上角「向导」重跑。</p>",
+        },
+      ],
+      en: [
+        {
+          title: "Headless RE Install Wizard",
+          kind: "info",
+          html:
+            "<p><strong>Formal local setup</strong>: probe environment, sync packable x64dbg, configure IDA (never bundled), run Doctor, persist config, generate MCP snippets.</p>" +
+            "<ul class='checklist'>" +
+            "<li>Loopback + token only</li>" +
+            "<li>x64dbg headless may ship under <code>external/</code></li>" +
+            "<li>IDA / Hex-Rays must never be bundled</li>" +
+            "<li><code>claims_universal_unpack=false</code></li>" +
+            "</ul>" +
+            "<p>Use <strong>Skip wizard</strong> anytime to enter the console.</p>",
+        },
+        {
+          title: "1) Environment check",
+          kind: "run",
+          step: "environment",
+          html: "<p>Probe Python ≥ 3.11, web extras, repo root and config paths. Click <strong>Run this step</strong>.</p>",
+        },
+        {
+          title: "2) Sync x64dbg → external/",
+          kind: "run",
+          step: "sync_x64dbg",
+          html: "<p>Copy Release trees into packable <code>external/x64dbg-*</code>. Never touches IDA.</p>",
+        },
+        {
+          title: "3) Runtime path probe",
+          kind: "run",
+          step: "probe_runtimes",
+          html: "<p>Verify headless.exe (x64/x86) and IDA idalib.dll visibility.</p>",
+        },
+        {
+          title: "4) Configure local IDA",
+          kind: "ida_setup",
+          html: "<p>Set licensed IDA 9.x path, write config.json, optionally run official py-activate-idalib.py. Never patches IDA.</p>",
+        },
+        {
+          title: "5) Run Doctor",
+          kind: "run",
+          step: "doctor",
+          html: "<p>Full run_doctor() across required/optional backends. May take a while.</p>",
+        },
+        {
+          title: "6) Persist defaults",
+          kind: "run",
+          step: "persist_defaults",
+          html: "<p>Write http bind, artifact_root, discovered paths into user config.json.</p>",
+        },
+        {
+          title: "7) Generate MCP snippets",
+          kind: "run",
+          step: "generate_mcp",
+          html: "<p>Generate MCP JSON from discovered local paths (embed <code>HEADLESS_RE_*</code> / <code>PYTHONPATH</code>) into the user config dir. You can also use the console <strong>MCP export</strong> panel later.</p>",
+        },
+        {
+          title: "8) Final checklist",
+          kind: "run",
+          step: "finalize",
+          html: "<p>Summarize missing core deps and next commands, then enter the console.</p>",
+        },
+      ],
+    };
+
+    function formatRunResult(step, result) {
+      try {
+        return JSON.stringify(result, null, 2);
+      } catch (e) {
+        return String(result);
+      }
+    }
+
+    function renderWizard() {
+      const steps = WIZARD_STEPS[lang] || WIZARD_STEPS.zh;
+      const step = steps[wizardStep] || steps[0];
+      const bar = document.getElementById("wizard-steps");
+      bar.innerHTML = steps.map((_, i) => "<i class='" + (i <= wizardStep ? "on" : "") + "'></i>").join("");
+      document.getElementById("wizard-title").textContent = step.title;
+      document.getElementById("wizard-kicker").textContent =
+        t("wizard.kicker") + " · " + (wizardStep + 1) + "/" + steps.length;
+
+      let html = step.html || "";
+      if (step.kind === "run") {
+        html +=
+          '<div class="setup-box">' +
+          '<div class="setup-check"><input type="checkbox" id="wiz-auto-next" checked />' +
+          "<span>" + t("wizard.autoNext") + "</span></div>" +
+          '<div class="row" style="margin-top:0.65rem;margin-bottom:0">' +
+          '<button class="btn primary" type="button" id="wiz-run">' + t("wizard.run") + "</button>" +
+          "</div>" +
+          '<div class="run-log" id="wiz-run-log">ready.</div>' +
+          "</div>";
+      }
+      if (step.kind === "ida_setup") {
+        html +=
+          '<div class="setup-box" id="ida-setup-box">' +
+          '<label for="ida-home-input">' + t("setup.idaLabel") + "</label>" +
+          '<input type="text" id="ida-home-input" placeholder="' + t("setup.idaPlaceholder") + '" />' +
+          '<div class="setup-check"><input type="checkbox" id="ida-activate" checked />' +
+          "<span>" + t("setup.activate") + "</span></div>" +
+          '<div style="margin-top:0.45rem;color:var(--muted);font-size:0.72rem">' + t("setup.pickCand") + "</div>" +
+          '<div class="setup-cands" id="ida-cands"></div>' +
+          '<div class="row" style="margin-top:0.65rem;margin-bottom:0">' +
+          '<button class="btn primary" type="button" id="ida-apply">' + t("setup.apply") + "</button>" +
+          '<button class="btn" type="button" id="ida-skip">' + t("setup.skip") + "</button>" +
+          "</div>" +
+          '<div class="setup-msg" id="ida-setup-msg"></div>' +
+          "</div>";
+      }
+      document.getElementById("wizard-body").innerHTML = html;
+      if (step.kind === "run") wireRunStep(step.step);
+      if (step.kind === "ida_setup") wireIdaSetupStep();
+
+      document.getElementById("wizard-prev").disabled = wizardStep <= 0;
+      document.getElementById("wizard-prev").style.opacity = wizardStep <= 0 ? "0.4" : "1";
+      const next = document.getElementById("wizard-next");
+      next.textContent = wizardStep >= steps.length - 1 ? t("wizard.finish") : t("wizard.next");
+      document.getElementById("wizard-skip-label").style.visibility = "visible";
+    }
+
+    function wireRunStep(stepName) {
+      const btn = document.getElementById("wiz-run");
+      const log = document.getElementById("wiz-run-log");
+      if (!btn || !log) return;
+      btn.onclick = async () => {
+        btn.disabled = true;
+        log.textContent = t("wizard.running") + " [" + stepName + "]";
+        try {
+          const result = await api("/api/setup/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm: true, step: stepName }),
+          });
+          log.textContent = (result.ok ? t("wizard.runOk") : t("wizard.runFail")) +
+            "\n" + formatRunResult(stepName, result);
+          log.style.color = result.ok ? "var(--ok)" : "var(--rose)";
+          btn.disabled = false;
+          loadDeps().catch(() => {});
+          const auto = document.getElementById("wiz-auto-next");
+          if (result.ok && auto && auto.checked) {
+            const steps = WIZARD_STEPS[lang] || WIZARD_STEPS.zh;
+            if (wizardStep < steps.length - 1) {
+              setTimeout(() => { wizardStep += 1; renderWizard(); }, 450);
+            }
+          }
+        } catch (err) {
+          log.textContent = t("wizard.runFail") + "\n" + String(err);
+          log.style.color = "var(--rose)";
+          btn.disabled = false;
+        }
+      };
+    }
+
+    async function wireIdaSetupStep() {
+      const input = document.getElementById("ida-home-input");
+      const cands = document.getElementById("ida-cands");
+      const msg = document.getElementById("ida-setup-msg");
+      const apply = document.getElementById("ida-apply");
+      const skip = document.getElementById("ida-skip");
+      if (!input || !cands || !msg || !apply || !skip) return;
+      try {
+        const status = await api("/api/setup/status");
+        if (status.ida_home) input.value = status.ida_home;
+        const list = status.candidates || [];
+        if (!list.length) {
+          cands.innerHTML = '<div class="empty" style="padding:0.35rem 0">—</div>';
+        } else {
+          cands.innerHTML = list.map((p) =>
+            '<button type="button" data-path="' + p.replace(/"/g, "&quot;") + '">' + p + "</button>"
+          ).join("");
+          cands.querySelectorAll("button").forEach((btn) => {
+            btn.onclick = () => { input.value = btn.dataset.path || ""; };
+          });
+        }
+        const probeMsg = status.probe && (status.probe.summary || status.probe.message);
+        if (probeMsg) {
+          msg.textContent = status.probe.status + " · " + probeMsg;
+          msg.className = "setup-msg" + (status.probe.status === "ready" ? " ok" : "");
+        }
+      } catch (err) {
+        msg.textContent = String(err);
+        msg.className = "setup-msg bad";
+      }
+      apply.onclick = async () => {
+        const pathVal = (input.value || "").trim();
+        if (!pathVal) {
+          msg.textContent = t("setup.needPath");
+          msg.className = "setup-msg bad";
+          return;
+        }
+        apply.disabled = true;
+        msg.textContent = t("setup.working");
+        msg.className = "setup-msg";
+        try {
+          const result = await api("/api/setup/ida", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              confirm: true,
+              ida_home: pathVal,
+              activate: !!document.getElementById("ida-activate").checked,
+            }),
+          });
+          if (!result.ok) {
+            const v = result.validation || {};
+            msg.textContent = (v.message || "failed") + (v.code ? (" [" + v.code + "]") : "");
+            msg.className = "setup-msg bad";
+            apply.disabled = false;
+            return;
+          }
+          let line = (lang === "zh" ? result.note_zh : result.note_en) || "ok";
+          const probeLine = result.probe && (result.probe.summary || result.probe.message);
+          if (probeLine) line += "\n" + probeLine;
+          if (result.activation) {
+            line += "\nactivate: " + (result.activation.ok ? "ok" : (result.activation.code || "fail"));
+          }
+          msg.textContent = line;
+          msg.className = "setup-msg ok";
+          apply.disabled = false;
+          loadDeps().catch(() => {});
+        } catch (err) {
+          msg.textContent = String(err);
+          msg.className = "setup-msg bad";
+          apply.disabled = false;
+        }
+      };
+      skip.onclick = () => {
+        const steps = WIZARD_STEPS[lang] || WIZARD_STEPS.zh;
+        if (wizardStep < steps.length - 1) {
+          wizardStep += 1;
+          renderWizard();
+        }
+      };
+    }
+
+
+    const params = new URLSearchParams(location.search);
+    let token = params.get("token") || localStorage.getItem("hre_token") || "";
+    if (token) localStorage.setItem("hre_token", token);
+
+    let lang = localStorage.getItem("hre_lang") || "zh";
+    if (lang !== "zh" && lang !== "en") lang = "zh";
+
+    let selected = null;
+    let live = true;
+    let es = null;
+    let pollTimer = null;
+    let sessionsCache = [];
+    let wizardStep = 0;
+    let lastLiveDetail = "";
+
+    function t(key) {
+      return (I18N[lang] && I18N[lang][key]) || (I18N.zh[key] || key);
+    }
+
+    function applyStaticI18n() {
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      document.title = lang === "zh" ? "HRE · 实时工作流监控" : "HRE · Live Workflow Monitor";
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (key) el.textContent = t(key);
+      });
+      document.getElementById("btn-lang").textContent = t("lang.switch");
+      document.getElementById("btn-live").textContent = live ? t("btn.liveOn") : t("btn.liveOff");
+      document.getElementById("wizard-prev").textContent = t("wizard.prev");
+      setLiveChip(document.getElementById("chip-link").classList.contains("live"), lastLiveDetail);
+      if (!selected) {
+        document.getElementById("workflow-nodes").innerHTML =
+          '<div class="empty">' + t("empty.workflowPick") + "</div>";
+        document.getElementById("events").innerHTML =
+          '<div class="empty">' + t("empty.events") + "</div>";
+        document.getElementById("timeline").innerHTML =
+          '<div class="empty">' + t("empty.timeline") + "</div>";
+        document.getElementById("artifacts").innerHTML =
+          '<div class="empty">' + t("empty.artifacts") + "</div>";
+        document.getElementById("wf-flag").textContent = t("wf.idle");
+      }
+      renderSessions(sessionsCache);
+      if (document.getElementById("wizard").classList.contains("open")) renderWizard();
+      renderMcpPanel();
+    }
+
+    function authHeaders() {
+      return token ? { Authorization: "Bearer " + token } : {};
+    }
+
+    async function api(path, opts = {}) {
+      const url = new URL(path, location.origin);
+      const res = await fetch(url, {
+        ...opts,
+        headers: { ...(opts.headers || {}), ...authHeaders() },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(res.status + " " + text);
+      }
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) return res.json();
+      return res.text();
+    }
+
+    function setLiveChip(on, detail) {
+      lastLiveDetail = detail || "";
+      const el = document.getElementById("chip-link");
+      el.textContent = on
+        ? (t("chip.live") + (detail ? " · " + detail : ""))
+        : t("chip.offline");
+      el.className = "chip " + (on ? "live" : "bad");
+    }
+
+    function tickClock(iso) {
+      const el = document.getElementById("chip-clock");
+      if (iso) {
+        el.textContent = String(iso).replace("T", " ").replace(/\.\d+Z$/, "Z");
+      } else {
+        el.textContent = new Date().toISOString().slice(11, 19) + "Z";
+      }
+    }
+
+    function shortId(id) {
+      return (id || "").slice(0, 10);
+    }
+
+    function renderSessions(sessions) {
+      sessionsCache = sessions || [];
+      const box = document.getElementById("sessions");
+      document.getElementById("sess-count").textContent = String(sessionsCache.length);
+      box.innerHTML = "";
+      if (!sessionsCache.length) {
+        box.innerHTML = '<div class="empty">' + t("empty.sessions") + "</div>";
+        return;
+      }
+      for (const s of sessionsCache) {
+        const btn = document.createElement("button");
+        btn.className = "sess" + (selected === s.id ? " active" : "");
+        const arch = s.architecture || "?";
+        const state = s.state || "?";
+        const binary = (s.binary || "").split(/[/\\]/).pop() || s.binary || "";
+        btn.innerHTML =
+          "<strong>" + shortId(s.id) + "</strong>" +
+          "<span>" + arch + " · " + state + "</span>" +
+          "<span>" + binary + "</span>";
+        btn.onclick = () => {
+          selected = s.id;
+          renderSessions(sessionsCache);
+          startMonitor();
+        };
+        box.appendChild(btn);
+      }
+    }
+
+    function stateClass(state) {
+      const s = String(state || "").toLowerCase();
+      if (s === "running") return "run";
+      if (s === "paused" || s === "suspended") return "warn";
+      if (s === "idle" || s === "ready") return "ok";
+      if (s.includes("fail") || s.includes("error")) return "bad";
+      return "";
+    }
+
+    function renderWorkflow(wf) {
+      const host = document.getElementById("workflow-nodes");
+      const flag = document.getElementById("wf-flag");
+      const dump = document.getElementById("workflow-json");
+      if (!wf || !wf.present || !wf.data) {
+        host.innerHTML = '<div class="empty">' +
+          (wf && wf.error
+            ? (t("empty.workflowErr") + " · " + (wf.error.code || ""))
+            : t("empty.workflowNone")) +
+          "</div>";
+        flag.textContent = t("wf.idle");
+        dump.textContent = "";
+        return;
+      }
+      const data = wf.data;
+      const status = data.status || data.state || data.phase || "active";
+      flag.textContent = String(status).toUpperCase();
+      const nodes = ["READY", "TRACKING", "NAVIGATING", "PAUSED", "CANCELLED", "FAILED"];
+      const current = String(status).toUpperCase();
+      host.innerHTML = nodes.map((n) => {
+        const on = current.includes(n) || (data.status && String(data.status).toUpperCase() === n);
+        return '<div class="workflow-node' + (on ? " on" : "") + '"><span class="dot"></span><span>' + n + "</span></div>";
+      }).join("");
+      dump.textContent = JSON.stringify({
+        status: data.status || data.state,
+        module: data.module || data.tracked_module,
+        breakpoints: data.breakpoints || data.breakpoint_intents,
+        cursor: data.event_cursor || data.cursor,
+      }, null, 2);
+    }
+
+    function renderStream(el, items, emptyText, mapFn) {
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="empty">' + emptyText + "</div>";
+        return;
+      }
+      el.innerHTML = items.slice().reverse().slice(0, 40).map(mapFn).join("");
+    }
+
+    function applyMonitor(payload) {
+      if (!payload) return;
+      tickClock(payload.generated_at);
+      const dyn = payload.dynamic || {};
+      const unpack = payload.unpack || {};
+      const stateEl = document.getElementById("m-state");
+      stateEl.textContent = dyn.state || "—";
+      stateEl.className = "v " + stateClass(dyn.state);
+      document.getElementById("m-pid").textContent =
+        dyn.debuggee_pid || dyn.process_id || "—";
+      const stageEl = document.getElementById("m-stage");
+      stageEl.textContent = unpack.stage || (unpack.present ? "active" : "—");
+      stageEl.className = "v " + (unpack.stage ? "warn" : "");
+      const recEl = document.getElementById("m-rec");
+      const rec = unpack.recoverability || "—";
+      recEl.textContent = rec;
+      recEl.className = "v " + (String(rec).includes("vm_coupled") ? "bad" : (rec === "—" ? "" : "ok"));
+      renderWorkflow(payload.workflow);
+      const events = (payload.events && payload.events.items) || [];
+      document.getElementById("evt-count").textContent = String(events.length);
+      renderStream(document.getElementById("events"), events, t("empty.events"), (e) => {
+        const kind = e.kind || e.type || "event";
+        const seq = e.sequence != null ? "#" + e.sequence : "";
+        const detail = e.data ? JSON.stringify(e.data).slice(0, 180) : "";
+        return '<div class="evt"><div class="t">' + seq + '</div><div class="n">' + kind +
+          '</div><div class="d">' + detail + "</div></div>";
+      });
+      const timeline = (payload.timeline && payload.timeline.items) || [];
+      document.getElementById("tl-count").textContent = String(timeline.length);
+      renderStream(document.getElementById("timeline"), timeline, t("empty.timeline"), (e) => {
+        const kind = e.kind || e.action || e.type || "note";
+        const ts = e.ts || e.timestamp || e.at || "";
+        const msg = e.message || e.summary || JSON.stringify(e).slice(0, 160);
+        return '<div class="evt"><div class="t">' + ts + '</div><div class="n">' + kind +
+          '</div><div class="d">' + msg + "</div></div>";
+      });
+      const arts = (payload.artifacts && payload.artifacts.items) || [];
+      document.getElementById("art-count").textContent = String(
+        payload.artifacts && payload.artifacts.count != null ? payload.artifacts.count : arts.length
+      );
+      const artBox = document.getElementById("artifacts");
+      if (!arts.length) {
+        artBox.innerHTML = '<div class="empty">' + t("empty.artifacts") + "</div>";
+      } else {
+        artBox.innerHTML = arts.map((a) => {
+          const id = a.id || "";
+          const kind = a.kind || a.type || "file";
+          const name = (a.path || "").split(/[/\\]/).pop() || id;
+          const href = id
+            ? ("/api/artifacts/" + encodeURIComponent(id) + "/file?token=" + encodeURIComponent(token))
+            : "#";
+          return '<div class="art"><span>' + kind + " · " + name +
+            '</span><a style="color:var(--cyan)" href="' + href + '">' + t("btn.download") + "</a></div>";
+        }).join("");
+      }
+    }
+
+    function stopMonitor() {
+      if (es) { es.close(); es = null; }
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    async function fetchMonitorOnce() {
+      if (!selected) return;
+      const body = await api("/api/sessions/" + encodeURIComponent(selected) + "/monitor");
+      applyMonitor(body.data || body);
+      setLiveChip(true, "poll");
+    }
+
+    function startMonitor() {
+      stopMonitor();
+      if (!selected) return;
+      if (!live || typeof EventSource === "undefined") {
+        fetchMonitorOnce().catch((err) => {
+          setLiveChip(false);
+          console.error(err);
+        });
+        pollTimer = setInterval(() => {
+          fetchMonitorOnce().catch(() => setLiveChip(false));
+        }, 1000);
+        return;
+      }
+      const url = new URL(
+        "/api/sessions/" + encodeURIComponent(selected) + "/monitor/stream",
+        location.origin
+      );
+      url.searchParams.set("interval_ms", "750");
+      if (token) url.searchParams.set("token", token);
+      es = new EventSource(url.toString());
+      es.addEventListener("monitor", (ev) => {
+        try {
+          const body = JSON.parse(ev.data);
+          applyMonitor(body.data || body);
+          setLiveChip(true, "sse");
+        } catch (err) {
+          console.error(err);
+        }
+      });
+      es.onerror = () => {
+        setLiveChip(false);
+        if (es) { es.close(); es = null; }
+        pollTimer = setInterval(() => {
+          fetchMonitorOnce().catch(() => setLiveChip(false));
+        }, 1200);
+      };
+    }
+
+    async function loadSessions() {
+      const payload = await api("/api/sessions");
+      const sessions = (payload.data && payload.data.sessions) || [];
+      renderSessions(sessions);
+      if (!selected && sessions.length) {
+        selected = sessions[0].id;
+        renderSessions(sessions);
+        startMonitor();
+      } else if (selected) {
+        startMonitor();
+      }
+    }
+
+    function renderDeps(snap) {
+      const list = document.getElementById("deps-list");
+      const policy = document.getElementById("deps-policy");
+      const count = document.getElementById("deps-count");
+      if (!snap || !snap.items) {
+        list.innerHTML = '<div class="empty">' + t("empty.deps") + "</div>";
+        return;
+      }
+      policy.textContent = t("deps.policy") +
+        (snap.external_root ? (" · " + snap.external_root) : "");
+      const present = (snap.counts && snap.counts.present) || 0;
+      const total = (snap.counts && snap.counts.total) || snap.items.length;
+      count.textContent = present + "/" + total;
+      list.innerHTML = snap.items.map((item) => {
+        const title = lang === "zh" ? (item.title_zh || item.title) : item.title;
+        const note = lang === "zh" ? item.note_zh : item.note_en;
+        const status = item.present
+          ? '<span class="badge ok">' + t("deps.present") + "</span>"
+          : '<span class="badge miss">' + t("deps.missing") + "</span>";
+        let kind = "";
+        if (item.never_bundle) {
+          kind = '<span class="badge ban">' + t("deps.never") + "</span>";
+        } else if (item.packable) {
+          kind = '<span class="badge pack">' + t("deps.packable") + "</span>";
+        } else {
+          kind = '<span class="badge">' + t("deps.optional") + "</span>";
+        }
+        const path = item.path
+          ? '<div class="path">' + item.path + "</div>"
+          : '<div class="path">' + (item.env || "") + "</div>";
+        return '<div class="dep"><div class="top"><span class="name">' + title +
+          "</span><span>" + status + " " + kind + "</span></div>" + path +
+          '<div class="note">' + (note || "") + "</div></div>";
+      }).join("");
+    }
+
+    async function loadDeps() {
+      const snap = await api("/api/deps");
+      renderDeps(snap);
+    }
+
+    let mcpExport = null;
+    let mcpClient = "cursor";
+
+    function currentMcpConfig() {
+      if (!mcpExport) return null;
+      if (mcpClient === "stdio") return mcpExport.stdio || null;
+      const examples = mcpExport.examples || {};
+      return examples[mcpClient] || null;
+    }
+
+    function renderMcpPanel() {
+      const meta = document.getElementById("mcp-meta");
+      const pre = document.getElementById("mcp-pre");
+      const envBox = document.getElementById("mcp-env");
+      const ready = document.getElementById("mcp-ready");
+      document.querySelectorAll("#mcp-tabs button").forEach((btn) => {
+        btn.classList.toggle("on", btn.dataset.client === mcpClient);
+      });
+      if (!mcpExport) {
+        meta.textContent = t("mcp.idle");
+        pre.textContent = t("mcp.preEmpty");
+        envBox.innerHTML = "";
+        ready.textContent = "—";
+        ready.className = "";
+        return;
+      }
+      const doctorReady = !!mcpExport.doctor_ready;
+      ready.textContent = doctorReady ? t("mcp.ready") : t("mcp.partial");
+      ready.style.color = doctorReady ? "var(--ok)" : "var(--amber)";
+      const keys = (mcpExport.embedded_env_keys || []).join(", ") || "—";
+      meta.innerHTML = t("mcp.meta")
+        .replace("{python}", mcpExport.python || "—")
+        .replace("{config}", mcpExport.config_path || "—")
+        .replace("{keys}", keys)
+        .replace(
+          "{doctor}",
+          doctorReady
+            ? '<span class="ok">ready</span>'
+            : '<span class="warn">not ready</span>'
+        )
+        .replace(/\n/g, "<br/>");
+      const inv = mcpExport.env_inventory || [];
+      envBox.innerHTML = inv.map((item) => {
+        const cls = item.present ? "hit" : "miss";
+        const label = item.key + (item.present ? "" : " ?");
+        return '<span class="' + cls + '" title="' +
+          String(item.path || "").replace(/"/g, "&quot;") + '">' + label + "</span>";
+      }).join("");
+      const cfg = currentMcpConfig();
+      pre.textContent = cfg ? JSON.stringify(cfg, null, 2) : t("mcp.preEmpty");
+    }
+
+    async function detectMcpExport() {
+      const meta = document.getElementById("mcp-meta");
+      meta.textContent = t("mcp.working");
+      const payload = await api("/api/mcp/export?client=all");
+      mcpExport = payload;
+      renderMcpPanel();
+      loadDeps().catch(() => {});
+      return payload;
+    }
+
+    async function persistMcpExport() {
+      const payload = await api("/api/mcp/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true, persist: true }),
+      });
+      mcpExport = {
+        ...payload,
+        examples: payload.examples,
+        stdio: payload.stdio,
+      };
+      renderMcpPanel();
+      const written = payload.written || {};
+      const paths = Object.values(written).join("\n");
+      alert(t("mcp.persisted") + (paths ? ("\n" + paths) : ""));
+      return payload;
+    }
+
+    async function copyMcpConfig() {
+      const cfg = currentMcpConfig();
+      if (!cfg) {
+        alert(t("mcp.needGenerate"));
+        return;
+      }
+      const text = JSON.stringify(cfg, null, 2);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        alert(t("mcp.copied"));
+      } catch (err) {
+        alert(t("mcp.copyFail") + "\n" + String(err));
+      }
+    }
+
+    function downloadMcpConfig() {
+      const cfg = currentMcpConfig();
+      if (!cfg) {
+        alert(t("mcp.needGenerate"));
+        return;
+      }
+      const blob = new Blob([JSON.stringify(cfg, null, 2) + "\n"], {
+        type: "application/json",
+      });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "mcp." + mcpClient + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function openWizard(reset) {
+      if (reset) wizardStep = 0;
+      document.getElementById("wizard").classList.add("open");
+      renderWizard();
+    }
+
+    function closeWizard() {
+      if (document.getElementById("wizard-dont-show").checked) {
+        localStorage.setItem("hre_wizard_done", "1");
+      }
+      document.getElementById("wizard").classList.remove("open");
+    }
+
+    function maybeShowWizard() {
+      if (params.get("wizard") === "1" || localStorage.getItem("hre_wizard_done") !== "1") {
+        openWizard(true);
+      }
+    }
+
+    document.getElementById("btn-refresh").onclick = () => {
+      loadSessions().catch((err) => {
+        setLiveChip(false);
+        alert(String(err));
+      });
+    };
+    document.getElementById("btn-live").onclick = () => {
+      live = !live;
+      document.getElementById("btn-live").textContent = live ? t("btn.liveOn") : t("btn.liveOff");
+      startMonitor();
+    };
+    document.getElementById("btn-lang").onclick = () => {
+      lang = lang === "zh" ? "en" : "zh";
+      localStorage.setItem("hre_lang", lang);
+      applyStaticI18n();
+      if (selected) fetchMonitorOnce().catch(() => {});
+      loadDeps().catch(() => {});
+    };
+    document.getElementById("btn-wizard").onclick = () => openWizard(true);
+    document.getElementById("wizard-skip-all").onclick = () => {
+      document.getElementById("wizard-dont-show").checked = true;
+      localStorage.setItem("hre_wizard_done", "1");
+      closeWizard();
+    };
+    document.getElementById("btn-deps").onclick = () => {
+      loadDeps().catch((err) => alert(String(err)));
+    };
+    document.getElementById("btn-mcp-detect").onclick = () => {
+      detectMcpExport().catch((err) => alert(String(err)));
+    };
+    document.getElementById("btn-mcp-copy").onclick = () => {
+      copyMcpConfig().catch((err) => alert(String(err)));
+    };
+    document.getElementById("btn-mcp-download").onclick = () => downloadMcpConfig();
+    document.getElementById("btn-mcp-persist").onclick = () => {
+      persistMcpExport().catch((err) => alert(String(err)));
+    };
+    document.querySelectorAll("#mcp-tabs button").forEach((btn) => {
+      btn.onclick = () => {
+        mcpClient = btn.dataset.client || "cursor";
+        renderMcpPanel();
+      };
+    });
+    document.getElementById("wizard-prev").onclick = () => {
+      if (wizardStep > 0) {
+        wizardStep -= 1;
+        renderWizard();
+      }
+    };
+    document.getElementById("wizard-next").onclick = () => {
+      const steps = WIZARD_STEPS[lang] || WIZARD_STEPS.zh;
+      if (wizardStep >= steps.length - 1) {
+        // finishing always marks done unless user unchecked — default check on last step
+        const box = document.getElementById("wizard-dont-show");
+        if (!box.checked && box.dataset.touched !== "1") box.checked = true;
+        closeWizard();
+        return;
+      }
+      wizardStep += 1;
+      renderWizard();
+    };
+    document.getElementById("wizard-dont-show").onchange = (ev) => {
+      ev.currentTarget.dataset.touched = "1";
+    };
+
+    document.querySelectorAll("[data-write]").forEach((btn) => {
+      btn.onclick = async () => {
+        const action = btn.dataset.write;
+        if (!confirm(t("confirm.write") + action + "?")) return;
+        const body = { confirm: true };
+        if (action !== "artifacts.gc") {
+          if (!selected) { alert(t("alert.pickSession")); return; }
+          body.session_id = selected;
+        }
+        try {
+          await api("/api/write/" + action, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          await loadSessions();
+        } catch (err) {
+          alert(String(err));
+        }
+      };
+    });
+
+    (async () => {
+      applyStaticI18n();
+      maybeShowWizard();
+      try {
+        const meta = await api("/api/meta");
+        document.getElementById("chip-host").textContent =
+          (meta.host || "127.0.0.1") + ":" + (meta.port || "");
+        setLiveChip(true, "auth");
+        await loadSessions();
+        await loadDeps();
+        setInterval(() => tickClock(), 1000);
+      } catch (err) {
+        setLiveChip(false);
+        document.getElementById("sessions").innerHTML =
+          '<div class="empty">' + t("empty.auth") + "</div>";
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>
