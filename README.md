@@ -6,6 +6,58 @@
 - 官方 x64dbg `headless.exe` 执行 x86/x64 动态调试；
 - MCP stdio 暴露受限的语义工具，不开放任意调试器命令。
 
+## 快速开始
+
+适合第一次克隆本仓库后的本机配置（Windows + Python 3.11+）。
+
+```powershell
+cd <本仓库根目录>
+python -m pip install -U pip
+python first_setup.py              # 终端问答（结束时控制台贴出完整 MCP JSON）
+python first_setup.py --gui        # PySide6 现代原生窗口（无 WebView）
+# 等价：
+pip install -e ".[native]"
+python -m headless_re_mcp.native_app
+```
+
+
+`first_setup.py` / 原生启动器会收集路径并完成配置：
+
+1. （可选）`pip install -e ".[dev,ida,pe,web]"`
+2. 询问并校验 **IDA 9.x 安装目录**、**x64/x86 headless.exe**
+3. 可选询问 UPX / DIE / Rizin / cdb 等
+4. 写入用户 `config.json`（`platformdirs` 下的 headless-re-mcp 配置）
+5. 可选运行 IDA `idalib` Python 激活脚本
+6. 同步/探针 x64dbg、生成 Cursor `.cursor/mcp.json`（本机文件，已 gitignore）
+7. 运行 `doctor`；GUI 还可一键启动/停止 MCP serve
+
+便携目录（Zerofall 风格布局，**无浏览器套壳**）：
+
+```powershell
+powershell -File .\scripts\build_native_portable.ps1
+# 产物：artifacts/release/native-portable/headless-re-mcp-win.x64/
+```
+
+配置完成后：
+
+```powershell
+python -m headless_re_mcp doctor --json --strict
+python -m headless_re_mcp serve
+# 或本地监控台进程（系统浏览器访问，非内嵌）：
+python start_web.py
+```
+
+说明：
+
+- 需要已安装 **IDA Professional 9.x**（含 `idalib.dll`），本项目不捆绑 IDA。
+- 需要本机已有 x64dbg `headless.exe`（通常在 `artifacts/x64dbg-*/Release/` 或
+  `external/x64dbg-*/`）。若还没有，先按下文「构建官方 x64dbg headless RPC」构建，
+  或用 `scripts/sync_upstream.ps1 -Name x64dbg` 拉取源码后再构建。
+- 仅自动发现、不提问：`python first_setup.py --non-interactive`
+- 跳过 pip：`python first_setup.py --skip-pip`
+- 原生壳使用 **PySide6**（`pip install -e ".[native]"`），深色简洁 UI；保存后右侧与控制台都会贴出可复制 MCP JSON。
+- **禁止** WebView2/Electron 浏览器套壳。
+
 ## 当前能力
 
 ```text
@@ -151,11 +203,11 @@ upstream/              # 本地上游 checkout（gitignore；由 lock + sync 脚
 artifacts/             # 本地构建/验收产物（默认 gitignore；含 headless.exe、tools）
 ```
 
-根目录仅保留项目入口与元数据：`pyproject.toml`、`README.md`、`start_web.py`、
-`upstream.lock.json`、`LICENSE`、`THIRD_PARTY_NOTICES.md`。
+根目录仅保留项目入口与元数据：`pyproject.toml`、`README.md`、`first_setup.py`、
+`start_web.py`、`upstream.lock.json`、`LICENSE`、`THIRD_PARTY_NOTICES.md`。
 
-上游源码不进 Git：复制 `.cursor/mcp.json.example` 为本机 `.cursor/mcp.json` 后按路径修改；
-拉取锁定上游：
+上游源码不进 Git：优先跑 `python first_setup.py` 生成本机 `.cursor/mcp.json`；
+也可复制 `.cursor/mcp.json.example` 后手改。拉取锁定上游：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync_upstream.ps1
