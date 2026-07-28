@@ -6,6 +6,21 @@
 - 官方 x64dbg `headless.exe` 执行 x86/x64 动态调试；
 - MCP stdio 暴露受限的语义工具，不开放任意调试器命令。
 
+## 依赖发行包（不含 IDA）
+
+GitHub Release 提供除 IDA 外的运行时依赖 zip（x64dbg / UPX / DIE / cdb / de4dot / NETReactorSlayer）：
+
+https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0-deps
+
+本机构建同样产物：
+
+`powershell
+powershell -File .\scripts\build_deps_bundle.ps1
+# -> artifacts/release/deps-bundle/headless-re-mcp-deps-win.x64.zip
+`
+
+解压后执行 ctivate_deps.ps1，再单独设置 HEADLESS_RE_IDA_HOME。
+
 ## 快速开始
 
 适合第一次克隆本仓库后的本机配置（Windows + Python 3.11+）。
