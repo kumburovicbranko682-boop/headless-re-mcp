@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
+from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.events import DEFAULT_DEBUG_EVENT_BATCH
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result
 from headless_re_mcp.workflows.breakpoints import BreakpointIntent
@@ -57,9 +58,8 @@ class WorkflowAnalysisMixin:
     def workflow_status(self, session_id: str) -> Result[JsonObject]:
         try:
             self.registry.get(session_id)
-            with self._lock:
-                runtime = self._runtimes.get((session_id, BackendKind.X64DBG))
-                terminal = self._terminal_workflows.get(session_id)
+            runtime = self._runtime_owner.get(session_id, BackendKind.X64DBG)
+            terminal = self._workflow_owner.get_terminal(session_id)
             if runtime is None:
                 if terminal is not None:
                     return _success(
@@ -71,7 +71,7 @@ class WorkflowAnalysisMixin:
                 raise XdbgRpcError("backend_unavailable", "x64dbg worker is not open")
             with runtime.lock:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
-                workflow = self._require_workflow(runtime)
+                workflow = self._require_workflow(session_id)
                 return _success(
                     {"workflow": workflow.to_dict()},
                     session_id=session_id,
@@ -92,7 +92,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_workflow(runtime)
+            workflow = self._require_workflow(session_id)
             transition = prepare_workflow_reset(workflow.state)
             try:
                 execute_workflow_transition(
@@ -101,13 +101,11 @@ class WorkflowAnalysisMixin:
                     timeout=validated,
                 )
             except WorkflowExecutionError as exc:
-                self._record_workflow_failure_locked(runtime, workflow, exc)
+                self._record_workflow_failure_locked(session_id, workflow, exc)
                 raise exc.cause from exc
             cursor = self._require_event_cursor(runtime).value
             reset = create_workflow_runtime(cursor=cursor)
-            runtime.workflow = reset
-            with self._lock:
-                self._terminal_workflows.pop(session_id, None)
+            self._workflow_owner.put(session_id, reset)
             return {"workflow": reset.to_dict()}
 
         return self._workflow_request(session_id, action)
@@ -123,7 +121,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             transition = cancel_workflow_navigation(workflow.state)
             updated = self._execute_workflow_transition_locked(
                 session_id,
@@ -159,7 +157,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             self._workflow_ensure_paused_locked(
                 session_id,
                 runtime,
@@ -195,7 +193,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             transition = untrack_workflow_module(workflow.state, key)
             updated = self._execute_workflow_transition_locked(
                 session_id,
@@ -231,7 +229,7 @@ class WorkflowAnalysisMixin:
         selected = None if normalized_keys is None else frozenset(normalized_keys)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             transition = request_workflow_module_refresh(workflow.state, selected)
             updated = self._execute_workflow_transition_locked(
                 session_id,
@@ -270,7 +268,7 @@ class WorkflowAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             transition = put_workflow_breakpoint_intent(workflow.state, intent)
             updated = self._execute_workflow_transition_locked(
                 session_id,
@@ -295,7 +293,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             transition = disable_workflow_breakpoint_intent(
                 workflow.state,
                 intent_id,
@@ -323,7 +321,7 @@ class WorkflowAnalysisMixin:
             return _failure(validated, session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             disabled = disable_workflow_breakpoint_intent(
                 workflow.state,
                 intent_id,
@@ -349,7 +347,7 @@ class WorkflowAnalysisMixin:
 
     def workflow_breakpoint_list(self, session_id: str) -> Result[JsonObject]:
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_workflow(runtime)
+            workflow = self._require_workflow(session_id)
             serialized = workflow.to_dict()
             state = cast(JsonObject, serialized["state"])
             return {
@@ -399,7 +397,7 @@ class WorkflowAnalysisMixin:
             )
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             intent = workflow.state.breakpoints.intent(intent_id)
             if intent is None:
                 raise ValueError(f"breakpoint intent is not defined: {intent_id}")

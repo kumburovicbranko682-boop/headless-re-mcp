@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shutil
@@ -275,7 +274,7 @@ def _step_probe_runtimes(settings: Settings) -> JsonObject:
         },
     ]
     return {
-        "ok": all(c["ok"] for c in checks if c["id"].startswith("x64dbg")),
+        "ok": all(c["ok"] for c in checks if str(c["id"]).startswith("x64dbg")),
         "step": "probe_runtimes",
         "checks": checks,
         "settings_reloaded": True,
@@ -288,7 +287,7 @@ def _step_doctor(settings: Settings) -> JsonObject:
     ready_core = [
         p
         for p in probes
-        if p["name"]
+        if str(p.get("name") or "")
         in {
             "python",
             "ida_idalib",

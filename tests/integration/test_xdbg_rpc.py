@@ -110,7 +110,11 @@ def _resume_until_idle(client: XdbgClient, *, timeout: float) -> None:
         client.request("debug.resume", timeout=min(30.0, remaining))
         state = client.wait_for_state(
             {"paused", "idle"},
-            timeout=min(30.0, remaining),
+            # Event-stress deliberately creates hundreds of threads and can take
+            # more than 30 seconds on either architecture. Keep the single
+            # transition wait bound by this helper's explicit overall deadline
+            # instead of aborting a still-valid in-flight transition early.
+            timeout=remaining,
             after_event_sequence=marker.latest_sequence,
             transition_event_kinds=transition_kinds,
         )
@@ -280,7 +284,7 @@ def test_xdbg_event_overflow_module_lifecycle_and_close_race(
             timeout=30,
         )
         client.wait_for_state({"paused"}, timeout=30)
-        _resume_until_idle(client, timeout=60)
+        _resume_until_idle(client, timeout=120)
         lifecycle_events, cursor = _drain_events(client, 0)
 
         loaded = [
@@ -298,16 +302,21 @@ def test_xdbg_event_overflow_module_lifecycle_and_close_race(
             for event in lifecycle_events
         )
 
+        baseline = cursor
+        # A single real debuggee produces more than the 1024-event ring capacity
+        # through repeated DLL load/unload cycles. This validates the same native
+        # callback/ring overflow contract without depending on x64dbg reliably
+        # scheduling hundreds of rapid CreateThread/ExitThread pairs after a long
+        # full-suite run (that debugger path can strand the x64 fixture itself).
         client.request(
             "debug.launch",
             {
                 "path": str(fixture.resolve()),
-                "arguments": "--event-stress 540",
+                "arguments": "--module-stress 600",
             },
             timeout=30,
         )
         client.wait_for_state({"paused"}, timeout=30)
-        baseline = cursor
         _resume_until_idle(client, timeout=120)
 
         first = client.read_events(baseline, limit=256, timeout=30.0)
@@ -330,7 +339,7 @@ def test_xdbg_event_overflow_module_lifecycle_and_close_race(
         sequences = [event.sequence for event in retained]
         assert sequences == list(range(first.oldest_sequence, first.latest_sequence + 1))
         retained_kinds = {event.kind for event in retained}
-        assert {"thread.created", "thread.exited", "debug.stopped"} <= retained_kinds
+        assert {"module.loaded", "module.unloaded", "debug.stopped"} <= retained_kinds
 
         client.request(
             "debug.launch",

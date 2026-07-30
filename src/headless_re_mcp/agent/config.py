@@ -1,0 +1,206 @@
+﻿"""Server-only provider profiles and safe Zerofall import."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from threading import RLock
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+from headless_re_mcp.agent.redaction import masked_secret, redact
+
+ZEROFALL_IMPORT_FIELDS = frozenset(
+    {
+        "ai.apiBaseUrl",
+        "apiKey",
+        "model",
+        "knownModels",
+        "modelCatalogs",
+        "providerApiKeys",
+        "enableThinking",
+        "reasoningEffort",
+        "contextCompressionThresholdPercent",
+    }
+)
+
+
+def normalize_base_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("provider base URL is required")
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("provider base URL must be absolute http(s)")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1"):
+        path = f"{path}/v1" if path else "/v1"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc, path, "", ""))
+
+
+@dataclass(slots=True)
+class ProviderProfile:
+    id: str
+    base_url: str
+    model: str
+    api_key: str | None = None
+    known_models: list[str] = field(default_factory=list)
+    model_catalogs: list[dict[str, Any]] = field(default_factory=list)
+    enable_thinking: bool = False
+    reasoning_effort: str | None = None
+    context_compression_threshold_percent: int = 75
+
+    def __post_init__(self) -> None:
+        self.base_url = normalize_base_url(self.base_url)
+        if not self.id.strip() or not self.model.strip():
+            raise ValueError("profile id and model are required")
+        if not 10 <= self.context_compression_threshold_percent <= 95:
+            raise ValueError("context compression threshold must be 10..95")
+
+    def public(self, *, source: str = "file") -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "base_url": self.base_url,
+            "model": self.model,
+            "known_models": list(self.known_models),
+            "model_catalogs": redact(self.model_catalogs),
+            "enable_thinking": self.enable_thinking,
+            "reasoning_effort": self.reasoning_effort,
+            "context_compression_threshold_percent": self.context_compression_threshold_percent,
+            "configured": bool(self.api_key),
+            "api_key_masked": masked_secret(self.api_key),
+            "source": source,
+        }
+
+
+class ProviderConfigStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path.expanduser().resolve()
+        self._lock = RLock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._best_effort_protect(self.path.parent, directory=True)
+
+    @staticmethod
+    def _best_effort_protect(path: Path, *, directory: bool = False) -> None:
+        try:
+            if os.name == "nt":
+                import subprocess
+
+                target = str(path)
+                subprocess.run(
+                    ["icacls", target, "/inheritance:r", "/grant:r", f"{os.getlogin()}:(OI)(CI)F" if directory else f"{os.getlogin()}:F"],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            else:
+                path.chmod(0o700 if directory else 0o600)
+        except (OSError, TimeoutError):
+            pass
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.is_file():
+            return {"profiles": {}, "current": None}
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("provider config root must be an object")
+        return raw
+
+    def _write(self, data: dict[str, Any]) -> None:
+        temp = self.path.with_suffix(self.path.suffix + ".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._best_effort_protect(temp)
+        temp.replace(self.path)
+        self._best_effort_protect(self.path)
+
+    def list_public(self) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+        profiles_value = data.get("profiles")
+        profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
+        return {
+            "current": data.get("current"),
+            "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
+        }
+
+    def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:
+        env_prefix = f"HEADLESS_RE_PROVIDER_{profile_id.upper().replace('-', '_')}_"
+        api_key = os.getenv(env_prefix + "API_KEY") or os.getenv("HEADLESS_RE_PROVIDER_API_KEY") or raw.get("api_key")
+        base_url = os.getenv(env_prefix + "BASE_URL") or os.getenv("HEADLESS_RE_PROVIDER_BASE_URL") or raw.get("base_url") or "https://api.openai.com/v1"
+        model = os.getenv(env_prefix + "MODEL") or os.getenv("HEADLESS_RE_PROVIDER_MODEL") or raw.get("model") or "gpt-4.1-mini"
+        return ProviderProfile(
+            id=profile_id,
+            base_url=str(base_url),
+            model=str(model),
+            api_key=str(api_key) if api_key else None,
+            known_models=[str(x) for x in raw.get("known_models", []) if isinstance(x, str)],
+            model_catalogs=[dict(x) for x in raw.get("model_catalogs", []) if isinstance(x, dict)],
+            enable_thinking=bool(raw.get("enable_thinking", False)),
+            reasoning_effort=str(raw["reasoning_effort"]) if raw.get("reasoning_effort") else None,
+            context_compression_threshold_percent=int(raw.get("context_compression_threshold_percent", 75)),
+        )
+
+    def get(self, profile_id: str | None = None) -> ProviderProfile:
+        with self._lock:
+            data = self._read()
+        selected = profile_id or data.get("current") or "default"
+        profiles_value = data.get("profiles")
+        profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
+        raw = profiles.get(selected, {})
+        if not isinstance(raw, dict):
+            raise KeyError(selected)
+        return self._profile_from_raw(str(selected), raw)
+
+    def save(self, profile: ProviderProfile, *, make_current: bool = True) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+            profiles = data.setdefault("profiles", {})
+            if not isinstance(profiles, dict):
+                profiles = data["profiles"] = {}
+            profiles[profile.id] = asdict(profile)
+            if make_current:
+                data["current"] = profile.id
+            self._write(data)
+        return profile.public(source="file")
+
+    @staticmethod
+    def _flatten_zerofall(raw: dict[str, Any]) -> dict[str, Any]:
+        ai_value = raw.get("ai")
+        ai: dict[str, Any] = ai_value if isinstance(ai_value, dict) else {}
+        flat = {key: raw[key] for key in raw if key in ZEROFALL_IMPORT_FIELDS}
+        if "apiBaseUrl" in ai:
+            flat["ai.apiBaseUrl"] = ai["apiBaseUrl"]
+        return flat
+
+    def preview_zerofall(self, raw: dict[str, Any]) -> dict[str, Any]:
+        fields = self._flatten_zerofall(raw)
+        ignored = sorted(set(raw) - {key for key in ZEROFALL_IMPORT_FIELDS if "." not in key} - {"ai"})
+        preview = redact(fields)
+        if "apiKey" in fields:
+            preview["apiKey"] = masked_secret(str(fields["apiKey"]))
+        if "providerApiKeys" in fields and isinstance(fields["providerApiKeys"], dict):
+            preview["providerApiKeys"] = {str(k): masked_secret(str(v)) for k, v in fields["providerApiKeys"].items()}
+        return {"fields": preview, "ignored": ignored, "requires_confirmation": True}
+
+    def import_zerofall(self, raw: dict[str, Any], *, confirm: bool, profile_id: str = "zerofall") -> dict[str, Any]:
+        if not confirm:
+            raise ValueError("confirm_required")
+        fields = self._flatten_zerofall(raw)
+        keys_value = fields.get("providerApiKeys")
+        keys: dict[str, Any] = keys_value if isinstance(keys_value, dict) else {}
+        api_key = fields.get("apiKey") or keys.get(profile_id) or keys.get("openai")
+        profile = ProviderProfile(
+            id=profile_id,
+            base_url=str(fields.get("ai.apiBaseUrl") or "https://api.openai.com/v1"),
+            model=str(fields.get("model") or "gpt-4.1-mini"),
+            api_key=str(api_key) if api_key else None,
+            known_models=[str(x) for x in fields.get("knownModels", []) if isinstance(x, str)],
+            model_catalogs=[dict(x) for x in fields.get("modelCatalogs", []) if isinstance(x, dict)],
+            enable_thinking=bool(fields.get("enableThinking", False)),
+            reasoning_effort=str(fields["reasoningEffort"]) if fields.get("reasoningEffort") else None,
+            context_compression_threshold_percent=int(fields.get("contextCompressionThresholdPercent", 75)),
+        )
+        return self.save(profile)

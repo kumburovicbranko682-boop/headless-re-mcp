@@ -35,7 +35,7 @@ class ManagedSubprocessMixin:
     @property
     def analyzer_windows(self) -> tuple[str, ...]:
         windows = describe_process_windows(self.pid)
-        titles = tuple(str(item.get("title") or "") for item in windows if item.get("title"))
+        titles = tuple(sorted(windows))
         for title in titles:
             self._observed_windows.add(title)
         return titles

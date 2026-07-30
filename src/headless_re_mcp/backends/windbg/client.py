@@ -82,7 +82,12 @@ class WindbgClient:
 
     def attach(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         """Non-invasive user-mode probe against a session debuggee PID."""
-        data = self._run_process(pid, ["vertarget", "version"], allowed_pid=allowed_pid, timeout=timeout)
+        data = self._run_process(
+            pid,
+            ["vertarget", "version"],
+            allowed_pid=allowed_pid,
+            timeout=timeout,
+        )
         return {
             "pid": pid,
             "attached": True,
@@ -210,16 +215,17 @@ class WindbgClient:
 
 
 def _discover_cdb() -> Path | None:
-    found = shutil.which("cdb")
-    if found:
-        return Path(found)
     env = os.environ.get("HEADLESS_RE_CDB")
     if env and Path(env).is_file():
         return Path(env)
-    # Bundled copy under project tools (preferred when WinDbg Store ACL blocks).
-    tools = Path(__file__).resolve().parents[3] / "artifacts" / "tools" / "cdb-amd64" / "cdb.exe"
+    # Prefer the verified project runtime over a WindowsApps execution alias whose
+    # package ACL can make ``is_file`` true while CreateProcess is denied.
+    tools = Path(__file__).resolve().parents[4] / "artifacts" / "tools" / "cdb-amd64" / "cdb.exe"
     if tools.is_file():
         return tools
+    found = shutil.which("cdb")
+    if found and "windowsapps" not in found.lower():
+        return Path(found)
     roots = [
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Windows Kits",
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Windows Kits",

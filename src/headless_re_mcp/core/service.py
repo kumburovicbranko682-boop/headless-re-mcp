@@ -24,6 +24,13 @@ from headless_re_mcp.core.addressing import (
     build_main_module_mapping,
     build_rebased_module_mapping,
 )
+from headless_re_mcp.core.application_services import (
+    ApplicationServices,
+    ArtifactApplicationService,
+    DynamicApplicationService,
+    InteractionApplicationService,
+    RuntimeApplicationService,
+)
 from headless_re_mcp.core.events import (
     DEFAULT_DEBUG_EVENT_BATCH,
     MAX_DEBUG_EVENT_BATCH,
@@ -41,19 +48,26 @@ from headless_re_mcp.core.models import (
     Session,
     SessionState,
 )
-from headless_re_mcp.core.service_ext import (
-    ExtAnalysisMixin,
-    install_service_extensions,
-    note_session_closed,
-    note_session_created,
-    _DEBUG_EVENT_BUDGET_PER_BATCH,
-    _ensure_store,
-    _timeline_append,
-)
+from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_static import StaticAnalysisMixin
+from headless_re_mcp.core.runtime_state import (
+    BackendRuntimeOwner,
+    DebuggeeSnapshot,
+    DebuggeeStateOwner,
+    TraceStateOwner,
+    UnpackStateOwner,
+    WorkflowStateOwner,
+)
 from headless_re_mcp.core.service_detect import DetectAnalysisMixin
 from headless_re_mcp.core.service_dotnet import DotnetAnalysisMixin
+from headless_re_mcp.core.service_ext import (
+    _DEBUG_EVENT_BUDGET_PER_BATCH,
+    ExtAnalysisMixin,
+    _timeline_append,
+    note_session_closed,
+    note_session_created,
+)
+from headless_re_mcp.core.service_static import StaticAnalysisMixin
 from headless_re_mcp.core.service_unpack_cli import UnpackCliMixin
 from headless_re_mcp.core.service_workflow import WorkflowAnalysisMixin
 from headless_re_mcp.core.session import (
@@ -89,28 +103,18 @@ from headless_re_mcp.core.windows import (
     resolve_allowed_ui_pids,
 )
 from headless_re_mcp.detection import (
-    DetectionSource,
-    FindingCategory,
     PeFormatError,
     ScanMode,
     scan_pe,
 )
 from headless_re_mcp.detection.die import DieScanError, DieScanResult, scan_with_die
 from headless_re_mcp.detection.exeinfope import (
-    ExeinfopeScanError,
     ExeinfopeScanResult,
     scan_with_exeinfope,
 )
 from headless_re_mcp.doctor import run_doctor
-from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
-from headless_re_mcp.dotnet.de4dot import De4dotError, run_de4dot
-from headless_re_mcp.dotnet.metadata_enum import (
-    disassemble_method_il,
-    enumerate_metadata,
-    list_memberref_xrefs,
-)
+from headless_re_mcp.dotnet.de4dot import run_de4dot
 from headless_re_mcp.dotnet.net_reactor_slayer import (
-    NetReactorSlayerError,
     run_net_reactor_slayer,
 )
 from headless_re_mcp.unpack.iat_rank import (
@@ -118,21 +122,12 @@ from headless_re_mcp.unpack.iat_rank import (
     gate_iat_rebuild,
     rank_iat_candidates,
 )
-from headless_re_mcp.unpack.pause_quality import assess_pause_quality
-from headless_re_mcp.unpack.stage_labels import (
-    STAGE_DUMPED,
-    STAGE_IAT_REBUILT,
-    STAGE_RUNNABLE,
-    gate_stage_upgrade,
-    resolve_artifact_kind_for_stage,
-    stage_for_artifact_kind,
-)
-from headless_re_mcp.unpack.stub_calls import analyze_dump_stub_coupling
 from headless_re_mcp.unpack.observe import (
     collect_oep_observations,
     stub_rva_ranges_from_sections,
 )
 from headless_re_mcp.unpack.oep import score_oep_candidates
+from headless_re_mcp.unpack.pause_quality import assess_pause_quality
 from headless_re_mcp.unpack.pe_rebuild import (
     PeRebuildError,
     parse_runtime_headers,
@@ -147,6 +142,9 @@ from headless_re_mcp.unpack.phase_bridge import (
 )
 from headless_re_mcp.unpack.plan import build_unpack_plan
 from headless_re_mcp.unpack.recommend import pe_suggests_vm_protector, recommend_unpack_route
+from headless_re_mcp.unpack.scylla import (
+    run_scylla,
+)
 from headless_re_mcp.unpack.session import (
     UnpackPhase,
     UnpackSessionError,
@@ -162,50 +160,42 @@ from headless_re_mcp.unpack.session import (
     transition,
     write_timeline_jsonl,
 )
+from headless_re_mcp.unpack.stage_labels import (
+    STAGE_DUMPED,
+    STAGE_IAT_REBUILT,
+    STAGE_RUNNABLE,
+    gate_stage_upgrade,
+    resolve_artifact_kind_for_stage,
+)
+from headless_re_mcp.unpack.stub_calls import analyze_dump_stub_coupling
 from headless_re_mcp.unpack.upx import (
     UpxResult,
-    UpxScanError,
     test_upx,
     unpack_upx,
 )
-from headless_re_mcp.unpack.scylla import (
-    ScyllaError,
-    run_scylla,
-)
 from headless_re_mcp.unpack.vmp_dumper import (
-    VmpDumperError,
     run_vmp_dumper,
 )
 from headless_re_mcp.unpack.xvlkc import (
-    XvlkcError,
     run_xvlkc,
 )
 from headless_re_mcp.workflows.breakpoints import (
-    BreakpointIntent,
     BreakpointOperation,
     BreakpointOperationKind,
 )
 from headless_re_mcp.workflows.engine import (
     WorkflowState,
     WorkflowTransition,
-    cancel_workflow_navigation,
     consume_workflow_events,
-    disable_workflow_breakpoint_intent,
-    prepare_workflow_reset,
-    put_workflow_breakpoint_intent,
-    remove_workflow_breakpoint_intent,
-    request_workflow_module_refresh,
     start_workflow_navigation,
     timeout_workflow_navigation,
-    track_workflow_module,
-    untrack_workflow_module,
 )
 from headless_re_mcp.workflows.executor import (
     WorkflowExecutionError,
     execute_workflow_transition,
 )
 from headless_re_mcp.workflows.models import WorkflowInvariantError
-from headless_re_mcp.workflows.navigation import EventPattern, EventScalar, NavigationStatus
+from headless_re_mcp.workflows.navigation import EventPattern, NavigationStatus
 from headless_re_mcp.workflows.runtime import (
     WorkflowRunStatus,
     WorkflowRuntime,
@@ -273,7 +263,6 @@ class _BackendRuntime:
     worker: BackendWorker
     lock: RLock = field(default_factory=RLock)
     event_cursor: DebugEventCursor | None = None
-    workflow: WorkflowRuntime | None = None
     # Set when an event batch reports dropped>0; cleared by a fresh modules.list.
     snapshot_resync_required: bool = False
 
@@ -388,6 +377,7 @@ class AnalysisService(
         xvlkc_runner: Any | None = None,
         vmp_dumper_runner: Any | None = None,
         scylla_runner: Any | None = None,
+        repository: AnalysisRepository | None = None,
     ) -> None:
         if worker_factory is not None and static_worker_factory is not None:
             raise ValueError("configure worker_factory or static_worker_factory, not both")
@@ -404,13 +394,30 @@ class AnalysisService(
         self._xvlkc_runner = xvlkc_runner or run_xvlkc
         self._vmp_dumper_runner = vmp_dumper_runner or run_vmp_dumper
         self._scylla_runner = scylla_runner or run_scylla
-        self._runtimes: dict[tuple[str, BackendKind], _BackendRuntime] = {}
-        self._terminal_workflows: dict[str, WorkflowRuntime] = {}
-        self._unpack_sessions: dict[str, UnpackSessionState] = {}
-        self._unpack_protect_snapshots: dict[str, list[JsonObject]] = {}
-        self._trace_sessions: dict[str, _TraceArtifactState] = {}
-        self._lock = RLock()
-        _ensure_store(self)
+        self.repository = repository or SqliteAnalysisRepository(self.settings.artifact_root)
+        self._runtime_owner: BackendRuntimeOwner[_BackendRuntime] = BackendRuntimeOwner()
+        self._workflow_owner: WorkflowStateOwner[WorkflowRuntime] = WorkflowStateOwner()
+        self._unpack_owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
+        self._trace_owner: TraceStateOwner[_TraceArtifactState] = TraceStateOwner()
+        self._debuggee_owner = DebuggeeStateOwner(self.registry)
+
+        # Compatibility views for callers and existing tests. Ownership stays in the
+        # dedicated state components above; new code must use those components.
+        self._runtimes = self._runtime_owner.items
+        self._terminal_workflows = self._workflow_owner.terminal
+        self._unpack_sessions = self._unpack_owner.sessions
+        self._unpack_protect_snapshots = self._unpack_owner.protection_snapshots
+        self._trace_sessions = self._trace_owner.sessions
+        self._lock = self._runtime_owner.lock
+        self.services = ApplicationServices(
+            runtime=RuntimeApplicationService(self, self._runtime_owner),
+            dynamic=DynamicApplicationService(self, self._debuggee_owner),
+            interaction=InteractionApplicationService(self),
+            artifacts=ArtifactApplicationService(self, self.repository),
+            workflow_state=self._workflow_owner,
+            unpack_state=self._unpack_owner,
+            trace_state=self._trace_owner,
+        )
 
     def doctor(self) -> Result[JsonObject]:
         return _success(run_doctor(self.settings).to_dict())
@@ -437,6 +444,9 @@ class AnalysisService(
         return _success({"sessions": sessions, "count": len(sessions)})
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
+        return self.services.runtime.open_static(session_id)
+
+    def _open_static(self, session_id: str) -> Result[JsonObject]:
         return self._open_backend(
             session_id,
             kind=BackendKind.IDA,
@@ -447,6 +457,9 @@ class AnalysisService(
         )
 
     def open_dynamic(self, session_id: str) -> Result[JsonObject]:
+        return self.services.runtime.open_dynamic(session_id)
+
+    def _open_dynamic(self, session_id: str) -> Result[JsonObject]:
         return self._open_backend(
             session_id,
             kind=BackendKind.X64DBG,
@@ -466,11 +479,10 @@ class AnalysisService(
         endpoint_scheme: str,
         factory: StaticWorkerFactory,
     ) -> Result[JsonObject]:
-        key = (session_id, kind)
         with self._lock:
             try:
                 session = self.registry.get(session_id)
-                existing = self._runtimes.get(key)
+                existing = self._runtime_owner.get(session_id, kind)
                 if existing is not None:
                     if session.state in {
                         SessionState.CLOSING,
@@ -500,16 +512,19 @@ class AnalysisService(
                 opening_session = session.state == SessionState.CREATED
                 if opening_session:
                     self.registry.transition(session_id, SessionState.OPENING)
+                self._runtime_owner.begin_open(session_id, kind)
                 try:
                     worker = factory(session, self.settings)
+                    workflow = (
+                        create_workflow_runtime() if kind == BackendKind.X64DBG else None
+                    )
                     runtime = _BackendRuntime(
                         worker,
                         event_cursor=(DebugEventCursor() if kind == BackendKind.X64DBG else None),
-                        workflow=(
-                            create_workflow_runtime() if kind == BackendKind.X64DBG else None
-                        ),
                     )
-                    self._runtimes[key] = runtime
+                    self._runtime_owner.put(session_id, kind, runtime)
+                    if workflow is not None:
+                        self._workflow_owner.put(session_id, workflow)
                     handle = BackendHandle(
                         kind=kind,
                         worker_id=f"{worker_prefix}:{session_id}",
@@ -524,7 +539,7 @@ class AnalysisService(
                     else:
                         current = self.registry.get(session_id)
                 except BaseException:
-                    self._runtimes.pop(key, None)
+                    self._runtime_owner.fail(session_id, kind)
                     if "worker" in locals():
                         worker.terminate()
                     if opening_session:
@@ -541,6 +556,9 @@ class AnalysisService(
                 return _failure(exc, session_id=session_id, backend=kind.value)
 
     def close_session(self, session_id: str) -> Result[JsonObject]:
+        return self.services.runtime.close_session(session_id)
+
+    def _close_session(self, session_id: str) -> Result[JsonObject]:
         result: Result[JsonObject]
         with self._lock:
             try:
@@ -550,14 +568,10 @@ class AnalysisService(
                     note_session_closed(self, session_id, result)
                     return result
                 self.registry.transition(session_id, SessionState.CLOSING)
-                runtimes = [
-                    (kind, self._runtimes.pop((session_id, kind)))
-                    for kind in tuple(session.backends)
-                    if (session_id, kind) in self._runtimes
-                ]
-                self._terminal_workflows.pop(session_id, None)
-                self._unpack_sessions.pop(session_id, None)
-                self._unpack_protect_snapshots.pop(session_id, None)
+                runtimes = self._runtime_owner.pop_session(session_id)
+                self._workflow_owner.clear(session_id)
+                self._unpack_owner.clear(session_id)
+                self._debuggee_owner.clear(session_id)
             except BaseException as exc:
                 result = _failure(exc, session_id=session_id)
                 note_session_closed(self, session_id, result)
@@ -630,14 +644,30 @@ class AnalysisService(
 
 
     def dynamic_state(self, session_id: str) -> Result[JsonObject]:
+        return self.services.dynamic.state(session_id)
+
+    def _dynamic_state(self, session_id: str) -> Result[JsonObject]:
         result = self._dynamic_request(session_id, "debug.state")
         if not result.ok or result.data is None:
             return result
-        annotated = self._annotate_debuggee_pids(session_id, dict(result.data))
+        annotated = self._observe_debuggee_state(session_id, dict(result.data))
         return Result[JsonObject](ok=True, data=annotated, error=None, meta=dict(result.meta))
 
 
     def ui_windows_list(
+        self,
+        session_id: str,
+        *,
+        allow_child_pids: list[int] | None = None,
+        include_same_image_children: bool = False,
+    ) -> Result[JsonObject]:
+        return self.services.interaction.windows_list(
+            session_id,
+            allow_child_pids=allow_child_pids,
+            include_same_image_children=include_same_image_children,
+        )
+
+    def _ui_windows_list(
         self,
         session_id: str,
         *,
@@ -677,8 +707,8 @@ class AnalysisService(
         def action(ctx: JsonObject) -> JsonObject:
             from headless_re_mcp.core.process_tree import (
                 enumerate_direct_children,
-                process_image_path,
                 probe_child_window_candidates,
+                process_image_path,
             )
 
             debuggee_pid = int(ctx["debuggee_pid"])
@@ -703,7 +733,10 @@ class AnalysisService(
                 "child_candidates": probe_child_window_candidates(
                     debuggee_pid, list_windows_fn=None
                 ),
-                "note": "Read-only probe; pass allow_child_pids or include_same_image_children to interact",
+                "note": (
+                    "Read-only probe; pass allow_child_pids or "
+                    "include_same_image_children to interact"
+                ),
             }
 
         return self._ui_call(
@@ -1182,7 +1215,7 @@ class AnalysisService(
                         details={"capability": "debug.state"},
                     )
                 state = runtime.worker.request("debug.state", {})
-                self._sync_dynamic_state(session_id, state)
+                self._observe_debuggee_state(session_id, state)
                 annotated = self._annotate_debuggee_pids(session_id, dict(state))
                 debuggee_pid = annotated.get("debuggee_pid")
                 debugger_pid = annotated.get("debugger_pid")
@@ -1209,7 +1242,7 @@ class AnalysisService(
                     dynamic = cast(DynamicWorker, runtime.worker)
                     try:
                         running_state = dynamic.wait_for_state({"running"}, timeout=2.0)
-                        self._sync_dynamic_state(session_id, running_state)
+                        self._observe_debuggee_state(session_id, running_state)
                         annotated = self._annotate_debuggee_pids(session_id, dict(running_state))
                         debuggee_pid = annotated.get("debuggee_pid") or debuggee_pid
                         debugger_pid = annotated.get("debugger_pid") or debugger_pid
@@ -1218,11 +1251,11 @@ class AnalysisService(
                         if exc.code not in {"timeout", "wait_timeout", "debug_state_timeout"}:
                             raise XdbgRpcError(
                                 "resume_failed",
-                                f"failed to resume debuggee before {capability}: {exc.message}",
+                                f"failed to resume debuggee before {capability}: {exc}",
                                 details={"capability": capability, "cause": exc.code},
                             ) from exc
                         state = runtime.worker.request("debug.state", {})
-                        self._sync_dynamic_state(session_id, state)
+                        self._observe_debuggee_state(session_id, state)
                         annotated = self._annotate_debuggee_pids(session_id, dict(state))
                         debuggee_pid = annotated.get("debuggee_pid") or debuggee_pid
                         debugger_pid = annotated.get("debugger_pid") or debugger_pid
@@ -1319,11 +1352,16 @@ class AnalysisService(
                     session_id,
                     runtime,
                     batch,
-                    timeout=float(timeout),
+                    # ``timeout`` bounds the native events.read long-poll.  A UI
+                    # burst peek may intentionally use 50 ms, but consuming the
+                    # resulting breakpoint event can require a bounded
+                    # ensure-paused transition.  Reusing the peek timeout made
+                    # that transition fail reliably under full-suite load.
+                    timeout=max(5.0, float(timeout)),
                 )
                 if batch.dropped > 0:
                     runtime.snapshot_resync_required = True
-                workflow_id = runtime.workflow.id if runtime.workflow is not None else None
+                workflow_id = self._require_workflow(session_id).id
             result = _success(
                 batch.to_dict(),
                 session_id=session_id,
@@ -1469,7 +1507,9 @@ class AnalysisService(
                     backend=BackendKind.X64DBG.value,
                 )
         # Attach UX: surface child-window hints without granting UI rights.
-        annotated = dict(result.data) if isinstance(result.data, dict) else {"state": result.data}
+        annotated: JsonObject = (
+            dict(result.data) if isinstance(result.data, dict) else {"state": result.data}
+        )
         try:
             from headless_re_mcp.core.process_tree import probe_child_window_candidates
 
@@ -1959,7 +1999,7 @@ class AnalysisService(
             path = data.get("output_path")
             sha = data.get("sha256")
             if isinstance(path, str) and isinstance(sha, str):
-                art = _ensure_store(self).register_artifact(
+                art = self.repository.register_artifact(
                     session_id=session_id,
                     kind=str(data.get("artifact_kind") or "module_dump"),
                     path=path,
@@ -2986,7 +3026,7 @@ class AnalysisService(
                     ok=False,
                     error=RpcError(code="invalid_params", message="replace must be a boolean"),
                 )
-            existing = self._unpack_sessions.get(session_id)
+            existing = self._unpack_owner.get(session_id)
             if existing is not None:
                 checked = check_timeout(existing)
                 if checked is not existing:
@@ -3149,7 +3189,7 @@ class AnalysisService(
         """Return the current unpack orchestration state for a session."""
         try:
             self.registry.get(session_id)
-            state = self._unpack_sessions.get(session_id)
+            state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](
                     ok=False,
@@ -3185,7 +3225,7 @@ class AnalysisService(
         """
         try:
             self.registry.get(session_id)
-            state = self._unpack_sessions.get(session_id)
+            state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](
                     ok=False,
@@ -3196,8 +3236,7 @@ class AnalysisService(
                     ),
                 )
             debuggee_paused_attempted = False
-            with self._lock:
-                dynamic_open = (session_id, BackendKind.X64DBG) in self._runtimes
+            dynamic_open = self._runtime_owner.get(session_id, BackendKind.X64DBG) is not None
             if dynamic_open:
                 debuggee_paused_attempted = True
                 with suppress(Exception):
@@ -3228,7 +3267,7 @@ class AnalysisService(
         """List artifacts produced by the current unpack session."""
         try:
             self.registry.get(session_id)
-            state = self._unpack_sessions.get(session_id)
+            state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](
                     ok=False,
@@ -3276,7 +3315,7 @@ class AnalysisService(
             blocked = self._guard_unpack_active(session_id, stage="score_oep")
             if blocked is not None:
                 return blocked
-            state = self._unpack_sessions.get(session_id)
+            state = self._unpack_owner.get(session_id)
 
             collected_note: str | None = None
             auto_collected = False
@@ -3482,7 +3521,7 @@ class AnalysisService(
 
         cached_previous = previous_regions
         if cached_previous is None:
-            cached_previous = self._unpack_protect_snapshots.get(session_id)
+            cached_previous = self._unpack_owner.get_protection_snapshot(session_id)
 
         observations = collect_oep_observations(
             module_base=module_base,
@@ -3495,16 +3534,19 @@ class AnalysisService(
             imports_resolved_hint=imports_resolved_hint,
         )
 
-        self._unpack_protect_snapshots[session_id] = [
-            {
-                "base": item.get("base"),
-                "size": item.get("size"),
-                "protect": item.get("protect"),
-                "protect_name": item.get("protect_name"),
-            }
-            for item in regions
-            if isinstance(item.get("base"), int)
-        ]
+        self._unpack_owner.put_protection_snapshot(
+            session_id,
+            [
+                {
+                    "base": item.get("base"),
+                    "size": item.get("size"),
+                    "protect": item.get("protect"),
+                    "protect_name": item.get("protect_name"),
+                }
+                for item in regions
+                if isinstance(item.get("base"), int)
+            ],
+        )
 
         note = "observations auto-collected from runtime snapshots"
         if not observations:
@@ -3557,7 +3599,7 @@ class AnalysisService(
                     ok=False,
                     error=RpcError(code="invalid_params", message="auto_dump must be a boolean"),
                 )
-            state = self._unpack_sessions.get(session_id)
+            state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](
                     ok=False,
@@ -3658,9 +3700,9 @@ class AnalysisService(
                             code="dump_failed",
                             message="auto_dump failed after OEP confirm",
                         ),
-                        meta={"unpack": self._unpack_sessions.get(session_id)},
+                        meta={"unpack": self._unpack_owner.get(session_id)},
                     )
-                state = self._unpack_sessions.get(session_id) or state
+                state = self._unpack_owner.get(session_id) or state
 
             return _success(
                 {
@@ -3714,8 +3756,7 @@ class AnalysisService(
                 "does not open a new debugger session"
             ),
         }
-        with self._lock:
-            dynamic_open = (session_id, BackendKind.X64DBG) in self._runtimes
+        dynamic_open = self._runtime_owner.get(session_id, BackendKind.X64DBG) is not None
         probe["dynamic_open"] = dynamic_open
         if not dynamic_open:
             state = append_timeline(
@@ -3777,7 +3818,7 @@ class AnalysisService(
             if scored.ok and scored.data is not None:
                 probe["oep_scored"] = True
                 probe["candidate_count"] = int(scored.data.get("candidate_count") or 0)
-                refreshed = self._unpack_sessions.get(session_id)
+                refreshed = self._unpack_owner.get(session_id)
                 if refreshed is not None:
                     state = refreshed
             else:
@@ -3877,11 +3918,16 @@ class AnalysisService(
         )
 
     def _store_unpack_session(self, state: UnpackSessionState) -> None:
-        with self._lock:
-            self._unpack_sessions[state.session_id] = state
-        directory = self._unpack_session_dir(state.session_id)
-        write_timeline_jsonl(state, directory / "timeline.jsonl")
-        persist_state_snapshot(state, directory / "state.json")
+        self._unpack_owner.put(state.session_id, state)
+
+        def write(directory: Path) -> None:
+            write_timeline_jsonl(state, directory / "timeline.jsonl")
+            persist_state_snapshot(state, directory / "state.json")
+
+        self.repository.persist_unpack_state(
+            state.session_id,
+            write=write,
+        )
 
     def _guard_unpack_active(
         self,
@@ -3894,7 +3940,7 @@ class AnalysisService(
         Returns an error ``Result`` to propagate, or ``None`` when work may proceed
         (including when no unpack session exists yet).
         """
-        state = self._unpack_sessions.get(session_id)
+        state = self._unpack_owner.get(session_id)
         if state is None:
             return None
         checked, code = ensure_unpack_active(state, stage=stage)
@@ -3932,7 +3978,7 @@ class AnalysisService(
         sha256: str,
     ) -> None:
         """Advance session to dumped when a dump artifact is produced."""
-        state = self._unpack_sessions.get(session_id)
+        state = self._unpack_owner.get(session_id)
         if state is None:
             return
         try:
@@ -3959,7 +4005,7 @@ class AnalysisService(
         kind: str,
     ) -> None:
         """Advance session to imports_rebuilt after IAT/PE rebuild."""
-        state = self._unpack_sessions.get(session_id)
+        state = self._unpack_owner.get(session_id)
         if state is None:
             return
         try:
@@ -3987,7 +4033,7 @@ class AnalysisService(
         ida_ok: bool,
     ) -> None:
         """Advance session to verified / reanalyzed after unpack.verify."""
-        state = self._unpack_sessions.get(session_id)
+        state = self._unpack_owner.get(session_id)
         if state is None:
             return
         try:
@@ -4339,16 +4385,18 @@ class AnalysisService(
                         "backend does not provide trace.start",
                         details={"capability": "trace.start"},
                     )
-                with self._lock:
-                    existing = self._trace_sessions.get(session_id)
-                    if existing is not None and existing.active:
-                        raise XdbgRpcError(
-                            "already_tracing",
-                            "stop or finalize the active session trace before starting another",
-                            details={"path": str(existing.path)},
-                        )
-                    self._trace_sessions[session_id] = state
-                    state_registered = True
+                existing = self._trace_owner.put_if_inactive(
+                    session_id,
+                    state,
+                    is_active=lambda item: item.active,
+                )
+                if existing is not None:
+                    raise XdbgRpcError(
+                        "already_tracing",
+                        "stop or finalize the active session trace before starting another",
+                        details={"path": str(existing.path)},
+                    )
+                state_registered = True
                 native = runtime.worker.request(
                     "trace.start",
                     {
@@ -4395,8 +4443,7 @@ class AnalysisService(
         runtime: _BackendRuntime | None = None
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with self._lock:
-                state = self._trace_sessions.get(session_id)
+            state = self._trace_owner.get(session_id)
             with runtime.lock:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 if "trace.stop" not in runtime.worker.capabilities:
@@ -4453,8 +4500,7 @@ class AnalysisService(
         runtime: _BackendRuntime | None = None
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with self._lock:
-                state = self._trace_sessions.get(session_id)
+            state = self._trace_owner.get(session_id)
             with runtime.lock:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 if "trace.status" not in runtime.worker.capabilities:
@@ -4691,11 +4737,7 @@ class AnalysisService(
                     state.artifact_truncated = True
                     state.terminal_reason = "quota_violation"
                 digest = file_sha256(state.path)
-                store = getattr(self, "_store", None)
-                if store is None:
-                    state.artifact_error = "artifact store is unavailable"
-                    return
-                artifact = store.register_artifact(
+                artifact = self.repository.register_artifact(
                     session_id=state.session_id,
                     kind="run_trace_partial" if state.artifact_truncated else "run_trace",
                     path=state.path,
@@ -4756,8 +4798,7 @@ class AnalysisService(
         *,
         reason: str,
     ) -> None:
-        with self._lock:
-            state = self._trace_sessions.get(session_id)
+        state = self._trace_owner.get(session_id)
         if state is None or state.artifact_id is not None:
             return
         state.active = False
@@ -4936,8 +4977,8 @@ class AnalysisService(
             )
         return cursor
 
-    def _require_workflow(self, runtime: _BackendRuntime) -> WorkflowRuntime:
-        workflow = runtime.workflow
+    def _require_workflow(self, session_id: str) -> WorkflowRuntime:
+        workflow = self._workflow_owner.get(session_id)
         if workflow is None:
             raise XdbgRpcError(
                 "rpc_protocol_error",
@@ -4945,8 +4986,8 @@ class AnalysisService(
             )
         return workflow
 
-    def _require_mutable_workflow(self, runtime: _BackendRuntime) -> WorkflowRuntime:
-        workflow = self._require_workflow(runtime)
+    def _require_mutable_workflow(self, session_id: str) -> WorkflowRuntime:
+        workflow = self._require_workflow(session_id)
         if workflow.status == WorkflowRunStatus.FAILED:
             raise WorkflowInvariantError(
                 "workflow is failed; call workflow.reset before modifying it"
@@ -4970,7 +5011,7 @@ class AnalysisService(
                 timeout=timeout,
             )
         except WorkflowExecutionError as exc:
-            self._record_workflow_failure_locked(runtime, workflow, exc)
+            self._record_workflow_failure_locked(session_id, workflow, exc)
             raise exc.cause from exc
         resolved_status = status or _workflow_status_for_state(execution.state)
         updated = advance_workflow_runtime(
@@ -4979,12 +5020,12 @@ class AnalysisService(
             status=resolved_status,
             operations=1 + execution.operation_count,
         )
-        runtime.workflow = updated
+        self._workflow_owner.put(session_id, updated)
         return updated
 
     def _record_workflow_failure_locked(
         self,
-        runtime: _BackendRuntime,
+        session_id: str,
         workflow: WorkflowRuntime,
         error: WorkflowExecutionError,
     ) -> WorkflowRuntime:
@@ -4998,7 +5039,7 @@ class AnalysisService(
             state=error.execution.state,
             operations=1 + error.execution.operation_count,
         )
-        runtime.workflow = failed
+        self._workflow_owner.put(session_id, failed)
         return failed
 
     def _consume_workflow_batch_locked(
@@ -5009,7 +5050,7 @@ class AnalysisService(
         *,
         timeout: float,
     ) -> None:
-        workflow = self._require_workflow(runtime)
+        workflow = self._require_workflow(session_id)
         if workflow.status == WorkflowRunStatus.FAILED:
             return
         if workflow.state.lifecycle.cursor != batch.cursor:
@@ -5025,12 +5066,15 @@ class AnalysisService(
             transition = consume_workflow_events(workflow.state, batch)
         except BaseException as exc:
             code, details, retryable = _workflow_failure(exc)
-            runtime.workflow = fail_workflow_runtime(
-                workflow,
-                code=code,
-                message=str(exc),
-                details=details,
-                retryable=retryable,
+            self._workflow_owner.put(
+                session_id,
+                fail_workflow_runtime(
+                    workflow,
+                    code=code,
+                    message=str(exc),
+                    details=details,
+                    retryable=retryable,
+                ),
             )
             raise
         self._execute_workflow_transition_locked(
@@ -5059,7 +5103,7 @@ class AnalysisService(
             )
 
         def action(runtime: _BackendRuntime) -> JsonObject:
-            workflow = self._require_mutable_workflow(runtime)
+            workflow = self._require_mutable_workflow(session_id)
             return self._navigate_locked(
                 session_id,
                 runtime,
@@ -5141,7 +5185,7 @@ class AnalysisService(
                 batch,
                 timeout=min(remaining, 30.0),
             )
-            workflow = self._require_workflow(runtime)
+            workflow = self._require_workflow(session_id)
             if not batch.events and not batch.has_more:
                 sleep(min(0.05, max(0.0, deadline - monotonic())))
 
@@ -5158,7 +5202,7 @@ class AnalysisService(
             "debug.state",
             timeout=min(timeout, 30.0),
         )
-        self._sync_dynamic_state(session_id, state)
+        self._observe_debuggee_state(session_id, state)
         return state
 
     def _workflow_resume_locked(
@@ -5185,7 +5229,7 @@ class AnalysisService(
             "debug.resume",
             timeout=min(timeout, 30.0),
         )
-        self._sync_dynamic_state(session_id, submitted)
+        self._observe_debuggee_state(session_id, submitted)
 
     def _workflow_ensure_paused_locked(
         self,
@@ -5211,7 +5255,7 @@ class AnalysisService(
             {"paused"},
             timeout=timeout,
         )
-        self._sync_dynamic_state(session_id, paused)
+        self._observe_debuggee_state(session_id, paused)
         if submitted.get("debugging") is not True:
             raise XdbgRpcError(
                 "not_debugging",
@@ -5402,7 +5446,7 @@ class AnalysisService(
                         transition_event_kinds=transition_event_kinds,
                     )
                 if method.startswith("debug."):
-                    self._sync_dynamic_state(session_id, state)
+                    self._observe_debuggee_state(session_id, state)
             data = state if wait_for is None else {"submitted": submitted, "state": state}
             return _success(
                 data,
@@ -5427,8 +5471,7 @@ class AnalysisService(
             raise InvalidStateTransition(
                 f"{kind.value} operation cannot run in {session.state.value} state"
             )
-        with self._lock:
-            runtime = self._runtimes.get((session_id, kind))
+        runtime = self._runtime_owner.get(session_id, kind)
         if runtime is not None:
             return runtime
         if kind == BackendKind.IDA:
@@ -5441,30 +5484,20 @@ class AnalysisService(
         kind: BackendKind,
         runtime: _BackendRuntime,
     ) -> None:
-        with self._lock:
-            if self._runtimes.get((session_id, kind)) is not runtime:
-                raise InvalidStateTransition(f"session backend is closing: {session_id}")
+        if not self._runtime_owner.is_current(session_id, kind, runtime):
+            raise InvalidStateTransition(f"session backend is closing: {session_id}")
 
-    def _sync_dynamic_state(self, session_id: str, state: JsonObject) -> None:
-        target = state.get("state")
-        current = self.registry.get(session_id).state
-        if target == "running" and current in {SessionState.READY, SessionState.SUSPENDED}:
-            self.registry.transition(session_id, SessionState.RUNNING)
-        elif target == "paused" and current in {SessionState.READY, SessionState.RUNNING}:
-            self.registry.transition(session_id, SessionState.SUSPENDED)
-        elif target == "idle":
-            if current == SessionState.RUNNING:
-                self.registry.transition(session_id, SessionState.SUSPENDED)
-                current = SessionState.SUSPENDED
-            if current == SessionState.SUSPENDED:
-                self.registry.transition(session_id, SessionState.READY)
-        annotated = self._annotate_debuggee_pids(session_id, state)
-        self.registry.update_metadata(
-            session_id,
-            {
-                "debuggee_pid": annotated.get("debuggee_pid"),
-                "debugger_pid": annotated.get("debugger_pid"),
-            },
+    def _observe_debuggee_state(self, session_id: str, state: JsonObject) -> JsonObject:
+        session = self.registry.get(session_id)
+        handle = session.backends.get(BackendKind.X64DBG)
+        debugger_pid = handle.pid if handle is not None else None
+        return cast(
+            JsonObject,
+            self._debuggee_owner.observe(
+                session_id,
+                state,
+                debugger_pid=debugger_pid,
+            ),
         )
 
     def _annotate_debuggee_pids(
@@ -5472,21 +5505,18 @@ class AnalysisService(
         session_id: str,
         state: JsonObject,
     ) -> JsonObject:
-        """Attach debuggee/debugger PID fields; never confuse with BackendHandle.pid."""
+        """Attach debuggee/debugger PID fields without changing lifecycle state."""
         session = self.registry.get(session_id)
         handle = session.backends.get(BackendKind.X64DBG)
-        debugger_pid = handle.pid if handle is not None else None
         process_id = state.get("process_id")
-        debuggee_pid: int | None
-        debuggee_pid = process_id if isinstance(process_id, int) and process_id > 0 else None
-        annotated = dict(state)
-        annotated["debuggee_pid"] = debuggee_pid
-        annotated["debugger_pid"] = debugger_pid
-        annotated["pid_note"] = (
-            "debuggee_pid is the target process (from debug.state.process_id); "
-            "debugger_pid is the x64dbg headless analyzer (BackendHandle.pid)"
+        snapshot = DebuggeeSnapshot(
+            state=str(state.get("state") or "unknown"),
+            debuggee_pid=(
+                process_id if isinstance(process_id, int) and process_id > 0 else None
+            ),
+            debugger_pid=handle.pid if handle is not None else None,
         )
-        return annotated
+        return cast(JsonObject, DebuggeeStateOwner.annotate(state, snapshot))
 
     def _fail_runtime(
         self,
@@ -5495,10 +5525,9 @@ class AnalysisService(
         *,
         failure: BaseException | None = None,
     ) -> None:
-        with self._lock:
-            runtime = self._runtimes.pop((session_id, kind), None)
+        runtime = self._runtime_owner.fail(session_id, kind)
         if runtime is not None and kind == BackendKind.X64DBG:
-            workflow = runtime.workflow
+            workflow = self._workflow_owner.get(session_id)
             if workflow is not None:
                 if workflow.status != WorkflowRunStatus.FAILED:
                     code, details, retryable = _workflow_failure(
@@ -5511,8 +5540,7 @@ class AnalysisService(
                         details=details,
                         retryable=retryable,
                     )
-                with self._lock:
-                    self._terminal_workflows[session_id] = workflow
+                self._workflow_owner.put_terminal(session_id, workflow)
         if runtime is not None:
             runtime.worker.terminate()
             if kind == BackendKind.X64DBG:
@@ -5805,6 +5833,3 @@ def _ui_finalize_windows(payload: JsonObject, ctx: JsonObject) -> JsonObject:
                     "include_same_image_children=true"
                 )
     return payload
-
-
-install_service_extensions(AnalysisService)

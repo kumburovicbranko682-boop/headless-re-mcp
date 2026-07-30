@@ -13,7 +13,6 @@ from headless_re_mcp.detection import ScanMode, scan_pe
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.scylla import ScyllaError
 from headless_re_mcp.unpack.session import UnpackPhase
-from headless_re_mcp.unpack.upx import UpxScanError
 from headless_re_mcp.unpack.vmp_dumper import VmpDumperError
 from headless_re_mcp.unpack.xvlkc import XvlkcError
 

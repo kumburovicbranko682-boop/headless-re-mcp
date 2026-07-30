@@ -1,54 +1,19 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- Minimal WiX template for Headless RE-MCP (M15.3).
-     Does not install drivers/services or mutate OS security settings.
-     User artifacts remain outside the install directory by default. -->
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*"
-           Name="Headless RE-MCP"
-           Language="1033"
-           Version="0.1.0"
+  <Product Id="*" Name="Headless RE-MCP" Language="1033" Version="0.1.0"
            Manufacturer="Headless RE-MCP contributors"
            UpgradeCode="A7C3E9B1-4D2F-4A8E-9C11-8F2E6D1B0A09">
-    <Package InstallerVersion="500"
-             Compressed="yes"
-             InstallScope="perUser"
-             Description="Headless reverse-engineering MCP core (no IDA)" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Description="Headless reverse-engineering MCP and browser workbench (no IDA)" />
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
-
-    <Feature Id="ProductFeature" Title="Core" Level="1">
-      <ComponentGroupRef Id="ProductComponents" />
+    <Feature Id="ProductFeature" Title="Core and browser workbench" Level="1">
+      <ComponentGroupRef Id="ProductFiles" />
     </Feature>
-
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="HeadlessReMcp" />
       </Directory>
     </Directory>
-
-    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="RegistryComponent" Guid="B1C2D3E4-F5A6-4789-8BCD-EF0123456789">
-        <RegistryValue Root="HKCU"
-                       Key="Software\HeadlessReMcp"
-                       Name="Installed"
-                       Type="integer"
-                       Value="1"
-                       KeyPath="yes" />
-        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
-        <RemoveRegistryKey Root="HKCU" Key="Software\HeadlessReMcp" Action="removeOnUninstall" />
-      </Component>
-      <Component Id="ReadmeComponent" Guid="C2D3E4F5-A6B7-4890-9CDE-F01234567890">
-        <RegistryValue Root="HKCU" Key="Software\HeadlessReMcp\Components" Name="Readme" Type="integer" Value="1" KeyPath="yes" />
-        <File Id="ReadmeFile" Source="$(var.ProjectDir)\README.md" />
-      </Component>
-      <Component Id="LicenseComponent" Guid="D3E4F5A6-B7C8-4901-ADE0-012345678901">
-        <RegistryValue Root="HKCU" Key="Software\HeadlessReMcp\Components" Name="License" Type="integer" Value="1" KeyPath="yes" />
-        <File Id="LicenseFile" Source="$(var.ProjectDir)\LICENSE" />
-      </Component>
-      <Component Id="NoticesComponent" Guid="E4F5A6B7-C8D9-4012-BEF1-123456789012">
-        <RegistryValue Root="HKCU" Key="Software\HeadlessReMcp\Components" Name="Notices" Type="integer" Value="1" KeyPath="yes" />
-        <File Id="NoticesFile" Source="$(var.ProjectDir)\THIRD_PARTY_NOTICES.md" />
-      </Component>
-    </ComponentGroup>
   </Product>
 </Wix>

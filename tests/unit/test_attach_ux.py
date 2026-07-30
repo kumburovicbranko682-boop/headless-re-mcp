@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 
 from headless_re_mcp.core.service import AnalysisService, _ui_finalize_windows
-from headless_re_mcp.core.windows import UiPidBoundaryError
 
 
 def test_dynamic_attach_defaults_pause_after_attach_false() -> None:

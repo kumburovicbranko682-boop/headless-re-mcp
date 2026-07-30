@@ -780,6 +780,29 @@ def test_dynamic_events_cursor_advances_and_empty_batch_preserves_position(
     assert worker.event_reads == [(0, 7, 2.5), (0, 7, 2.5), (2, 7, 2.5)]
 
 
+def test_dynamic_event_peek_keeps_bounded_workflow_transition_budget(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker(event_batches=[_event_batch(0)])
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    transition_timeouts: list[float] = []
+
+    def consume(*_args: object, timeout: float, **_kwargs: object) -> None:
+        transition_timeouts.append(timeout)
+
+    service._consume_workflow_batch_locked = consume  # type: ignore[method-assign]
+
+    result = service.dynamic_events(session_id, limit=16, timeout=0.05)
+
+    assert result.ok
+    assert worker.event_reads == [(0, 16, 0.05)]
+    assert transition_timeouts == [5.0]
+
+
 def test_dynamic_events_reports_overwritten_loss_and_advances_to_available_window(
     tmp_path: Path,
 ) -> None:

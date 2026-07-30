@@ -37,8 +37,7 @@ def test_m12_session_artifact_timeline_roundtrip(tmp_path: Path) -> None:
     import hashlib
 
     sha = hashlib.sha256(blob.read_bytes()).hexdigest()
-    store = service._store
-    registered = store.register_artifact(
+    registered = service.repository.register_artifact(
         session_id=session_id,
         kind="manual_note",
         path=blob,
@@ -59,7 +58,7 @@ def test_m12_session_artifact_timeline_roundtrip(tmp_path: Path) -> None:
     assert timeline.data["total"] >= 1
 
     # Force audit entry via store and expose through audit.list.
-    store.append_audit(
+    service.repository.append_audit(
         session_id=session_id,
         action="test.action",
         params_summary={"k": 1},

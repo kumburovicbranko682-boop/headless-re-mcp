@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
 # Application source (ASCII paths only).
 Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $dest "src\headless_re_mcp")
-Copy-Item "pyproject.toml","README.md","LICENSE","THIRD_PARTY_NOTICES.md","upstream.lock.json" $dest -ErrorAction SilentlyContinue
+Copy-Item "pyproject.toml","README.md","LICENSE","THIRD_PARTY_NOTICES.md","upstream.lock.json","start_web.py","first_setup.py" $dest -ErrorAction SilentlyContinue
 Copy-Item -Recurse "docs" (Join-Path $dest "docs") -ErrorAction SilentlyContinue
 # external/ docs + placeholders (binaries filled below when present). Never copy IDA.
 New-Item -ItemType Directory -Force -Path (Join-Path $dest "external") | Out-Null
@@ -25,6 +25,18 @@ if (Test-Path "external\README.md") {
 if (Test-Path "external\optional\README.md") {
     New-Item -ItemType Directory -Force -Path (Join-Path $dest "external\optional") | Out-Null
     Copy-Item "external\optional\README.md" (Join-Path $dest "external\optional\README.md")
+}
+
+# Release payloads never carry caches, user databases, configuration or dumps.
+Get-ChildItem -LiteralPath $dest -Directory -Recurse -Force |
+    Where-Object { $_.Name -in @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules") } |
+    Sort-Object FullName -Descending |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+Get-ChildItem -LiteralPath $dest -File -Recurse -Force |
+    Where-Object { $_.Extension -in @(".pyc", ".pyo", ".dmp", ".idb", ".i64") -or $_.Name -in @("agent.db", "providers.json", "config.json") } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+if (-not (Test-Path -LiteralPath (Join-Path $dest "src\headless_re_mcp\web\spa\index.html"))) {
+    throw "production SPA missing; run: cd webui; npm ci; npm run build"
 }
 
 # Packable x64dbg runtimes (GPL). Prefer external/, then artifacts/. Never IDA.
@@ -57,7 +69,7 @@ Headless RE-MCP Portable
 4. Optional CLIs (diec/upx/de4dot/...) via env — see external/README.md
 5. Run: python -m headless_re_mcp doctor --strict
 6. Serve MCP: python -m headless_re_mcp serve
-7. Web console: python -m headless_re_mcp serve-web
+7. Browser workbench: python start_web.py
 
 This archive may include GPL x64dbg headless Release trees.
 It does NOT include IDA, idalib, Hex-Rays, DIE, de4dot, Exeinfo, or unclear-license unpackers.

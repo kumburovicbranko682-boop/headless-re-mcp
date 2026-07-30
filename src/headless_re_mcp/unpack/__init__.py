@@ -5,10 +5,6 @@ from headless_re_mcp.unpack.iat_rank import (
     gate_iat_rebuild,
     rank_iat_candidates,
 )
-from headless_re_mcp.unpack.stub_calls import (
-    analyze_dump_stub_coupling,
-    count_stub_vs_api_calls,
-)
 from headless_re_mcp.unpack.observe import (
     collect_oep_observations,
     stub_rva_ranges_from_sections,
@@ -45,6 +41,10 @@ from headless_re_mcp.unpack.session import (
     persist_state_snapshot,
     transition,
     write_timeline_jsonl,
+)
+from headless_re_mcp.unpack.stub_calls import (
+    analyze_dump_stub_coupling,
+    count_stub_vs_api_calls,
 )
 from headless_re_mcp.unpack.upx import (
     DEFAULT_MAX_FILE_SIZE,
@@ -99,6 +99,7 @@ __all__ = [
     "cancel_unpack_session",
     "check_timeout",
     "collect_oep_observations",
+    "count_stub_vs_api_calls",
     "create_unpack_session",
     "ensure_unpack_active",
     "fail_unpack_session",

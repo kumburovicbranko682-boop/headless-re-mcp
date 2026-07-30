@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -290,10 +291,8 @@ class SessionStore:
             for key in ("params_summary", "result_summary"):
                 raw = item.get(key)
                 if isinstance(raw, str):
-                    try:
+                    with suppress(json.JSONDecodeError):
                         item[key] = json.loads(raw)
-                    except json.JSONDecodeError:
-                        pass
             items.append(item)
         return {
             "entries": items,

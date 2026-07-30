@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.backends.x64dbg.client import seed_headless_event_settings
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.core.session import detect_pe_architecture
-from headless_re_mcp.backends.x64dbg.client import seed_headless_event_settings
 from headless_re_mcp.core.windows import describe_process_windows
 
 # Interval between analyzer-window enumerations while the gate runs. Window

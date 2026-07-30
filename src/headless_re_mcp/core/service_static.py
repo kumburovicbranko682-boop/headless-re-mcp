@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
-
 from headless_re_mcp.core.results import _failure, _success
 
 JsonObject = dict[str, Any]

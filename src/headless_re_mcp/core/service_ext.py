@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from math import isfinite
 from pathlib import Path
 from time import monotonic
@@ -11,15 +11,12 @@ from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.capabilities_catalog import describe_capability, list_capabilities
 from headless_re_mcp.core.models import Result, RpcError
+from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.store import SessionStore
-from headless_re_mcp.core.store.timeline import (
-    append_session_timeline,
-    list_session_timeline,
-    session_timeline_path,
-)
+from headless_re_mcp.core.session import SessionRegistry
 from headless_re_mcp.core.ui_drive import drive_deadline, normalize_drive_steps, run_drive_step
 from headless_re_mcp.core.windows import (
     UiPidBoundaryError,
@@ -71,97 +68,51 @@ def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str
     return address
 
 
-def _ensure_store(service: Any) -> SessionStore:
-    store = getattr(service, "_store", None)
-    if store is None:
-        root = service.settings.artifact_root.expanduser().resolve()
-        store = SessionStore(root / "meta" / "sessions.db")
-        store.mark_unclean_open_sessions()
-        service._store = store
-    return store
+def _ensure_repository(service: Any) -> AnalysisRepository:
+    repository = getattr(service, "repository", None)
+    if repository is None:
+        repository = SqliteAnalysisRepository(service.settings.artifact_root)
+        service.repository = repository
+    return repository
 
 
-def _timeline_append(service: Any, session_id: str, event: str, message: str, **details: object) -> None:
-    path = session_timeline_path(service.settings.artifact_root, session_id)
-    append_session_timeline(path, event=event, message=message, details=dict(details))
+def _timeline_append(
+    service: Any,
+    session_id: str,
+    event: str,
+    message: str,
+    **details: object,
+) -> None:
+    _ensure_repository(service).append_timeline(
+        session_id,
+        event,
+        message,
+        **details,
+    )
 
 
 def _record_backend(service: Any, session_id: str, kind: str, **fields: object) -> None:
-    _ensure_store(service).upsert_backend(
-        session_id=session_id,
-        kind=kind,
-        worker_id=str(fields.get("worker_id") or "") or None,
-        pid=int(fields["pid"]) if isinstance(fields.get("pid"), int) else None,
-        endpoint=str(fields.get("endpoint") or "") or None,
-    )
+    _ensure_repository(service).record_backend(session_id, kind, **fields)
 
 
 def note_session_created(service: Any, binary: str, result: Result[JsonObject]) -> None:
-    """Persist session create side-effects (store/timeline/audit)."""
-    if not result.ok or not result.data:
-        return
-    session = result.data.get("session")
-    if not isinstance(session, dict):
-        return
-    store = _ensure_store(service)
-    store.upsert_session(
-        session_id=str(session["id"]),
-        binary=str(session.get("binary") or binary),
-        sha256=str(session.get("sha256") or ""),
-        architecture=str(session.get("architecture") or ""),
-        state=str(session.get("state") or "created"),
-        closed_cleanly=False,
-    )
-    _timeline_append(service, str(session["id"]), "session.created", "session created")
-    store.append_audit(
-        session_id=str(session["id"]),
-        action="session.create",
-        params_summary={"binary": str(binary)},
-        ok=True,
-        result_summary={"session_id": str(session["id"])},
-    )
+    _ensure_repository(service).note_session_created(binary, result)
 
 
 def note_session_closed(service: Any, session_id: str, result: Result[JsonObject]) -> None:
-    """Persist session close side-effects (store/timeline/audit)."""
-    store = _ensure_store(service)
     try:
         session = service.registry.get(session_id)
-        store.upsert_session(
-            session_id=session_id,
-            binary=str(session.binary),
-            sha256=session.sha256,
-            architecture=session.architecture.value,
-            state=session.state.value,
-            closed_cleanly=bool(result.ok),
-        )
-    except Exception:
-        store.upsert_session(
-            session_id=session_id,
-            binary="",
-            sha256="",
-            architecture="",
-            state="closed" if result.ok else "failed",
-            closed_cleanly=bool(result.ok),
-        )
-    _timeline_append(
-        service,
-        session_id,
-        "session.closed",
-        "session closed" if result.ok else "session close failed",
-        ok=bool(result.ok),
-    )
-    store.append_audit(
-        session_id=session_id,
-        action="session.close",
-        params_summary={},
-        ok=bool(result.ok),
-        result_summary={"ok": bool(result.ok)},
-    )
+    except (KeyError, RuntimeError):
+        session = None
+    _ensure_repository(service).note_session_closed(session_id, session, result)
 
 
-class ExtAnalysisMixin:
-    """Optional backends / artifacts / UI drive (methods bound by install_service_extensions)."""
+class UiDriveMixin:
+    """PID-bounded UI drive operations shared by the compatibility façade."""
+
+    settings: Settings
+    registry: SessionRegistry
+    workflow_status: Callable[[str], Result[JsonObject]]
 
     def ui_drive_to_event(
         self,
@@ -232,16 +183,16 @@ class ExtAnalysisMixin:
         )
 
 
-def install_service_extensions(_AnalysisService: type) -> None:
-    """Bind optional backend methods onto ExtAnalysisMixin (no AnalysisService wraps)."""
+class ExtAnalysisMixin(UiDriveMixin):
+    """Optional backend and artifact operations with statically declared methods."""
 
-    def capabilities_search(  # type: ignore[no-untyped-def]
+    def capabilities_search(
         self, backend: str | None = None, status: str | None = None
     ) -> Result[JsonObject]:
         items = list_capabilities(self.settings, backend=backend, status=status)
         return _success({"capabilities": items, "count": len(items)})
 
-    def capabilities_describe(self, capability_id: str) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def capabilities_describe(self, capability_id: str) -> Result[JsonObject]:
         item = describe_capability(capability_id, self.settings)
         if item is None:
             return Result(
@@ -250,10 +201,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
             )
         return _success({"capability": item})
 
-    ExtAnalysisMixin.capabilities_search = capabilities_search  # type: ignore[attr-defined]
-    ExtAnalysisMixin.capabilities_describe = capabilities_describe  # type: ignore[attr-defined]
-
-    def r2_open(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_open(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             exe = getattr(self.settings, "r2", None)
@@ -267,22 +215,22 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def r2_info(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_info(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["i"], timeout=timeout)
 
-    def r2_functions(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_functions(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["aa", "aflj"], timeout=timeout)
 
-    def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["izj"], timeout=timeout)
 
-    def r2_imports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_imports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["iij"], timeout=timeout)
 
-    def r2_exports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_exports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["iEj"], timeout=timeout)
 
-    def r2_disasm(  # type: ignore[no-untyped-def]
+    def r2_disasm(
         self, session_id: str, address: int, count: int = 32, timeout: float = 30.0
     ) -> Result[JsonObject]:
         try:
@@ -297,7 +245,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def r2_xrefs(self, session_id: str, address: int, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def r2_xrefs(self, session_id: str, address: int, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             exe = getattr(self.settings, "r2", None)
@@ -310,16 +258,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    ExtAnalysisMixin.r2_open = r2_open  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_info = r2_info  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_functions = r2_functions  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_strings = r2_strings  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_imports = r2_imports  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_exports = r2_exports  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_disasm = r2_disasm  # type: ignore[attr-defined]
-    ExtAnalysisMixin.r2_xrefs = r2_xrefs  # type: ignore[attr-defined]
-
-    def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
@@ -333,35 +272,29 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def ghidra_functions(  # type: ignore[no-untyped-def]
+    def ghidra_functions(
         self, session_id: str, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "functions", limit=limit, timeout=timeout)
 
-    def ghidra_symbols(  # type: ignore[no-untyped-def]
+    def ghidra_symbols(
         self, session_id: str, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "symbols", limit=limit, timeout=timeout)
 
-    def ghidra_xrefs(  # type: ignore[no-untyped-def]
+    def ghidra_xrefs(
         self, session_id: str, address: str | int, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(
             self, session_id, "xrefs", limit=limit, address=address, timeout=timeout
         )
 
-    def ghidra_decompile(  # type: ignore[no-untyped-def]
+    def ghidra_decompile(
         self, session_id: str, address: str | int, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "decompile", address=address, timeout=timeout)
 
-    ExtAnalysisMixin.ghidra_analyze = ghidra_analyze  # type: ignore[attr-defined]
-    ExtAnalysisMixin.ghidra_functions = ghidra_functions  # type: ignore[attr-defined]
-    ExtAnalysisMixin.ghidra_symbols = ghidra_symbols  # type: ignore[attr-defined]
-    ExtAnalysisMixin.ghidra_xrefs = ghidra_xrefs  # type: ignore[attr-defined]
-    ExtAnalysisMixin.ghidra_decompile = ghidra_decompile  # type: ignore[attr-defined]
-
-    def frida_attach(self, session_id: str) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def frida_attach(self, session_id: str) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
@@ -374,7 +307,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_modules(self, session_id: str, limit: int = 64) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def frida_modules(self, session_id: str, limit: int = 64) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
@@ -386,7 +319,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_exports(  # type: ignore[no-untyped-def]
+    def frida_exports(
         self, session_id: str, module_name: str, limit: int = 64
     ) -> Result[JsonObject]:
         try:
@@ -407,7 +340,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_memory_read(  # type: ignore[no-untyped-def]
+    def frida_memory_read(
         self, session_id: str, address: int, size: int
     ) -> Result[JsonObject]:
         try:
@@ -420,7 +353,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
@@ -432,13 +365,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    ExtAnalysisMixin.frida_attach = frida_attach  # type: ignore[attr-defined]
-    ExtAnalysisMixin.frida_modules = frida_modules  # type: ignore[attr-defined]
-    ExtAnalysisMixin.frida_exports = frida_exports  # type: ignore[attr-defined]
-    ExtAnalysisMixin.frida_memory_read = frida_memory_read  # type: ignore[attr-defined]
-    ExtAnalysisMixin.frida_hook_template = frida_hook_template  # type: ignore[attr-defined]
-
-    def windbg_open_dump(  # type: ignore[no-untyped-def]
+    def windbg_open_dump(
         self,
         dump_path: str,
         commands: list[str] | None = None,
@@ -459,7 +386,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc)
 
-    def windbg_threads(self, dump_path: str, timeout: float = 60.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def windbg_threads(self, dump_path: str, timeout: float = 60.0) -> Result[JsonObject]:
         try:
             client = _windbg_client(self)
             return _success(client.threads(Path(dump_path), timeout=timeout), backend="windbg")
@@ -468,7 +395,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc)
 
-    def windbg_modules(self, dump_path: str, timeout: float = 60.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def windbg_modules(self, dump_path: str, timeout: float = 60.0) -> Result[JsonObject]:
         try:
             client = _windbg_client(self)
             return _success(client.modules(Path(dump_path), timeout=timeout), backend="windbg")
@@ -477,7 +404,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc)
 
-    def windbg_disasm(  # type: ignore[no-untyped-def]
+    def windbg_disasm(
         self,
         dump_path: str,
         address: str | int,
@@ -496,7 +423,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
             return _failure(exc)
 
 
-    def windbg_attach(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def windbg_attach(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = _windbg_client(self)
@@ -509,7 +436,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def windbg_live_threads(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def windbg_live_threads(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = _windbg_client(self)
@@ -521,7 +448,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def windbg_live_modules(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
+    def windbg_live_modules(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = _windbg_client(self)
@@ -533,7 +460,7 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def windbg_live_disasm(  # type: ignore[no-untyped-def]
+    def windbg_live_disasm(
         self,
         session_id: str,
         address: str | int,
@@ -555,33 +482,27 @@ def install_service_extensions(_AnalysisService: type) -> None:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    ExtAnalysisMixin.windbg_open_dump = windbg_open_dump  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_threads = windbg_threads  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_modules = windbg_modules  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_disasm = windbg_disasm  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_attach = windbg_attach  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_live_threads = windbg_live_threads  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_live_modules = windbg_live_modules  # type: ignore[attr-defined]
-    ExtAnalysisMixin.windbg_live_disasm = windbg_live_disasm  # type: ignore[attr-defined]
-
-    def artifacts_list(  # type: ignore[no-untyped-def]
+    def artifacts_list(
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
-        store = _ensure_store(self)
-        return _success(store.list_artifacts(session_id, offset=offset, limit=limit))
+        return _success(
+            self.services.artifacts.list_artifacts(
+                session_id,
+                offset=offset,
+                limit=limit,
+            )
+        )
 
-    def artifacts_describe(self, artifact_id: str) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
-        store = _ensure_store(self)
-        item = store.describe_artifact(artifact_id)
+    def artifacts_describe(self, artifact_id: str) -> Result[JsonObject]:
+        item = self.services.artifacts.describe_artifact(artifact_id)
         if item is None:
             return Result(ok=False, error=RpcError(code="not_found", message="artifact not found"))
         return _success({"artifact": item})
 
-    def artifacts_read(  # type: ignore[no-untyped-def]
+    def artifacts_read(
         self, artifact_id: str, offset: int = 0, limit: int = 4096
     ) -> Result[JsonObject]:
-        store = _ensure_store(self)
-        item = store.describe_artifact(artifact_id)
+        item = _ensure_repository(self).describe_artifact(artifact_id)
         if item is None:
             return Result(ok=False, error=RpcError(code="not_found", message="artifact not found"))
         path = Path(str(item["path"])).resolve()
@@ -607,34 +528,36 @@ def install_service_extensions(_AnalysisService: type) -> None:
             }
         )
 
-    def artifacts_gc(self, max_total_bytes: int = 512 * 1024 * 1024) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
-        store = _ensure_store(self)
-        return _success(store.gc_artifacts(max_total_bytes=max_total_bytes))
+    def artifacts_gc(self, max_total_bytes: int = 512 * 1024 * 1024) -> Result[JsonObject]:
+        return _success(
+            self.services.artifacts.gc_artifacts(max_total_bytes=max_total_bytes)
+        )
 
-    def timeline_list(  # type: ignore[no-untyped-def]
+    def timeline_list(
         self, session_id: str, offset: int = 0, limit: int = 100
     ) -> Result[JsonObject]:
-        path = session_timeline_path(self.settings.artifact_root, session_id)
-        return _success(list_session_timeline(path, offset=offset, limit=limit))
+        return _success(
+            self.services.artifacts.list_timeline(
+                session_id,
+                offset=offset,
+                limit=limit,
+            )
+        )
 
-    def sessions_unclean(self) -> Result[JsonObject]:  # type: ignore[no-untyped-def]
-        store = _ensure_store(self)
-        items = store.list_unclean_sessions()
+    def sessions_unclean(self) -> Result[JsonObject]:
+        items = _ensure_repository(self).list_unclean_sessions()
         return _success({"sessions": items, "count": len(items)})
 
-    def audit_list(  # type: ignore[no-untyped-def]
+    def audit_list(
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
-        store = _ensure_store(self)
-        return _success(store.list_audit(session_id, offset=offset, limit=limit))
-
-    ExtAnalysisMixin.artifacts_list = artifacts_list  # type: ignore[attr-defined]
-    ExtAnalysisMixin.artifacts_describe = artifacts_describe  # type: ignore[attr-defined]
-    ExtAnalysisMixin.artifacts_read = artifacts_read  # type: ignore[attr-defined]
-    ExtAnalysisMixin.artifacts_gc = artifacts_gc  # type: ignore[attr-defined]
-    ExtAnalysisMixin.timeline_list = timeline_list  # type: ignore[attr-defined]
-    ExtAnalysisMixin.sessions_unclean = sessions_unclean  # type: ignore[attr-defined]
-    ExtAnalysisMixin.audit_list = audit_list  # type: ignore[attr-defined]
+        return _success(
+            self.services.artifacts.list_audit(
+                session_id,
+                offset=offset,
+                limit=limit,
+            )
+        )
 
 
 def _require_debuggee_pid(service: Any, session_id: str) -> int:
@@ -702,7 +625,7 @@ def _ghidra_export(
             import hashlib
 
             raw = Path(export_path).read_bytes()
-            art = _ensure_store(service).register_artifact(
+            art = _ensure_repository(service).register_artifact(
                 session_id=session_id,
                 kind=f"ghidra_{mode}",
                 path=export_path,
@@ -929,7 +852,18 @@ def _ui_drive(
                 # Peek events only; do not burn 2s between UI steps.
                 _drain_events(wait_s=_STEP_EVENT_PEEK)
                 if matched_event is not None:
-                    break
+                    # A queued/stale ``debug.paused`` is common after launch and
+                    # must not make a UI-goal drive succeed before its remaining
+                    # steps have run.  Other event goals (notably a breakpoint)
+                    # still stop immediately; callers that require an event-only
+                    # drive use ``accept_ui_goal=False``.
+                    incidental_pause = (
+                        pattern.kind == "debug.paused"
+                        and accept_ui_goal
+                        and bool(normalized)
+                    )
+                    if not incidental_pause:
+                        break
                 if not normalized and accept_ui_goal and ui_goal:
                     break
                 continue
@@ -973,7 +907,7 @@ def _ui_drive(
             ui_goal=ui_goal,
             steps=len(step_results),
         )
-        _ensure_store(service).append_audit(
+        _ensure_repository(service).append_audit(
             session_id=session_id,
             action="ui.drive",
             params_summary={"kind": kind, "steps": len(step_results)},
@@ -983,7 +917,7 @@ def _ui_drive(
         return _success(payload, session_id=session_id, capability="ui.drive_to_event")
     except XdbgRpcError as exc:
         _pause_best_effort()
-        _ensure_store(service).append_audit(
+        _ensure_repository(service).append_audit(
             session_id=session_id,
             action="ui.drive",
             params_summary={"kind": kind, "steps": len(step_results), "stop_reason": stop_reason},

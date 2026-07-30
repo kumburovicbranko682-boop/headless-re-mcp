@@ -18,7 +18,6 @@ from headless_re_mcp.dotnet.metadata_enum import (
 )
 from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerError
 
-
 JsonObject = dict[str, Any]
 
 

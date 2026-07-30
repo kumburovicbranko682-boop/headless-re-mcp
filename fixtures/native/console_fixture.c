@@ -164,6 +164,18 @@ static int cycle_event_module(void)
     return 0;
 }
 
+static int stress_event_module(unsigned count)
+{
+    unsigned index;
+    for(index = 0; index < count; ++index)
+    {
+        int status = cycle_event_module();
+        if(status != 0)
+            return status;
+    }
+    return 0;
+}
+
 static int expose_event_module_lifecycle(void)
 {
     HMODULE module = NULL;
@@ -222,6 +234,7 @@ static int run_runtime_decrypt(void)
 static int fixture_main(int argc, char** argv)
 {
     unsigned thread_count = 1;
+    unsigned module_stress_count = 0;
     int cycle_module = 0;
     int expose_module_lifecycle = 0;
     int workflow_module_reload = 0;
@@ -251,6 +264,17 @@ static int fixture_main(int argc, char** argv)
         {
             cycle_module = 1;
         }
+        else if(strcmp(argv[index], "--module-stress") == 0)
+        {
+            char* end = NULL;
+            unsigned long parsed;
+            if(index + 1 >= argc)
+                return 8;
+            parsed = strtoul(argv[++index], &end, 10);
+            if(end == argv[index] || *end != '\0' || parsed == 0 || parsed > 2048)
+                return 8;
+            module_stress_count = (unsigned)parsed;
+        }
         else if(strcmp(argv[index], "--module-lifecycle-windows") == 0)
         {
             expose_module_lifecycle = 1;
@@ -269,11 +293,20 @@ static int fixture_main(int argc, char** argv)
         }
     }
 
-    if(cycle_module + expose_module_lifecycle + workflow_module_reload + runtime_decrypt > 1)
+    if((cycle_module != 0) + (module_stress_count != 0)
+           + (expose_module_lifecycle != 0) + (workflow_module_reload != 0)
+           + (runtime_decrypt != 0)
+       > 1)
         return 9;
     if(cycle_module)
     {
         status = cycle_event_module();
+        if(status != 0)
+            return status;
+    }
+    if(module_stress_count != 0)
+    {
+        status = stress_event_module(module_stress_count);
         if(status != 0)
             return status;
     }

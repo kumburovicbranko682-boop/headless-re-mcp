@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -236,10 +237,8 @@ def update_config_values(
         else:
             data[key] = value
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    try:
+    with suppress(OSError):
         path.chmod(0o600)
-    except OSError:
-        pass
     return path
 
 

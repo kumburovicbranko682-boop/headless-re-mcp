@@ -71,7 +71,12 @@ class FridaClient:
             )
         session = self._frida.attach(pid)
         try:
-            return {"pid": pid, "attached": True, "device": "local", "note": "probe attach; detached immediately"}
+            return {
+                "pid": pid,
+                "attached": True,
+                "device": "local",
+                "note": "probe attach; detached immediately",
+            }
         finally:
             session.detach()
 

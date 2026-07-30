@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from headless_re_mcp.unpack.iat_rank import gate_iat_rebuild, analyze_import_entries
+from headless_re_mcp.unpack.iat_rank import analyze_import_entries, gate_iat_rebuild
 from headless_re_mcp.unpack.stub_calls import (
     code_section_ranges,
     count_stub_vs_api_calls,

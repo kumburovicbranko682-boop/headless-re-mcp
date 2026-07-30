@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 import pytest
@@ -28,11 +27,11 @@ def _recover_serial_from_export_bytes(raw_hex: bytes) -> str:
         # try any 8 printable-after-xor run
         for i in range(0, len(raw_hex) - 7):
             cand = bytes(b ^ 0x41 for b in raw_hex[i : i + 8])
-            if cand.isalnum() or all(32 < c < 127 for c in cand):
-                if cand.decode("ascii").isalnum() or True:
-                    # require mostly alnum
-                    if sum(ch.isalnum() for ch in cand.decode("ascii", errors="ignore")) >= 6:
-                        return cand.decode("ascii")
+            if (
+                (cand.isalnum() or all(32 < c < 127 for c in cand))
+                and sum(ch.isalnum() for ch in cand.decode("ascii", errors="ignore")) >= 6
+            ):
+                return cand.decode("ascii")
         raise AssertionError("expect blob not found")
     return bytes(b ^ 0x41 for b in marker).decode("ascii")
 
@@ -80,7 +79,6 @@ def test_crackme_serial_solved_end_to_end() -> None:
         assert va > 0
         dis = service.r2_disasm(sid, va, count=48)
         assert dis.ok and dis.data
-        raw = str(dis.data.get("raw") or "")
         # Also pull expect constant from binary image around export RVA
         image = _CRACKME.read_bytes()
         serial = _recover_serial_from_export_bytes(image)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.session import file_sha256
@@ -16,12 +15,14 @@ from headless_re_mcp.detection import (
     ScanMode,
     scan_pe,
 )
-from headless_re_mcp.detection.die import DieScanError, DieScanResult
+from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.detection.exeinfope import (
     ExeinfopeScanError,
-    ExeinfopeScanResult,
 )
-
+from headless_re_mcp.unpack.recommend import (
+    pe_suggests_vm_protector,
+    recommend_unpack_route,
+)
 
 JsonObject = dict[str, Any]
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """首次启动：CLI 问答配置（GUI 请用 python -m headless_re_mcp.native_app）。"""
 
 from __future__ import annotations

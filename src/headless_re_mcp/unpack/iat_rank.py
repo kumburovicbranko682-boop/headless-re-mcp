@@ -130,12 +130,16 @@ def rank_iat_candidates(
             item["iat_rva"] = rva
         if not isinstance(iat_va, int) or not isinstance(size, int) or size <= 0:
             continue
-        if isinstance(module_base, int) and isinstance(module_size, int):
-            if iat_va < module_base or iat_va + size > module_base + module_size:
-                continue
+        if (
+            isinstance(module_base, int)
+            and isinstance(module_size, int)
+            and (iat_va < module_base or iat_va + size > module_base + module_size)
+        ):
+            continue
         density = matched / max(slots, 1)
         score = conf * 0.45 + min(1.0, matched / 32.0) * 0.35 + density * 0.2
-        samples = item.get("sample_apis") if isinstance(item.get("sample_apis"), list) else []
+        samples_value = item.get("sample_apis")
+        samples: list[Any] = samples_value if isinstance(samples_value, list) else []
         ime_hits = _count_ime_samples(samples)
         sample_n = len(samples)
         if sample_n > 0 and (ime_hits >= 2 or ime_hits / sample_n >= 0.5):
@@ -206,12 +210,11 @@ def gate_iat_rebuild(
     if ime:
         allowed = False
         reasons.append("ime_dominated_candidate")
-    if layout in {"junk", "empty", "fragmented"} and layout != "half_sparse":
+    if layout in {"junk", "empty", "fragmented"}:
         # fragmented already clears rebuild_allowed usually; keep explicit.
-        if layout != "dense" and layout != "half_sparse":
-            allowed = False
-            if f"layout={layout}" not in reasons:
-                reasons.append(f"layout={layout}")
+        allowed = False
+        if f"layout={layout}" not in reasons:
+            reasons.append(f"layout={layout}")
     return {
         "rebuild_allowed": allowed,
         "reasons": reasons,

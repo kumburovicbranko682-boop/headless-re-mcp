@@ -34,9 +34,8 @@ def assess_pause_quality(
         reasons.append("ui_visible_only_not_sufficient")
     if code_not_ready:
         iat_ready = False
-        reasons.append(
-            f"code_not_decrypted:nonzero_ratio={float(code_nonzero_ratio):.4f}"
-        )
+        assert code_nonzero_ratio is not None
+        reasons.append(f"code_not_decrypted:nonzero_ratio={code_nonzero_ratio:.4f}")
     if layout in {"junk", "empty", "fragmented"}:
         iat_ready = False
         reasons.append(f"layout={layout}")
@@ -49,10 +48,13 @@ def assess_pause_quality(
     elif recoverability == "iat_insufficient":
         iat_ready = False
         reasons.append("iat_insufficient")
-    if isinstance(still_vm_stub_count, int) and isinstance(api_call_site_count, int):
-        if still_vm_stub_count > max(api_call_site_count, 1) * 2:
-            iat_ready = False
-            reasons.append("stub_calls_dominate_api_sites")
+    if (
+        isinstance(still_vm_stub_count, int)
+        and isinstance(api_call_site_count, int)
+        and still_vm_stub_count > max(api_call_site_count, 1) * 2
+    ):
+        iat_ready = False
+        reasons.append("stub_calls_dominate_api_sites")
     if isinstance(resolved_ratio, float) and resolved_ratio < 0.25:
         iat_ready = False
         reasons.append("resolved_ratio_low")

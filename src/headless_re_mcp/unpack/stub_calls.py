@@ -7,8 +7,9 @@ VMP-like sections means the dump remains VM-coupled even if some IAT slots resol
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from headless_re_mcp.unpack.pe_rebuild import PeRebuildError, parse_runtime_headers
 
@@ -234,7 +235,12 @@ def analyze_dump_stub_coupling(
             "still_vm_stub_count": None,
             "claims_universal_unpack": False,
         }
-    sections = headers.get("sections") if isinstance(headers.get("sections"), list) else []
+    sections_value = headers.get("sections")
+    sections: list[JsonObject] = (
+        [item for item in sections_value if isinstance(item, dict)]
+        if isinstance(sections_value, list)
+        else []
+    )
     base = image_base if isinstance(image_base, int) else int(headers.get("image_base") or 0)
     is_64bit = str(headers.get("architecture") or "").lower() in {"x64", "amd64", "x86_64"}
     stub = vmp_like_section_ranges(sections)

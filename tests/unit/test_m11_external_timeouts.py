@@ -31,9 +31,8 @@ def test_r2_nonzero_exit_maps_to_backend_error(tmp_path: Path) -> None:
     stub.write_bytes(b"")
     client = R2Client(executable=stub)
     fake = subprocess.CompletedProcess(args=["r2"], returncode=2, stdout=b"", stderr=b"boom")
-    with patch("subprocess.run", return_value=fake):
-        with pytest.raises(R2Error) as exc:
-            client.run(binary, ["i"], timeout=1.0)
+    with patch("subprocess.run", return_value=fake), pytest.raises(R2Error) as exc:
+        client.run(binary, ["i"], timeout=1.0)
     assert exc.value.code == "backend_error"
 
 

@@ -20,6 +20,7 @@ MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_ABSOLUTE = 0x8000
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
+VK_MENU = 0x12
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 
@@ -121,10 +122,14 @@ def _bring_to_foreground(hwnd: int, allowed_pids: frozenset[int]) -> None:
     user32 = _user32()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     require_allowed_hwnd(hwnd, allowed_pids)
+    # SetForegroundWindow only accepts a top-level window. UI actions commonly
+    # target a child Button/Edit HWND, so resolve its root before the focus dance.
+    root = int(user32.GetAncestor(ctypes.c_void_p(int(hwnd)), 2) or hwnd)  # GA_ROOT
+    require_allowed_hwnd(root, allowed_pids)
     # Best-effort focus; success is decided by the post-check below.
-    user32.ShowWindow(ctypes.c_void_p(int(hwnd)), 9)  # SW_RESTORE
-    user32.BringWindowToTop(ctypes.c_void_p(int(hwnd)))
-    target = int(hwnd)
+    user32.ShowWindow(ctypes.c_void_p(root), 9)  # SW_RESTORE
+    user32.BringWindowToTop(ctypes.c_void_p(root))
+    target = root
     current_tid = int(kernel32.GetCurrentThreadId())
     deadline = time.time() + 2.0
     while time.time() < deadline:
@@ -132,6 +137,13 @@ def _bring_to_foreground(hwnd: int, allowed_pids: frozenset[int]) -> None:
         if fg == target and hwnd_owner_pid(target) in allowed_pids:
             require_foreground_allowed(allowed_pids)
             return
+        # A non-interactive launcher can temporarily leave the desktop without
+        # any foreground HWND. In that state there is no foreground thread to
+        # attach to, and SetForegroundWindow alone is commonly ignored. The
+        # target root is already PID-authorized, so use the bounded Win32
+        # activation path before the same fail-closed post-check.
+        if fg <= 0:
+            user32.SwitchToThisWindow(ctypes.c_void_p(target), True)
         # AttachThreadInput is often required when another app (e.g. Edge) owns FG.
         fg_tid = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(fg), None)) if fg else 0
         tgt_tid = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(target), None))
@@ -142,7 +154,20 @@ def _bring_to_foreground(hwnd: int, allowed_pids: frozenset[int]) -> None:
                 attached_fg = bool(user32.AttachThreadInput(current_tid, fg_tid, True))
             if tgt_tid and tgt_tid != current_tid:
                 attached_tgt = bool(user32.AttachThreadInput(current_tid, tgt_tid, True))
-            user32.SetForegroundWindow(ctypes.c_void_p(target))
+            if fg <= 0:
+                # Windows' foreground lock can reject activation when the
+                # desktop currently has no foreground queue. A bounded Alt
+                # press grants this input-initiated activation; no UI action is
+                # emitted until the allowed-PID foreground post-check passes.
+                user32.keybd_event(VK_MENU, 0, 0, 0)
+            try:
+                user32.SetForegroundWindow(ctypes.c_void_p(target))
+            finally:
+                if fg <= 0:
+                    user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+            if fg <= 0:
+                user32.SetActiveWindow(ctypes.c_void_p(target))
+                user32.SetFocus(ctypes.c_void_p(target))
         finally:
             if attached_tgt:
                 user32.AttachThreadInput(current_tid, tgt_tid, False)

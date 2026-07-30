@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic

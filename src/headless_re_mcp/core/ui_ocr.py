@@ -219,15 +219,16 @@ def ocr_hwnd(
         )
     key = (backend or "auto").strip().casefold()
     errors: list[str] = []
-    if key in {"windows", "windows_ocr", "winrt", "auto"}:
-        if windows_ocr_available() or key != "auto":
-            try:
-                result = ocr_bmp_windows(path, language=language)
-                return {**shot, **result, "ocr_backend": result["backend"]}
-            except Exception as exc:
-                if key != "auto":
-                    raise
-                errors.append(f"windows_ocr:{exc}")
+    if key in {"windows", "windows_ocr", "winrt", "auto"} and (
+        windows_ocr_available() or key != "auto"
+    ):
+        try:
+            result = ocr_bmp_windows(path, language=language)
+            return {**shot, **result, "ocr_backend": result["backend"]}
+        except Exception as exc:
+            if key != "auto":
+                raise
+            errors.append(f"windows_ocr:{exc}")
     if key in {"tesseract", "auto"}:
         try:
             result = ocr_bmp_tesseract(path, tesseract=tesseract)

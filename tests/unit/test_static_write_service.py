@@ -178,7 +178,7 @@ def test_static_disassemble_spills_oversized_artifact(tmp_path: Path) -> None:
             *,
             timeout: float = 120.0,
         ) -> JsonObject:
-            del params, timeout
+            del timeout
             if command == "disassemble":
                 # >64KiB rendered text triggers spill path
                 line = "x" * 200

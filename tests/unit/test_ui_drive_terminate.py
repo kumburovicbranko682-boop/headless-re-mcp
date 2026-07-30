@@ -181,6 +181,69 @@ def test_ui_drive_burst_peeks_events_between_steps(
     assert all(t <= 0.1 for t in peeked), peeked
 
 
+def test_ui_drive_does_not_accept_incidental_pause_before_ui_goal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _FakeService(tmp_path)
+    service._events = [{"kind": "debug.paused", "data": {}}]
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.is_pid_alive",
+        lambda pid: True,
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.list_windows_for_pids",
+        lambda _pids: [
+            {
+                "hwnd": 1,
+                "pid": 4242,
+                "title": "A",
+                "class_name": "X",
+                "visible": True,
+            }
+        ],
+    )
+    executed: list[str] = []
+
+    def _step(
+        step: dict[str, object],
+        *,
+        allowed_pids: frozenset[int],
+        handles: dict[str, int],
+    ) -> dict[str, object]:
+        del allowed_pids, handles
+        action = str(step["action"])
+        executed.append(action)
+        return {"action": action, "matched": action == "wait"}
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.run_drive_step",
+        _step,
+    )
+
+    result = _ui_drive(
+        service,
+        "sess",
+        kind="debug.paused",
+        fields=None,
+        steps=[
+            {"action": "click", "hwnd": 1},
+            {"action": "click", "hwnd": 1},
+            {"action": "wait", "title_contains": "A", "timeout": 0.01},
+        ],
+        timeout=2.0,
+        event_budget=8,
+        allow_child_pids=None,
+        accept_ui_goal=True,
+        breakpoint_intent_id=None,
+    )
+
+    assert result.ok and result.data is not None
+    assert executed == ["click", "click", "wait"]
+    assert result.data["ui_goal"] is True
+    assert result.data["stop_reason"] == "ui_goal"
+
+
 def test_ui_drive_event_loss_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
