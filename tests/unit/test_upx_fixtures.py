@@ -18,7 +18,6 @@ UPX_ENV = os.environ.get("HEADLESS_RE_UPX")
 UPX_CANDIDATES = [
     Path(UPX_ENV) if UPX_ENV else None,
     REPO / "artifacts" / "tools" / "upx-5.2.0" / "upx.exe",
-    Path(r"C:\Users\Administrator\Downloads\upx-5.2.0-win64\upx-5.2.0-win64\upx.exe"),
 ]
 
 

@@ -1,0 +1,218 @@
+"""Session-scoped durable debug-event log for true sequence replay.
+
+Native x64dbg keeps a 1024-slot ring. This log is filled by a drain cursor that
+runs ahead of the MCP consumer cursor, so consumers that lag past the ring
+window can still read contiguous events by sequence (until an unrecovered gap).
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from threading import RLock
+from typing import Any
+
+from headless_re_mcp.core.events import (
+    DEBUG_EVENT_CAPACITY,
+    DebugEvent,
+    DebugEventBatch,
+    DebugEventProtocolError,
+)
+
+JsonObject = dict[str, Any]
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS debug_events (
+  sequence INTEGER PRIMARY KEY NOT NULL,
+  timestamp_unix_ms INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  data_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS debug_event_meta (
+  key TEXT PRIMARY KEY NOT NULL,
+  value INTEGER NOT NULL
+);
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class EventLogRead:
+    """Consumer-facing slice from the durable log."""
+
+    batch: DebugEventBatch
+    replayed_from_store: bool
+    unrecovered_gap: bool
+
+
+class PersistentDebugEventLog:
+    """Append-only event log with optional SQLite durability for one session."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._lock = RLock()
+        self._memory: dict[int, DebugEvent] = {}
+        self._latest = 0
+        self._gap_through = 0  # highest sequence known missing (inclusive), 0 = none
+        self._path = path
+        self._conn: sqlite3.Connection | None = None
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
+            self._load_from_db()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+    @property
+    def latest_sequence(self) -> int:
+        with self._lock:
+            return self._latest
+
+    def note_unrecovered_gap(self, first_missing: int, last_missing: int) -> None:
+        """Record that native ring overwritten sequences before drain could copy them."""
+        if first_missing <= 0 or last_missing < first_missing:
+            return
+        with self._lock:
+            self._gap_through = max(self._gap_through, last_missing)
+
+    def append_events(self, events: tuple[DebugEvent, ...] | list[DebugEvent]) -> None:
+        if not events:
+            return
+        with self._lock:
+            rows: list[tuple[int, int, str, str, str]] = []
+            for event in events:
+                if event.sequence in self._memory:
+                    continue
+                if self._latest and event.sequence > self._latest + 1:
+                    # Contiguity hole relative to what we already stored.
+                    self._gap_through = max(self._gap_through, event.sequence - 1)
+                self._memory[event.sequence] = event
+                self._latest = max(self._latest, event.sequence)
+                rows.append(
+                    (
+                        event.sequence,
+                        event.timestamp_unix_ms,
+                        event.source,
+                        event.kind,
+                        json.dumps(event.data, ensure_ascii=False, separators=(",", ":")),
+                    )
+                )
+            if self._conn is not None and rows:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO debug_events"
+                    "(sequence, timestamp_unix_ms, source, kind, data_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+                self._conn.execute(
+                    "INSERT INTO debug_event_meta(key, value) VALUES('latest', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (self._latest,),
+                )
+                self._conn.execute(
+                    "INSERT INTO debug_event_meta(key, value) VALUES('gap_through', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (self._gap_through,),
+                )
+                self._conn.commit()
+
+    def read_after(self, cursor: int, *, limit: int) -> EventLogRead:
+        if type(cursor) is not int or cursor < 0:
+            raise DebugEventProtocolError("cursor must be a non-negative integer")
+        if type(limit) is not int or limit < 1:
+            raise DebugEventProtocolError("limit must be a positive integer")
+
+        with self._lock:
+            latest = self._latest
+            if latest == 0:
+                batch = DebugEventBatch(
+                    events=(),
+                    cursor=cursor,
+                    next_cursor=cursor,
+                    oldest_sequence=0,
+                    latest_sequence=0,
+                    dropped=0,
+                    dropped_total=0,
+                    has_more=False,
+                    capacity=DEBUG_EVENT_CAPACITY,
+                )
+                return EventLogRead(batch=batch, replayed_from_store=False, unrecovered_gap=False)
+
+            want_start = cursor + 1
+            unrecovered = False
+            dropped = 0
+            if self._gap_through >= want_start:
+                # Skip past known unrecovered hole.
+                dropped = self._gap_through - cursor
+                want_start = self._gap_through + 1
+                unrecovered = dropped > 0
+
+            selected: list[DebugEvent] = []
+            seq = want_start
+            while seq <= latest and len(selected) < limit:
+                event = self._memory.get(seq)
+                if event is None:
+                    # Soft hole: treat as unrecovered gap until next present event.
+                    nxt = min(
+                        (key for key in self._memory if key > seq),
+                        default=None,
+                    )
+                    if nxt is None:
+                        break
+                    dropped += nxt - seq
+                    unrecovered = True
+                    seq = nxt
+                    continue
+                selected.append(event)
+                seq += 1
+
+            events = tuple(selected)
+            next_cursor = events[-1].sequence if events else cursor + dropped
+            oldest = min(self._memory) if self._memory else 0
+            batch = DebugEventBatch(
+                events=events,
+                cursor=cursor,
+                next_cursor=next_cursor,
+                oldest_sequence=oldest,
+                latest_sequence=latest,
+                dropped=dropped,
+                dropped_total=max(0, latest - len(self._memory)),
+                has_more=next_cursor < latest,
+                capacity=DEBUG_EVENT_CAPACITY,
+            )
+            replayed = bool(events) and dropped == 0 and cursor > 0
+            return EventLogRead(
+                batch=batch,
+                replayed_from_store=replayed,
+                unrecovered_gap=unrecovered,
+            )
+
+    def _load_from_db(self) -> None:
+        assert self._conn is not None
+        for row in self._conn.execute(
+            "SELECT sequence, timestamp_unix_ms, source, kind, data_json FROM debug_events "
+            "ORDER BY sequence"
+        ):
+            data = json.loads(row[4])
+            event = DebugEvent(
+                sequence=int(row[0]),
+                timestamp_unix_ms=int(row[1]),
+                source=str(row[2]),
+                kind=str(row[3]),
+                data=data if isinstance(data, dict) else {},
+            )
+            self._memory[event.sequence] = event
+            self._latest = max(self._latest, event.sequence)
+        gap = self._conn.execute(
+            "SELECT value FROM debug_event_meta WHERE key='gap_through'"
+        ).fetchone()
+        if gap is not None:
+            self._gap_through = int(gap[0])

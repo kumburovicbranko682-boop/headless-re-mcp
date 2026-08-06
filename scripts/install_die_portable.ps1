@@ -4,12 +4,19 @@
 #   powershell -File scripts\install_die_portable.ps1 -ZipPath D:\downloads\die_win64_portable_3.21_x64.zip
 
 param(
-    [string]$ZipPath = "E:\x64dbgmcp\artifacts\tools\die_win64_portable_3.21_x64.zip",
-    [string]$DestDir = "E:\x64dbgmcp\artifacts\tools\die_win64_portable_3.21_x64",
+    [string]$ZipPath = "",
+    [string]$DestDir = "",
     [string]$ExpectedSha256 = "078f2934f267392247f9c7b759a1c2457a48bc2000b25b80c2f129955ee4a3b9"
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not $ZipPath) {
+    $ZipPath = Join-Path $RepoRoot "artifacts\tools\die_win64_portable_3.21_x64.zip"
+}
+if (-not $DestDir) {
+    $DestDir = Join-Path $RepoRoot "artifacts\tools\die_win64_portable_3.21_x64"
+}
 if (-not (Test-Path -LiteralPath $ZipPath)) {
     Write-Error "ZIP missing: $ZipPath"
 }

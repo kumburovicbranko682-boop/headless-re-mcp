@@ -216,7 +216,7 @@ def _sync_one_arch(arch: str) -> JsonObject:
         return result
     dst.mkdir(parents=True, exist_ok=True)
     for item in dst.iterdir():
-        if item.name in {"README.md", ".gitkeep"}:
+        if item.name in {".gitkeep"}:
             continue
         if item.is_dir():
             shutil.rmtree(item)

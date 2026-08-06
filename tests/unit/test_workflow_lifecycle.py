@@ -25,7 +25,7 @@ def _mapping(
     base: int,
     *,
     name: str = "event_fixture.dll",
-    path: str = r"E:\fixtures\event_fixture.dll",
+    path: str = r"C:\sample\fixtures\event_fixture.dll",
     preferred_base: int = 0x180000000,
     image_size: int = 0x5000,
 ) -> RebasedModuleMapping:
@@ -199,7 +199,7 @@ def test_event_loss_marks_every_tracked_module_stale() -> None:
         _tracked_state(),
         "helper",
         ModuleSelector(base=0x71000000),
-        _mapping(0x71000000, name="helper.dll", path=r"E:\fixtures\helper.dll"),
+        _mapping(0x71000000, name="helper.dll", path=r"C:\sample\fixtures\helper.dll"),
     )
 
     transition = consume_module_events(state, _batch(0, dropped=4))

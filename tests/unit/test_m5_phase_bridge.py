@@ -26,7 +26,7 @@ def test_phase_bridge_advances_dumped_imports_verified() -> None:
     state = transition(state, UnpackPhase.OEP_CANDIDATE, event="oep", message="oep")
     state = note_dump_success(
         state,
-        output_path="E:/tmp/dump.bin",
+        output_path="C:/sample/tmp/dump.bin",
         sha256="a" * 64,
         module_base=0x140000000,
     )
@@ -35,12 +35,12 @@ def test_phase_bridge_advances_dumped_imports_verified() -> None:
 
     state = note_imports_rebuilt(
         state,
-        output_path="E:/tmp/rebuilt.exe",
+        output_path="C:/sample/tmp/rebuilt.exe",
         sha256="b" * 64,
     )
     assert state.phase == UnpackPhase.IMPORTS_REBUILT
 
-    state = note_verified(state, path="E:/tmp/rebuilt.exe", sha256="b" * 64)
+    state = note_verified(state, path="C:/sample/tmp/rebuilt.exe", sha256="b" * 64)
     assert state.phase == UnpackPhase.VERIFIED
     assert state.to_dict()["claims_universal_unpack"] is False
 

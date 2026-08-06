@@ -33,11 +33,9 @@ packages = ["src/headless_re_mcp"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src/headless_re_mcp",
-  "/docs",
   "/pyproject.toml",
   "/README.md",
   "/LICENSE",
-  "/THIRD_PARTY_NOTICES.md",
   "/upstream.lock.json",
   "/start_web.py",
   "/first_setup.py",

@@ -34,6 +34,9 @@ class Settings:
     cdb: Path | None = None
     windbg_allow_kernel: bool = False
     persist_debug_events: bool = False
+    # Background drain keeps copying native ring events into the durable log
+    # while the MCP consumer is idle (needed for true lag replay).
+    debug_event_background_drain: bool = True
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:
@@ -131,6 +134,10 @@ class Settings:
             persist_debug_events=_as_bool(
                 os.environ.get("HEADLESS_RE_PERSIST_DEBUG_EVENTS"),
                 data.get("persist_debug_events", False),
+            ),
+            debug_event_background_drain=_as_bool(
+                os.environ.get("HEADLESS_RE_DEBUG_EVENT_BACKGROUND_DRAIN"),
+                data.get("debug_event_background_drain", True),
             ),
             local_full_access=_as_bool(
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),

@@ -14,7 +14,7 @@ from headless_re_mcp.core.models import Architecture, ModuleSelector, Session
 from headless_re_mcp.core.session import file_sha256
 
 
-def _session(path: str = r"E:\fixtures\fixture.exe") -> Session:
+def _session(path: str = r"C:\sample\fixtures\fixture.exe") -> Session:
     return Session(
         binary=Path(path),
         sha256="a" * 64,
@@ -69,7 +69,7 @@ def test_main_module_mapping_translates_both_directions() -> None:
                 "base": 0x7FF700000000,
                 "size": 0x6000,
                 "name": "fixture.exe",
-                "path": "e:/FIXTURES/fixture.exe",
+                "path": "c:/SAMPLE/FIXTURES/fixture.exe",
             }
         ),
         _runtime_metadata(),
@@ -171,7 +171,7 @@ def test_translation_rejects_address_outside_module() -> None:
                 "base": 0x180000000,
                 "size": 0x1000,
                 "name": "fixture.exe",
-                "path": r"E:\fixtures\fixture.exe",
+                "path": r"C:\sample\fixtures\fixture.exe",
             }
         ),
         _runtime_metadata(),

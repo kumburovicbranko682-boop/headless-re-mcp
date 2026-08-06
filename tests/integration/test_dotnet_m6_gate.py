@@ -45,7 +45,6 @@ def _gate_sample(de4dot: Path) -> Path:
     for candidate in (
         de4dot.parent / "bin" / "Test.Rename.exe",
         de4dot.parent / "Test.Rename.exe",
-        Path(r"F:\学技术网工具包V2.0\Tools\Unpacker\de4dot-Reactor5.0\bin\Test.Rename.exe"),
     ):
         if candidate.is_file():
             return candidate

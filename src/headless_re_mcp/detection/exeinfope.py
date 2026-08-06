@@ -14,7 +14,7 @@ Exeinfo PE is Freeware (non-OSI) and is **not** bundled. Callers configure
 * always treats results as a cross-check (``claims_universal_unpack`` stays false
   at the service layer).
 
-See ``docs/ADR_EXEINFOPE.md``.
+Optional user-supplied binary only; not bundled.
 """
 
 from __future__ import annotations

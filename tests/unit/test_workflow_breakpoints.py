@@ -31,7 +31,7 @@ def _mapping(base: int) -> RebasedModuleMapping:
     return RebasedModuleMapping(
         identity=ModuleIdentity(
             name="payload.dll",
-            path=r"E:\fixtures\payload.dll",
+            path=r"C:\sample\fixtures\payload.dll",
             sha256="b" * 64,
             architecture=Architecture.X64,
         ),
@@ -41,7 +41,7 @@ def _mapping(base: int) -> RebasedModuleMapping:
             base=base,
             size=0x5000,
             name="payload.dll",
-            path=r"E:\fixtures\payload.dll",
+            path=r"C:\sample\fixtures\payload.dll",
         ),
         match_basis="name",
     )

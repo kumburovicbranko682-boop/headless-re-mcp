@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -262,3 +263,111 @@ def test_cursor_refuses_batch_from_another_stream_position() -> None:
 
     with pytest.raises(DebugEventProtocolError, match="does not match"):
         cursor.advance(batch)
+
+
+def test_persistent_log_replays_after_consumer_lag(tmp_path: Path) -> None:
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEvent
+
+    log = PersistentDebugEventLog(tmp_path / "events.sqlite3")
+    events = tuple(
+        DebugEvent(
+            sequence=i,
+            timestamp_unix_ms=1_700_000_000_000 + i,
+            source="x64dbg.plugin_callback",
+            kind="debug.paused",
+            data={},
+        )
+        for i in range(1, 6)
+    )
+    log.append_events(events)
+
+    first = log.read_after(0, limit=2)
+    assert [event.sequence for event in first.batch.events] == [1, 2]
+    assert first.batch.dropped == 0
+
+    # Consumer lagged; store still has 3..5 for true replay.
+    second = log.read_after(2, limit=10)
+    assert [event.sequence for event in second.batch.events] == [3, 4, 5]
+    assert second.batch.dropped == 0
+    assert second.unrecovered_gap is False
+    log.close()
+
+
+def test_persistent_log_reports_unrecovered_gap(tmp_path: Path) -> None:
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEvent
+
+    log = PersistentDebugEventLog(tmp_path / "events.sqlite3")
+    log.note_unrecovered_gap(1, 2)
+    log.append_events(
+        [
+            DebugEvent(
+                sequence=3,
+                timestamp_unix_ms=1,
+                source="x64dbg.plugin_callback",
+                kind="debug.paused",
+                data={},
+            )
+        ]
+    )
+    served = log.read_after(0, limit=10)
+    assert served.batch.dropped == 2
+    assert served.unrecovered_gap is True
+    assert [event.sequence for event in served.batch.events] == [3]
+    log.close()
+
+
+def test_drain_copies_native_batch_into_log_before_ring_loss() -> None:
+    from headless_re_mcp.core.event_drain import drain_native_into_log
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEvent, DebugEventBatch, DebugEventCursor
+
+    class _FakeNative:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def read_events(self, cursor: int, *, limit: int = 100, timeout: float = 10.0) -> DebugEventBatch:
+            self.calls.append(cursor)
+            if cursor >= 3:
+                return DebugEventBatch(
+                    events=(),
+                    cursor=cursor,
+                    next_cursor=cursor,
+                    oldest_sequence=1,
+                    latest_sequence=3,
+                    dropped=0,
+                    dropped_total=0,
+                    has_more=False,
+                    capacity=DEBUG_EVENT_CAPACITY,
+                )
+            events = tuple(
+                DebugEvent(
+                    sequence=i,
+                    timestamp_unix_ms=i,
+                    source="x64dbg.plugin_callback",
+                    kind="debug.paused",
+                    data={},
+                )
+                for i in range(cursor + 1, 4)
+            )
+            return DebugEventBatch(
+                events=events[:limit],
+                cursor=cursor,
+                next_cursor=events[:limit][-1].sequence,
+                oldest_sequence=1,
+                latest_sequence=3,
+                dropped=0,
+                dropped_total=0,
+                has_more=False,
+                capacity=DEBUG_EVENT_CAPACITY,
+            )
+
+    log = PersistentDebugEventLog()
+    drain = DebugEventCursor()
+    native = _FakeNative()
+    appended = drain_native_into_log(native, drain, log, timeout=0.05)
+    assert appended == 3
+    assert drain.value == 3
+    served = log.read_after(0, limit=10)
+    assert [event.sequence for event in served.batch.events] == [1, 2, 3]

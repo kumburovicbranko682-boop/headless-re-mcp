@@ -22,7 +22,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $stage "src\headless_re_mcp")
-Copy-Item "pyproject.toml","README.md","LICENSE","THIRD_PARTY_NOTICES.md","upstream.lock.json","first_setup.py","start_web.py" $stage -ErrorAction SilentlyContinue
+Copy-Item "pyproject.toml","README.md","LICENSE","upstream.lock.json","first_setup.py","start_web.py" $stage -ErrorAction SilentlyContinue
 Copy-Item -Recurse "docs" (Join-Path $stage "docs") -ErrorAction SilentlyContinue
 Copy-Item -Recurse "scripts" (Join-Path $stage "scripts") -ErrorAction SilentlyContinue
 Get-ChildItem -LiteralPath $stage -Directory -Recurse -Force |

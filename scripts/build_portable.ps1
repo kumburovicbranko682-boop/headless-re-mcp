@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
 # Application source (ASCII paths only).
 Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $dest "src\headless_re_mcp")
-Copy-Item "pyproject.toml","README.md","LICENSE","THIRD_PARTY_NOTICES.md","upstream.lock.json","start_web.py","first_setup.py" $dest -ErrorAction SilentlyContinue
+Copy-Item "pyproject.toml","README.md","LICENSE","upstream.lock.json","start_web.py","first_setup.py" $dest -ErrorAction SilentlyContinue
 Copy-Item -Recurse "docs" (Join-Path $dest "docs") -ErrorAction SilentlyContinue
 # external/ docs + placeholders (binaries filled below when present). Never copy IDA.
 New-Item -ItemType Directory -Force -Path (Join-Path $dest "external") | Out-Null

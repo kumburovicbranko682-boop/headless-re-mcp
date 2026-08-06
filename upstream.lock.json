@@ -104,7 +104,7 @@
       "tag_reference": "v0.9.8",
       "tag_reference_commit": "db5eb01d99bdb9c992328c10bc821f5bb45b2a73",
       "license": "GPL-3.0",
-      "use": "M4 IAT search / dump / PE rebuild algorithm reference; no source copied yet; see docs/ADR_M4_SCYLLA.md"
+      "use": "M4 IAT search / dump / PE rebuild algorithm reference; no source copied yet"
     },
     {
       "name": "de4dotEx",
@@ -149,7 +149,7 @@
       "release_asset": "exeinfope.zip",
       "release_asset_sha256": "812e210f834a60845b2cc11136817a244dd9a0137994d33d9f2cd2ab662dc797",
       "download_upstream": "https://github.com/ExeinfoASL/ASL/releases/download/v0.0.9.7/exeinfope.zip",
-      "use": "optional second-opinion packer detector via HEADLESS_RE_EXEINFOPE; NOT bundled; silent argv <file>* /s /log:; visible TForm1/modals fail; see docs/ADR_EXEINFOPE.md",
+      "use": "optional second-opinion packer detector via HEADLESS_RE_EXEINFOPE; NOT bundled; silent argv <file>* /s /log:; visible TForm1/modals fail",
       "behavior_reference_only": {
         "path_note": "toolkit Exeinfope 0.0.9.3.exe under PE/Exeinfo — use=behavior reference only; not a release source; do not copy into tree or MSI"
       }

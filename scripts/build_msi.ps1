@@ -39,7 +39,7 @@ if (-not $resolvedStage.StartsWith($resolvedOut, [StringComparison]::OrdinalIgno
 if (Test-Path -LiteralPath $resolvedStage) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $stage "src\headless_re_mcp")
-Copy-Item "pyproject.toml","README.md","LICENSE","THIRD_PARTY_NOTICES.md","upstream.lock.json","start_web.py","first_setup.py" $stage
+Copy-Item "pyproject.toml","README.md","LICENSE","upstream.lock.json","start_web.py","first_setup.py" $stage
 $launcher = @(
   '@echo off', 'setlocal', 'cd /d "%~dp0"', 'set PYTHONPATH=%~dp0src',
   'python start_web.py', 'if errorlevel 1 pause'

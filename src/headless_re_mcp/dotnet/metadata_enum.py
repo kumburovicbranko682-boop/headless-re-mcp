@@ -1,8 +1,7 @@
 """Bounded ECMA-335 metadata enumeration (M6.4; no dnlib).
 
 Provides paginated type/method/field/resource/string listings, a small IL
-opcode subset disassembler, and weak MemberRef-based xref hints. See
-``docs/ADR_M6_DNLIB.md``.
+opcode subset disassembler, and weak MemberRef-based xref hints. No dnlib.
 """
 
 from __future__ import annotations

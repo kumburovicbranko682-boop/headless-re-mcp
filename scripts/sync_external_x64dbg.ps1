@@ -22,7 +22,7 @@ foreach ($arch in @("x86", "x64")) {
     Write-Host ("sync {0} -> {1}" -f $src, $dst)
     if ($WhatIf) { continue }
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Get-ChildItem $dst -Force | Where-Object { $_.Name -notin @("README.md", ".gitkeep") } | Remove-Item -Recurse -Force
+    Get-ChildItem $dst -Force | Where-Object { $_.Name -notin @(".gitkeep") } | Remove-Item -Recurse -Force
     Copy-Item -Recurse -Force (Join-Path $src "*") $dst
     if (-not (Test-Path (Join-Path $dst "headless.exe"))) {
         throw ("sync failed: headless.exe missing in {0}" -f $dst)

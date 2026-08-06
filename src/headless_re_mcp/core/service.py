@@ -31,6 +31,8 @@ from headless_re_mcp.core.application_services import (
     InteractionApplicationService,
     RuntimeApplicationService,
 )
+from headless_re_mcp.core.event_drain import EventDrainPump, drain_native_into_log
+from headless_re_mcp.core.event_log import PersistentDebugEventLog
 from headless_re_mcp.core.events import (
     DEFAULT_DEBUG_EVENT_BATCH,
     MAX_DEBUG_EVENT_BATCH,
@@ -263,6 +265,10 @@ class _BackendRuntime:
     worker: BackendWorker
     lock: RLock = field(default_factory=RLock)
     event_cursor: DebugEventCursor | None = None
+    # Drain cursor runs ahead of event_cursor and fills event_log for true replay.
+    drain_cursor: DebugEventCursor | None = None
+    event_log: PersistentDebugEventLog | None = None
+    event_drain_pump: EventDrainPump | None = None
     # Set when an event batch reports dropped>0; cleared by a fresh modules.list.
     snapshot_resync_required: bool = False
 
@@ -518,10 +524,35 @@ class AnalysisService(
                     workflow = (
                         create_workflow_runtime() if kind == BackendKind.X64DBG else None
                     )
+                    event_log: PersistentDebugEventLog | None = None
+                    drain_cursor: DebugEventCursor | None = None
+                    event_cursor = None
+                    if kind == BackendKind.X64DBG:
+                        event_cursor = DebugEventCursor()
+                        drain_cursor = DebugEventCursor()
+                        log_dir = self.settings.artifact_root / "debug-events" / session_id
+                        event_log = PersistentDebugEventLog(log_dir / "events.sqlite3")
                     runtime = _BackendRuntime(
                         worker,
-                        event_cursor=(DebugEventCursor() if kind == BackendKind.X64DBG else None),
+                        event_cursor=event_cursor,
+                        drain_cursor=drain_cursor,
+                        event_log=event_log,
                     )
+                    if (
+                        kind == BackendKind.X64DBG
+                        and event_log is not None
+                        and drain_cursor is not None
+                        and hasattr(worker, "read_events")
+                        and bool(getattr(self.settings, "debug_event_background_drain", True))
+                    ):
+                        pump = EventDrainPump(
+                            cast(DynamicWorker, worker),
+                            drain_cursor,
+                            event_log,
+                            lock=runtime.lock,
+                        )
+                        runtime.event_drain_pump = pump
+                        pump.start()
                     self._runtime_owner.put(session_id, kind, runtime)
                     if workflow is not None:
                         self._workflow_owner.put(session_id, workflow)
@@ -579,6 +610,8 @@ class AnalysisService(
 
         close_errors: list[tuple[BackendKind, BaseException]] = []
         for kind, runtime in runtimes:
+            if kind == BackendKind.X64DBG:
+                self._stop_event_drain(runtime)
             with runtime.lock:
                 try:
                     runtime.worker.close()
@@ -1330,17 +1363,34 @@ class AnalysisService(
                         details={"capability": "events.read"},
                     )
                 cursor = runtime.event_cursor
-                if cursor is None:
+                drain_cursor = runtime.drain_cursor
+                event_log = runtime.event_log
+                if cursor is None or drain_cursor is None or event_log is None:
                     raise XdbgRpcError(
                         "rpc_protocol_error",
-                        "dynamic runtime has no event cursor",
+                        "dynamic runtime has no durable event log",
                     )
                 dynamic = cast(DynamicWorker, runtime.worker)
-                batch = dynamic.read_events(
-                    cursor.value,
-                    limit=limit,
-                    timeout=timeout,
+                # Catch up durable log from the native ring (short polls).
+                drain_native_into_log(
+                    dynamic,
+                    drain_cursor,
+                    event_log,
+                    timeout=0.05,
+                    max_rounds=64,
                 )
+                served = event_log.read_after(cursor.value, limit=limit)
+                if not served.batch.events and not served.unrecovered_gap:
+                    # Long-poll once for new native events, then serve from log.
+                    drain_native_into_log(
+                        dynamic,
+                        drain_cursor,
+                        event_log,
+                        timeout=float(timeout),
+                        max_rounds=1,
+                    )
+                    served = event_log.read_after(cursor.value, limit=limit)
+                batch = served.batch
                 try:
                     cursor.advance(batch)
                 except DebugEventProtocolError as exc:
@@ -1359,32 +1409,34 @@ class AnalysisService(
                     # that transition fail reliably under full-suite load.
                     timeout=max(5.0, float(timeout)),
                 )
-                if batch.dropped > 0:
+                if batch.dropped > 0 or served.unrecovered_gap:
                     runtime.snapshot_resync_required = True
                 workflow_id = self._require_workflow(session_id).id
+                payload = batch.to_dict()
+                payload["durable_log"] = True
+                payload["replayed_from_store"] = bool(batch.events) and batch.dropped == 0
+                payload["unrecovered_gap"] = served.unrecovered_gap
             result = _success(
-                batch.to_dict(),
+                payload,
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
                 workflow_id=workflow_id,
             )
-            if (
-                result.ok
-                and result.data
-                and bool(getattr(self.settings, "persist_debug_events", False))
-            ):
+            if result.ok and result.data:
                 events = result.data.get("events") or []
-                for event in events[:_DEBUG_EVENT_BUDGET_PER_BATCH]:
-                    if not isinstance(event, dict):
-                        continue
-                    _timeline_append(
-                        self,
-                        session_id,
-                        "debug.event",
-                        str(event.get("kind") or "event"),
-                        kind=event.get("kind"),
-                        data=event.get("data") if isinstance(event.get("data"), dict) else {},
-                    )
+                # Timeline mirror remains opt-in; durable sqlite log is always on.
+                if bool(getattr(self.settings, "persist_debug_events", False)):
+                    for event in events[:_DEBUG_EVENT_BUDGET_PER_BATCH]:
+                        if not isinstance(event, dict):
+                            continue
+                        _timeline_append(
+                            self,
+                            session_id,
+                            "debug.event",
+                            str(event.get("kind") or "event"),
+                            kind=event.get("kind"),
+                            data=event.get("data") if isinstance(event.get("data"), dict) else {},
+                        )
             return result
         except XdbgRpcError as exc:
             if exc.code in _FATAL_WORKER_ERRORS:
@@ -5518,6 +5570,18 @@ class AnalysisService(
         )
         return cast(JsonObject, DebuggeeStateOwner.annotate(state, snapshot))
 
+    def _stop_event_drain(self, runtime: _BackendRuntime) -> None:
+        pump = runtime.event_drain_pump
+        runtime.event_drain_pump = None
+        if pump is not None:
+            with suppress(Exception):
+                pump.stop()
+        log = runtime.event_log
+        runtime.event_log = None
+        if log is not None:
+            with suppress(Exception):
+                log.close()
+
     def _fail_runtime(
         self,
         session_id: str,
@@ -5527,6 +5591,7 @@ class AnalysisService(
     ) -> None:
         runtime = self._runtime_owner.fail(session_id, kind)
         if runtime is not None and kind == BackendKind.X64DBG:
+            self._stop_event_drain(runtime)
             workflow = self._workflow_owner.get(session_id)
             if workflow is not None:
                 if workflow.status != WorkflowRunStatus.FAILED:

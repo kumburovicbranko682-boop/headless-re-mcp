@@ -402,7 +402,7 @@ def probe_exeinfope(settings: Settings) -> Probe:
             "Optional Exeinfo PE detector is not configured",
             remediation=(
                 "Obtain official Exeinfo PE (Freeware) yourself and set "
-                "HEADLESS_RE_EXEINFOPE to its executable. Not bundled; see docs/ADR_EXEINFOPE.md."
+                "HEADLESS_RE_EXEINFOPE to its executable. Not bundled."
             ),
         )
     if not executable.is_file():

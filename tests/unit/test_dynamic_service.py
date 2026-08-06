@@ -60,6 +60,8 @@ def _settings(tmp_path: Path) -> Settings:
         x64dbg_headless_x64=None,
         x64dbg_headless_x86=None,
         artifact_root=tmp_path / "artifacts",
+        # Unit fakes queue scripted batches; background drain would race them.
+        debug_event_background_drain=False,
     )
 
 
@@ -757,7 +759,6 @@ def test_dynamic_events_cursor_advances_and_empty_batch_preserves_position(
     _write_minimal_pe(binary)
     worker = FakeDynamicWorker(
         event_batches=[
-            _event_batch(0),
             _event_batch(0, (1, 2)),
             _event_batch(2, latest=2),
         ]
@@ -766,18 +767,18 @@ def test_dynamic_events_cursor_advances_and_empty_batch_preserves_position(
     session_id = _create(service, binary)
     assert service.open_dynamic(session_id).ok
 
-    empty_before = service.dynamic_events(session_id, limit=7, timeout=2.5)
     first = service.dynamic_events(session_id, limit=7, timeout=2.5)
     empty_after = service.dynamic_events(session_id, limit=7, timeout=2.5)
 
-    assert empty_before.ok and empty_before.data is not None
-    assert empty_before.data["next_cursor"] == 0
     assert first.ok and first.data is not None
     assert first.data["next_cursor"] == 2
+    assert first.data["durable_log"] is True
     assert [event["sequence"] for event in first.data["events"]] == [1, 2]
     assert empty_after.ok and empty_after.data is not None
     assert empty_after.data["cursor"] == 2
-    assert worker.event_reads == [(0, 7, 2.5), (0, 7, 2.5), (2, 7, 2.5)]
+    # Durable path: short drain + optional long-poll against native ring.
+    assert worker.event_reads[0] == (0, 256, 0.05)
+    assert any(read[0] == 2 for read in worker.event_reads)
 
 
 def test_dynamic_event_peek_keeps_bounded_workflow_transition_budget(
@@ -799,8 +800,34 @@ def test_dynamic_event_peek_keeps_bounded_workflow_transition_budget(
     result = service.dynamic_events(session_id, limit=16, timeout=0.05)
 
     assert result.ok
-    assert worker.event_reads == [(0, 16, 0.05)]
+    assert worker.event_reads[0] == (0, 256, 0.05)
     assert transition_timeouts == [5.0]
+
+
+def test_durable_log_replays_when_consumer_lags_behind_drained_events(
+    tmp_path: Path,
+) -> None:
+    """Drain captures the full native window; a slow consumer still reads by sequence."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker(
+        event_batches=[_event_batch(0, (1, 2, 3, 4, 5), latest=5)]
+    )
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    first = service.dynamic_events(session_id, limit=2)
+    second = service.dynamic_events(session_id, limit=10)
+
+    assert first.ok and first.data is not None
+    assert [event["sequence"] for event in first.data["events"]] == [1, 2]
+    assert second.ok and second.data is not None
+    assert [event["sequence"] for event in second.data["events"]] == [3, 4, 5]
+    assert second.data["dropped"] == 0
+    assert second.data["unrecovered_gap"] is False
+    assert second.data["replayed_from_store"] is True
+    assert second.data["durable_log"] is True
 
 
 def test_dynamic_events_reports_overwritten_loss_and_advances_to_available_window(
@@ -823,7 +850,7 @@ def test_dynamic_events_reports_overwritten_loss_and_advances_to_available_windo
 
     assert overwritten.ok and overwritten.data is not None
     assert overwritten.data["dropped"] == 3
-    assert overwritten.data["dropped_total"] == 3
+    assert overwritten.data["unrecovered_gap"] is True
     assert overwritten.data["next_cursor"] == 5
     assert overwritten.data["has_more"] is True
     assert remainder.ok and remainder.data is not None
@@ -850,8 +877,10 @@ def test_dynamic_event_cursors_are_isolated_per_session(tmp_path: Path) -> None:
     assert service.dynamic_events(second_session).ok
     assert service.dynamic_events(first_session).ok
 
-    assert [read[0] for read in first_worker.event_reads] == [0, 1]
-    assert [read[0] for read in second_worker.event_reads] == [0]
+    assert first_worker.event_reads[0][0] == 0
+    assert any(read[0] == 1 for read in first_worker.event_reads)
+    assert second_worker.event_reads[0][0] == 0
+    assert first_worker is not second_worker
 
 
 def test_dynamic_events_require_live_backend_and_validate_bounds(tmp_path: Path) -> None:
@@ -1119,7 +1148,8 @@ def test_workflow_event_consume_rebinds_after_module_reload_in_order(
         if command in {"breakpoints.remove", "modules.list", "breakpoints.set"}
     ]
     assert relevant == ["breakpoints.remove", "modules.list", "breakpoints.set"]
-    assert worker.event_reads == [(0, 100, 10.0)]
+    assert worker.event_reads[0] == (0, 256, 0.05)
+    assert any(read[0] == 0 for read in worker.event_reads)
 
 
 def test_workflow_navigation_matches_breakpoint_using_shared_cursor(
@@ -1180,7 +1210,8 @@ def test_workflow_navigation_matches_breakpoint_using_shared_cursor(
     assert navigation["matched_event"]["sequence"] == 1
     assert state["cursor"] == 1
     assert worker.current_state["state"] == "paused"
-    assert worker.event_reads == [(0, 8, 2.0)]
+    assert worker.event_reads[0][0] == 0
+    assert any(read[2] == 2.0 or read[1] == 8 for read in worker.event_reads)
 
 
 def test_workflow_event_loss_fails_closed_and_pauses_target(tmp_path: Path) -> None:

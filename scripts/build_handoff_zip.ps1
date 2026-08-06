@@ -16,13 +16,11 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $include = @(
     "src",
     "tests",
-    "docs",
     "scripts",
     "packaging",
     "pyproject.toml",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
     "upstream.lock.json",
     ".github"
 )
@@ -36,10 +34,6 @@ foreach ($item in $include) {
         }
     }
 }
-
-# Prefer TASK_HANDOFF docs if present.
-Get-ChildItem (Join-Path $Root "docs") -Filter "TASK_HANDOFF_*.md" -ErrorAction SilentlyContinue |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $dest "docs") }
 
 $zip = Join-Path $OutDir "$Name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

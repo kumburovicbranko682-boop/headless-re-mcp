@@ -96,9 +96,9 @@ foreach ($t in $toolMap) {
     }
 }
 
-Copy-Item "THIRD_PARTY_NOTICES.md" (Join-Path $stage "THIRD_PARTY_NOTICES.md") -ErrorAction SilentlyContinue
 Copy-Item "upstream.lock.json" (Join-Path $stage "upstream.lock.json") -ErrorAction SilentlyContinue
 Copy-Item "LICENSE" (Join-Path $stage "LICENSE") -ErrorAction SilentlyContinue
+Copy-Item "README.md" (Join-Path $stage "README.md") -ErrorAction SilentlyContinue
 
 $manifest = [ordered]@{
     schema_version = 1
@@ -162,7 +162,7 @@ $first = @(
     "  3. Set HEADLESS_RE_IDA_HOME to your IDA 9.x install",
     "  4. python -m headless_re_mcp doctor --strict",
     "",
-    "See MANIFEST.json and THIRD_PARTY_NOTICES.md."
+    "See MANIFEST.json and README.md."
 ) -join "`r`n"
 Set-Content -Path (Join-Path $stage "FIRST_RUN.txt") -Value $first -Encoding ASCII
 

@@ -1,7 +1,7 @@
 """Live Gate for optional Exeinfo PE second-opinion detect.
 
-Requires a user-supplied binary via ``HEADLESS_RE_EXEINFOPE``, or (local only)
-the toolkit behavior-reference path. skip ≠ pass.
+Requires ``HEADLESS_RE_EXEINFOPE`` pointing at a user-supplied Exeinfo PE binary.
+skip ≠ pass.
 """
 
 from __future__ import annotations
@@ -19,10 +19,8 @@ from headless_re_mcp.detection.exeinfope import (
 )
 from headless_re_mcp.doctor import ProbeStatus, probe_exeinfope
 
-_TOOLKIT_REF = Path(
-    r"F:\学技术网工具包V2.0\Tools\PE\Exeinfo\Exeinfope 0.0.9.3.exe"
-)
-_UPX_FIXTURE = Path(r"e:\x64dbgmcp\artifacts\fixtures-upx\console_fixture-x64-upx.exe")
+_REPO = Path(__file__).resolve().parents[2]
+_UPX_FIXTURE = _REPO / "fixtures" / "upx" / "console_fixture-x64.upx.exe"
 
 
 def _resolve_exeinfope() -> Path:
@@ -31,9 +29,7 @@ def _resolve_exeinfope() -> Path:
         path = Path(configured).expanduser()
         if path.is_file():
             return path.resolve()
-    if _TOOLKIT_REF.is_file():
-        return _TOOLKIT_REF.resolve()
-    pytest.skip("HEADLESS_RE_EXEINFOPE not configured and toolkit reference missing")
+    pytest.skip("HEADLESS_RE_EXEINFOPE not configured")
 
 
 @pytest.mark.integration

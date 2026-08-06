@@ -449,18 +449,18 @@ def test_memory_regions_and_modules_dump_helpers_dispatch_expected_rpc() -> None
     regions = client.memory_regions(offset=2, limit=10, timeout=5)
     protect = client.memory_protect_query(0x1004, timeout=7)
     dumped = client.modules_dump(
-        0x400000, Path(r"E:\tmp\mod.bin"), size=0x1000, timeout=9
+        0x400000, Path(r"C:\sample\tmp\mod.bin"), size=0x1000, timeout=9
     )
 
     assert regions["method"] == "memory.regions"
     assert protect["address"] == 0x1004
-    assert dumped["output_path"] == r"E:\tmp\mod.bin"
+    assert dumped["output_path"] == r"C:\sample\tmp\mod.bin"
     assert calls == [
         ("memory.regions", {"offset": 2, "limit": 10}, 5),
         ("memory.protect.query", {"address": 0x1004}, 7),
         (
             "modules.dump",
-            {"base": 0x400000, "output_path": r"E:\tmp\mod.bin", "size": 0x1000},
+            {"base": 0x400000, "output_path": r"C:\sample\tmp\mod.bin", "size": 0x1000},
             9,
         ),
     ]
