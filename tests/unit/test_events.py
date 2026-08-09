@@ -327,7 +327,9 @@ def test_drain_copies_native_batch_into_log_before_ring_loss() -> None:
         def __init__(self) -> None:
             self.calls: list[int] = []
 
-        def read_events(self, cursor: int, *, limit: int = 100, timeout: float = 10.0) -> DebugEventBatch:
+        def read_events(
+            self, cursor: int, *, limit: int = 100, timeout: float = 10.0
+        ) -> DebugEventBatch:
             self.calls.append(cursor)
             if cursor >= 3:
                 return DebugEventBatch(
