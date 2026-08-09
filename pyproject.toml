@@ -130,6 +130,8 @@ module = [
   "idc",
   "frida",
   "frida.*",
+  "uiautomation",
+  "uiautomation.*",
   "numpy",
   "numpy.*",
 ]
