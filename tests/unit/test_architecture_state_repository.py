@@ -186,9 +186,18 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == []
 
 
+def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:
+    image = bytearray(0x200)
+    image[:2] = b"MZ"
+    image[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    image[0x80:0x84] = b"PE\0\0"
+    image[0x84:0x86] = machine.to_bytes(2, "little")
+    path.write_bytes(image)
+
+
 def test_analysis_service_accepts_repository_without_legacy_store(tmp_path: Path) -> None:
-    fixture = Path("artifacts/fixtures-x64/console_fixture.exe").resolve()
-    assert fixture.is_file()
+    fixture = tmp_path / "session-target.exe"
+    _write_minimal_pe(fixture)
     settings = replace(Settings.load(), artifact_root=tmp_path / "service-artifacts")
     repository = InMemoryAnalysisRepository(settings.artifact_root)
     service = AnalysisService(settings, repository=repository)
