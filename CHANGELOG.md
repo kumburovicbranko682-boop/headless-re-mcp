@@ -3,7 +3,9 @@
 Notable changes per release. Versions follow [semantic versioning](https://semver.org/lang/zh-CN/);
 until 1.0 the tool surface may still change between minor versions.
 
-## [Unreleased]
+## [0.2.1] - 2026-08-12
+
+0.2.0 的安装包无法使用，这个版本修掉它，并带上一轮代码审计发现的自愈缺陷。
 
 ### 修复（安装包）
 
@@ -134,5 +136,6 @@ until 1.0 the tool surface may still change between minor versions.
 
 首个公开快照：IDA 与 x64dbg 双后端、MCP 工具面、WebUI 工作台、会话与产物持久化。
 
+[0.2.1]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0
