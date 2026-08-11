@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
@@ -40,6 +40,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "unpack.confirm_oep",
         "session.create",
         "session.get",
+        "session.health",
         "session.list",
         "session.close",
         "static.open",

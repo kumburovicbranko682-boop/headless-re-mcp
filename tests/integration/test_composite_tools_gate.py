@@ -285,6 +285,37 @@ def test_a_dropped_connection_heals_without_losing_the_debuggee(
         service.close_all()
 
 
+def test_a_dropped_connection_repairs_itself_with_nobody_watching(
+    settings: Settings,
+    fixture_binary: Path,
+) -> None:
+    """Nothing may need to be called for a live session to come back."""
+    service = AnalysisService(settings)
+    session_id = str(
+        _object(_data(service.create_session(str(fixture_binary)))["session"])["id"]
+    )
+    try:
+        _data(service.open_dynamic(session_id))
+        _data(service.dynamic_launch(session_id, arguments="--debug-wait", timeout=60.0))
+        client = _dynamic_client(service, session_id)
+        _drop_connection(client)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if client.transport_connected:  # type: ignore[attr-defined]
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the connection was never repaired on its own")
+
+        # Recovering the connection is only worth anything if calls work again.
+        assert _data(service.dynamic_state(session_id))["debuggee_pid"]
+        _data(service.dynamic_stop(session_id, timeout=60.0))
+    finally:
+        service.close_session(session_id)
+        service.close_all()
+
+
 def test_session_recover_reconnects_a_live_backend_in_place(
     settings: Settings,
     fixture_binary: Path,

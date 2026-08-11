@@ -19,6 +19,8 @@ class Settings:
     x64dbg_headless_x86: Path | None
     artifact_root: Path
     hidden_desktop: bool = False
+    # Seconds between background backend health sweeps; 0 disables the monitor.
+    health_check_interval_s: float = 5.0
     local_full_access: bool = True
     http_host: str = "127.0.0.1"
     http_port: int = 8765
@@ -143,6 +145,10 @@ class Settings:
             hidden_desktop=_as_bool(
                 os.environ.get("HEADLESS_RE_HIDDEN_DESKTOP"),
                 data.get("hidden_desktop", False),
+            ),
+            health_check_interval_s=_as_float(
+                os.environ.get("HEADLESS_RE_HEALTH_CHECK_INTERVAL_S"),
+                data.get("health_check_interval_s", 5.0),
             ),
             local_full_access=_as_bool(
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),
@@ -323,3 +329,15 @@ def _as_bool(raw: str | None, default: object) -> bool:
     if raw is None:
         return bool(default)
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _as_float(raw: str | None, default: object) -> float:
+    # An unreadable value must not stop the server from starting, so fall back to
+    # the default rather than raising out of configuration loading.
+    for candidate in (raw, default):
+        try:
+            if candidate is not None:
+                return max(0.0, float(candidate))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return 0.0

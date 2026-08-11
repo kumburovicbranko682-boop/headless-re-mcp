@@ -41,6 +41,7 @@ from headless_re_mcp.core.events import (
     DebugEventCursor,
     DebugEventProtocolError,
 )
+from headless_re_mcp.core.health import BackendHealthMonitor
 from headless_re_mcp.core.models import (
     Architecture,
     BackendHandle,
@@ -417,6 +418,12 @@ class AnalysisService(
         self._unpack_protect_snapshots = self._unpack_owner.protection_snapshots
         self._trace_sessions = self._trace_owner.sessions
         self._lock = self._runtime_owner.lock
+        # Started when the first backend opens, so a service that never opens one
+        # does not leave a sweep thread behind.
+        self._health = BackendHealthMonitor(
+            self._runtime_owner,
+            interval_s=float(getattr(self.settings, "health_check_interval_s", 5.0)),
+        )
         self.services = ApplicationServices(
             runtime=RuntimeApplicationService(self, self._runtime_owner),
             dynamic=DynamicApplicationService(self, self._debuggee_owner),
@@ -708,6 +715,8 @@ class AnalysisService(
                         runtime.event_drain_pump = pump
                         pump.start()
                     self._runtime_owner.put(session_id, kind, runtime)
+                    if self._health.interval_s > 0:
+                        self._health.start()
                     if workflow is not None:
                         self._workflow_owner.put(session_id, workflow)
                     handle = BackendHandle(
@@ -754,6 +763,7 @@ class AnalysisService(
                     return result
                 self.registry.transition(session_id, SessionState.CLOSING)
                 runtimes = self._runtime_owner.pop_session(session_id)
+                self._health.forget(session_id)
                 self._workflow_owner.clear(session_id)
                 self._unpack_owner.clear(session_id)
                 self._debuggee_owner.clear(session_id)
@@ -803,6 +813,29 @@ class AnalysisService(
         note_session_closed(self, session_id, result)
         return result
 
+    def session_health(self, session_id: str | None = None) -> Result[JsonObject]:
+        """Report backend liveness and any connections the monitor rebuilt.
+
+        Checking synchronously means the answer reflects the moment it was asked
+        rather than the last background sweep, which matters when a caller is
+        deciding whether to recover.
+        """
+        try:
+            if session_id is not None:
+                self.registry.get(session_id)
+            self._health.check_once()
+            backends = self._health.report(session_id)
+            return _success(
+                {
+                    "backends": backends,
+                    "count": len(backends),
+                    "healthy": all(item["healthy"] for item in backends),
+                },
+                session_id=session_id,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def close_all(self) -> Result[JsonObject]:
         session_ids = [session.id for session in self.registry.list()]
         errors: list[JsonObject] = []
@@ -818,6 +851,7 @@ class AnalysisService(
                         "error": result.error.model_dump(mode="json"),
                     }
                 )
+        self._health.stop()
         if errors:
             return Result[JsonObject](
                 ok=False,

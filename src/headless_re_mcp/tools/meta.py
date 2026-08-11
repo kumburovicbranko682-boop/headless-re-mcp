@@ -113,6 +113,17 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="session.health")
+    def session_health(session_id: str | None = None) -> dict[str, Any]:
+        """Report whether each open backend is alive and still connected.
+
+        Checks on call rather than returning the last sweep, and rebuilds a
+        dropped connection in place. A dead worker is reported rather than
+        restarted, because a restarted debugger is attached to nothing; use
+        session.recover once you are ready to relaunch.
+        """
+        return _dump(analysis.session_health(session_id))
+
     @tools.tool(name="session.recover")
     def session_recover(
         session_id: str,

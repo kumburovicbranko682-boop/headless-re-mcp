@@ -81,6 +81,11 @@ class BackendRuntimeOwner(Generic[RuntimeT]):
             self.phases[key] = BackendRuntimePhase.FAILED
             return runtime
 
+    def snapshot(self) -> list[tuple[str, BackendKind, RuntimeT]]:
+        """Copy the open runtimes so callers can inspect them without the lock."""
+        with self.lock:
+            return [(sid, kind, runtime) for (sid, kind), runtime in self.items.items()]
+
     def is_current(self, session_id: str, kind: BackendKind, runtime: RuntimeT) -> bool:
         with self.lock:
             return self.items.get((session_id, kind)) is runtime

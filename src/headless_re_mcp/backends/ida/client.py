@@ -134,6 +134,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         return self._process.pid
 
     @property
+    def exit_code(self) -> int | None:
+        """None while the worker is running, matching the dynamic backend."""
+        return self._process.poll()
+
+    @property
     def capabilities(self) -> frozenset[str]:
         return self._capabilities
 

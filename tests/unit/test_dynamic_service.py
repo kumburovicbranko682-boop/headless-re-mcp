@@ -1849,6 +1849,9 @@ def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_k
     service = _service(tmp_path, worker)
     session_id = _create(service, binary)
     assert service.open_dynamic(session_id).ok
+    # Isolate explicit recovery: the background monitor would otherwise repair
+    # the connection first and this would test the monitor instead.
+    service._health.stop()
 
     # A transport fault drops the connection but leaves the worker alive, so the
     # backend stays registered and the session never reaches FAILED.
@@ -1880,6 +1883,7 @@ def test_session_recover_reports_a_failed_reconnect_per_backend(tmp_path: Path) 
     service = _service(tmp_path, worker)
     session_id = _create(service, binary)
     assert service.open_dynamic(session_id).ok
+    service._health.stop()
 
     def reconnect() -> None:
         raise XdbgRpcError("rpc_startup_timeout", "pipe never came back")
