@@ -1,14 +1,17 @@
 # Headless RE-MCP
 
-Windows 上的无分析器窗口逆向 MCP（v0.1.0 早期原型）。把 IDA `idalib` 静态分析与 x64dbg `headless.exe` 动态调试收成受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令，也不弹 IDA/x64dbg GUI。
+Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析与 x64dbg `headless.exe` 动态调试收成 199 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令，也不弹 IDA/x64dbg GUI。
 
-**现状口径（偏保守）：** 公开仓库历史很短、单维护者，适合隔离环境实验，不建议当作生产级核心依赖。缺后端时集成测试会 `skip`，`skip ≠ pass`。
+变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+**现状口径（偏保守）：** 公开仓库历史很短、单维护者。连接级自愈、错误契约与安装包都有真机验证（下方「范围与风险」列了具体数字），但可选后端成熟度不一，仍建议在隔离环境使用。缺后端时集成测试会 `skip`，`skip ≠ pass`。
 
 ## 依赖
 
 | 依赖 | 说明 |
 |------|------|
-| Windows 10/11 x64 + Python 3.11+ | 仅 Windows |
+| Windows 10/11 x64 | 仅 Windows |
+| Python 3.11+ | 仅从源码运行时需要；MSI 自带 3.12 运行时 |
 | IDA Professional 9.x（含 idalib） | 商业软件，本仓库不捆绑 |
 | x64dbg `headless.exe`（x86/x64） | 可从 [deps Release](https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0-deps) 取，或本地构建 |
 | 可选 CLI | UPX / DIE `diec` / de4dot / cdb 等：用户自备，缺失则降级 |
@@ -36,6 +39,21 @@ powershell -File .\scripts\build_deps_bundle.ps1
 `python -m headless_re_mcp doctor` 按「必需 / 可选」分组输出，并单独列出阻塞项与对应修复命令。
 
 ## 快速开始
+
+### 用安装包（不需要先装 Python）
+
+到 [Releases](https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/latest) 下载
+`headless-re-mcp.msi`（约 33 MB，per-user 安装到 `%LocalAppData%\HeadlessReMcp`，无需管理员）。
+Python 运行时与全部依赖在包内，装完直接用：
+
+```powershell
+& "$env:LOCALAPPDATA\HeadlessReMcp\start_web.cmd"                 # 监控台（系统浏览器）
+& "$env:LOCALAPPDATA\HeadlessReMcp\headless-re-mcp.cmd" doctor --json
+```
+
+首次启动会自检环境并打印带 token 的本地地址。IDA 与 x64dbg 仍需自备，在监控台里填路径即可。
+
+### 从源码
 
 ```powershell
 cd <repo-root>
@@ -75,7 +93,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 复合工作流：`dynamic.analyze_function`（反编译 + 重定位下断 + 运行 + 寄存器，一次调用）、`dynamic.trace_api_arguments`（按符号或地址断 API 并捕获整型参数：x64 取 RCX/RDX/R8/R9，x86 从返回地址之上的栈读取；结束必清断点）
 - 分析记录与报告：`knowledge.record/query`（按 `kind`+`key` 幂等累积函数/断点/结构体/API 等发现）、`report.generate`（渲染 Markdown 报告并落盘为产物）
 - 可观测：`meta.metrics`（每工具调用数、失败数、p50/p95/max 延迟；同时以 JSON 行写入 `headless_re_mcp.telemetry` 日志）
-- 自愈：`session.health`（按需检查各后端存活与连接状态）、`session.recover`（重开死掉的后端）
+- 自愈：`session.health`（按需检查各后端存活与连接状态，并就地重建掉线的连接）、`session.recover`（重开死掉的后端）
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
@@ -97,7 +115,11 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-每个工具的读写归类在 `tools/catalog.py` 里显式声明，策略在调用时读取，改配置不必重启。
+199 个工具的读写归类（114 只读 / 85 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+读取，改配置不必重启。
+
+守卫下沉在 `CommandCatalog.bind_mcp`——所有绑定路径的唯一收口，所以 MCP、Web 控制台的
+agent 路由与 OpenAI 桥接拿到的是同一套策略；Web 那条直接调服务方法的写入路径单独做了检查。
 
 ### 并发
 
@@ -252,11 +274,13 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 当前证据（在一台配好 IDA 9.x + x64dbg headless + DIE/UPX/de4dot/rizin/cdb 的机器上实测）：
 
-- 单元测试 507 passed / 4 skipped
-- 集成 Gate 64 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
+- 单元测试 530 passed / 4 skipped
+- 集成 Gate 65 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
 - 剩余 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
-- 197 个工具在敌意输入下全部返回结构化错误信封，无一抛出
-- MSI 装—跑—卸往返零残留
+- 198 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
+  且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制校验，不是一次性测量
+- 安装包：清空 PATH 里所有解释器后仍能用自带运行时启动工作台，SPA 与 `/api/sessions` 均返回 200，
+  卸载后目录完全移除
 
 已知不稳定：`test_m10_ui_*` 依赖独占的交互桌面，在全量并发跑时偶发失败（前台焦点被抢），
 单独重跑稳定通过。判定回归前请先单独复跑。
