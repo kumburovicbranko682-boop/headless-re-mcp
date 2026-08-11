@@ -456,6 +456,11 @@ class XdbgClient:
             timeout=timeout,
             process=self._process,
         )
+        # Both callers check for None first, but overwriting without closing
+        # would leak a pipe handle the moment one of them stops.
+        previous = self._transport
+        if previous is not None:
+            previous.close()
         self._transport = transport
         try:
             if transport.server_pid != self._process.pid:
@@ -487,8 +492,12 @@ class XdbgClient:
         """
         hello = self._connect_transport(_RECONNECT_TIMEOUT_SECONDS)
         capabilities = hello.get("capabilities")
-        if isinstance(capabilities, list):
-            self._capabilities = frozenset(str(item) for item in capabilities)
+        if not isinstance(capabilities, list):
+            # Keeping the old set would treat a degraded worker as fully capable
+            # and only surface the problem as a confusing failure later. The
+            # initial handshake rejects the same payload.
+            raise XdbgRpcError("rpc_protocol_error", "RPC hello capabilities must be an array")
+        self._capabilities = frozenset(str(item) for item in capabilities)
 
     def reconnect(self) -> None:
         """Rebuild a dropped connection on demand, for explicit recovery."""
@@ -578,17 +587,20 @@ class XdbgClient:
                 raise XdbgRpcError("session_closed", "x64dbg RPC client is closed")
             if self._process.poll() is not None:
                 raise self._process_exit_error()
-            if self._transport is None:
-                # Heal here rather than in _request: the call that hit the fault
-                # already failed, and replaying it could run a state-changing
-                # operation twice. Only later calls get the rebuilt connection.
-                self._reconnect()
+            # Checked before reconnecting: a call the worker cannot serve should
+            # fail immediately rather than after spending the reconnect timeout
+            # only to be rejected anyway.
             if method not in self._capabilities and not method.startswith("rpc."):
                 raise XdbgRpcError(
                     "capability_unavailable",
                     f"x64dbg RPC does not provide {method}",
                     details={"capability": method},
                 )
+            if self._transport is None:
+                # Heal here rather than in _request: the call that hit the fault
+                # already failed, and replaying it could run a state-changing
+                # operation twice. Only later calls get the rebuilt connection.
+                self._reconnect()
             self._observe_windows()
             return self._request(method, params or {}, timeout=timeout)
 
@@ -1064,11 +1076,16 @@ class XdbgClient:
                 self._finish_threads()
 
     def terminate(self) -> None:
-        self._closed = True
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
+        # Kill the process first so a reconnect already in flight cannot outlive
+        # this call, then take the lock to mutate state the way close() does.
+        # Without the lock a concurrent reconnect could publish a transport onto
+        # a client that is being torn down.
         self._terminate_process()
+        with self._request_lock:
+            self._closed = True
+            if self._transport is not None:
+                self._transport.close()
+                self._transport = None
         self._finish_threads()
 
     def _request(self, method: str, params: JsonObject, *, timeout: float) -> JsonObject:
