@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import BackendKind, Result
+from headless_re_mcp.core.models import BackendKind, Result, SessionState
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -250,6 +250,53 @@ def _drop_connection(client: object) -> None:
     transport.close()
     client._transport = None  # type: ignore[attr-defined]
     assert client.transport_connected is False  # type: ignore[attr-defined]
+
+
+def _break_pipe(client: object) -> None:
+    """Break the pipe without telling the client, so the next call really fails.
+
+    Clearing _transport skips the request path entirely, which is where a fault is
+    actually observed and where the service decides whether the backend is dead.
+    """
+    transport = client._transport  # type: ignore[attr-defined]
+    assert transport is not None
+    transport.close()
+    assert client.transport_connected is True  # type: ignore[attr-defined]
+
+
+def test_a_transport_fault_during_a_call_does_not_kill_the_debuggee(
+    settings: Settings,
+    fixture_binary: Path,
+) -> None:
+    """The fault has to arrive the way it does in production: through a request."""
+    service = AnalysisService(settings)
+    session_id = str(
+        _object(_data(service.create_session(str(fixture_binary)))["session"])["id"]
+    )
+    try:
+        _data(service.open_dynamic(session_id))
+        _data(service.dynamic_launch(session_id, arguments="--debug-wait", timeout=60.0))
+        before = _data(service.dynamic_state(session_id))
+        debuggee_pid = before["debuggee_pid"]
+        assert isinstance(debuggee_pid, int) and debuggee_pid > 0
+        client = _dynamic_client(service, session_id)
+
+        _break_pipe(client)
+        failed = service.dynamic_registers_read(session_id)
+
+        assert not failed.ok and failed.error is not None
+        assert failed.error.code == "rpc_transport_error"
+        # Treating this as fatal terminated x64dbg and the process it was
+        # debugging, so the reconnect never had anything left to reconnect to.
+        assert service.registry.get(session_id).state is not SessionState.FAILED
+
+        after = _data(service.dynamic_state(session_id))
+        assert after["debuggee_pid"] == debuggee_pid
+        assert int(str(after["debugger_pid"])) == int(str(before["debugger_pid"]))
+        _data(service.dynamic_stop(session_id, timeout=60.0))
+    finally:
+        service.close_session(session_id)
+        service.close_all()
 
 
 def test_a_dropped_connection_heals_without_losing_the_debuggee(

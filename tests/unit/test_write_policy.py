@@ -97,6 +97,27 @@ def test_writes_run_normally_when_full_access_is_allowed() -> None:
     assert calls == ["go"]
 
 
+def test_the_guard_is_applied_by_the_catalog_so_every_transport_gets_it() -> None:
+    catalog = _catalog(frozenset({ToolEffect.STATE_CHANGE}))
+    calls: list[str] = []
+
+    def handler(value: str = "x") -> dict[str, Any]:
+        """Probe."""
+        calls.append(value)
+        return {"ok": True, "data": None, "error": None, "meta": {}}
+
+    # bind_handler is what the agent route and the OpenAI bridge use; guarding
+    # only inside the MCP adapter left those two writable in a read-only setup.
+    spec = catalog.bind_handler(
+        "probe.act", handler, input_schema={"properties": {}}, description="Probe."
+    )
+    catalog.write_allowed = False
+
+    assert spec.handler is not None
+    assert spec.handler()["error"]["code"] == "write_disabled"
+    assert calls == []
+
+
 def test_the_policy_is_read_per_call_not_frozen_at_registration() -> None:
     catalog = _catalog(frozenset({ToolEffect.STATE_CHANGE}))
     calls: list[str] = []

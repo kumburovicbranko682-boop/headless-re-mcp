@@ -11,44 +11,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
 
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
-from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.telemetry import instrument
 from headless_re_mcp.tools.binding import BoundTool
-
-JsonObject = dict[str, Any]
-
-
-def enforce_write_policy(
-    handler: Callable[..., dict[str, Any]],
-    *,
-    name: str,
-    catalog: CommandCatalog,
-) -> Callable[..., dict[str, Any]]:
-    """Refuse state-changing tools while the deployment is read-only.
-
-    Every tool already declares its effects, but nothing consulted them, so
-    `local_full_access` looked like an access control and enforced nothing. The
-    refusal is an ordinary error envelope: a caller that cannot write should
-    learn why, not see the tool disappear.
-    """
-
-    @wraps(handler)
-    def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        if not catalog.write_allowed:
-            refusal: Result[JsonObject] = Result(
-                ok=False,
-                error=RpcError(
-                    code="write_disabled",
-                    message=f"{name} changes state and this deployment is read-only",
-                    details={"tool": name, "setting": "local_full_access"},
-                ),
-            )
-            dumped = refusal.model_dump(mode="json")
-            assert isinstance(dumped, dict)
-            return dumped
-        return handler(*args, **kwargs)
-
-    return guarded
 
 
 def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
@@ -83,27 +47,29 @@ def register_tool(
     description = handler.__doc__ or spec.description or name
     # One wrapper serves both transports: the server calls it directly and the
     # catalog binding is what the agent transport invokes.
-    guarded = enforce_write_policy(handler, name=name, catalog=catalog) if spec.write else handler
-    observed = instrument(guarded, name=name)
-    # The server gets the offloaded form so the event loop stays free, while the
-    # catalog keeps the direct one: the agent transport calls it synchronously.
-    server.add_tool(
-        offload(observed),
-        name=name,
-        description=description,
-        structured_output=True,
-    )
+    observed = instrument(handler, name=name)
     tool = Tool.from_function(
         observed,
         name=name,
         description=description,
         structured_output=True,
     )
-    catalog.bind_mcp(
+    # bind_mcp applies the write policy, so take the handler back from the spec
+    # rather than registering the unguarded one with the server.
+    bound = catalog.bind_mcp(
         name,
         observed,
         input_schema=dict(tool.parameters),
         description=tool.description,
+    )
+    assert bound.handler is not None
+    # The server gets the offloaded form so the event loop stays free, while the
+    # catalog keeps the direct one: the agent transport calls it synchronously.
+    server.add_tool(
+        offload(bound.handler),
+        name=name,
+        description=description,
+        structured_output=True,
     )
 
 

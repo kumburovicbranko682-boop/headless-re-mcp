@@ -58,6 +58,10 @@ def bind_all_tools(
 ) -> tuple[BoundTool, ...]:
     """Build every domain handler and bind complete metadata into one catalog."""
 
+    # Set before binding, since bind_mcp reads it to decide whether to guard.
+    # The agent route and the OpenAI bridge come through here rather than the MCP
+    # server, and would otherwise stay writable in a read-only deployment.
+    catalog.write_allowed = bool(analysis.settings.local_full_access)
     bindings = tuple(binding for factory in TOOL_FACTORIES for binding in factory(analysis))
     names = [binding.name for binding in bindings]
     if len(names) != len(set(names)):

@@ -338,12 +338,16 @@ class _ServiceWorkflowPort:
         )
 
 
+# rpc_transport_error is deliberately absent: the client raises it only after
+# confirming the worker is still running (a dead one raises worker_exited), so it
+# means the connection broke and not the backend. Failing the runtime for it
+# terminated x64dbg and the debuggee it owned, destroying the very session the
+# next call would have reconnected.
 _FATAL_WORKER_ERRORS = frozenset(
     {
         "analyzer_window_detected",
         "rpc_peer_mismatch",
         "rpc_protocol_error",
-        "rpc_transport_error",
         "worker_exited",
         "worker_protocol_error",
     }
@@ -829,7 +833,11 @@ class AnalysisService(
                 {
                     "backends": backends,
                     "count": len(backends),
-                    "healthy": all(item["healthy"] for item in backends),
+                    # None rather than True when nothing is open: "all zero
+                    # backends are fine" reads as a clean bill of health.
+                    "healthy": (
+                        all(item["healthy"] for item in backends) if backends else None
+                    ),
                 },
                 session_id=session_id,
             )
@@ -6035,17 +6043,30 @@ class AnalysisService(
         failure: XdbgRpcError,
         timeout: float,
     ) -> JsonObject:
-        """Treat a run-control command the target already satisfied as success.
+        """Treat a pause the target already satisfied as success.
 
         The debugger checks whether the target is running and only then issues the
         command, so a breakpoint hit in that window makes it reject a pause that
-        has effectively already happened. Reporting that as a failure would make
-        a correct outcome look like a broken session.
+        has effectively already happened. Reporting that as a failure would make a
+        correct outcome look like a broken session.
+
+        Only pause qualifies. A step or a resume is rejected while the target is
+        paused, which is also its state before the command, so the state can never
+        show the command ran; absorbing those would report a step that never
+        happened as success whenever the event ring dropped the transition.
         """
-        if failure.code != "debugger_command_failed" or not wait_for:
+        if failure.code != "debugger_command_failed" or method != "debug.pause":
             raise failure
-        current = dynamic.request("debug.state", {}, timeout=min(timeout, 5.0))
-        if str(current.get("state")) not in wait_for:
+        if not wait_for or "paused" not in wait_for:
+            raise failure
+        try:
+            current = dynamic.request("debug.state", {}, timeout=min(timeout, 5.0))
+        except BaseException:
+            # The probe failing says nothing about the command; surface the real
+            # reason the caller asked about rather than the reason we could not
+            # check it.
+            raise failure from None
+        if str(current.get("state")) != "paused":
             raise failure
         return current
 
@@ -6198,6 +6219,9 @@ class AnalysisService(
         failure: BaseException | None = None,
     ) -> None:
         runtime = self._runtime_owner.fail(session_id, kind)
+        # Without this the backend keeps being reported as unhealthy for the life
+        # of the process, with a checked_at that never advances.
+        self._health.forget(session_id)
         if runtime is not None and kind == BackendKind.X64DBG:
             self._stop_event_drain(runtime)
             workflow = self._workflow_owner.get(session_id)

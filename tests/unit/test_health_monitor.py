@@ -31,6 +31,9 @@ class FakeRuntimes:
     def snapshot(self) -> list[tuple[str, BackendKind, object]]:
         return list(self.entries)
 
+    def is_current(self, session_id: str, kind: BackendKind, runtime: object) -> bool:
+        return (session_id, kind, runtime) in self.entries
+
 
 def _monitor(*entries: tuple[str, BackendKind, object]) -> BackendHealthMonitor:
     return BackendHealthMonitor(FakeRuntimes(list(entries)), interval_s=0.01)
@@ -112,6 +115,51 @@ def test_report_is_scoped_and_cleared_per_session() -> None:
     monitor.forget("s1")
 
     assert [item["session_id"] for item in monitor.report()] == ["s2"]
+
+
+class VanishingRuntimes(FakeRuntimes):
+    """Hands out a runtime that the owner drops before it gets used."""
+
+    def is_current(self, session_id: str, kind: BackendKind, runtime: object) -> bool:
+        del session_id, kind, runtime
+        return False
+
+
+def test_a_runtime_closed_after_the_snapshot_is_left_alone() -> None:
+    worker = FakeWorker(connected=False)
+    monitor = BackendHealthMonitor(
+        VanishingRuntimes([("s1", BackendKind.X64DBG, worker)]),
+        interval_s=0.01,
+    )
+
+    monitor.check_once()
+
+    # Reconnecting a runtime the owner already dropped holds its request lock for
+    # the whole reconnect timeout while close_session waits for the same lock,
+    # and resurrects a health row that close_session just forgot.
+    assert worker.reconnects == 0
+    assert monitor.report("s1") == []
+
+
+def test_restarting_after_a_timed_out_stop_does_not_leave_two_sweepers() -> None:
+    worker = FakeWorker()
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    monitor.start()
+    first = monitor._thread
+    assert first is not None
+
+    monitor.stop(timeout=0.0)
+    monitor.start()
+
+    try:
+        # Clearing the stop flag for a restart would un-cancel a sweep that is
+        # still winding down, leaving two threads looping forever.
+        assert monitor._thread is None or monitor._thread is not first
+        alive = [t for t in (first, monitor._thread) if t is not None and t.is_alive()]
+        assert len(alive) <= 1
+    finally:
+        monitor.stop(timeout=2.0)
+        first.join(timeout=2.0)
 
 
 def test_the_background_sweep_repairs_without_being_asked() -> None:

@@ -149,6 +149,7 @@ class Settings:
             health_check_interval_s=_as_float(
                 os.environ.get("HEADLESS_RE_HEALTH_CHECK_INTERVAL_S"),
                 data.get("health_check_interval_s", 5.0),
+                fallback=5.0,
             ),
             local_full_access=_as_bool(
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),
@@ -331,13 +332,14 @@ def _as_bool(raw: str | None, default: object) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _as_float(raw: str | None, default: object) -> float:
-    # An unreadable value must not stop the server from starting, so fall back to
-    # the default rather than raising out of configuration loading.
+def _as_float(raw: str | None, default: object, *, fallback: float = 0.0) -> float:
+    # An unreadable value must not stop the server from starting, so fall back
+    # rather than raising out of configuration loading. The fallback is explicit
+    # because silently returning 0 turned a typo into a disabled feature.
     for candidate in (raw, default):
         try:
             if candidate is not None:
                 return max(0.0, float(candidate))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
-    return 0.0
+    return fallback

@@ -34,6 +34,12 @@ class WebCommandAdapter:
             or not spec.write
         ):
             raise KeyError(action)
+        if not self._catalog.write_allowed:
+            # This path calls the service method directly, so the handler guard
+            # never runs and a read-only deployment would be writable here.
+            raise PermissionError(
+                f"{action} changes state and this deployment is read-only"
+            )
         session_id = body.get("session_id")
         method = getattr(self._service, spec.service_method)
         if action == "artifacts.gc":

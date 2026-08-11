@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from functools import wraps
 from typing import Any
 
 
@@ -356,9 +357,48 @@ class CommandCatalog:
         description: str | None,
     ) -> CommandSpec:
         base = self.require(name)
-        bound = base.bind_mcp(handler, input_schema=input_schema, description=description)
+        # Guarding here rather than in one transport's adapter: every binding
+        # path arrives at this method, so the MCP server, the agent route and the
+        # OpenAI bridge cannot end up with different write policies.
+        guarded = self.guard_write(handler, name=name) if base.write else handler
+        bound = base.bind_mcp(guarded, input_schema=input_schema, description=description)
         self.register(bound)
         return bound
+
+    def guard_write(
+        self,
+        handler: Callable[..., dict[str, Any]],
+        *,
+        name: str,
+    ) -> Callable[..., dict[str, Any]]:
+        """Refuse a state-changing call while the deployment is read-only.
+
+        The refusal is an ordinary error envelope: a caller that cannot write
+        should learn why rather than watch the tool disappear. The flag is read
+        per call so a running server is not stuck with the startup config.
+        """
+
+        @wraps(handler)
+        def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            if self.write_allowed:
+                return handler(*args, **kwargs)
+            return self.write_refusal(name)
+
+        return guarded
+
+    def write_refusal(self, name: str) -> dict[str, Any]:
+        """The envelope every transport returns for a refused write."""
+        return {
+            "ok": False,
+            "data": None,
+            "error": {
+                "code": "write_disabled",
+                "message": f"{name} changes state and this deployment is read-only",
+                "details": {"tool": name, "setting": "local_full_access"},
+                "retryable": False,
+            },
+            "meta": {},
+        }
 
     def bind_handler(
         self,

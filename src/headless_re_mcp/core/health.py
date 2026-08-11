@@ -50,6 +50,8 @@ class BackendHealth:
 class _RuntimeSource(Protocol):
     def snapshot(self) -> list[tuple[str, BackendKind, Any]]: ...
 
+    def is_current(self, session_id: str, kind: BackendKind, runtime: Any) -> bool: ...
+
 
 @dataclass(slots=True)
 class BackendHealthMonitor:
@@ -69,10 +71,17 @@ class BackendHealthMonitor:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
+    _previous: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        # A sweep can sit inside a reconnect for far longer than stop() waits, so
+        # the previous thread may still be running. Clearing the stop flag now
+        # would un-cancel it and leave two sweepers running forever.
+        if self._previous is not None and self._previous.is_alive():
+            return
+        self._previous = None
         self._stop.clear()
         thread = threading.Thread(target=self._run, name="backend-health", daemon=True)
         self._thread = thread
@@ -82,8 +91,12 @@ class BackendHealthMonitor:
         self._stop.set()
         thread = self._thread
         self._thread = None
-        if thread is not None:
-            thread.join(timeout=timeout)
+        if thread is None:
+            return
+        thread.join(timeout=timeout)
+        # Remembered rather than discarded: it is still winding down and must be
+        # allowed to see the stop flag before a restart clears it.
+        self._previous = thread if thread.is_alive() else None
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -97,6 +110,13 @@ class BackendHealthMonitor:
         """Inspect every open backend once, repairing what can be repaired."""
         results: list[BackendHealth] = []
         for session_id, kind, runtime in self.runtimes.snapshot():
+            # The snapshot is a copy taken under the owner lock and released, so
+            # a session can be closed while we hold a runtime from it. Repairing
+            # one that is no longer registered would hold its request lock inside
+            # a reconnect for the full timeout while close_session waits for the
+            # same lock, and would resurrect a health entry that was forgotten.
+            if not self.runtimes.is_current(session_id, kind, runtime):
+                continue
             worker = getattr(runtime, "worker", runtime)
             results.append(self._check_backend(session_id, kind, worker))
         return results
@@ -104,33 +124,42 @@ class BackendHealthMonitor:
     def _check_backend(self, session_id: str, kind: BackendKind, worker: object) -> BackendHealth:
         key = (session_id, kind.value)
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is None:
-                entry = BackendHealth(
-                    session_id=session_id,
-                    backend=kind.value,
-                    worker_alive=True,
-                    connected=True,
-                    checked_at=time.time(),
-                )
-                self._entries[key] = entry
+            previous = self._entries.get(key)
+            reconnects = previous.reconnects if previous else 0
+            failures = previous.failures if previous else 0
+            last_error = previous.last_error if previous else None
 
         # A worker that never reports an exit code cannot be judged dead, so
         # treat the unknown case as alive rather than inventing a failure.
-        entry.worker_alive = getattr(worker, "exit_code", None) is None
-        entry.connected = bool(getattr(worker, "transport_connected", True))
-        entry.checked_at = time.time()
+        worker_alive = getattr(worker, "exit_code", None) is None
+        connected = bool(getattr(worker, "transport_connected", True))
         reconnect = getattr(worker, "reconnect", None)
-        if entry.worker_alive and not entry.connected and callable(reconnect):
+        if worker_alive and not connected and callable(reconnect):
             try:
                 reconnect()
             except BaseException as exc:  # noqa: BLE001 - recorded, not raised
-                entry.failures += 1
-                entry.last_error = f"{type(exc).__name__}: {exc}"
+                failures += 1
+                last_error = f"{type(exc).__name__}: {exc}"
             else:
-                entry.reconnects += 1
-                entry.last_error = None
-                entry.connected = bool(getattr(worker, "transport_connected", True))
+                reconnects += 1
+                last_error = None
+                connected = bool(getattr(worker, "transport_connected", True))
+
+        # Published as one finished value: a reader must never see a row that is
+        # half updated, for instance connected already true but the repair not
+        # yet counted.
+        entry = BackendHealth(
+            session_id=session_id,
+            backend=kind.value,
+            worker_alive=worker_alive,
+            connected=connected,
+            checked_at=time.time(),
+            reconnects=reconnects,
+            failures=failures,
+            last_error=last_error,
+        )
+        with self._lock:
+            self._entries[key] = entry
         return entry
 
     def forget(self, session_id: str) -> None:

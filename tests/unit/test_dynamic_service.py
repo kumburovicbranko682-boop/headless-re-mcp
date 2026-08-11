@@ -731,7 +731,7 @@ def test_fatal_dynamic_error_marks_session_failed(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
     worker = FakeDynamicWorker(
-        XdbgRpcError("rpc_transport_error", "pipe disconnected", retryable=False)
+        XdbgRpcError("worker_exited", "x64dbg exited with code 1", retryable=False)
     )
     service = _service(tmp_path, worker)
     session_id = _create(service, binary)
@@ -739,7 +739,7 @@ def test_fatal_dynamic_error_marks_session_failed(tmp_path: Path) -> None:
 
     result = service.dynamic_state(session_id)
     assert not result.ok and result.error is not None
-    assert result.error.code == "rpc_transport_error"
+    assert result.error.code == "worker_exited"
     assert worker.terminated
     session = service.registry.get(session_id)
     assert session.state == SessionState.FAILED
@@ -749,7 +749,30 @@ def test_fatal_dynamic_error_marks_session_failed(tmp_path: Path) -> None:
     terminal = workflow.data["workflow"]
     assert isinstance(terminal, dict)
     assert terminal["status"] == "failed"
-    assert terminal["failure"]["code"] == "rpc_transport_error"
+    assert terminal["failure"]["code"] == "worker_exited"
+
+
+def test_a_transport_fault_does_not_terminate_the_worker(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker(
+        XdbgRpcError("rpc_transport_error", "pipe disconnected", retryable=True)
+    )
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    result = service.dynamic_state(session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "rpc_transport_error"
+    # The client only raises this after confirming the worker is alive, so
+    # terminating it here would kill the debuggee that the next call reconnects
+    # to, and turn a recoverable fault into a lost session.
+    assert not worker.terminated
+    session = service.registry.get(session_id)
+    assert session.state is not SessionState.FAILED
+    assert BackendKind.X64DBG in session.backends
 
 
 def test_dynamic_events_cursor_advances_and_empty_batch_preserves_position(
@@ -1877,6 +1900,44 @@ def test_pause_succeeds_when_the_target_stopped_before_the_command_landed(
     # breakpoint hit in that window rejects a pause that already happened.
     assert paused.ok, paused.error
     assert "debug.state" in {command for command, _ in worker.requests}
+
+
+class RejectingStepWorker(FakeDynamicWorker):
+    """Rejects a step while the target sits paused, as the debugger does."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "debug.step_into":
+            self.requests.append((command, params or {}))
+            self.current_state = _state("paused")
+            raise XdbgRpcError(
+                "debugger_command_failed",
+                "x64dbg rejected command: StepInto",
+                details={"method": "debug.step_into", "command": "StepInto"},
+            )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_a_rejected_step_is_reported_not_absorbed(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, RejectingStepWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    stepped = service.dynamic_step_into(session_id, timeout=2.0)
+
+    # A step is rejected while the target is paused, which is also its state
+    # before the step, so "already paused" can never show the step happened.
+    # Absorbing it would report an instruction pointer that never moved.
+    assert not stepped.ok and stepped.error is not None
+    assert stepped.error.code == "debugger_command_failed"
+    assert stepped.error.details["command"] == "StepInto"
 
 
 class BrokenPauseWorker(FakeDynamicWorker):
