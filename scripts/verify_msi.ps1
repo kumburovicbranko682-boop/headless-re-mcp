@@ -49,44 +49,79 @@ foreach ($relative in @("start_web.cmd", "src\headless_re_mcp\__init__.py", "src
 $installedCount = (Get-ChildItem -LiteralPath $installDir -Recurse -File -Force).Count
 Write-Host "installed $installedCount files"
 
-# Importing the installed copy both proves the payload is complete and makes
-# Python write __pycache__, which is the residue this check exists to catch.
-$previousPythonPath = $env:PYTHONPATH
-$env:PYTHONPATH = Join-Path $installDir "src"
-$probe = Join-Path ([IO.Path]::GetTempPath()) "headless_re_mcp_msi_probe.py"
-Set-Content -LiteralPath $probe -Encoding ascii -Value @(
-    'import pathlib',
-    'import headless_re_mcp',
-    'print(pathlib.Path(headless_re_mcp.__file__).resolve())'
+# Run the installed copy the way a user would: through its own launcher, with a
+# PATH that has no interpreter and an environment that leaks nothing from this
+# checkout. Borrowing the developer machine's site-packages is what let an
+# installer ship with no dependencies at all and still pass this check.
+$launcher = Join-Path $installDir "start_web.cmd"
+$bundledPython = Join-Path $installDir "runtime\python\python.exe"
+if (-not (Test-Path -LiteralPath $bundledPython)) {
+    throw "the install ships no interpreter at runtime\python\python.exe, so it cannot run on a machine without a matching Python and its dependencies"
+}
+$probeCmd = Join-Path $installDir "verify_probe.cmd"
+$importProbe = Join-Path $installDir "verify_imports.py"
+# config generate alone only proves the core imports resolve. The browser
+# workbench is the reason most of the payload exists, so its stack has to be
+# present too or the install is still a shell for the feature people use.
+Set-Content -LiteralPath $importProbe -Encoding ascii -Value @(
+    'import fastapi, uvicorn, httpx, mcp, pydantic, platformdirs, pefile',
+    'from headless_re_mcp.mcp.server import create_server',
+    'from headless_re_mcp.web.app import create_app',
+    'print("web stack ok")'
 )
+$probeBody = @(
+    '@echo off',
+    'setlocal',
+    'cd /d "%~dp0"',
+    'call "%~dp0runtime\python\python.exe" -B verify_imports.py || exit /b 1',
+    'call "%~dp0runtime\python\python.exe" -B -m headless_re_mcp config generate --skip-doctor --no-examples',
+    'exit /b %ERRORLEVEL%'
+) -join "`r`n"
+Set-Content -LiteralPath $probeCmd -Value $probeBody -Encoding ASCII
+
+$clean = @{
+    PYTHONPATH = $null
+    PYTHONHOME = $null
+    VIRTUAL_ENV = $null
+}
+$saved = @{}
+foreach ($name in $clean.Keys) {
+    $saved[$name] = [Environment]::GetEnvironmentVariable($name)
+    [Environment]::SetEnvironmentVariable($name, $null)
+}
+$savedPath = $env:PATH
+# Strip every interpreter from PATH so a bundled runtime is the only one that can
+# answer; if the payload has none, this fails, which is the point.
+$env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
 try {
-    Push-Location $installDir
-    # A development checkout is usually pip-installed on the same machine, and an
-    # editable install can win over PYTHONPATH. Without this the check could pass
-    # while exercising the repository instead of the package under test.
-    $resolved = (& python $probe 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "installed copy failed to import: $resolved" }
-    if (-not $resolved.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
-        Pop-Location
-        throw "import resolved to $resolved instead of the installed tree under $installDir"
-    }
-    $output = & python -m headless_re_mcp config generate --skip-doctor --no-examples 2>&1
+    $output = & cmd /c "`"$probeCmd`"" 2>&1
     $exit = $LASTEXITCODE
-    Pop-Location
 } finally {
-    $env:PYTHONPATH = $previousPythonPath
-    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    $env:PATH = $savedPath
+    foreach ($name in $saved.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $saved[$name])
+    }
+    Remove-Item -LiteralPath $probeCmd -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $importProbe -Force -ErrorAction SilentlyContinue
+}
+if (($output | Out-String) -notmatch "web stack ok") {
+    Write-Host ($output | Out-String)
+    throw "the bundled runtime is missing part of the browser workbench stack"
 }
 if ($exit -ne 0) {
     Write-Host ($output | Out-String)
-    throw "installed copy failed to run (exit $exit)"
+    throw "the installed copy cannot run on its own (exit $exit); it needs a runtime it does not ship"
 }
 if (($output | Out-String) -notmatch '"ok"\s*:\s*true') {
     Write-Host ($output | Out-String)
     throw "installed copy ran but did not report a healthy config"
 }
-$bytecode = (Get-ChildItem -LiteralPath $installDir -Recurse -File -Force -Filter *.pyc).Count
-Write-Host "installed copy runs; wrote $bytecode bytecode files"
+foreach ($required in @("start_web.cmd", "headless-re-mcp.cmd")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $installDir $required))) {
+        throw "$required is missing from the install"
+    }
+}
+Write-Host "installed copy runs standalone with its own runtime and web stack"
 
 Invoke-Msiexec @("/x", "`"$productCode`"", "/qn", "/l*v", "`"$(Join-Path $logDir 'verify-uninstall.log')`"") "uninstall"
 
