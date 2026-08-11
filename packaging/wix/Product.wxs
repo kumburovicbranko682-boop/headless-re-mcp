@@ -1,5 +1,6 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <Product Id="*" Name="Headless RE-MCP" Language="1033" Version="0.1.0"
            Manufacturer="Headless RE-MCP contributors"
            UpgradeCode="A7C3E9B1-4D2F-4A8E-9C11-8F2E6D1B0A09">
@@ -9,11 +10,27 @@
     <MediaTemplate EmbedCab="yes" />
     <Feature Id="ProductFeature" Title="Core and browser workbench" Level="1">
       <ComponentGroupRef Id="ProductFiles" />
+      <ComponentRef Id="CleanupInstallFolder" />
     </Feature>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="HeadlessReMcp" />
       </Directory>
     </Directory>
+
+    <!-- Python writes __pycache__ next to the installed sources at run time.
+         Those files did not exist at install time, so the installer cannot
+         track them and uninstall would otherwise leave them behind. -->
+    <Property Id="INSTALLFOLDERCACHE">
+      <RegistrySearch Id="FindInstallFolder" Root="HKCU" Key="Software\HeadlessReMcp"
+                      Name="InstallFolder" Type="raw" />
+    </Property>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="CleanupInstallFolder" Guid="4C137169-DF8E-429D-B8F1-2C6239040C24">
+        <RegistryValue Root="HKCU" Key="Software\HeadlessReMcp" Name="InstallFolder"
+                       Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <util:RemoveFolderEx On="uninstall" Property="INSTALLFOLDERCACHE" />
+      </Component>
+    </DirectoryRef>
   </Product>
 </Wix>

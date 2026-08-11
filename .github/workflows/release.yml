@@ -1,0 +1,76 @@
+# Build, verify and publish the per-user MSI.
+#
+# workflow_dispatch builds and verifies without publishing, so the packaging
+# path can be exercised without cutting a release. Pushing a v* tag additionally
+# uploads the installer and its checksum to a GitHub Release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[web]"
+
+      - name: Build SPA
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Ensure WiX 3.14
+        run: |
+          $bin = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+          if (-not (Test-Path -LiteralPath $bin)) {
+            choco install wixtoolset --no-progress -y
+          }
+          if (-not (Test-Path -LiteralPath $bin)) { throw "WiX 3.14 toolset unavailable on this runner" }
+          "WIXBIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build MSI
+        run: .\scripts\build_msi.ps1 -WixDir "$env:WIXBIN"
+
+      - name: Verify MSI round-trip
+        run: .\scripts\verify_msi.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-re-mcp-msi
+          path: |
+            artifacts/release/headless-re-mcp.msi
+            artifacts/release/headless-re-mcp.msi.sha256
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            artifacts/release/headless-re-mcp.msi `
+            artifacts/release/headless-re-mcp.msi.sha256 `
+            --title "$env:GITHUB_REF_NAME" `
+            --generate-notes

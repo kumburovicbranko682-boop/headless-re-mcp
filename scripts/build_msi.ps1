@@ -28,6 +28,18 @@ if (-not $candle -or -not $light -or -not $heat) {
     exit 2
 }
 
+# The MSI version lives in Product.wxs and the package version in pyproject.toml.
+# Nothing links them, so a release could otherwise ship an installer that
+# advertises a stale version and defeats MajorUpgrade.
+$wxsPath = Join-Path $Root "packaging\wix\Product.wxs"
+$projectVersion = ([regex]::Match((Get-Content -LiteralPath (Join-Path $Root "pyproject.toml") -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+$msiVersion = ([regex]::Match((Get-Content -LiteralPath $wxsPath -Raw), 'Product[^>]*?Version="([^"]+)"')).Groups[1].Value
+if (-not $projectVersion -or -not $msiVersion) { throw "could not read version from pyproject.toml or Product.wxs" }
+if ($projectVersion -ne $msiVersion) {
+    throw "version mismatch: pyproject.toml is $projectVersion but packaging/wix/Product.wxs is $msiVersion"
+}
+Write-Host "version $projectVersion"
+
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stageRoot = Join-Path $OutDir "_msi_stage"
 $stage = Join-Path $stageRoot "HeadlessReMcp"
@@ -65,16 +77,15 @@ $harvest = Join-Path $OutDir "ProductFiles.wxs"
 $perUserTransform = Join-Path $Root "packaging\wix\PerUserKeyPath.xslt"
 & $heat dir $stage -cg ProductFiles -dr INSTALLFOLDER -srd -sreg -gg -var var.StageDir -t $perUserTransform -out $harvest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$wxs = Join-Path $Root "packaging\wix\Product.wxs"
 $productObj = Join-Path $OutDir "Product.wixobj"
 $filesObj = Join-Path $OutDir "ProductFiles.wixobj"
-& $candle $wxs $harvest "-dStageDir=$stage" -out (Join-Path $OutDir "")
+& $candle $wxsPath $harvest "-dStageDir=$stage" -ext WixUtilExtension -out (Join-Path $OutDir "")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $msi = Join-Path $OutDir "headless-re-mcp.msi"
 # Harvested per-user subdirectories can remain as empty folders after uninstall;
 # suppress only that cleanup ICE and the per-user informational ICE. Component
 # key paths still use HKCU registry values and all other validation remains on.
-& $light $productObj $filesObj -sice:ICE64 -sice:ICE91 -out $msi
+& $light $productObj $filesObj -ext WixUtilExtension -sice:ICE64 -sice:ICE91 -out $msi
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  headless-re-mcp.msi" | Set-Content -LiteralPath (Join-Path $OutDir "headless-re-mcp.msi.sha256") -Encoding ascii
