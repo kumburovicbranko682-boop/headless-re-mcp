@@ -1,7 +1,6 @@
 """Render a session analysis report as Markdown.
 
 
-
 The renderer is pure: callers gather session metadata, accumulated knowledge,
 
 artifacts and audit rows, and this module turns them into a reviewable document.
@@ -13,7 +12,6 @@ a database, or a filesystem.
 """
 
 
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -22,11 +20,7 @@ from typing import Any
 JsonObject = dict[str, Any]
 
 
-
 _MAX_CELL = 120
-
-
-
 
 
 def _cell(value: object) -> str:
@@ -42,9 +36,6 @@ def _cell(value: object) -> str:
     return text or "—"
 
 
-
-
-
 def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
 
     lines = ["| " + " | ".join(headers) + " |"]
@@ -58,9 +49,6 @@ def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
     return lines
 
 
-
-
-
 def _summarize_value(value: object) -> str:
 
     if isinstance(value, dict):
@@ -72,9 +60,6 @@ def _summarize_value(value: object) -> str:
         return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
 
     return _cell(value)
-
-
-
 
 
 def render_markdown_report(
@@ -103,15 +88,11 @@ def render_markdown_report(
 
     heading = title or f"Analysis report — {subject}"
 
-
-
     lines: list[str] = [f"# {heading}", ""]
 
     lines.append(f"Generated at `{stamp}`.")
 
     lines.append("")
-
-
 
     lines.append("## Session")
 
@@ -144,8 +125,6 @@ def render_markdown_report(
     )
 
     lines.append("")
-
-
 
     entries = list((knowledge or {}).get("entries") or [])
 
@@ -203,8 +182,6 @@ def render_markdown_report(
 
             lines.append("")
 
-
-
     artifact_entries = list((artifacts or {}).get("entries") or [])
 
     lines.append("## Artifacts")
@@ -238,8 +215,6 @@ def render_markdown_report(
         )
 
         lines.append("")
-
-
 
     audit_entries = list((audit or {}).get("entries") or [])
 
@@ -277,8 +252,6 @@ def render_markdown_report(
 
         lines.append("")
 
-
-
     lines.append("---")
 
     lines.append("")
@@ -292,4 +265,3 @@ def render_markdown_report(
     )
 
     return "\n".join(lines).rstrip() + "\n"
-

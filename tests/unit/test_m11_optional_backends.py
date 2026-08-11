@@ -84,7 +84,6 @@ def test_doctor_ready_ignores_optional_backend_missing() -> None:
     assert report.ready is True
 
 
-
 def test_windbg_live_pid_boundary(tmp_path: Path) -> None:
     stub = tmp_path / "cdb.exe"
     stub.write_bytes(b"")

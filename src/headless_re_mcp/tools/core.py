@@ -103,7 +103,6 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     return tuple(specs)
 
 
-
 def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     """Register detect.*/packer.classify/unpack.recommend via add_tool."""
 

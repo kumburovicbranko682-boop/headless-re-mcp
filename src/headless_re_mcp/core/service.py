@@ -439,8 +439,6 @@ class AnalysisService(
         except BaseException as exc:
             return _failure(exc)
 
-
-
     def get_session(self, session_id: str) -> Result[JsonObject]:
         try:
             return _success({"session": _session_json(self.registry.get(session_id))})
@@ -509,8 +507,9 @@ class AnalysisService(
 
             entries: list[JsonObject] = []
             for kind in requested:
-                if self._runtime_owner.get(session_id, kind) is not None:
-                    entries.append({"backend": kind.value, "action": "kept", "ok": True})
+                backend = self._runtime_owner.get(session_id, kind)
+                if backend is not None:
+                    entries.append(self._restore_backend_transport(kind, backend))
                     continue
                 entries.append(self._reopen_backend(session_id, kind))
             return _success(
@@ -522,7 +521,7 @@ class AnalysisService(
                     "recovered": sum(
                         1
                         for item in entries
-                        if item["action"] == "reopened" and item["ok"]
+                        if item["action"] in {"reopened", "reconnected"} and item["ok"]
                     ),
                     "kept": sum(1 for item in entries if item["action"] == "kept"),
                     "failed": sum(1 for item in entries if not item["ok"]),
@@ -531,6 +530,28 @@ class AnalysisService(
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    @staticmethod
+    def _restore_backend_transport(kind: BackendKind, runtime: _BackendRuntime) -> JsonObject:
+        """Rebuild a live backend's dropped connection, or report it as healthy.
+
+        A transport fault kills the connection but not the worker, so the
+        backend is still registered. Reporting it as kept would leave the caller
+        with a session that fails every later call and a recovery tool that
+        claims there was nothing to do.
+        """
+        worker = runtime.worker
+        reconnect = getattr(worker, "reconnect", None)
+        connected = getattr(worker, "transport_connected", True)
+        if connected or not callable(reconnect):
+            return {"backend": kind.value, "action": "kept", "ok": True}
+        entry: JsonObject = {"backend": kind.value, "action": "reconnected", "ok": True}
+        try:
+            reconnect()
+        except BaseException as exc:  # noqa: BLE001 - reported per backend
+            entry["ok"] = False
+            entry["error"] = {"code": type(exc).__name__, "message": str(exc)}
+        return entry
 
     def _reopen_backend(self, session_id: str, kind: BackendKind) -> JsonObject:
         opened = (
@@ -807,7 +828,6 @@ class AnalysisService(
                 ),
             )
         return _success({"closed": closed})
-
 
     def dynamic_state(self, session_id: str) -> Result[JsonObject]:
         return self.services.dynamic.state(session_id)
@@ -5973,7 +5993,6 @@ class AnalysisService(
                 details={"capability": capability},
             )
 
-
     def _dynamic_request(
         self,
         session_id: str,
@@ -6144,8 +6163,6 @@ class AnalysisService(
         with suppress(KeyError, InvalidStateTransition):
             self.registry.detach_backend(session_id, kind)
             self.registry.transition(session_id, SessionState.FAILED)
-
-
 
 
 def _create_ida_worker(session: Session, settings: Settings) -> StaticWorker:

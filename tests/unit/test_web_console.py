@@ -127,8 +127,6 @@ def test_web_index_is_monitor_shell(tmp_path: Path) -> None:
     assert "识别环境并生成" in html
 
 
-
-
 def test_web_deps_inventory(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
@@ -164,7 +162,6 @@ def test_discover_x64dbg_headless_external(tmp_path: Path, monkeypatch: pytest.M
     found = cfg.discover_x64dbg_headless("x64")
     assert found == exe.resolve()
     assert cfg.discover_x64dbg_headless("x86") is None
-
 
 
 def test_web_setup_ida_writes_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,7 +220,6 @@ def test_validate_ida_home_rejects_missing_idalib(tmp_path: Path) -> None:
     result = validate_ida_home(empty)
     assert result["ok"] is False
     assert result["code"] == "idalib_missing"
-
 
 
 def test_web_setup_run_environment(tmp_path: Path) -> None:

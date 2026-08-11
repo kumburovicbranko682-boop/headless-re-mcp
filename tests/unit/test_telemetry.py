@@ -17,11 +17,7 @@ def test_ring_is_bounded_and_returns_newest_first() -> None:
 
         record_tool_call(f"tool.{index}", ok=True, duration_ms=float(index), ring=ring)
 
-
-
     recent = ring.recent(10)
-
-
 
     assert [item["tool"] for item in recent] == ["tool.4", "tool.3", "tool.2"]
 
@@ -30,32 +26,21 @@ def test_ring_is_bounded_and_returns_newest_first() -> None:
     assert ring.capacity == 3
 
 
-
-
-
 def test_instrument_records_success_and_envelope_failure() -> None:
 
     ring = TelemetryRing()
-
-
 
     def ok_handler(value: int) -> dict[str, Any]:
 
         return {"ok": True, "value": value}
 
-
-
     def failing_handler() -> dict[str, Any]:
 
         return {"ok": False, "error": {"code": "invalid_request"}}
 
-
-
     instrument(ok_handler, name="demo.ok", ring=ring)(value=1)
 
     instrument(failing_handler, name="demo.fail", ring=ring)()
-
-
 
     metrics = ring.metrics()
 
@@ -72,14 +57,9 @@ def test_instrument_records_success_and_envelope_failure() -> None:
     assert ring.recent(1)[0]["error_code"] == "invalid_request"
 
 
-
-
-
 def test_instrument_preserves_signature_and_reraises() -> None:
 
     ring = TelemetryRing()
-
-
 
     def boom(session_id: str) -> dict[str, Any]:
 
@@ -87,11 +67,7 @@ def test_instrument_preserves_signature_and_reraises() -> None:
 
         raise RuntimeError("nope")
 
-
-
     observed = instrument(boom, name="demo.boom", ring=ring)
-
-
 
     assert observed.__doc__ == "Original doc."
 
@@ -101,16 +77,11 @@ def test_instrument_preserves_signature_and_reraises() -> None:
 
         observed(session_id="s")
 
-
-
     record = ring.recent(1)[0]
 
     assert record["ok"] is False
 
     assert record["error_code"] == "RuntimeError"
-
-
-
 
 
 def test_registered_tools_are_instrumented_by_the_adapter() -> None:
@@ -121,8 +92,6 @@ def test_registered_tools_are_instrumented_by_the_adapter() -> None:
     from headless_re_mcp.mcp.server import create_server
     from headless_re_mcp.telemetry import TELEMETRY
     from headless_re_mcp.tools.catalog import COMMAND_CATALOG
-
-
 
     analysis = AnalysisService()
 
@@ -138,8 +107,6 @@ def test_registered_tools_are_instrumented_by_the_adapter() -> None:
 
         analysis.close_all()
 
-
-
     assert payload["ok"] is True
 
     recent = TELEMETRY.recent(5)
@@ -153,20 +120,13 @@ def test_registered_tools_are_instrumented_by_the_adapter() -> None:
     assert recent[0]["duration_ms"] >= 0.0
 
 
-
-
-
 def test_record_emits_structured_json_log(caplog: pytest.LogCaptureFixture) -> None:
 
     ring = TelemetryRing()
 
-
-
     with caplog.at_level(logging.INFO, logger="headless_re_mcp.telemetry"):
 
         record_tool_call("demo.log", ok=True, duration_ms=1.5, ring=ring)
-
-
 
     payload = json.loads(caplog.records[-1].message)
 
@@ -177,4 +137,3 @@ def test_record_emits_structured_json_log(caplog: pytest.LogCaptureFixture) -> N
     assert payload["ok"] is True
 
     assert payload["duration_ms"] == 1.5
-

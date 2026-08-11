@@ -19,9 +19,6 @@ _SESSION = {
 }
 
 
-
-
-
 def test_report_renders_session_and_grouped_findings() -> None:
 
     knowledge = {
@@ -56,8 +53,6 @@ def test_report_renders_session_and_grouped_findings() -> None:
 
     }
 
-
-
     markdown = render_markdown_report(
 
         session=_SESSION,
@@ -67,8 +62,6 @@ def test_report_renders_session_and_grouped_findings() -> None:
         generated_at="2026-08-11T12:00:00+00:00",
 
     )
-
-
 
     assert markdown.startswith("# Analysis report — C:\\samples\\fixture.exe")
 
@@ -85,23 +78,15 @@ def test_report_renders_session_and_grouped_findings() -> None:
     assert markdown.endswith("\n")
 
 
-
-
-
 def test_report_states_empty_sections_explicitly() -> None:
 
     markdown = render_markdown_report(session=_SESSION, generated_at="t")
-
-
 
     assert "No findings were recorded for this session yet." in markdown
 
     assert "No artifacts were produced for this session yet." in markdown
 
     assert "## Recent actions" not in markdown
-
-
-
 
 
 def test_report_escapes_pipes_and_truncates_long_cells() -> None:
@@ -126,8 +111,6 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
 
     }
 
-
-
     markdown = render_markdown_report(
 
         session=_SESSION,
@@ -138,8 +121,6 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
 
     )
 
-
-
     assert "pipe\\|key" in markdown
 
     assert "…" in markdown
@@ -149,9 +130,6 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
     # The escaped pipe must not create a fourth column.
 
     assert len(row.replace("\\|", "").strip("| ").split(" | ")) == 3
-
-
-
 
 
 def test_report_includes_audit_when_supplied() -> None:
@@ -168,15 +146,10 @@ def test_report_includes_audit_when_supplied() -> None:
 
     }
 
-
-
     markdown = render_markdown_report(session=_SESSION, audit=audit, generated_at="t")
-
-
 
     assert "## Recent actions" in markdown
 
     assert "static.open" in markdown
 
     assert "failed" in markdown
-

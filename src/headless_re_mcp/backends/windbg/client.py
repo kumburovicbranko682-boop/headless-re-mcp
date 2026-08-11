@@ -101,7 +101,6 @@ class WindbgClient:
             "raw": data,
         }
 
-
     def attach(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         """Non-invasive user-mode probe against a session debuggee PID."""
         data = self._run_process(

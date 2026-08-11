@@ -1840,6 +1840,65 @@ def test_session_recover_reopens_only_dead_backends(tmp_path: Path) -> None:
     assert service.registry.get(session_id).state == SessionState.CLOSED
 
 
+def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_kept(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    # A transport fault drops the connection but leaves the worker alive, so the
+    # backend stays registered and the session never reaches FAILED.
+    reconnects: list[str] = []
+
+    def reconnect() -> None:
+        reconnects.append("reconnect")
+        worker.transport_connected = True
+
+    worker.transport_connected = False
+    worker.reconnect = reconnect  # type: ignore[attr-defined]
+
+    recovered = service.session_recover(session_id, ["x64dbg"])
+
+    assert recovered.ok and recovered.data is not None
+    assert reconnects == ["reconnect"]
+    entry = recovered.data["backends"][0]
+    assert entry["action"] == "reconnected" and entry["ok"]
+    assert recovered.data["recovered"] == 1
+    assert recovered.data["kept"] == 0
+    # Restarting would have discarded the debuggee the live worker still owns.
+    assert recovered.data["replaced"] is False
+
+
+def test_session_recover_reports_a_failed_reconnect_per_backend(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    def reconnect() -> None:
+        raise XdbgRpcError("rpc_startup_timeout", "pipe never came back")
+
+    worker.transport_connected = False
+    worker.reconnect = reconnect  # type: ignore[attr-defined]
+
+    recovered = service.session_recover(session_id, ["x64dbg"])
+
+    # A worker stuck long enough to refuse the reconnect must not be reported as
+    # recovered, or the caller keeps issuing calls that cannot succeed.
+    assert recovered.ok and recovered.data is not None
+    entry = recovered.data["backends"][0]
+    assert entry["action"] == "reconnected" and entry["ok"] is False
+    assert entry["error"]["code"] == "XdbgRpcError"
+    assert recovered.data["recovered"] == 0
+    assert recovered.data["failed"] == 1
+
+
 def test_session_recover_rejects_unknown_backend(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

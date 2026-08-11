@@ -126,7 +126,6 @@ def test_m11_capabilities_and_missing_backends() -> None:
         assert not kernel_denied.ok and kernel_denied.error is not None
         assert kernel_denied.error.code == "permission_denied"
 
-
         for call in (
             lambda: service.windbg_attach(session_id, timeout=5.0),
             lambda: service.windbg_live_threads(session_id, timeout=5.0),

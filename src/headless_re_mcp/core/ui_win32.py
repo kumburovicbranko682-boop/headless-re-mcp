@@ -335,7 +335,6 @@ def _send_timeout(
     return int(result.value)
 
 
-
 def _post_message(
     hwnd: int,
     message: int,

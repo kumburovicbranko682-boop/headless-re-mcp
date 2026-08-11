@@ -34,6 +34,10 @@ _PROTOCOL = "headless-re-xdbg"
 _PROTOCOL_VERSION = 1
 _MAX_FRAME_BYTES = MAX_FRAME_BYTES
 _MAX_DISPATCH_TIMEOUT_MS = 30_000
+# A reconnect can only succeed once the worker finishes whatever request the
+# dropped connection left it running, so allow for that without letting a stuck
+# worker block the caller indefinitely.
+_RECONNECT_TIMEOUT_SECONDS = 30.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
 
 
@@ -314,7 +318,6 @@ class _NamedPipeTransport:
         kernel32.GetNamedPipeServerProcessId.restype = ctypes.c_int
 
 
-
 # Debugged GUI targets often load IME/input DLLs whose TLS callbacks would pause
 # the debuggee under x64dbg defaults (Events/TlsCallbacks=true). Headless UI
 # automation cannot make progress while those incidental breaks fire.
@@ -370,6 +373,12 @@ class XdbgClient:
         pipe_suffix = f"headless-re-{uuid4().hex}"
         pipe_name = rf"\\.\pipe\{pipe_suffix}"
         token = secrets.token_hex(32)
+        # Retained so a dropped connection can be rebuilt: the worker keeps
+        # serving the same pipe and keeps the same token for its whole lifetime.
+        self._pipe_name = pipe_name
+        self._token = token
+        self._architecture = architecture
+        self._startup_timeout = startup_timeout
         popen_kw = no_window_popen_kwargs()
         child_environment = os.environ.copy()
         child_environment["HEADLESS_RE_XDBG_RPC_PIPE"] = pipe_suffix
@@ -424,25 +433,7 @@ class XdbgClient:
         self._window_thread.start()
 
         try:
-            self._transport = _NamedPipeTransport.connect(
-                pipe_name,
-                timeout=startup_timeout,
-                process=self._process,
-            )
-            if self._transport.server_pid != self._process.pid:
-                raise XdbgRpcError(
-                    "rpc_peer_mismatch",
-                    "named-pipe server PID does not match the spawned x64dbg process",
-                )
-            hello = self._request("rpc.hello", {"token": token}, timeout=startup_timeout)
-            if hello.get("pid") != self._process.pid:
-                raise XdbgRpcError(
-                    "rpc_peer_mismatch", "RPC hello PID does not match the spawned process"
-                )
-            if hello.get("architecture") != architecture.value:
-                raise XdbgRpcError(
-                    "architecture_mismatch", "RPC hello architecture does not match the client"
-                )
+            hello = self._connect_transport(startup_timeout)
             self._metadata = dict(hello)
             self._metadata["desktop"] = self.desktop_snapshot()
             raw_capabilities = hello.get("capabilities")
@@ -453,6 +444,67 @@ class XdbgClient:
         except BaseException:
             self.terminate()
             raise
+
+    def _connect_transport(self, timeout: float) -> JsonObject:
+        """Open the pipe, authenticate, and return the hello payload.
+
+        The worker tracks authentication per connection, so a reconnect has to
+        repeat the handshake rather than resume the previous one.
+        """
+        transport = _NamedPipeTransport.connect(
+            self._pipe_name,
+            timeout=timeout,
+            process=self._process,
+        )
+        self._transport = transport
+        try:
+            if transport.server_pid != self._process.pid:
+                raise XdbgRpcError(
+                    "rpc_peer_mismatch",
+                    "named-pipe server PID does not match the spawned x64dbg process",
+                )
+            hello = self._request("rpc.hello", {"token": self._token}, timeout=timeout)
+            if hello.get("pid") != self._process.pid:
+                raise XdbgRpcError(
+                    "rpc_peer_mismatch", "RPC hello PID does not match the spawned process"
+                )
+            if hello.get("architecture") != self._architecture.value:
+                raise XdbgRpcError(
+                    "architecture_mismatch", "RPC hello architecture does not match the client"
+                )
+        except BaseException:
+            transport.close()
+            self._transport = None
+            raise
+        return hello
+
+    def _reconnect(self) -> None:
+        """Rebuild a dropped connection without disturbing the debuggee.
+
+        A transport fault leaves the worker running, and the worker is what owns
+        the debuggee, so replacing the connection preserves live state that
+        restarting the backend would throw away.
+        """
+        hello = self._connect_transport(_RECONNECT_TIMEOUT_SECONDS)
+        capabilities = hello.get("capabilities")
+        if isinstance(capabilities, list):
+            self._capabilities = frozenset(str(item) for item in capabilities)
+
+    def reconnect(self) -> None:
+        """Rebuild a dropped connection on demand, for explicit recovery."""
+        with self._request_lock:
+            if self._closed:
+                raise XdbgRpcError("session_closed", "x64dbg RPC client is closed")
+            if self._process.poll() is not None:
+                raise self._process_exit_error()
+            if self._transport is not None:
+                return
+            self._reconnect()
+
+    @property
+    def transport_connected(self) -> bool:
+        """False once a fault dropped the connection, until it is rebuilt."""
+        return self._transport is not None
 
     @property
     def pid(self) -> int:
@@ -526,6 +578,11 @@ class XdbgClient:
                 raise XdbgRpcError("session_closed", "x64dbg RPC client is closed")
             if self._process.poll() is not None:
                 raise self._process_exit_error()
+            if self._transport is None:
+                # Heal here rather than in _request: the call that hit the fault
+                # already failed, and replaying it could run a state-changing
+                # operation twice. Only later calls get the rebuilt connection.
+                self._reconnect()
             if method not in self._capabilities and not method.startswith("rpc."):
                 raise XdbgRpcError(
                     "capability_unavailable",
@@ -1053,7 +1110,9 @@ class XdbgClient:
                 "rpc_transport_error",
                 f"x64dbg RPC transport failed: {exc}",
                 details=self._diagnostics(),
-                retryable=False,
+                # The worker outlived the fault, so the next call rebuilds the
+                # connection instead of failing for the rest of the session.
+                retryable=True,
             ) from exc
 
         try:

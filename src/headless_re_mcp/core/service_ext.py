@@ -427,7 +427,6 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc)
 
-
     def windbg_attach(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)

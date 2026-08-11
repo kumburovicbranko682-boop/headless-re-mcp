@@ -12,6 +12,7 @@ import pytest
 import headless_re_mcp.backends.x64dbg.client as client_module
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.core.events import DebugEvent, DebugEventBatch
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
 
@@ -464,3 +465,102 @@ def test_memory_regions_and_modules_dump_helpers_dispatch_expected_rpc() -> None
             9,
         ),
     ]
+
+
+class HandshakeTransport:
+    """A transport that answers the handshake and records the methods it saw."""
+
+    def __init__(self, *, pid: int, architecture: str = "x64") -> None:
+        self.server_pid = pid
+        self.architecture = architecture
+        self.methods: list[str] = []
+        self.closed = False
+        self._reads: deque[bytes] = deque()
+
+    def write_all(self, data: bytes, *, timeout: float) -> None:
+        del timeout
+        request = json.loads(data[4:])
+        self.methods.append(request["method"])
+        if request["method"] == "rpc.hello":
+            result: JsonObject = {
+                "pid": self.server_pid,
+                "architecture": self.architecture,
+                "capabilities": ["events.read"],
+            }
+        else:
+            result = {"request_id": request["id"]}
+        encoded = json.dumps(
+            {
+                "protocol": "headless-re-xdbg",
+                "version": 1,
+                "id": request["id"],
+                "ok": True,
+                "result": result,
+            },
+            separators=(",", ":"),
+        ).encode()
+        self._reads.extend((len(encoded).to_bytes(4, "little"), encoded))
+
+    def read_exact(self, size: int, *, timeout: float) -> bytes:
+        del timeout
+        value = self._reads.popleft()
+        assert len(value) == size
+        return value
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _prepare_reconnect(client: XdbgClient) -> None:
+    client._pipe_name = r"\\.\pipe\headless-re-test"
+    client._token = "token"
+    client._architecture = Architecture.X64
+    client._startup_timeout = 5.0
+
+
+def test_transport_fault_heals_on_the_next_request_without_replaying_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess()
+    client = _client(ScriptedTransport(fail=TimeoutError("named-pipe read timed out")), process)
+    _prepare_reconnect(client)
+
+    with pytest.raises(XdbgRpcError) as failure:
+        client.request("events.read")
+
+    assert failure.value.code == "rpc_transport_error"
+    # The worker outlived the fault, so the caller can expect a later call to work.
+    assert failure.value.retryable is True
+    assert client.transport_connected is False
+
+    healed = HandshakeTransport(pid=process.pid)
+    monkeypatch.setattr(
+        client_module._NamedPipeTransport,
+        "connect",
+        classmethod(lambda cls, pipe_name, *, timeout, process: healed),
+    )
+
+    result = client.request("events.read")
+
+    assert result["request_id"]
+    assert client.transport_connected is True
+    # Replaying the failed call would run a state-changing operation twice, so
+    # only the handshake and the new call may reach the rebuilt connection.
+    assert healed.methods == ["rpc.hello", "events.read"]
+
+
+def test_reconnect_refuses_once_the_worker_is_gone() -> None:
+    process = FakeProcess()
+    client = _client(ScriptedTransport(fail=TimeoutError("named-pipe read timed out")), process)
+    _prepare_reconnect(client)
+
+    with pytest.raises(XdbgRpcError):
+        client.request("events.read")
+    process.returncode = 1
+
+    with pytest.raises(XdbgRpcError) as failure:
+        client.reconnect()
+
+    # Rebuilding a connection to a dead worker would hang until the pipe timeout
+    # and then report a transport problem instead of the real cause.
+    assert failure.value.code == "worker_exited"

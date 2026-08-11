@@ -22,9 +22,6 @@ def _handler(**_: Any) -> dict[str, Any]:
     return {}
 
 
-
-
-
 def _spec(name: str, effects: frozenset[ToolEffect]) -> CommandSpec:
 
     return CommandSpec(
@@ -46,9 +43,6 @@ def _spec(name: str, effects: frozenset[ToolEffect]) -> CommandSpec:
     )
 
 
-
-
-
 def test_openai_function_name_sanitizes_dotted_names() -> None:
 
     assert openai_function_name("static.functions") == "static_functions"
@@ -56,9 +50,6 @@ def test_openai_function_name_sanitizes_dotted_names() -> None:
     assert openai_function_name("ui.virtual_desktop.capture") == "ui_virtual_desktop_capture"
 
     assert len(openai_function_name("a" * 200)) <= MAX_FUNCTION_NAME
-
-
-
 
 
 def test_build_openai_tools_maps_names_and_flags_writes() -> None:
@@ -81,11 +72,7 @@ def test_build_openai_tools_maps_names_and_flags_writes() -> None:
 
     )
 
-
-
     payload = build_openai_tools(catalog)
-
-
 
     assert payload["count"] == 2
 
@@ -106,9 +93,6 @@ def test_build_openai_tools_maps_names_and_flags_writes() -> None:
     assert entry["function"]["name"] == "static_functions"
 
     assert entry["function"]["parameters"] == {"type": "object", "properties": {}}
-
-
-
 
 
 def test_build_openai_tools_rejects_unbound_catalog() -> None:
@@ -133,14 +117,9 @@ def test_build_openai_tools_rejects_unbound_catalog() -> None:
 
     )
 
-
-
     with pytest.raises(RuntimeError, match="not bound"):
 
         build_openai_tools(catalog)
-
-
-
 
 
 def test_every_exported_name_is_openai_safe_and_maps_back() -> None:
@@ -152,15 +131,11 @@ def test_every_exported_name_is_openai_safe_and_maps_back() -> None:
     from headless_re_mcp.openai_bridge import build_bound_catalog, build_openai_tools
     from headless_re_mcp.tools.catalog import COMMAND_CATALOG
 
-
-
     payload = build_openai_tools(build_bound_catalog())
 
     pattern = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
     names = [entry["function"]["name"] for entry in payload["tools"]]
-
-
 
     assert names, "no tools were exported"
 
@@ -177,9 +152,6 @@ def test_every_exported_name_is_openai_safe_and_maps_back() -> None:
         assert COMMAND_CATALOG.get(mcp_name) is not None, mcp_name
 
 
-
-
-
 def test_build_openai_tools_detects_name_collisions() -> None:
 
     catalog = CommandCatalog(
@@ -194,9 +166,6 @@ def test_build_openai_tools_detects_name_collisions() -> None:
 
     )
 
-
-
     with pytest.raises(RuntimeError, match="collision"):
 
         build_openai_tools(catalog)
-
