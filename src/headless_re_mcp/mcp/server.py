@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
+from headless_re_mcp.core.commands import COMMAND_CATALOG
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.mcp.adapter import install_cursor_underscore_aliases
 from headless_re_mcp.mcp.registry import (
@@ -17,6 +18,9 @@ from headless_re_mcp.mcp.routes import register_remaining_tools
 
 def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
     analysis = service or AnalysisService()
+    # The setting existed and was written by setup, but nothing read it, so a
+    # deployment asking to be read-only still got the full write surface.
+    COMMAND_CATALOG.write_allowed = bool(analysis.settings.local_full_access)
     server: FastMCP[None] = FastMCP(
         "Headless RE-MCP",
         instructions=(

@@ -3,6 +3,25 @@
 Notable changes per release. Versions follow [semantic versioning](https://semver.org/lang/zh-CN/);
 until 1.0 the tool surface may still change between minor versions.
 
+## [Unreleased]
+
+### 修复
+
+- **一次耗时调用会卡住整个 MCP 服务**。FastMCP 对同步工具是直接在事件循环里调用的
+  （`call_fn_with_arg_validation` 里 `fn_is_async` 为假时直接 `return fn(...)`），而本项目
+  所有 handler 都是同步且可能阻塞数十秒（`dynamic.launch` 默认超时 60 秒、IDA 反编译等）。
+  这期间同一连接上的其它请求全部排队，包括用来问"出什么事了"的那些。现在工具在工作线程
+  上执行，事件循环保持空闲。
+- **`local_full_access` 是个不起作用的开关**。它由安装流程写入、被 `Settings` 读入，
+  但代码中从无任何地方消费它——设成 `false` 得到的是虚假的安全感。现在它真正生效：
+  只读部署下所有 STATE_CHANGE / FILE_WRITE 工具返回 `write_disabled` 错误信封，
+  只读工具不受影响。工具仍然可见，调用方得到的是可理解的拒绝而不是工具凭空消失。
+
+### 新增
+
+- 全工具面契约测试：198 个工具在每次运行时都被喂入敌意参数，必须返回错误信封而非抛出。
+  此前这条性质只被手工测量过一次，没有任何机制阻止新工具打破它。
+
 ## [0.2.0] - 2026-08-12
 
 第一个自愈能力经过真机验证的版本。198 个工具扩到 199 个，全部工具在敌意输入下均返回结构化错误信封。

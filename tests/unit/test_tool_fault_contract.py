@@ -16,10 +16,10 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.tools.assembly import bind_all_tools
 from headless_re_mcp.tools.catalog import CommandCatalog
 
-# Excluded because hostile arguments would still do real work rather than fail
-# on a bad session: doctor probes the whole host, and these two delete or close
-# state that does not belong to this test.
-UNSAFE_TO_PROBE = {"meta.doctor", "artifacts.gc", "session.close_all"}
+# Excluded because hostile arguments would still do real work rather than fail on
+# a bad session. Kept to the minimum: doctor and capabilities.* also touch the
+# host but are read-only, so they stay in the probe even though they are slow.
+UNSAFE_TO_PROBE = {"artifacts.gc"}
 
 DUMMY: dict[str, Any] = {
     "string": "\u0000nonexistent",
@@ -76,9 +76,13 @@ def test_every_tool_answers_hostile_input_with_an_error_envelope() -> None:
                 continue
             if not isinstance(result, dict) or "ok" not in result:
                 malformed.append(binding.name)
+        bound = {binding.name for binding in bindings}
     finally:
         analysis.close_all()
 
-    assert probed >= len(UNSAFE_TO_PROBE), "the tool surface failed to bind"
+    # A name that no longer exists would silently stop excluding anything, and
+    # the comment above would quietly become false.
+    assert not UNSAFE_TO_PROBE - bound, UNSAFE_TO_PROBE - bound
+    assert probed == len(bound) - len(UNSAFE_TO_PROBE)
     assert raised == [], raised
     assert malformed == [], malformed

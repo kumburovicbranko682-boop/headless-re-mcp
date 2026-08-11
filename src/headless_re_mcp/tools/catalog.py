@@ -328,6 +328,10 @@ class CommandCatalog:
         if any(not spec.effects for spec in materialized):
             raise ValueError("every tool requires explicit effects")
         self._specs = indexed
+        # Read at call time rather than at registration, so a deployment can be
+        # put in read-only mode without rebuilding the tool surface, and so tools
+        # keep being discoverable instead of silently vanishing.
+        self.write_allowed = True
 
     def get(self, name: str) -> CommandSpec | None:
         return self._specs.get(name)
