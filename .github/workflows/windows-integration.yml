@@ -1,10 +1,14 @@
 ﻿# Windows real-backend gates (M16.2) — self-hosted / authorized runners only.
+#
+# Manual trigger only: this job needs a self-hosted runner labelled
+# [self-hosted, Windows, headless-re] with IDA and the x64dbg headless builds
+# installed. A schedule here queues forever and GitHub cancels it after 24h,
+# which produced daily cancelled runs and a false impression of nightly
+# real-backend coverage. Re-add a schedule once such a runner is registered.
 name: windows-integration
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"
 
 jobs:
   gates:
@@ -17,12 +21,19 @@ jobs:
 
       - name: Environment sanity
         run: |
+          # tests/integration/conftest.py also resolves these from config.json,
+          # so accept either source rather than failing a configured runner.
           $required = @(
             "HEADLESS_RE_X64DBG_HEADLESS_X64",
             "HEADLESS_RE_X64DBG_HEADLESS_X86"
           )
-          foreach ($k in $required) {
-            if (-not [Environment]::GetEnvironmentVariable($k)) { throw "missing $k" }
+          $missing = @($required | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missing.Count -gt 0) {
+            python -m pip install -U pip
+            python -m pip install -e "."
+            $resolved = python -c "from headless_re_mcp.config import Settings; s=Settings.load(); print(int(bool(s.x64dbg_headless_x64 and s.x64dbg_headless_x86)))"
+            if ($resolved.Trim() -ne "1") { throw "x64dbg headless not configured via env or config.json: $($missing -join ', ')" }
+            Write-Host "x64dbg headless resolved from config.json"
           }
           Write-Host "IDA gate binary optional via HEADLESS_RE_IDA_GATE_BINARY / HEADLESS_RE_IDA_HOME"
 
@@ -36,24 +47,16 @@ jobs:
           $env:PYTHONPATH = "src"
           python -m headless_re_mcp gate-xdbg --architecture all
 
-      - name: Core integration gates
+      - name: Build native fixtures
         run: |
-          $env:PYTHONPATH = "src"
-          python -m pytest tests/integration/test_workflow_xdbg.py tests/integration/test_xdbg_rpc.py tests/integration/test_m10_ui_pid_gate.py tests/integration/test_m10_ui_interact_gate.py tests/integration/test_m12_persist_gate.py -vv --tb=short
+          powershell -File .\fixtures\native\build.ps1 -Architecture all
 
-      - name: Optional IDA / UPX gates
+      - name: Integration gates
         run: |
+          # Run every gate rather than a hardcoded subset, which silently omitted
+          # newer gates. -rs prints each skip reason so skip never reads as pass.
           $env:PYTHONPATH = "src"
-          if ($env:HEADLESS_RE_IDA_HOME) {
-            python -m pytest tests/integration/test_m8_static_batch1_gate.py -vv --tb=short
-          } else {
-            Write-Host "IDA not configured — skip IDA gate (not counted as pass)"
-          }
-          if ($env:HEADLESS_RE_UPX) {
-            python -m pytest tests/integration/test_m5_unpack_live_gate.py -vv --tb=short
-          } else {
-            Write-Host "UPX not configured — skip unpack live gate (not counted as pass)"
-          }
+          python -m pytest tests/integration -rs --tb=short
 
       - name: Residue check hint
         run: |

@@ -25,7 +25,7 @@ jobs:
           python -m pip install -e ".[test,dev,web]"
 
       - name: Ruff
-        run: python -m ruff check src tests
+        run: python -m ruff check src tests fixtures openai_bridge.py
 
       - name: Mypy strict
         run: python -m mypy
@@ -53,3 +53,53 @@ jobs:
           python -m headless_re_mcp config generate --skip-doctor --no-examples | Out-File artifacts_ci_config.json -Encoding utf8
           $j = Get-Content artifacts_ci_config.json -Raw | ConvertFrom-Json
           if (-not $j.ok) { throw "config generate failed" }
+
+      - name: OpenAI tool export smoke
+        run: |
+          python openai_bridge.py --names-only | Out-File artifacts_ci_openai.json -Encoding utf8
+          $j = Get-Content artifacts_ci_openai.json -Raw | ConvertFrom-Json
+          if ($j.count -lt 1) { throw "openai bridge exported no tools" }
+          Write-Host "openai tools: $($j.count)"
+
+  webui:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install
+        working-directory: webui
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: webui
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: webui
+        run: npx vitest run
+
+      - name: Build
+        working-directory: webui
+        run: npm run build
+
+      - name: Committed SPA is not stale
+        run: |
+          # Vite encodes content in the asset filename, so an added or removed
+          # asset means the committed bundle no longer matches webui/src. Pure
+          # modifications are ignored because the runner rewrites line endings.
+          $changes = @(git status --porcelain -- src/headless_re_mcp/web/spa)
+          $structural = @($changes | Where-Object { $_ -notmatch '^.M' -and $_ -notmatch '^M.' })
+          if ($structural.Count -gt 0) {
+            $changes | ForEach-Object { Write-Host $_ }
+            throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
+          }
+          Write-Host "committed SPA matches webui/src"
