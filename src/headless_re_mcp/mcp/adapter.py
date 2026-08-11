@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Any
 
+import anyio
 import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
@@ -13,6 +14,21 @@ from mcp.server.fastmcp.tools import Tool
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
 from headless_re_mcp.telemetry import instrument
 from headless_re_mcp.tools.binding import BoundTool
+
+# Debugger calls run for tens of seconds, so they get their own limiter: sharing
+# anyio's default pool would let a handful of stuck tools starve everything else
+# that offloads work, including the framework's own. Reaching this bound queues
+# further tool calls, which is honest backpressure rather than silent starvation.
+_TOOL_THREADS = 16
+_tool_limiter: anyio.CapacityLimiter | None = None
+
+
+def _limiter() -> anyio.CapacityLimiter:
+    # Built on first use because a capacity limiter binds to the running loop.
+    global _tool_limiter
+    if _tool_limiter is None:
+        _tool_limiter = anyio.CapacityLimiter(_TOOL_THREADS)
+    return _tool_limiter
 
 
 def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
@@ -30,7 +46,14 @@ def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
         def call() -> dict[str, Any]:
             return handler(*args, **kwargs)
 
-        return await anyio.to_thread.run_sync(call)
+        # Abandon on cancel: a client that disconnects mid-launch must not keep
+        # the server waiting out the debugger's timeout before it can respond to
+        # anything else. The thread finishes on its own and frees its slot.
+        return await anyio.to_thread.run_sync(
+            call,
+            abandon_on_cancel=True,
+            limiter=_limiter(),
+        )
 
     return offloaded
 

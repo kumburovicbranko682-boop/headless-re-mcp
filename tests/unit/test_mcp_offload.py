@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+import headless_re_mcp.mcp.adapter as adapter
 from headless_re_mcp.core.commands import CommandCatalog, CommandSpec, CommandTransport
 from headless_re_mcp.mcp.adapter import offload, register_tool
 from headless_re_mcp.tools.catalog import ToolEffect
@@ -62,6 +63,38 @@ async def test_a_blocking_tool_leaves_the_event_loop_free() -> None:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_a_cancelled_call_does_not_hold_the_caller_for_the_whole_tool() -> None:
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def blocking() -> dict[str, Any]:
+        loop.call_soon_threadsafe(started.set)
+        time.sleep(1.0)
+        return {"ok": True}
+
+    task = asyncio.create_task(offload(blocking)())
+    await started.wait()
+    task.cancel()
+
+    began = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # A client that disconnects mid-launch must not keep the server waiting out
+    # the debugger's timeout before it can answer anything else.
+    assert time.monotonic() - began < 0.5
+
+
+def test_tool_threads_do_not_share_the_default_pool() -> None:
+    limiter = adapter._limiter()
+
+    # Sharing anyio's default pool would let a handful of stuck debugger calls
+    # starve every other offloaded task, including the framework's own.
+    assert limiter is not None
+    assert limiter.total_tokens == adapter._TOOL_THREADS
+    assert adapter._limiter() is limiter
 
 
 def test_registration_offloads_the_server_copy_but_not_the_catalog_one() -> None:

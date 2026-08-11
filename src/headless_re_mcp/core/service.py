@@ -792,6 +792,11 @@ class AnalysisService(
                     reason="session_closed" if not close_errors else "worker_close_failed",
                 )
 
+        # A caller that closes sessions one at a time never reaches close_all, so
+        # without this the sweep thread outlives every backend it existed for.
+        if not self._runtime_owner.snapshot():
+            self._health.stop()
+
         try:
             for kind in tuple(session.backends):
                 self.registry.detach_backend(session_id, kind)
