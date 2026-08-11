@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "headless-re-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unified headless reverse-engineering MCP for IDA, x64dbg, and CLI backends"
 readme = "README.md"
 license = "GPL-3.0-only"
