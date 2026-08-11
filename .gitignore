@@ -6,6 +6,11 @@ __pycache__/
 .venv/
 dist/
 build/
+node_modules/
+# Stale duplicate copies left behind by a bad directory sync
+*__dup
+# Local agent scratch (transcripts, one-off probes, tool logs)
+agent-tools/
 artifacts/*
 !artifacts/.gitkeep
 *.idb
