@@ -103,7 +103,9 @@ _READ_ONLY_NAMES = frozenset((
     'imports.scan',
     'memory.protect.query',
     'memory.protection',
+    'knowledge.query',
     'memory.regions',
+    'meta.metrics',
     'modules.list',
     'modules.resolve',
     'packer.classify',
@@ -147,6 +149,7 @@ _READ_ONLY_NAMES = frozenset((
     'symbols.resolve',
     'sync.module_preferred_to_runtime',
     'sync.module_runtime_to_preferred',
+    'sync.resolve_runtime_address',
     'sync.runtime_to_static',
     'sync.static_to_runtime',
     'threads.context.read',
@@ -158,6 +161,7 @@ _READ_ONLY_NAMES = frozenset((
     'ui.process_tree',
     'ui.resolve',
     'ui.tree',
+    'ui.virtual_desktop.snapshot',
     'ui.windows.list',
     'unpack.artifacts',
     'unpack.external.probe',
@@ -179,6 +183,10 @@ _READ_ONLY_NAMES = frozenset((
 ))
 _STATE_CHANGE_NAMES = frozenset((
     'breakpoints.condition.set',
+    'dynamic.analyze_function',
+    'dynamic.trace_api_arguments',
+    'knowledge.record',
+    'session.recover',
     'breakpoints.hardware.remove',
     'breakpoints.hardware.set',
     'breakpoints.memory.remove',
@@ -225,6 +233,7 @@ _STATE_CHANGE_NAMES = frozenset((
 ))
 _FILE_WRITE_NAMES = frozenset((
     'artifacts.gc',
+    'batch.analyze',
     'dotnet.deobfuscate',
     'dotnet.reactor.unpack',
     'ghidra.analyze',
@@ -232,6 +241,7 @@ _FILE_WRITE_NAMES = frozenset((
     'patches.apply',
     'patches.list',
     'patches.restore',
+    'report.generate',
     'session.create',
     'static.batch',
     'static.bytes.patch',
@@ -244,6 +254,7 @@ _FILE_WRITE_NAMES = frozenset((
     'trace.start',
     'trace.stop',
     'ui.screenshot',
+    'ui.virtual_desktop.capture',
     'unpack.auto',
     'unpack.cancel',
     'unpack.confirm_oep',
@@ -260,7 +271,7 @@ _FILE_WRITE_NAMES = frozenset((
     'unpack.xvlkc.unpack',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 187:
+if len(_ALL_TOOL_NAMES) != 198:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])
@@ -274,6 +285,12 @@ _SERVICE_OVERRIDES = {
     "dynamic.registers.write": "dynamic_register_write",
     "modules.list": "module_catalog",
     "modules.resolve": "module_resolve",
+    "ui.virtual_desktop.snapshot": "virtual_desktop_snapshot",
+    "ui.virtual_desktop.capture": "virtual_desktop_capture",
+    "sync.resolve_runtime_address": "resolve_runtime_address",
+    "dynamic.analyze_function": "analyze_function_dynamic",
+    "dynamic.trace_api_arguments": "trace_api_arguments",
+    "meta.metrics": "tool_metrics",
 }
 
 

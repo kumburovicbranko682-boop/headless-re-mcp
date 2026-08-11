@@ -49,8 +49,18 @@ CREATE TABLE IF NOT EXISTS audit (
   ok INTEGER NOT NULL,
   result_summary TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS knowledge (
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, kind, key)
+);
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit(session_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id, kind);
 """
 
 
@@ -301,6 +311,93 @@ class SessionStore:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(items) < int(total),
+        }
+
+    def record_knowledge(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: JsonObject,
+    ) -> JsonObject:
+        """Insert or update one analysis fact, keeping the original created_at."""
+        now = datetime.now(UTC).isoformat()
+        payload = json.dumps(value, ensure_ascii=False)[:8000]
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM knowledge WHERE session_id=? AND kind=? AND key=?",
+                (session_id, kind, key),
+            ).fetchone()
+            created_at = row["created_at"] if row is not None else now
+            conn.execute(
+                "INSERT INTO knowledge(session_id,kind,key,value,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?)"
+                " ON CONFLICT(session_id,kind,key) DO UPDATE SET"
+                " value=excluded.value, updated_at=excluded.updated_at",
+                (session_id, kind, key, payload, created_at, now),
+            )
+            conn.commit()
+        return {
+            "session_id": session_id,
+            "kind": kind,
+            "key": key,
+            "created_at": created_at,
+            "updated_at": now,
+            "replaced": row is not None,
+        }
+
+    def list_knowledge(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+        with self._lock, self._connect() as conn:
+            if kind:
+                total = conn.execute(
+                    "SELECT COUNT(*) AS c FROM knowledge WHERE session_id=? AND kind=?",
+                    (session_id, kind),
+                ).fetchone()["c"]
+                rows = conn.execute(
+                    "SELECT * FROM knowledge WHERE session_id=? AND kind=?"
+                    " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
+                    (session_id, kind, limit, offset),
+                ).fetchall()
+            else:
+                total = conn.execute(
+                    "SELECT COUNT(*) AS c FROM knowledge WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()["c"]
+                rows = conn.execute(
+                    "SELECT * FROM knowledge WHERE session_id=?"
+                    " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
+                    (session_id, limit, offset),
+                ).fetchall()
+        entries: list[JsonObject] = []
+        kinds: dict[str, int] = {}
+        for row in rows:
+            item = dict(row)
+            raw = item.get("value")
+            if isinstance(raw, str):
+                with suppress(json.JSONDecodeError):
+                    item["value"] = json.loads(raw)
+            name = str(item["kind"])
+            kinds[name] = kinds.get(name, 0) + 1
+            entries.append(item)
+        return {
+            "session_id": session_id,
+            "entries": entries,
+            "count": len(entries),
+            "total": int(total),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(entries) < int(total),
+            "kinds": kinds,
         }
 
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:

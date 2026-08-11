@@ -26,6 +26,46 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+export async function apiBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  if (!token) throw new Error("Web token missing; reopen the launch URL");
+  const response = await fetch(path, {
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText })) as Record<string, unknown>;
+    const error = payload.error as Record<string, unknown> | undefined;
+    throw new Error(String(error?.message ?? payload.detail ?? `HTTP ${response.status}`));
+  }
+  return response.blob();
+}
+
+export type FrameResult = { blob: Blob; degraded: boolean; reason: string | null; backend: string | null };
+
+export async function apiFrame(path: string, signal?: AbortSignal): Promise<FrameResult> {
+  if (!token) throw new Error("Web token missing; reopen the launch URL");
+  const response = await fetch(path, {
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText })) as Record<string, unknown>;
+    const error = payload.error as Record<string, unknown> | undefined;
+    throw new Error(String(error?.message ?? payload.detail ?? `HTTP ${response.status}`));
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    degraded: response.headers.get("X-Capture-Degraded") === "1",
+    reason: response.headers.get("X-Capture-Degraded-Reason"),
+    backend: response.headers.get("X-Capture-Backend"),
+  };
+}
+
 export async function streamEvents(
   runId: string,
   after: number,

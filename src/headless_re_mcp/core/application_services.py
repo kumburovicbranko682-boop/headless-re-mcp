@@ -93,6 +93,36 @@ class ArtifactApplicationService:
     def describe_artifact(self, artifact_id: str) -> Any:
         return self.repository.describe_artifact(artifact_id)
 
+    def record_knowledge(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: dict[str, Any],
+    ) -> Any:
+        return self.repository.record_knowledge(
+            session_id=session_id,
+            kind=kind,
+            key=key,
+            value=value,
+        )
+
+    def list_knowledge(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Any:
+        return self.repository.list_knowledge(
+            session_id,
+            kind=kind,
+            offset=offset,
+            limit=limit,
+        )
+
     def gc_artifacts(self, *, max_total_bytes: int) -> Any:
         return self.repository.gc_artifacts(max_total_bytes=max_total_bytes)
 

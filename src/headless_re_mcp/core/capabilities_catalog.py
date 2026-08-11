@@ -32,6 +32,8 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
             "ui.click_at",
             "ui.window.close",
             "ui.screenshot",
+            "ui.virtual_desktop.snapshot",
+            "ui.virtual_desktop.capture",
             "ui.ocr",
             "ui.drive_to_event",
         ],

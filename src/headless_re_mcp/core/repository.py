@@ -99,6 +99,24 @@ class AnalysisRepository(Protocol):
         limit: int = 50,
     ) -> JsonObject: ...
 
+    def record_knowledge(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: JsonObject,
+    ) -> JsonObject: ...
+
+    def list_knowledge(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject: ...
+
     def persist_unpack_state(
         self,
         session_id: str,
@@ -287,6 +305,37 @@ class SqliteAnalysisRepository:
     ) -> JsonObject:
         return self.store.list_audit(session_id, offset=offset, limit=limit)
 
+    def record_knowledge(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: JsonObject,
+    ) -> JsonObject:
+        with self.transaction():
+            return self.store.record_knowledge(
+                session_id=session_id,
+                kind=kind,
+                key=key,
+                value=value,
+            )
+
+    def list_knowledge(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        return self.store.list_knowledge(
+            session_id,
+            kind=kind,
+            offset=offset,
+            limit=limit,
+        )
+
 
 class InMemoryAnalysisRepository:
     """Deterministic repository fake with the same observable contract as SQLite.
@@ -305,6 +354,7 @@ class InMemoryAnalysisRepository:
         self._artifacts: dict[str, JsonObject] = {}
         self._timeline: dict[str, list[JsonObject]] = {}
         self._audit: list[JsonObject] = []
+        self._knowledge: dict[tuple[str, str, str], JsonObject] = {}
 
     @contextmanager
     def transaction(self) -> Iterator[AnalysisRepository]:
@@ -563,6 +613,70 @@ class InMemoryAnalysisRepository:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(page) < total,
+        }
+
+    def record_knowledge(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: JsonObject,
+    ) -> JsonObject:
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            existing = self._knowledge.get((session_id, kind, key))
+            created_at = str(existing["created_at"]) if existing is not None else now
+            self._knowledge[(session_id, kind, key)] = {
+                "session_id": session_id,
+                "kind": kind,
+                "key": key,
+                "value": value,
+                "created_at": created_at,
+                "updated_at": now,
+            }
+        return {
+            "session_id": session_id,
+            "kind": kind,
+            "key": key,
+            "created_at": created_at,
+            "updated_at": now,
+            "replaced": existing is not None,
+        }
+
+    def list_knowledge(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+        with self._lock:
+            entries = [
+                dict(item)
+                for item in self._knowledge.values()
+                if item["session_id"] == session_id
+                and (kind is None or item["kind"] == kind)
+            ]
+        entries.sort(key=lambda item: (str(item["kind"]), str(item["key"])))
+        total = len(entries)
+        page = entries[offset : offset + limit]
+        kinds: dict[str, int] = {}
+        for item in page:
+            name = str(item["kind"])
+            kinds[name] = kinds.get(name, 0) + 1
+        return {
+            "session_id": session_id,
+            "entries": page,
+            "count": len(page),
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < total,
+            "kinds": kinds,
         }
 
     def persist_unpack_state(

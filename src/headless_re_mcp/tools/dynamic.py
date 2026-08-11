@@ -165,9 +165,75 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.dynamic_breakpoints(session_id))
 
     @tools.tool(name="dynamic.breakpoint.set")
-    def dynamic_breakpoint_set(session_id: str, address: int) -> dict[str, Any]:
-        """Set a software breakpoint at an address in a paused debuggee."""
-        return _dump(analysis.dynamic_breakpoint_set(session_id, address))
+    def dynamic_breakpoint_set(
+        session_id: str,
+        address: int,
+        address_space: Annotated[str, Field(pattern="^(runtime|static|rva)$")] = "runtime",
+    ) -> dict[str, Any]:
+        """Set a software breakpoint at an address in a paused debuggee.
+
+        Pass address_space=static for an IDA address or rva for a module offset;
+        both are rebased through the live module base, so ASLR never reaches the
+        caller. The default keeps treating address as an already-runtime VA.
+        """
+        return _dump(
+            analysis.dynamic_breakpoint_set(
+                session_id,
+                address,
+                address_space=address_space,
+            )
+        )
+
+    @tools.tool(name="dynamic.analyze_function")
+    def dynamic_analyze_function(
+        session_id: str,
+        address: int,
+        address_space: Annotated[str, Field(pattern="^(runtime|static|rva)$")] = "static",
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
+        decompile: bool = True,
+    ) -> dict[str, Any]:
+        """Decompile a function, arm it at runtime, resume, and report the stop.
+
+        One call replaces decompile + rebase + breakpoint + resume + registers.
+        address defaults to an IDA (static) coordinate and is rebased internally;
+        execution.stopped_at_breakpoint says whether the stop was this address.
+        """
+        return _dump(
+            analysis.analyze_function_dynamic(
+                session_id,
+                address,
+                address_space=address_space,
+                timeout=timeout,
+                decompile=decompile,
+            )
+        )
+
+    @tools.tool(name="dynamic.trace_api_arguments")
+    def dynamic_trace_api_arguments(
+        session_id: str,
+        expression: str | None = None,
+        address: int | None = None,
+        max_hits: Annotated[int, Field(ge=1, le=64)] = 4,
+        argument_count: Annotated[int, Field(ge=0, le=4)] = 4,
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Break on an API and capture its integer arguments on each hit.
+
+        Give either expression (for example kernel32.CreateFileW) or a runtime
+        address. x64 arguments come from RCX/RDX/R8/R9 and x86 arguments are read
+        from the stack above the return address. The breakpoint is removed when
+        the trace ends.
+        """
+        return _dump(
+            analysis.trace_api_arguments(
+                session_id,
+                expression,
+                address=address,
+                max_hits=max_hits,
+                argument_count=argument_count,
+                timeout=timeout,
+            )
+        )
 
     @tools.tool(name="dynamic.breakpoint.remove")
     def dynamic_breakpoint_remove(session_id: str, address: int) -> dict[str, Any]:

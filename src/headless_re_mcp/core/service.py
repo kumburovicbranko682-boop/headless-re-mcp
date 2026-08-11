@@ -19,6 +19,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.addressing import (
     AddressSyncError,
+    ModuleMapping,
     RebasedModuleMapping,
     RuntimeModuleCatalog,
     build_main_module_mapping,
@@ -54,6 +55,7 @@ from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRe
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.runtime_state import (
     BackendRuntimeOwner,
+    BackendRuntimePhase,
     DebuggeeSnapshot,
     DebuggeeStateOwner,
     TraceStateOwner,
@@ -465,6 +467,137 @@ class AnalysisService(
     def open_dynamic(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_dynamic(session_id)
 
+    def session_recover(
+        self,
+        session_id: str,
+        backends: list[str] | None = None,
+    ) -> Result[JsonObject]:
+        """Re-open backends whose worker process died, without resuming execution.
+
+        Recovery is deliberate rather than implicit: a crashed dynamic backend
+        comes back attached to nothing, so the caller decides whether to relaunch.
+        Live backends are kept as-is, and by default only backends this session
+        already had are restored.
+        """
+        try:
+            session = self.registry.get(session_id)
+            if session.state in {SessionState.CLOSING, SessionState.CLOSED}:
+                raise InvalidStateTransition(
+                    f"session cannot be recovered in {session.state.value} state"
+                )
+            if backends:
+                requested = _recover_backend_kinds(backends)
+            else:
+                # A crashed backend is dropped from session.backends, so the
+                # runtime phase is the only durable "this died" signal.
+                attached = set(session.backends)
+                requested = tuple(
+                    kind
+                    for kind in (BackendKind.IDA, BackendKind.X64DBG)
+                    if kind in attached
+                    or self._runtime_owner.phase(session_id, kind)
+                    is BackendRuntimePhase.FAILED
+                )
+            if session.state is SessionState.FAILED:
+                # FAILED is terminal by design, so recovery rebuilds the session
+                # instead of quietly reviving one whose invariants already broke.
+                return self._recover_by_replacement(
+                    session_id,
+                    str(session.binary),
+                    requested,
+                )
+
+            entries: list[JsonObject] = []
+            for kind in requested:
+                if self._runtime_owner.get(session_id, kind) is not None:
+                    entries.append({"backend": kind.value, "action": "kept", "ok": True})
+                    continue
+                entries.append(self._reopen_backend(session_id, kind))
+            return _success(
+                {
+                    "backends": entries,
+                    "requested": [kind.value for kind in requested],
+                    "replaced": False,
+                    "session_id": session_id,
+                    "recovered": sum(
+                        1
+                        for item in entries
+                        if item["action"] == "reopened" and item["ok"]
+                    ),
+                    "kept": sum(1 for item in entries if item["action"] == "kept"),
+                    "failed": sum(1 for item in entries if not item["ok"]),
+                },
+                session_id=session_id,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def _reopen_backend(self, session_id: str, kind: BackendKind) -> JsonObject:
+        opened = (
+            self.open_static(session_id)
+            if kind == BackendKind.IDA
+            else self.open_dynamic(session_id)
+        )
+        entry: JsonObject = {
+            "backend": kind.value,
+            "action": "reopened",
+            "ok": bool(opened.ok),
+        }
+        if not opened.ok and opened.error is not None:
+            entry["error"] = opened.error.model_dump(mode="json")
+        return entry
+
+    def _recover_by_replacement(
+        self,
+        session_id: str,
+        binary: str,
+        requested: tuple[BackendKind, ...],
+    ) -> Result[JsonObject]:
+        """Rebuild a failed session as a fresh one over the same binary."""
+        # Release the dead session first: a surviving IDA worker still holds the
+        # database lock for this binary, and a second open would fail with
+        # idapro.open_database code 4.
+        with suppress(BaseException):
+            self.close_session(session_id)
+        created = self.create_session(binary)
+        if not created.ok or created.data is None:
+            return created
+        payload = created.data.get("session")
+        if not isinstance(payload, dict):
+            raise XdbgRpcError(
+                "rpc_protocol_error",
+                "session creation did not return a session object",
+            )
+        replacement_id = str(payload["id"])
+        entries: list[JsonObject] = []
+        for kind in requested:
+            if entries and not entries[-1]["ok"]:
+                # One failed backend marks the whole session failed, so opening
+                # the next one would only add a confusing cascade error.
+                entries.append(
+                    {
+                        "backend": kind.value,
+                        "action": "skipped",
+                        "ok": False,
+                        "reason": "an earlier backend failed, leaving the session unusable",
+                    }
+                )
+                continue
+            entries.append(self._reopen_backend(replacement_id, kind))
+        return _success(
+            {
+                "backends": entries,
+                "requested": [kind.value for kind in requested],
+                "replaced": True,
+                "previous_session_id": session_id,
+                "session_id": replacement_id,
+                "recovered": sum(1 for item in entries if item["ok"]),
+                "kept": 0,
+                "failed": sum(1 for item in entries if not item["ok"]),
+            },
+            session_id=replacement_id,
+        )
+
     def _open_dynamic(self, session_id: str) -> Result[JsonObject]:
         return self._open_backend(
             session_id,
@@ -686,6 +819,105 @@ class AnalysisService(
         annotated = self._observe_debuggee_state(session_id, dict(result.data))
         return Result[JsonObject](ok=True, data=annotated, error=None, meta=dict(result.meta))
 
+    def virtual_desktop_snapshot(self, session_id: str) -> Result[JsonObject]:
+        """Return a passive, PID-bounded snapshot of the session desktop."""
+        try:
+            runtime = self._runtime(session_id, BackendKind.X64DBG)
+            snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
+            if not callable(snapshot_fn):
+                raise XdbgRpcError(
+                    "capability_unavailable",
+                    "x64dbg worker does not expose desktop monitoring",
+                )
+            with runtime.lock:
+                state = runtime.worker.request("debug.state", timeout=5.0)
+                allowed, debuggee_pid = _desktop_monitor_pids(state)
+                snapshot = snapshot_fn(allowed_pids=allowed)
+            if not isinstance(snapshot, dict):
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "desktop monitor returned a non-object snapshot",
+                )
+            payload = dict(snapshot)
+            payload.update(
+                {
+                    "session_id": session_id,
+                    "debuggee_pid": debuggee_pid,
+                    "debugger_pid": runtime.worker.pid,
+                    "allowed_pids": sorted(allowed),
+                    "capture_mode": "passive",
+                }
+            )
+            return _success(
+                payload,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(
+                exc,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+
+    def virtual_desktop_capture(
+        self,
+        session_id: str,
+        *,
+        hwnd: int | None = None,
+    ) -> Result[JsonObject]:
+        """Capture one authorized hidden-desktop window without switching desktops."""
+        try:
+            runtime = self._runtime(session_id, BackendKind.X64DBG)
+            snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
+            capture_fn = getattr(runtime.worker, "desktop_capture", None)
+            if not callable(snapshot_fn) or not callable(capture_fn):
+                raise XdbgRpcError(
+                    "capability_unavailable",
+                    "x64dbg worker does not expose hidden-desktop capture",
+                )
+            with runtime.lock:
+                state = runtime.worker.request("debug.state", timeout=5.0)
+                allowed, debuggee_pid = _desktop_monitor_pids(state)
+                snapshot = snapshot_fn(allowed_pids=allowed)
+                windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
+                rows = [row for row in windows or [] if isinstance(row, dict)]
+                selected = _select_desktop_window(rows, hwnd)
+                selected_hwnd = int(selected["hwnd"])
+                output = (
+                    self.settings.artifact_root.expanduser().resolve()
+                    / "sessions"
+                    / session_id
+                    / "desktop"
+                    / f"window-{selected_hwnd}.bmp"
+                )
+                capture = capture_fn(
+                    selected_hwnd,
+                    allowed_pids=allowed,
+                    output_path=output,
+                )
+            if not isinstance(capture, dict):
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "desktop capture returned a non-object payload",
+                )
+            return _success(
+                {
+                    **capture,
+                    "session_id": session_id,
+                    "debuggee_pid": debuggee_pid,
+                    "window": selected,
+                    "intrusion": "on_demand_printwindow",
+                },
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(
+                exc,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
 
     def ui_windows_list(
         self,
@@ -4174,12 +4406,41 @@ class AnalysisService(
         self,
         session_id: str,
         address: int,
+        *,
+        address_space: str = "runtime",
     ) -> Result[JsonObject]:
+        """Set a software breakpoint, rebasing static/RVA coordinates when asked."""
+        try:
+            target = self._runtime_breakpoint_address(session_id, address, address_space)
+        except IdaWorkerError as exc:
+            return _failure(exc, session_id=session_id, backend=BackendKind.IDA.value)
+        except XdbgRpcError as exc:
+            return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
         return self._dynamic_request(
             session_id,
             "breakpoints.set",
-            {"address": address},
+            {"address": target},
         )
+
+    def _runtime_breakpoint_address(
+        self,
+        session_id: str,
+        address: int,
+        address_space: str,
+    ) -> int:
+        """Translate a caller coordinate into the live runtime VA."""
+        normalized = (address_space or "runtime").strip().casefold()
+        if normalized == "runtime":
+            return address
+        if normalized not in {"static", "rva"}:
+            raise ValueError("address_space must be one of: runtime, static, rva")
+        mapping = self._main_module_mapping(session_id)
+        static_address = (
+            address if normalized == "static" else mapping.static.from_rva(address)
+        )
+        return int(mapping.translate("static", static_address)["runtime"]["address"])
 
     def dynamic_breakpoint_remove(
         self,
@@ -4876,6 +5137,270 @@ class AnalysisService(
     ) -> Result[JsonObject]:
         return self._sync_address(session_id, "runtime", address)
 
+    def resolve_runtime_address(
+        self,
+        session_id: str,
+        address: int,
+        *,
+        source: str = "static",
+    ) -> Result[JsonObject]:
+        """Resolve a static VA, module RVA, or runtime VA to the live runtime VA.
+
+        The payload always carries a top-level ``runtime_address`` so a caller can
+        act on one field instead of repeating rebase math per coordinate system.
+        """
+        try:
+            if isinstance(address, bool) or type(address) is not int or address < 0:
+                raise ValueError("address must be a non-negative integer")
+            normalized = (source or "static").strip().casefold()
+            if normalized not in {"static", "rva", "runtime"}:
+                raise ValueError("source must be one of: static, rva, runtime")
+            mapping = self._main_module_mapping(session_id)
+            if normalized == "rva":
+                data = mapping.translate("static", mapping.static.from_rva(address))
+            elif normalized == "runtime":
+                data = mapping.translate("runtime", address)
+            else:
+                data = mapping.translate("static", address)
+            payload: JsonObject = {
+                **data,
+                "requested": {"address": address, "source": normalized},
+                "runtime_address": data["runtime"]["address"],
+                "static_address": data["static"]["address"],
+            }
+            return _success(
+                payload,
+                session_id=session_id,
+                source_backend=BackendKind.IDA.value,
+                target_backend=BackendKind.X64DBG.value,
+            )
+        except IdaWorkerError as exc:
+            if exc.code in _FATAL_WORKER_ERRORS:
+                self._fail_runtime(session_id, BackendKind.IDA)
+            return _failure(exc, session_id=session_id, backend=BackendKind.IDA.value)
+        except XdbgRpcError as exc:
+            if exc.code in _FATAL_WORKER_ERRORS:
+                self._fail_runtime(session_id, BackendKind.X64DBG, failure=exc)
+            return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def analyze_function_dynamic(
+        self,
+        session_id: str,
+        address: int,
+        *,
+        address_space: str = "static",
+        timeout: float = 30.0,
+        decompile: bool = True,
+    ) -> Result[JsonObject]:
+        """Decompile one function, arm it at runtime, resume, and report the stop.
+
+        Static decompilation is best-effort context and never blocks the dynamic
+        half. Arming failures fail closed, and the reply reports the observed
+        instruction pointer so a caller can tell "stopped on my breakpoint" apart
+        from "stopped somewhere else".
+        """
+        try:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise ValueError("timeout must be a number")
+            if not 0 < float(timeout) <= _MAX_WORKFLOW_TIMEOUT:
+                raise ValueError(f"timeout must be > 0 and <= {_MAX_WORKFLOW_TIMEOUT}")
+
+            resolved = self.resolve_runtime_address(
+                session_id,
+                address,
+                source=address_space,
+            )
+            if not resolved.ok or resolved.data is None:
+                return resolved
+            coordinates = resolved.data
+            runtime_address = int(coordinates["runtime_address"])
+            static_address = int(coordinates["static_address"])
+
+            static_section: JsonObject = {"decompiled": bool(decompile)}
+            if decompile:
+                decompiled = self.static_decompile(session_id, address=static_address)
+                if decompiled.ok and decompiled.data is not None:
+                    static_section["decompilation"] = decompiled.data
+                else:
+                    static_section["decompiled"] = False
+                    static_section["error"] = (
+                        decompiled.error.model_dump(mode="json")
+                        if decompiled.error is not None
+                        else "decompilation unavailable"
+                    )
+
+            armed = self.dynamic_breakpoint_set(session_id, runtime_address)
+            if not armed.ok:
+                return armed
+
+            resumed = self.dynamic_resume(
+                session_id,
+                wait_for_pause=True,
+                timeout=float(timeout),
+            )
+            execution: JsonObject = {"resumed": bool(resumed.ok)}
+            if resumed.ok and resumed.data is not None:
+                execution["state"] = resumed.data.get("state")
+            elif resumed.error is not None:
+                execution["error"] = resumed.error.model_dump(mode="json")
+
+            registers: JsonObject | None = None
+            if resumed.ok:
+                register_result = self.dynamic_registers_read(session_id)
+                if register_result.ok and register_result.data is not None:
+                    registers = register_result.data
+
+            pointer = _instruction_pointer(registers)
+            execution["instruction_pointer"] = pointer
+            execution["stopped_at_breakpoint"] = (
+                None if pointer is None else pointer == runtime_address
+            )
+
+            return _success(
+                {
+                    "function": {
+                        "static_address": static_address,
+                        "runtime_address": runtime_address,
+                        "rva": coordinates.get("rva"),
+                        "rebase_delta": coordinates.get("rebase_delta"),
+                        "module": coordinates.get("module"),
+                    },
+                    "static": static_section,
+                    "breakpoint": {"address": runtime_address, "armed": True},
+                    "execution": execution,
+                    "registers": registers,
+                },
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def trace_api_arguments(
+        self,
+        session_id: str,
+        expression: str | None = None,
+        *,
+        address: int | None = None,
+        max_hits: int = 4,
+        argument_count: int = 4,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        """Break on an API and capture its integer arguments on each hit.
+
+        x64 arguments come from the Microsoft register convention and x86
+        arguments are read off the stack above the return address. The breakpoint
+        is always removed again, and a stop at another address ends the trace
+        rather than mislabelling someone else's break as a hit.
+        """
+        try:
+            if (expression is None) == (address is None):
+                raise ValueError("provide exactly one of expression or address")
+            if isinstance(max_hits, bool) or type(max_hits) is not int or not 1 <= max_hits <= 64:
+                raise ValueError("max_hits must be 1..64")
+            if (
+                isinstance(argument_count, bool)
+                or type(argument_count) is not int
+                or not 0 <= argument_count <= len(_X64_ARGUMENT_REGISTERS)
+            ):
+                raise ValueError(
+                    f"argument_count must be 0..{len(_X64_ARGUMENT_REGISTERS)}"
+                )
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise ValueError("timeout must be a number")
+            if not 0 < float(timeout) <= _MAX_WORKFLOW_TIMEOUT:
+                raise ValueError(f"timeout must be > 0 and <= {_MAX_WORKFLOW_TIMEOUT}")
+
+            architecture = self.registry.get(session_id).architecture
+            decodes_registers = architecture == Architecture.X64
+            resolution: JsonObject | None = None
+            target_address = address
+            if expression is not None:
+                resolved = self.symbols_resolve(
+                    session_id,
+                    expression,
+                    timeout=float(timeout),
+                )
+                if not resolved.ok or resolved.data is None:
+                    return resolved
+                resolution = resolved.data
+                candidate = resolution.get("address")
+                if not isinstance(candidate, int) or isinstance(candidate, bool):
+                    raise ValueError("symbol resolution did not return an address")
+                target_address = candidate
+            if target_address is None:
+                raise ValueError("unable to determine a trace address")
+
+            armed = self.dynamic_breakpoint_set(session_id, target_address)
+            if not armed.ok:
+                return armed
+
+            hits: list[JsonObject] = []
+            stopped_elsewhere = False
+            try:
+                for sequence in range(int(max_hits)):
+                    resumed = self.dynamic_resume(
+                        session_id,
+                        wait_for_pause=True,
+                        timeout=float(timeout),
+                    )
+                    if not resumed.ok:
+                        break
+                    register_result = self.dynamic_registers_read(session_id)
+                    registers = register_result.data if register_result.ok else None
+                    pointer = _instruction_pointer(registers)
+                    if pointer is not None and pointer != target_address:
+                        stopped_elsewhere = True
+                        break
+                    if decodes_registers:
+                        arguments = _register_arguments(registers, int(argument_count))
+                    else:
+                        stack = self.stack_read(
+                            session_id,
+                            count=int(argument_count) + 1,
+                            timeout=float(timeout),
+                        )
+                        arguments = _stack_arguments(
+                            stack.data if stack.ok else None,
+                            int(argument_count),
+                        )
+                    hits.append(
+                        {
+                            "sequence": sequence,
+                            "instruction_pointer": pointer,
+                            "arguments": arguments,
+                        }
+                    )
+            finally:
+                self.dynamic_breakpoint_remove(session_id, target_address)
+
+            return _success(
+                {
+                    "target": {
+                        "expression": expression,
+                        "address": target_address,
+                        "resolution": resolution,
+                    },
+                    "architecture": architecture.value,
+                    "convention": (
+                        "microsoft_x64_integer_registers"
+                        if decodes_registers
+                        else "x86_stack_arguments"
+                    ),
+                    "hits": hits,
+                    "hit_count": len(hits),
+                    "max_hits": int(max_hits),
+                    "truncated": len(hits) >= int(max_hits),
+                    "stopped_elsewhere": stopped_elsewhere,
+                },
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def _explicit_module_operation(
         self,
         session_id: str,
@@ -4947,6 +5472,31 @@ class AnalysisService(
                 retryable=True,
             )
 
+    def _main_module_mapping(self, session_id: str) -> ModuleMapping:
+        """Build the IDA<->x64dbg mapping for the session main module."""
+        session = self.registry.get(session_id)
+        static_runtime = self._runtime(session_id, BackendKind.IDA)
+        dynamic_runtime = self._runtime(session_id, BackendKind.X64DBG)
+        with static_runtime.lock, dynamic_runtime.lock:
+            self._require_current_runtime(session_id, BackendKind.IDA, static_runtime)
+            self._require_current_runtime(session_id, BackendKind.X64DBG, dynamic_runtime)
+            if "modules.list" not in dynamic_runtime.worker.capabilities:
+                raise XdbgRpcError(
+                    "capability_unavailable",
+                    "backend does not provide modules.list",
+                    details={"capability": "modules.list"},
+                )
+            runtime_modules = dynamic_runtime.worker.request(
+                "modules.list",
+                timeout=30.0,
+            )
+            return build_main_module_mapping(
+                session,
+                static_runtime.worker.metadata,
+                runtime_modules,
+                dynamic_runtime.worker.metadata,
+            )
+
     def _sync_address(
         self,
         session_id: str,
@@ -4954,29 +5504,7 @@ class AnalysisService(
         address: int,
     ) -> Result[JsonObject]:
         try:
-            session = self.registry.get(session_id)
-            static_runtime = self._runtime(session_id, BackendKind.IDA)
-            dynamic_runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with static_runtime.lock, dynamic_runtime.lock:
-                self._require_current_runtime(session_id, BackendKind.IDA, static_runtime)
-                self._require_current_runtime(session_id, BackendKind.X64DBG, dynamic_runtime)
-                if "modules.list" not in dynamic_runtime.worker.capabilities:
-                    raise XdbgRpcError(
-                        "capability_unavailable",
-                        "backend does not provide modules.list",
-                        details={"capability": "modules.list"},
-                    )
-                runtime_modules = dynamic_runtime.worker.request(
-                    "modules.list",
-                    timeout=30.0,
-                )
-                mapping = build_main_module_mapping(
-                    session,
-                    static_runtime.worker.metadata,
-                    runtime_modules,
-                    dynamic_runtime.worker.metadata,
-                )
-                data = mapping.translate(source, address)
+            data = self._main_module_mapping(session_id).translate(source, address)
             return _success(
                 data,
                 session_id=session_id,
@@ -5640,7 +6168,137 @@ def _create_xdbg_worker(session: Session, settings: Settings) -> DynamicWorker:
             f"x64dbg {session.architecture.value} headless executable is not configured",
             details={"environment_variable": variable},
         )
-    return XdbgClient(executable, session.architecture)
+    return XdbgClient(
+        executable,
+        session.architecture,
+        hidden_desktop=settings.hidden_desktop,
+    )
+
+
+_X64_ARGUMENT_REGISTERS = ("rcx", "rdx", "r8", "r9")
+
+
+def _register_arguments(registers: JsonObject | None, count: int) -> list[JsonObject]:
+    """Decode Microsoft x64 integer arguments from a registers payload."""
+    if not isinstance(registers, dict) or count <= 0:
+        return []
+    nested = registers.get("registers")
+    bank = nested if isinstance(nested, dict) else registers
+    arguments: list[JsonObject] = []
+    for index, name in enumerate(_X64_ARGUMENT_REGISTERS[:count]):
+        value = bank.get(name)
+        usable = isinstance(value, int) and not isinstance(value, bool)
+        arguments.append(
+            {
+                "index": index,
+                "source": name,
+                "value": value if usable else None,
+            }
+        )
+    return arguments
+
+
+def _recover_backend_kinds(backends: list[str]) -> tuple[BackendKind, ...]:
+    """Normalise caller backend names, rejecting anything unrecognised."""
+    kinds: list[BackendKind] = []
+    for raw in backends:
+        name = str(raw).strip().casefold()
+        if name in {"ida", "static"}:
+            kind = BackendKind.IDA
+        elif name in {"x64dbg", "dynamic"}:
+            kind = BackendKind.X64DBG
+        else:
+            raise ValueError("backends entries must be one of: ida, static, x64dbg, dynamic")
+        if kind not in kinds:
+            kinds.append(kind)
+    return tuple(kinds)
+
+
+def _stack_arguments(payload: JsonObject | None, count: int) -> list[JsonObject]:
+    """Decode x86 cdecl/stdcall arguments sitting above the return address.
+
+    At a function entry the top of stack holds the return address, so argument i
+    lives at slot i+1 of a stack.read starting from the stack pointer.
+    """
+    if not isinstance(payload, dict) or count <= 0:
+        return []
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return []
+    raw_width = payload.get("pointer_size")
+    width = raw_width if isinstance(raw_width, int) and raw_width > 0 else 4
+    arguments: list[JsonObject] = []
+    for index in range(count):
+        slot = index + 1
+        entry = entries[slot] if slot < len(entries) else None
+        value = entry.get("value") if isinstance(entry, dict) else None
+        usable = isinstance(value, int) and not isinstance(value, bool)
+        arguments.append(
+            {
+                "index": index,
+                "source": f"[esp+{slot * width:#x}]",
+                "value": value if usable else None,
+            }
+        )
+    return arguments
+
+
+def _instruction_pointer(registers: JsonObject | None) -> int | None:
+    """Read rip/eip/pc from a registers payload without assuming one shape."""
+    if not isinstance(registers, dict):
+        return None
+    nested = registers.get("registers")
+    bank = nested if isinstance(nested, dict) else registers
+    for name in ("rip", "eip", "pc"):
+        candidate = bank.get(name)
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return candidate
+    return None
+
+
+def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None]:
+    """Resolve a bounded target process set for passive desktop monitoring."""
+    value = state.get("process_id") or state.get("debuggee_pid")
+    if type(value) is not int or value <= 0 or not is_pid_alive(value):
+        return frozenset(), None
+    from headless_re_mcp.core.process_tree import enumerate_direct_children
+
+    allowed = {value}
+    for child in enumerate_direct_children(value):
+        if is_pid_alive(child):
+            allowed.add(child)
+    return frozenset(allowed), value
+
+
+def _select_desktop_window(
+    windows: list[JsonObject],
+    requested_hwnd: int | None,
+) -> JsonObject:
+    if requested_hwnd is not None:
+        if type(requested_hwnd) is not int or requested_hwnd <= 0:
+            raise ValueError("hwnd must be a positive integer")
+        for row in windows:
+            if row.get("hwnd") == requested_hwnd:
+                return row
+        raise XdbgRpcError(
+            "not_found",
+            "requested hwnd is not on the authorized hidden desktop",
+            details={"hwnd": requested_hwnd},
+        )
+    if not windows:
+        raise XdbgRpcError(
+            "not_found",
+            "the debuggee has no capturable hidden-desktop window",
+        )
+    return max(
+        windows,
+        key=lambda row: (
+            bool(row.get("visible")),
+            not bool(row.get("minimized")),
+            int(row.get("area") or 0),
+            bool(row.get("title")),
+        ),
+    )
 
 
 def _workflow_timeout(value: float) -> float | ValueError:

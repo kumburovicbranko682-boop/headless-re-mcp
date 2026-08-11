@@ -360,4 +360,26 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
                 accept_ui_goal=accept_ui_goal,
             )
         )
+
+    @tools.tool(name="ui.virtual_desktop.snapshot")
+    def ui_virtual_desktop_snapshot(session_id: str) -> dict[str, Any]:
+        """Passive PID-bounded snapshot of the session's hidden Win32 desktop.
+
+        Lists debuggee-owned windows without switching the input desktop; requires
+        the x64dbg worker started under HEADLESS_RE_HIDDEN_DESKTOP.
+        """
+        return _dump(analysis.virtual_desktop_snapshot(session_id))
+
+    @tools.tool(name="ui.virtual_desktop.capture")
+    def ui_virtual_desktop_capture(
+        session_id: str,
+        hwnd: int | None = None,
+    ) -> dict[str, Any]:
+        """Capture one authorized hidden-desktop window to BMP on demand.
+
+        Never switches the input desktop and flags degraded (blank/uniform) frames
+        instead of silently falling back; selects the top visible window when hwnd
+        is omitted.
+        """
+        return _dump(analysis.virtual_desktop_capture(session_id, hwnd=hwnd))
     return tools.bindings

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from math import isfinite
 from pathlib import Path
 from time import monotonic
@@ -24,6 +26,7 @@ from headless_re_mcp.core.windows import (
     list_windows_for_pids,
     resolve_allowed_ui_pids,
 )
+from headless_re_mcp.reporting import render_markdown_report
 from headless_re_mcp.workflows.navigation import EventPattern
 
 JsonObject = dict[str, Any]
@@ -113,6 +116,8 @@ class UiDriveMixin:
     settings: Settings
     registry: SessionRegistry
     workflow_status: Callable[[str], Result[JsonObject]]
+    create_session: Callable[[str], Result[JsonObject]]
+    open_static: Callable[[str], Result[JsonObject]]
 
     def ui_drive_to_event(
         self,
@@ -558,6 +563,195 @@ class ExtAnalysisMixin(UiDriveMixin):
                 limit=limit,
             )
         )
+
+    def batch_analyze(
+        self,
+        binaries: Sequence[str],
+        *,
+        max_workers: int = 2,
+        open_static: bool = True,
+    ) -> Result[JsonObject]:
+        """Create one session per binary with bounded parallelism.
+
+        Each entry succeeds or fails on its own so a single bad sample cannot
+        abort the batch. Parallelism is capped because every static backend is a
+        real analyser process, not a coroutine.
+        """
+        try:
+            paths = [str(item).strip() for item in binaries if str(item).strip()]
+            if not paths:
+                raise ValueError("binaries must contain at least one path")
+            if len(paths) > 32:
+                raise ValueError("binaries must contain at most 32 paths")
+            if (
+                isinstance(max_workers, bool)
+                or type(max_workers) is not int
+                or not 1 <= max_workers <= 8
+            ):
+                raise ValueError("max_workers must be 1..8")
+
+            def analyse(path: str) -> JsonObject:
+                entry: JsonObject = {"binary": path, "ok": False, "session_id": None}
+                created = self.create_session(path)
+                if not created.ok or created.data is None:
+                    if created.error is not None:
+                        entry["error"] = created.error.model_dump(mode="json")
+                    return entry
+                session = created.data.get("session")
+                if not isinstance(session, dict):
+                    entry["error"] = {"code": "rpc_protocol_error", "message": "no session"}
+                    return entry
+                session_id = str(session["id"])
+                entry["session_id"] = session_id
+                entry["ok"] = True
+                if open_static:
+                    opened = self.open_static(session_id)
+                    entry["static_open"] = bool(opened.ok)
+                    if not opened.ok:
+                        entry["ok"] = False
+                        if opened.error is not None:
+                            entry["error"] = opened.error.model_dump(mode="json")
+                return entry
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                entries = list(pool.map(analyse, paths))
+
+            succeeded = sum(1 for entry in entries if entry["ok"])
+            return _success(
+                {
+                    "entries": entries,
+                    "count": len(entries),
+                    "succeeded": succeeded,
+                    "failed": len(entries) - succeeded,
+                    "max_workers": max_workers,
+                }
+            )
+        except BaseException as exc:
+            return _failure(exc)
+
+    def knowledge_record(
+        self,
+        session_id: str,
+        kind: str,
+        key: str,
+        value: Mapping[str, Any] | None = None,
+    ) -> Result[JsonObject]:
+        """Record one durable analysis fact, replacing the same (kind, key) pair.
+
+        Keeping findings keyed makes repeated analysis idempotent instead of
+        appending duplicates every time an agent revisits a function.
+        """
+        try:
+            normalized_kind = (kind or "").strip()
+            normalized_key = (key or "").strip()
+            if not normalized_kind or len(normalized_kind) > 64:
+                raise ValueError("kind must be a non-empty string of at most 64 chars")
+            if not normalized_key or len(normalized_key) > 256:
+                raise ValueError("key must be a non-empty string of at most 256 chars")
+            self.registry.get(session_id)
+            entry = self.services.artifacts.record_knowledge(
+                session_id=session_id,
+                kind=normalized_kind,
+                key=normalized_key,
+                value=dict(value) if value else {},
+            )
+            return _success(entry, session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def knowledge_query(
+        self,
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
+        """Read accumulated analysis facts for a session, optionally by kind."""
+        try:
+            self.registry.get(session_id)
+            return _success(
+                self.services.artifacts.list_knowledge(
+                    session_id,
+                    kind=(kind or None),
+                    offset=offset,
+                    limit=limit,
+                ),
+                session_id=session_id,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def report_generate(
+        self,
+        session_id: str,
+        *,
+        title: str | None = None,
+        include_audit: bool = True,
+        audit_limit: int = 30,
+    ) -> Result[JsonObject]:
+        """Render a Markdown analysis report and save it under the artifact root."""
+        try:
+            if (
+                isinstance(audit_limit, bool)
+                or type(audit_limit) is not int
+                or not 1 <= audit_limit <= 200
+            ):
+                raise ValueError("audit_limit must be 1..200")
+            session = self.registry.get(session_id)
+            knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
+            artifacts = self.services.artifacts.list_artifacts(session_id, limit=100)
+            audit = (
+                self.services.artifacts.list_audit(session_id, limit=audit_limit)
+                if include_audit
+                else None
+            )
+            markdown = render_markdown_report(
+                session={
+                    "id": session_id,
+                    "binary": str(session.binary),
+                    "sha256": session.sha256,
+                    "architecture": session.architecture.value,
+                    "state": session.state.value,
+                    "backends": sorted(backend.value for backend in session.backends),
+                },
+                knowledge=knowledge,
+                artifacts=artifacts,
+                audit=audit,
+                title=title,
+            )
+            directory = (
+                self.settings.artifact_root.expanduser().resolve() / "reports" / session_id
+            )
+            directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            path = directory / f"report-{stamp}.md"
+            path.write_text(markdown, encoding="utf-8")
+            return _success(
+                {
+                    "path": str(path),
+                    "bytes": path.stat().st_size,
+                    "findings": int(knowledge.get("total") or 0),
+                    "markdown": markdown,
+                },
+                session_id=session_id,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def tool_metrics(self, *, limit: int = 20) -> Result[JsonObject]:
+        """Return per-tool call counts, failure counts and latency percentiles.
+
+        Sampled from a bounded in-memory ring, so it reflects the current process
+        rather than all history; the same records are emitted as JSON log lines.
+        """
+        from headless_re_mcp.telemetry import TELEMETRY
+
+        if isinstance(limit, bool) or type(limit) is not int or not 0 <= limit <= 200:
+            return _failure(ValueError("limit must be 0..200"))
+        payload = TELEMETRY.metrics()
+        payload["recent"] = TELEMETRY.recent(limit)
+        return _success(payload)
 
 
 def _require_debuggee_pid(service: Any, session_id: str) -> int:

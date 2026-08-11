@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from headless_re_mcp.openai_bridge import (
+    MAX_FUNCTION_NAME,
+    build_openai_tools,
+    openai_function_name,
+)
+from headless_re_mcp.tools.catalog import (
+    CommandCatalog,
+    CommandSpec,
+    CommandTransport,
+    ToolEffect,
+)
+
+
+def _handler(**_: Any) -> dict[str, Any]:
+
+    return {}
+
+
+
+
+
+def _spec(name: str, effects: frozenset[ToolEffect]) -> CommandSpec:
+
+    return CommandSpec(
+
+        name=name,
+
+        service_method=name.replace(".", "_"),
+
+        transports=frozenset({CommandTransport.MCP}),
+
+        effects=effects,
+
+        handler=_handler,
+
+        input_schema={"type": "object", "properties": {}},
+
+        description="desc",
+
+    )
+
+
+
+
+
+def test_openai_function_name_sanitizes_dotted_names() -> None:
+
+    assert openai_function_name("static.functions") == "static_functions"
+
+    assert openai_function_name("ui.virtual_desktop.capture") == "ui_virtual_desktop_capture"
+
+    assert len(openai_function_name("a" * 200)) <= MAX_FUNCTION_NAME
+
+
+
+
+
+def test_build_openai_tools_maps_names_and_flags_writes() -> None:
+
+    catalog = CommandCatalog(
+
+        (
+
+            _spec("static.functions", frozenset({ToolEffect.READ_ONLY})),
+
+            _spec(
+
+                "static.open",
+
+                frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE}),
+
+            ),
+
+        )
+
+    )
+
+
+
+    payload = build_openai_tools(catalog)
+
+
+
+    assert payload["count"] == 2
+
+    assert payload["name_map"] == {
+
+        "static_functions": "static.functions",
+
+        "static_open": "static.open",
+
+    }
+
+    assert payload["write_tools"] == ["static_open"]
+
+    entry = payload["tools"][0]
+
+    assert entry["type"] == "function"
+
+    assert entry["function"]["name"] == "static_functions"
+
+    assert entry["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+
+
+
+def test_build_openai_tools_rejects_unbound_catalog() -> None:
+
+    catalog = CommandCatalog(
+
+        (
+
+            CommandSpec(
+
+                name="static.functions",
+
+                service_method="static_functions",
+
+                transports=frozenset({CommandTransport.MCP}),
+
+                effects=frozenset({ToolEffect.READ_ONLY}),
+
+            ),
+
+        )
+
+    )
+
+
+
+    with pytest.raises(RuntimeError, match="not bound"):
+
+        build_openai_tools(catalog)
+
+
+
+
+
+def test_every_exported_name_is_openai_safe_and_maps_back() -> None:
+
+    """The sanitisation is the whole point, so check it against the real catalog."""
+
+    import re
+
+    from headless_re_mcp.openai_bridge import build_bound_catalog, build_openai_tools
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+
+
+    payload = build_openai_tools(build_bound_catalog())
+
+    pattern = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+    names = [entry["function"]["name"] for entry in payload["tools"]]
+
+
+
+    assert names, "no tools were exported"
+
+    assert len(set(names)) == len(names), "sanitised names collided"
+
+    for name in names:
+
+        assert pattern.fullmatch(name), f"not an OpenAI-safe function name: {name}"
+
+    assert len(payload["name_map"]) == payload["count"]
+
+    for mcp_name in payload["name_map"].values():
+
+        assert COMMAND_CATALOG.get(mcp_name) is not None, mcp_name
+
+
+
+
+
+def test_build_openai_tools_detects_name_collisions() -> None:
+
+    catalog = CommandCatalog(
+
+        (
+
+            _spec("ui.window.close", frozenset({ToolEffect.READ_ONLY})),
+
+            _spec("ui.window_close", frozenset({ToolEffect.READ_ONLY})),
+
+        )
+
+    )
+
+
+
+    with pytest.raises(RuntimeError, match="collision"):
+
+        build_openai_tools(catalog)
+

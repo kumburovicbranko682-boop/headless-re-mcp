@@ -46,6 +46,20 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Map an explicitly selected runtime VA back to its PE preferred VA."""
         return _dump(analysis.sync_module_runtime_to_preferred(session_id, selector, address))
 
+    @tools.tool(name="sync.resolve_runtime_address")
+    def sync_resolve_runtime_address(
+        session_id: str,
+        address: int,
+        source: str = "static",
+    ) -> dict[str, Any]:
+        """Resolve a static VA, module RVA, or runtime VA to the live runtime VA.
+
+        source is one of static (IDA address), rva (module offset) or runtime.
+        The reply carries a top-level runtime_address, so callers never compute
+        rebase deltas themselves before setting breakpoints or reading memory.
+        """
+        return _dump(analysis.resolve_runtime_address(session_id, address, source=source))
+
     @tools.tool(name="capabilities.search")
     def capabilities_search(
         backend: str | None = None,
@@ -98,4 +112,95 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
+
+    @tools.tool(name="session.recover")
+    def session_recover(
+        session_id: str,
+        backends: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Re-open backends whose worker process died, without resuming execution.
+
+        Defaults to the backends this session already had; pass ida/x64dbg to
+        force specific ones. A recovered dynamic backend is attached to nothing,
+        so relaunch or reattach explicitly afterwards.
+        """
+        return _dump(analysis.session_recover(session_id, backends))
+
+    @tools.tool(name="batch.analyze")
+    def batch_analyze(
+        binaries: list[str],
+        max_workers: Annotated[int, Field(ge=1, le=8)] = 2,
+        open_static: bool = True,
+    ) -> dict[str, Any]:
+        """Create one session per binary with bounded parallelism.
+
+        Entries fail independently so one unreadable sample cannot abort the
+        batch; parallelism is capped because each static backend is a process.
+        """
+        return _dump(
+            analysis.batch_analyze(
+                binaries,
+                max_workers=max_workers,
+                open_static=open_static,
+            )
+        )
+
+    @tools.tool(name="knowledge.record")
+    def knowledge_record(
+        session_id: str,
+        kind: str,
+        key: str,
+        value: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record one durable analysis fact, idempotent per kind and key.
+
+        Use kinds such as function, breakpoint, struct or api so later queries and
+        the generated report can group what the analysis actually learned.
+        """
+        return _dump(analysis.knowledge_record(session_id, kind, key, value))
+
+    @tools.tool(name="knowledge.query")
+    def knowledge_query(
+        session_id: str,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        """Read accumulated analysis facts for a session, optionally one kind."""
+        return _dump(
+            analysis.knowledge_query(
+                session_id,
+                kind=kind,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
+    @tools.tool(name="report.generate")
+    def report_generate(
+        session_id: str,
+        title: str | None = None,
+        include_audit: bool = True,
+        audit_limit: Annotated[int, Field(ge=1, le=200)] = 30,
+    ) -> dict[str, Any]:
+        """Render a Markdown analysis report from session state, findings and audit."""
+        return _dump(
+            analysis.report_generate(
+                session_id,
+                title=title,
+                include_audit=include_audit,
+                audit_limit=audit_limit,
+            )
+        )
+
+    @tools.tool(name="meta.metrics")
+    def meta_metrics(
+        limit: Annotated[int, Field(ge=0, le=200)] = 20,
+    ) -> dict[str, Any]:
+        """Per-tool call counts, failures and latency percentiles for this process.
+
+        Sampled from a bounded ring of recent calls; the same records are emitted
+        as structured JSON log lines under the headless_re_mcp.telemetry logger.
+        """
+        return _dump(analysis.tool_metrics(limit=limit))
     return tools.bindings

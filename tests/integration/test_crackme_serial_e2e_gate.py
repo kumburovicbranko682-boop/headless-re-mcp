@@ -43,9 +43,13 @@ def test_crackme_serial_solved_end_to_end() -> None:
         pytest.skip("Windows only")
     if not _CRACKME.is_file():
         pytest.skip(f"crackme missing: {_CRACKME}")
-    os.environ["HEADLESS_RE_X64DBG_HEADLESS_X64"] = str(
-        _PROJECT_ROOT / "artifacts" / "x64dbg-x64" / "Release" / "headless.exe"
-    )
+    # Only fall back to a local build; overwriting would break a machine whose
+    # headless.exe is configured somewhere else (deps bundle, custom path).
+    built_headless = _PROJECT_ROOT / "artifacts" / "x64dbg-x64" / "Release" / "headless.exe"
+    if not os.environ.get("HEADLESS_RE_X64DBG_HEADLESS_X64") and built_headless.is_file():
+        os.environ["HEADLESS_RE_X64DBG_HEADLESS_X64"] = str(built_headless)
+    if not os.environ.get("HEADLESS_RE_X64DBG_HEADLESS_X64"):
+        pytest.skip("x64 headless executable is not configured")
     r2 = os.environ.get("HEADLESS_RE_R2") or r"C:\Program Files\Rizin\bin\rizin.exe"
     if not Path(r2).is_file():
         pytest.skip("rizin missing")

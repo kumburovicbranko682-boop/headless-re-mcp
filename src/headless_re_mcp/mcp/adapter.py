@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
 
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
+from headless_re_mcp.telemetry import instrument
 from headless_re_mcp.tools.binding import BoundTool
 
 
@@ -22,21 +23,24 @@ def register_tool(
     """Register one typed handler and retain its generated schema in the catalog."""
     spec = catalog.require(name)
     description = handler.__doc__ or spec.description or name
+    # One wrapper serves both transports: the server calls it directly and the
+    # catalog binding is what the agent transport invokes.
+    observed = instrument(handler, name=name)
     server.add_tool(
-        handler,
+        observed,
         name=name,
         description=description,
         structured_output=True,
     )
     tool = Tool.from_function(
-        handler,
+        observed,
         name=name,
         description=description,
         structured_output=True,
     )
     catalog.bind_mcp(
         name,
-        handler,
+        observed,
         input_schema=dict(tool.parameters),
         description=tool.description,
     )

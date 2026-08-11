@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -42,19 +43,24 @@ class Probe:
         }
 
 
+REQUIRED_PROBES: frozenset[str] = frozenset(
+    {
+        "python",
+        "ida_idalib",
+        "x64dbg_source",
+        "x64dbg_headless_binaries",
+        "native_toolchain",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
     probes: tuple[Probe, ...]
 
     @property
     def ready(self) -> bool:
-        required = {
-            "python",
-            "ida_idalib",
-            "x64dbg_source",
-            "x64dbg_headless_binaries",
-            "native_toolchain",
-        }
+        required = REQUIRED_PROBES
         return all(
             probe.status == ProbeStatus.READY
             for probe in self.probes
@@ -80,6 +86,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             probe_x64dbg_source(current),
             probe_x64dbg_binaries(current),
             probe_native_toolchain(),
+            probe_isolation(current),
             probe_die(current),
             probe_exeinfope(current),
             probe_upx(current),
@@ -94,6 +101,65 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             probe_command("java", ("java",)),
             probe_command("windbg", ("cdb", "windbg", "windbgx")),
         )
+    )
+
+
+_VM_DRIVER_HINTS: tuple[tuple[str, str], ...] = (
+    ("vmware", r"C:\Windows\System32\drivers\vmhgfs.sys"),
+    ("vmware", r"C:\Windows\System32\drivers\vmmouse.sys"),
+    ("virtualbox", r"C:\Windows\System32\drivers\VBoxGuest.sys"),
+    ("hyperv", r"C:\Windows\System32\drivers\vmbus.sys"),
+)
+
+
+def _is_elevated() -> bool | None:
+    """Return whether the process is elevated, or None when it cannot be told."""
+    if os.name != "nt":
+        return None
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return None
+
+
+def probe_isolation(settings: Settings) -> Probe:
+    """Advisory: is this host disposable enough to execute unknown samples?
+
+    Never part of the required set, so it cannot flip overall readiness. It exists
+    because the debugger really executes the target, and an operator should see
+    that fact before launching an untrusted binary.
+    """
+    hints = sorted({name for name, path in _VM_DRIVER_HINTS if Path(path).exists()})
+    elevated = _is_elevated()
+    hidden_desktop = bool(getattr(settings, "hidden_desktop", False))
+    details: dict[str, Any] = {
+        "virtualization_hints": hints,
+        "elevated": elevated,
+        "hidden_desktop": hidden_desktop,
+        "advisory": True,
+    }
+    if elevated:
+        return Probe(
+            "isolation",
+            ProbeStatus.BLOCKED,
+            "running elevated; an unknown sample would execute with admin rights",
+            details,
+            "Run from a dedicated low-privilege account inside a disposable VM or host.",
+        )
+    if hints or hidden_desktop:
+        signals = ", ".join(hints or ["hidden desktop"])
+        return Probe(
+            "isolation",
+            ProbeStatus.READY,
+            f"isolation signals present: {signals}",
+            details,
+        )
+    return Probe(
+        "isolation",
+        ProbeStatus.MISSING,
+        "no virtualization or hidden-desktop isolation detected",
+        details,
+        "Analyse unknown samples in a disposable VM/host, or set HEADLESS_RE_HIDDEN_DESKTOP=1.",
     )
 
 
@@ -827,11 +893,36 @@ def probe_python_module(name: str, module: str) -> Probe:
 
 
 def format_report(report: DoctorReport) -> str:
-    lines = [f"Overall: {'READY' if report.ready else 'NOT READY'}"]
-    for probe in report.probes:
-        lines.append(f"[{probe.status.value.upper():8}] {probe.name}: {probe.summary}")
-        if probe.remediation:
-            lines.append(f"           fix: {probe.remediation}")
+    required = [probe for probe in report.probes if probe.name in REQUIRED_PROBES]
+    optional = [probe for probe in report.probes if probe.name not in REQUIRED_PROBES]
+    ready_required = sum(1 for probe in required if probe.status == ProbeStatus.READY)
+    blocking = [probe for probe in required if probe.status != ProbeStatus.READY]
+
+    lines = [
+        f"Overall: {'READY' if report.ready else 'NOT READY'} "
+        f"(required {ready_required}/{len(required)} ready)"
+    ]
+
+    def _emit(title: str, probes: list[Probe]) -> None:
+        if not probes:
+            return
+        lines.append("")
+        lines.append(title)
+        for probe in probes:
+            lines.append(f"  [{probe.status.value.upper():8}] {probe.name}: {probe.summary}")
+            if probe.remediation and probe.status != ProbeStatus.READY:
+                lines.append(f"             fix: {probe.remediation}")
+
+    _emit("Required backends:", required)
+    _emit("Optional backends:", optional)
+
+    if blocking:
+        lines.append("")
+        lines.append("Blocking required backends (resolve these first):")
+        for probe in blocking:
+            lines.append(f"  - {probe.name} ({probe.status.value})")
+            if probe.remediation:
+                lines.append(f"      fix: {probe.remediation}")
     return "\n".join(lines)
 
 

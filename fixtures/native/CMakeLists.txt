@@ -5,6 +5,8 @@ add_executable(console_fixture console_fixture.c)
 add_executable(headless_fixture WIN32 console_fixture.c)
 add_executable(gui_fixture WIN32 gui_fixture.c)
 add_executable(predictable_imports_fixture predictable_imports_fixture.c)
+# Source existed but had no target, so the crackme end-to-end gate could never run.
+add_executable(crackme_serial crackme_serial.c)
 add_library(event_fixture SHARED event_fixture.c)
 add_library(runtime_decrypt_fixture SHARED runtime_decrypt_fixture.c)
 
@@ -13,6 +15,7 @@ set_target_properties(
     headless_fixture
     gui_fixture
     predictable_imports_fixture
+    crackme_serial
     event_fixture
     runtime_decrypt_fixture
     PROPERTIES

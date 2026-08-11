@@ -18,6 +18,15 @@ class WindbgError(RuntimeError):
         self.details = details
 
 
+def _is_store_package(path: Path) -> bool:
+    """Microsoft Store package paths stat fine but CreateProcess denies them."""
+    return "windowsapps" in str(path).casefold()
+
+
+def _is_launchable_cdb(path: Path) -> bool:
+    return path.is_file() and not _is_store_package(path)
+
+
 class WindbgClient:
     def __init__(self, cdb: Path | None = None, *, allow_kernel: bool = False) -> None:
         self.cdb = cdb or _discover_cdb()
@@ -25,7 +34,20 @@ class WindbgClient:
 
     @property
     def available(self) -> bool:
-        return self.cdb is not None and self.cdb.is_file()
+        return self.cdb is not None and _is_launchable_cdb(self.cdb)
+
+    def _require_cdb(self) -> Path:
+        if self.cdb is not None and _is_store_package(self.cdb):
+            raise WindbgError(
+                "capability_unavailable",
+                "cdb resolved to a Microsoft Store package path, which Windows "
+                "refuses to launch directly; point HEADLESS_RE_CDB at a cdb.exe "
+                "from the Windows SDK Debugging Tools instead",
+                cdb=str(self.cdb),
+            )
+        if not self.available or self.cdb is None:
+            raise WindbgError("capability_unavailable", "cdb/WinDbg is not installed")
+        return self.cdb
 
     def open_dump(
         self,
@@ -142,8 +164,7 @@ class WindbgClient:
         allowed_pid: int,
         timeout: float,
     ) -> JsonObject:
-        if not self.available or self.cdb is None:
-            raise WindbgError("capability_unavailable", "cdb/WinDbg is not installed")
+        cdb = self._require_cdb()
         if type(pid) is not int or pid <= 0:
             raise WindbgError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -160,7 +181,7 @@ class WindbgClient:
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         # -pv: non-invasive; can coexist with another debugger on the same PID.
-        argv = [str(self.cdb), "-pv", "-p", str(pid), "-c", script]
+        argv = [str(cdb), "-pv", "-p", str(pid), "-c", script]
         try:
             completed = subprocess.run(
                 argv,
@@ -171,6 +192,12 @@ class WindbgClient:
             )
         except subprocess.TimeoutExpired as exc:
             raise WindbgError("timeout", "cdb timed out", timeout=timeout) from exc
+        except OSError as exc:
+            raise WindbgError(
+                "backend_error",
+                f"cdb could not be launched: {exc.strerror or exc}",
+                cdb=str(cdb),
+            ) from exc
         out = completed.stdout.decode("utf-8", errors="replace")[:500_000]
         err = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         if completed.returncode not in {0, 1} and not out:
@@ -189,8 +216,7 @@ class WindbgClient:
         }
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
-        if not self.available or self.cdb is None:
-            raise WindbgError("capability_unavailable", "cdb/WinDbg is not installed")
+        cdb = self._require_cdb()
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:
@@ -201,7 +227,7 @@ class WindbgClient:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
             completed = subprocess.run(
-                [str(self.cdb), "-z", str(dump), "-c", script],
+                [str(cdb), "-z", str(dump), "-c", script],
                 capture_output=True,
                 timeout=timeout,
                 check=False,
@@ -209,6 +235,12 @@ class WindbgClient:
             )
         except subprocess.TimeoutExpired as exc:
             raise WindbgError("timeout", "cdb timed out", timeout=timeout) from exc
+        except OSError as exc:
+            raise WindbgError(
+                "backend_error",
+                f"cdb could not be launched: {exc.strerror or exc}",
+                cdb=str(cdb),
+            ) from exc
         out = completed.stdout.decode("utf-8", errors="replace")[:500_000]
         err = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return {"dump": str(dump), "output": out, "stderr": err, "exit_code": completed.returncode}
@@ -224,12 +256,13 @@ def _discover_cdb() -> Path | None:
     if tools.is_file():
         return tools
     found = shutil.which("cdb")
-    if found and "windowsapps" not in found.lower():
+    if found and not _is_store_package(Path(found)):
         return Path(found)
+    # Searching WindowsApps would only rediscover the unusable package path the
+    # `which` filter above deliberately rejected.
     roots = [
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Windows Kits",
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Windows Kits",
-        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "WindowsApps",
     ]
     for root in roots:
         if not root.is_dir():
@@ -241,6 +274,6 @@ def _discover_cdb() -> Path | None:
             + list(root.glob("**/x86/cdb.exe"))
         )
         for match in matches:
-            if match.is_file():
+            if _is_launchable_cdb(match):
                 return match
     return None

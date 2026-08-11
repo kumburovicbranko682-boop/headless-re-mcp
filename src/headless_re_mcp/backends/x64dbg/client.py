@@ -7,6 +7,7 @@ import secrets
 import subprocess
 import time
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock, RLock, Thread
@@ -22,6 +23,7 @@ from headless_re_mcp.core.events import (
     DebugEventProtocolError,
     parse_debug_event_batch,
 )
+from headless_re_mcp.core.hidden_desktop import DesktopProcess, HiddenDesktop
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.core.session import detect_pe_architecture
 from headless_re_mcp.core.windows import describe_process_windows
@@ -106,7 +108,7 @@ class _NamedPipeTransport:
         pipe_name: str,
         *,
         timeout: float,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[str] | DesktopProcess,
     ) -> _NamedPipeTransport:
         if os.name != "nt":
             raise XdbgRpcError("backend_unavailable", "x64dbg RPC requires Windows")
@@ -337,6 +339,7 @@ class XdbgClient:
         architecture: Architecture,
         *,
         startup_timeout: float = 60.0,
+        hidden_desktop: bool = False,
     ) -> None:
         path = executable.resolve(strict=True)
         actual_architecture = detect_pe_architecture(path)
@@ -356,6 +359,7 @@ class XdbgClient:
         self._request_id = 0
         self._closed = False
         self._transport: _NamedPipeTransport | None = None
+        self._desktop: HiddenDesktop | None = None
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._user_directory = TemporaryDirectory(
@@ -370,22 +374,32 @@ class XdbgClient:
         child_environment = os.environ.copy()
         child_environment["HEADLESS_RE_XDBG_RPC_PIPE"] = pipe_suffix
         child_environment["HEADLESS_RE_XDBG_RPC_TOKEN"] = token
-        self._process = subprocess.Popen(
-            [
-                str(path),
-                "-userdir",
-                self._user_directory.name,
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=child_environment,
-            **popen_kw,
-        )
+        argv = [
+            str(path),
+            "-userdir",
+            self._user_directory.name,
+        ]
+        if hidden_desktop:
+            self._desktop = HiddenDesktop.create(prefix=f"HeadlessRE-{architecture.value}")
+            self._process: subprocess.Popen[str] | DesktopProcess = self._desktop.spawn(
+                argv,
+                environment=child_environment,
+                encoding="utf-8",
+                errors="replace",
+            )
+        else:
+            self._process = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=child_environment,
+                **popen_kw,
+            )
         assert self._process.stdout is not None
         assert self._process.stderr is not None
         self._stdout_thread = Thread(
@@ -429,7 +443,8 @@ class XdbgClient:
                 raise XdbgRpcError(
                     "architecture_mismatch", "RPC hello architecture does not match the client"
                 )
-            self._metadata = hello
+            self._metadata = dict(hello)
+            self._metadata["desktop"] = self.desktop_snapshot()
             raw_capabilities = hello.get("capabilities")
             if not isinstance(raw_capabilities, list):
                 raise XdbgRpcError("rpc_protocol_error", "RPC hello capabilities must be an array")
@@ -463,6 +478,41 @@ class XdbgClient:
     def analyzer_windows(self) -> tuple[str, ...]:
         with self._window_lock:
             return tuple(sorted(self._observed_windows))
+
+    def desktop_snapshot(
+        self,
+        *,
+        allowed_pids: frozenset[int] | None = None,
+    ) -> JsonObject:
+        desktop = self._desktop
+        if desktop is None:
+            return {
+                "available": False,
+                "mode": "default",
+                "input_desktop": True,
+                "window_count": 0,
+                "windows": [],
+            }
+        return desktop.snapshot(allowed_pids=allowed_pids)
+
+    def desktop_capture(
+        self,
+        hwnd: int,
+        *,
+        allowed_pids: frozenset[int],
+        output_path: str | Path,
+    ) -> JsonObject:
+        desktop = self._desktop
+        if desktop is None:
+            raise XdbgRpcError(
+                "capability_unavailable",
+                "the x64dbg worker is not running on a hidden desktop",
+            )
+        return desktop.capture(
+            hwnd,
+            allowed_pids=allowed_pids,
+            output_path=output_path,
+        )
 
     def request(
         self,
@@ -1035,13 +1085,13 @@ class XdbgClient:
 
     def _monitor_windows(self) -> None:
         while not self._monitor_stop.wait(0.05):
-            windows = describe_process_windows(self._process.pid)
+            windows = self._describe_analyzer_windows()
             if windows:
                 with self._window_lock:
                     self._observed_windows.update(windows)
 
     def _observe_windows(self) -> None:
-        windows = describe_process_windows(self._process.pid)
+        windows = self._describe_analyzer_windows()
         if windows:
             with self._window_lock:
                 self._observed_windows.update(windows)
@@ -1052,6 +1102,12 @@ class XdbgClient:
                 "x64dbg created a top-level analyzer window",
                 details={"windows": list(observed)},
             )
+
+    def _describe_analyzer_windows(self) -> list[str]:
+        desktop: HiddenDesktop | None = getattr(self, "_desktop", None)
+        if desktop is not None:
+            return desktop.process_window_descriptions(self._process.pid)
+        return sorted(describe_process_windows(self._process.pid))
 
     def _request_exit(self) -> None:
         if self._process.poll() is not None or self._process.stdin is None:
@@ -1080,7 +1136,13 @@ class XdbgClient:
             self._stdout_thread.join(timeout=2)
         if hasattr(self, "_stderr_thread"):
             self._stderr_thread.join(timeout=2)
-        self._user_directory.cleanup()
+        desktop: HiddenDesktop | None = getattr(self, "_desktop", None)
+        self._desktop = None
+        if desktop is not None:
+            with suppress(OSError):
+                desktop.close()
+        if hasattr(self, "_user_directory"):
+            self._user_directory.cleanup()
 
     def _process_exit_error(self) -> XdbgRpcError:
         return XdbgRpcError(

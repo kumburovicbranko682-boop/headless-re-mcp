@@ -14,6 +14,7 @@ from headless_re_mcp.doctor import (
     DoctorReport,
     Probe,
     ProbeStatus,
+    format_report,
     probe_die,
     probe_exeinfope,
     probe_upx,
@@ -355,3 +356,87 @@ def test_upx_probe_blocks_without_usable_version(
 
     monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
     assert probe_upx(settings).status == ProbeStatus.BLOCKED
+
+
+def test_isolation_probe_blocks_on_elevated_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module, "_is_elevated", lambda: True)
+    monkeypatch.setattr(doctor_module, "_VM_DRIVER_HINTS", ())
+
+    probe = doctor_module.probe_isolation(_settings(None, tmp_path / "artifacts"))
+
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "low-privilege" in (probe.remediation or "")
+
+
+def test_isolation_probe_accepts_hidden_desktop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module, "_is_elevated", lambda: False)
+    monkeypatch.setattr(doctor_module, "_VM_DRIVER_HINTS", ())
+    settings = replace(_settings(None, tmp_path / "artifacts"), hidden_desktop=True)
+
+    probe = doctor_module.probe_isolation(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["hidden_desktop"] is True
+
+
+def test_isolation_probe_is_advisory_and_never_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module, "_is_elevated", lambda: False)
+    monkeypatch.setattr(doctor_module, "_VM_DRIVER_HINTS", ())
+
+    probe = doctor_module.probe_isolation(_settings(None, tmp_path / "artifacts"))
+
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.details["advisory"] is True
+    assert "isolation" not in doctor_module.REQUIRED_PROBES
+
+
+def _all_required_ready() -> tuple[Probe, ...]:
+    return tuple(
+        Probe(name, ProbeStatus.READY, f"{name} ready")
+        for name in (
+            "python",
+            "ida_idalib",
+            "x64dbg_source",
+            "x64dbg_headless_binaries",
+            "native_toolchain",
+        )
+    )
+
+
+def test_format_report_ready_lists_required_count() -> None:
+    text = format_report(DoctorReport(_all_required_ready()))
+    assert text.splitlines()[0] == "Overall: READY (required 5/5 ready)"
+    assert "Required backends:" in text
+    assert "Blocking required backends" not in text
+
+
+def test_format_report_flags_blocking_required_and_groups_optional() -> None:
+    required = (
+        Probe("python", ProbeStatus.READY, "Python 3.12"),
+        Probe(
+            "ida_idalib",
+            ProbeStatus.MISSING,
+            "IDA not found",
+            remediation="Set HEADLESS_RE_IDA_HOME.",
+        ),
+        Probe("x64dbg_source", ProbeStatus.READY, "ok"),
+        Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ok"),
+        Probe("native_toolchain", ProbeStatus.READY, "ok"),
+    )
+    optional = (Probe("diec", ProbeStatus.MISSING, "optional DIE not set"),)
+    text = format_report(DoctorReport((*required, *optional)))
+
+    assert text.splitlines()[0] == "Overall: NOT READY (required 4/5 ready)"
+    assert "Optional backends:" in text
+    assert "Blocking required backends (resolve these first):" in text
+    assert "- ida_idalib (missing)" in text
+    assert "Set HEADLESS_RE_IDA_HOME." in text

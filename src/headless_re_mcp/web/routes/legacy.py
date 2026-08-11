@@ -471,6 +471,101 @@ def register_legacy_routes(
             },
         )
 
+    @app.get("/api/sessions/{session_id}/virtual-desktop")
+    def virtual_desktop(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Passive hidden-desktop window inventory; never switches desktops."""
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.virtual_desktop_snapshot(session_id)))
+
+    @app.get("/api/sessions/{session_id}/virtual-desktop/frame")
+    def virtual_desktop_frame(
+        session_id: str,
+        hwnd: int | None = Query(default=None, gt=0),
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> Any:
+        """Capture one target-owned window on demand without changing input desktop."""
+        _require_token(authorization, token_q)
+        captured = service.virtual_desktop_capture(session_id, hwnd=hwnd)
+        if not captured.ok or captured.data is None:
+            error = captured.error.model_dump(mode="json") if captured.error else None
+            return JSONResponse(
+                {"ok": False, "error": error},
+                status_code=409,
+            )
+        path_value = captured.data.get("path") or captured.data.get("artifact")
+        if not isinstance(path_value, str):
+            raise HTTPException(status_code=500, detail="capture_path_missing")
+        path = Path(path_value).resolve()
+        artifact_root = service.settings.artifact_root.expanduser().resolve()
+        if not path.is_file() or not path.is_relative_to(artifact_root):
+            raise HTTPException(status_code=404, detail="capture_not_found")
+        degraded = bool(captured.data.get("degraded"))
+        frame_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Capture-Degraded": "1" if degraded else "0",
+            "X-Capture-Backend": str(captured.data.get("backend") or ""),
+        }
+        degraded_reason = captured.data.get("degraded_reason")
+        if isinstance(degraded_reason, str) and degraded_reason:
+            frame_headers["X-Capture-Degraded-Reason"] = degraded_reason
+        return FileResponse(
+            path,
+            media_type="image/bmp",
+            filename=f"desktop-{session_id}-{captured.data.get('hwnd')}.bmp",
+            headers=frame_headers,
+        )
+
+    @app.get("/api/sessions/{session_id}/knowledge")
+    def session_knowledge(
+        session_id: str,
+        kind: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=500),
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Accumulated analysis findings for one session, optionally one kind."""
+        _require_token(authorization, token_q)
+        return JSONResponse(
+            _result_payload(
+                service.knowledge_query(session_id, kind=kind, limit=limit)
+            )
+        )
+
+    @app.post("/api/sessions/{session_id}/report")
+    def session_report(
+        session_id: str,
+        body: JsonObject | None = None,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Render a Markdown analysis report and persist it as an artifact."""
+        _require_token(authorization, token_q)
+        title = (body or {}).get("title")
+        return JSONResponse(
+            _result_payload(
+                service.report_generate(
+                    session_id,
+                    title=str(title) if isinstance(title, str) and title.strip() else None,
+                )
+            )
+        )
+
+    @app.get("/api/metrics")
+    def tool_metrics(
+        limit: int = Query(default=20, ge=0, le=200),
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Per-tool call counts, failures and latency percentiles for this process."""
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.tool_metrics(limit=limit)))
+
     @app.get("/api/sessions/{session_id}/timeline")
     def timeline(
         session_id: str,

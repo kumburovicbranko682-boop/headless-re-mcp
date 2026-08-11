@@ -10,13 +10,16 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
+from headless_re_mcp.config import Settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.integration
 def test_m11_windbg_live_usermode_probe() -> None:
-    client = WindbgClient()
+    # Prefer the configured cdb; discovery alone can only find a Store package
+    # path that Windows refuses to launch.
+    client = WindbgClient(Settings.load().cdb)
     if not client.available:
         pytest.skip("cdb/WinDbg not installed — live Gate not run (skip≠pass)")
     fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "gui_fixture.exe"

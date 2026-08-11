@@ -1570,3 +1570,324 @@ def test_pe_headers_memory_fallback_uses_atomic_write(tmp_path: Path) -> None:
     assert artifact.read_bytes()[:2] == b"MZ"
     assert not list(artifact.parent.glob("*.tmp"))
     assert not list(artifact.parent.glob("*.partial"))
+
+
+def _rebased_service(tmp_path: Path, runtime_base: int) -> tuple[object, str, FakeDynamicWorker]:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    dynamic = FakeDynamicWorker(module_base=runtime_base)
+    service = _service(tmp_path, dynamic, FakeStaticWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.open_static(session_id).ok
+    return service, session_id, dynamic
+
+
+def test_resolve_runtime_address_rebases_every_coordinate(tmp_path: Path) -> None:
+    runtime_base = 0x7FF700000000
+    service, session_id, _ = _rebased_service(tmp_path, runtime_base)
+
+    from_static = service.resolve_runtime_address(session_id, 0x140001234, source="static")
+    assert from_static.ok and from_static.data is not None
+    assert from_static.data["runtime_address"] == runtime_base + 0x1234
+    assert from_static.data["static_address"] == 0x140001234
+    assert from_static.data["rva"] == 0x1234
+
+    from_rva = service.resolve_runtime_address(session_id, 0x1234, source="rva")
+    assert from_rva.ok and from_rva.data is not None
+    assert from_rva.data["runtime_address"] == runtime_base + 0x1234
+
+    from_runtime = service.resolve_runtime_address(
+        session_id,
+        runtime_base + 0x1234,
+        source="runtime",
+    )
+    assert from_runtime.ok and from_runtime.data is not None
+    assert from_runtime.data["runtime_address"] == runtime_base + 0x1234
+    assert from_runtime.data["static_address"] == 0x140001234
+
+
+def test_resolve_runtime_address_rejects_unknown_source(tmp_path: Path) -> None:
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.resolve_runtime_address(session_id, 0x1000, source="nonsense")
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> None:
+    runtime_base = 0x7FF700000000
+    service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
+
+    assert service.dynamic_breakpoint_set(
+        session_id,
+        0x140001234,
+        address_space="static",
+    ).ok
+    assert service.dynamic_breakpoint_set(session_id, 0x1234, address_space="rva").ok
+    assert service.dynamic_breakpoint_set(session_id, runtime_base + 0x40).ok
+
+    requested = [
+        int(params["address"])
+        for command, params in dynamic.requests
+        if command == "breakpoints.set"
+    ]
+    assert requested == [
+        runtime_base + 0x1234,
+        runtime_base + 0x1234,
+        runtime_base + 0x40,
+    ]
+
+    rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:
+    service, session_id, dynamic = _rebased_service(tmp_path, 0x140000000)
+
+    report = service.analyze_function_dynamic(session_id, 0x140001000)
+
+    assert report.ok and report.data is not None
+    data = report.data
+    assert data["function"]["static_address"] == 0x140001000
+    assert data["function"]["runtime_address"] == 0x140001000
+    assert data["breakpoint"] == {"address": 0x140001000, "armed": True}
+    assert data["execution"]["resumed"] is True
+    assert data["execution"]["instruction_pointer"] == 0x140001000
+    assert data["execution"]["stopped_at_breakpoint"] is True
+    assert [
+        int(params["address"])
+        for command, params in dynamic.requests
+        if command == "breakpoints.set"
+    ] == [0x140001000]
+
+
+def test_analyze_function_dynamic_arms_the_rebased_address(tmp_path: Path) -> None:
+    runtime_base = 0x7FF700000000
+    service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
+
+    report = service.analyze_function_dynamic(
+        session_id,
+        0x140001000,
+        decompile=False,
+    )
+
+    assert report.ok and report.data is not None
+    data = report.data
+    assert data["function"]["runtime_address"] == runtime_base + 0x1000
+    assert data["static"]["decompiled"] is False
+    assert [
+        int(params["address"])
+        for command, params in dynamic.requests
+        if command == "breakpoints.set"
+    ] == [runtime_base + 0x1000]
+    # The fake reports a static-looking rip, so the stop is honestly not ours.
+    assert data["execution"]["stopped_at_breakpoint"] is False
+
+
+class _ArgumentRegisterWorker(FakeDynamicWorker):
+    """Fake reporting Microsoft x64 argument registers while parked on one API."""
+
+    def __init__(self, api_address: int) -> None:
+        super().__init__()
+        self.api_address = api_address
+        self.hits = 0
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "registers.read":
+            self.requests.append((command, params or {}))
+            self.hits += 1
+            return {
+                "registers": {
+                    "rip": self.api_address,
+                    "rsp": 0x120000,
+                    "rcx": 0x1000 + self.hits,
+                    "rdx": 0x2000 + self.hits,
+                    "r8": 0x3000 + self.hits,
+                    "r9": 0x4000 + self.hits,
+                }
+            }
+        return super().request(command, params, timeout=timeout)
+
+
+def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None:
+    api_address = 0x140002000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _ArgumentRegisterWorker(api_address)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=api_address, max_hits=2)
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["hit_count"] == 2
+    assert data["truncated"] is True
+    assert data["stopped_elsewhere"] is False
+    assert data["convention"] == "microsoft_x64_integer_registers"
+    first = data["hits"][0]
+    assert first["instruction_pointer"] == api_address
+    assert [argument["source"] for argument in first["arguments"]] == [
+        "rcx",
+        "rdx",
+        "r8",
+        "r9",
+    ]
+    assert first["arguments"][0]["value"] == 0x1001
+    assert data["hits"][1]["arguments"][0]["value"] == 0x1002
+
+    commands = [command for command, _ in worker.requests]
+    assert commands.count("breakpoints.set") == 1
+    assert commands.count("breakpoints.remove") == 1
+
+
+def test_trace_api_arguments_stops_when_break_is_not_ours(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _ArgumentRegisterWorker(0x140002000)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=0x140009000, max_hits=3)
+
+    assert traced.ok and traced.data is not None
+    assert traced.data["hit_count"] == 0
+    assert traced.data["stopped_elsewhere"] is True
+    commands = [command for command, _ in worker.requests]
+    assert commands.count("breakpoints.remove") == 1
+
+
+def test_stack_arguments_skip_the_return_address() -> None:
+    from headless_re_mcp.core.service import _stack_arguments
+
+    payload = {
+        "base": 0x120000,
+        "pointer_size": 4,
+        "entries": [
+            {"index": 0, "address": 0x120000, "value": 0x401234},  # return address
+            {"index": 1, "address": 0x120004, "value": 0xAAAA},
+            {"index": 2, "address": 0x120008, "value": 0xBBBB},
+        ],
+    }
+
+    arguments = _stack_arguments(payload, 3)
+
+    assert [item["value"] for item in arguments] == [0xAAAA, 0xBBBB, None]
+    assert [item["source"] for item in arguments] == [
+        "[esp+0x4]",
+        "[esp+0x8]",
+        "[esp+0xc]",
+    ]
+
+
+def test_stack_arguments_tolerate_missing_payloads() -> None:
+    from headless_re_mcp.core.service import _stack_arguments
+
+    assert _stack_arguments(None, 2) == []
+    assert _stack_arguments({"entries": "nope"}, 2) == []
+    assert _stack_arguments({"entries": []}, 0) == []
+
+
+def test_trace_api_arguments_requires_exactly_one_target(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    rejected = service.trace_api_arguments(session_id)
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_session_recover_reopens_only_dead_backends(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.open_static(session_id).ok
+
+    kept = service.session_recover(session_id)
+    assert kept.ok and kept.data is not None
+    assert kept.data["kept"] == 2
+    assert kept.data["recovered"] == 0
+
+    # A dead x64dbg worker also marks the session FAILED, which is terminal by
+    # design, so recovery must rebuild the session rather than revive it.
+    service._fail_runtime(session_id, BackendKind.X64DBG)
+    recovered = service.session_recover(session_id)
+
+    assert recovered.ok and recovered.data is not None
+    assert recovered.data["replaced"] is True
+    assert recovered.data["previous_session_id"] == session_id
+    replacement = str(recovered.data["session_id"])
+    assert replacement != session_id
+    assert recovered.data["recovered"] == 2
+    assert service.dynamic_state(replacement).ok
+    # The dead session is closed so it stops holding its backend workers.
+    assert service.registry.get(session_id).state == SessionState.CLOSED
+
+
+def test_session_recover_rejects_unknown_backend(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+    session_id = _create(service, binary)
+
+    rejected = service.session_recover(session_id, ["nonsense"])
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_batch_analyze_reports_per_binary_outcomes(tmp_path: Path) -> None:
+    first = tmp_path / "one.exe"
+    second = tmp_path / "two.exe"
+    _write_minimal_pe(first)
+    _write_minimal_pe(second)
+    missing = tmp_path / "missing.exe"
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+
+    result = service.batch_analyze(
+        [str(first), str(second), str(missing)],
+        max_workers=2,
+        open_static=False,
+    )
+
+    assert result.ok and result.data is not None
+    data = result.data
+    assert data["count"] == 3
+    assert data["succeeded"] == 2
+    assert data["failed"] == 1
+    failed = [entry for entry in data["entries"] if not entry["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["binary"] == str(missing)
+    assert failed[0]["session_id"] is None
+
+
+def test_batch_analyze_validates_inputs(tmp_path: Path) -> None:
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+
+    assert not service.batch_analyze([]).ok
+    assert not service.batch_analyze(["sample.exe"], max_workers=99).ok
+
+
+def test_analyze_function_dynamic_rejects_out_of_range_timeout(tmp_path: Path) -> None:
+    service, session_id, _ = _rebased_service(tmp_path, 0x140000000)
+
+    rejected = service.analyze_function_dynamic(session_id, 0x140001000, timeout=0)
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
