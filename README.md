@@ -149,13 +149,21 @@ $env:HEADLESS_RE_UPX  = "C:\path\to\upx.exe"    # 可选
 
 ### 安装包
 
-发布版提供 per-user MSI（装到 `%LocalAppData%\HeadlessReMcp`，不需要管理员）。本地构建需要
-WiX Toolset 3.14：
+发布版提供 per-user MSI（装到 `%LocalAppData%\HeadlessReMcp`，不需要管理员）。**Python 运行时
+与全部依赖随包发布**，装完即可用，不要求机器上已装 Python；装好后运行 `start_web.cmd` 打开
+工作台，或用 `headless-re-mcp.cmd` 调 CLI。IDA 与 x64dbg 仍需自行准备。
+
+内置解释器版本是锁定的（`pydantic-core` 只发 cp312 专用轮子，没有 abi3），所以运行时和
+依赖必须成套打包。本地构建需要 WiX Toolset 3.14，会联网取一次 Python 嵌入包并缓存到
+`artifacts/tools`：
 
 ```powershell
 powershell -File .\scripts\build_msi.ps1     # 产出 MSI 与 .sha256
 powershell -File .\scripts\verify_msi.ps1    # 装 → 跑 → 卸，并断言零残留
 ```
+
+验证会清空 PATH 里的所有解释器，只允许自带运行时应答——用系统 Python 去测安装副本，
+只能证明目录完整，证明不了装完能用。
 
 推 `v*` 标签会由 `release` 工作流构建、跑同一套往返验证，再连同校验和发布。
 

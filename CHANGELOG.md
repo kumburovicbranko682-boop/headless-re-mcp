@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（安装包）
+
+- **MSI 装出来是个空壳**。它只有 740 KB，因为里面只有源码：没有任何第三方依赖，
+  也没有 Python 运行时。在一台干净机器上装完，`python -m headless_re_mcp` 会直接
+  `ModuleNotFoundError: No module named 'pydantic'`。现在运行时和依赖随包发布
+  （33 MB，3261 个文件），安装后不依赖机器上装没装 Python。因为 `pydantic-core`
+  只提供 cp312 专用轮子而非 abi3，内置解释器版本是锁定的——这也正是必须连解释器
+  一起打包、而不能只放依赖的原因。
+- **验证脚本存在盲区，正是它让空壳通过了检查**。它用系统 Python 加 `PYTHONPATH`
+  去导入安装出来的副本，依赖其实来自开发机的 site-packages，所以只证明了"目录完整"，
+  没证明"装完能用"。现在它会清空 PATH 里的所有解释器、只允许自带运行时应答，
+  并额外校验 web 栈（fastapi/uvicorn/httpx/mcp）确实存在。
+- 字节码改为构建时预编译并随包安装（因而卸载时被一并移除），启动器加 `-B` 禁止
+  运行时再写。此前依赖 `util:RemoveFolderEx` 清理，在 3000 多个文件的规模下会漏掉
+  71 个 `.pyc`。
+
 ### 修复（代码审计发现）
 
 - **传输故障会先把被调试进程杀掉**，重连根本没机会介入。`rpc_transport_error` 被列在
