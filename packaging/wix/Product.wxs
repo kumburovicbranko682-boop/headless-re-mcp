@@ -1,7 +1,7 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
-  <Product Id="*" Name="Headless RE-MCP" Language="1033" Version="0.1.0"
+  <Product Id="*" Name="Headless RE-MCP" Language="1033" Version="0.2.0"
            Manufacturer="Headless RE-MCP contributors"
            UpgradeCode="A7C3E9B1-4D2F-4A8E-9C11-8F2E6D1B0A09">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"

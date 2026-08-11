@@ -1840,6 +1840,80 @@ def test_session_recover_reopens_only_dead_backends(tmp_path: Path) -> None:
     assert service.registry.get(session_id).state == SessionState.CLOSED
 
 
+class RaceyPauseWorker(FakeDynamicWorker):
+    """Rejects pause once the target already stopped, as the debugger does."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "debug.pause":
+            self.requests.append((command, params or {}))
+            self.current_state = _state("paused")
+            raise XdbgRpcError(
+                "debugger_command_failed",
+                "x64dbg rejected command: pause",
+                details={"method": "debug.pause", "command": "pause"},
+            )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_pause_succeeds_when_the_target_stopped_before_the_command_landed(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = RaceyPauseWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    paused = service.dynamic_pause(session_id, timeout=2.0)
+
+    # The debugger checks "is it running" and only then issues pause, so a
+    # breakpoint hit in that window rejects a pause that already happened.
+    assert paused.ok, paused.error
+    assert "debug.state" in {command for command, _ in worker.requests}
+
+
+class BrokenPauseWorker(FakeDynamicWorker):
+    """Rejects pause while the target keeps running."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "debug.pause":
+            self.requests.append((command, params or {}))
+            self.current_state = _state("running")
+            raise XdbgRpcError(
+                "debugger_command_failed",
+                "x64dbg rejected command: pause",
+                details={"method": "debug.pause", "command": "pause"},
+            )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_pause_still_fails_when_the_target_keeps_running(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, BrokenPauseWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    paused = service.dynamic_pause(session_id, timeout=2.0)
+
+    # Absorbing this too would hide a debugger that genuinely cannot stop.
+    assert not paused.ok and paused.error is not None
+    assert paused.error.code == "debugger_command_failed"
+
+
 def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_kept(
     tmp_path: Path,
 ) -> None:

@@ -75,11 +75,23 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 复合工作流：`dynamic.analyze_function`（反编译 + 重定位下断 + 运行 + 寄存器，一次调用）、`dynamic.trace_api_arguments`（按符号或地址断 API 并捕获整型参数：x64 取 RCX/RDX/R8/R9，x86 从返回地址之上的栈读取；结束必清断点）
 - 分析记录与报告：`knowledge.record/query`（按 `kind`+`key` 幂等累积函数/断点/结构体/API 等发现）、`report.generate`（渲染 Markdown 报告并落盘为产物）
 - 可观测：`meta.metrics`（每工具调用数、失败数、p50/p95/max 延迟；同时以 JSON 行写入 `headless_re_mcp.telemetry` 日志）
+- 自愈：`session.health`（按需检查各后端存活与连接状态）、`session.recover`（重开死掉的后端）
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
 
 动态写操作仅接受明确参数与白名单寄存器；无 `dynamic.command`。
+
+### 故障自愈
+
+RPC 连接掉线（例如被调试程序卡住导致一次超时）不会终结会话。worker 仍在运行、仍持有被调试进程，
+后台健康检查会重建连接；即便监控关闭，下一次调用也会自行重连。失败的那次调用**不会被重放**，
+因为重放可能让状态变更类操作执行两次——调用方仍会收到那次失败，但标记为 `retryable`。
+
+worker 进程真正死亡时只上报不自动重启：重启后的调试器不再附着于任何进程，是否重新启动目标
+必须由调用方决定，用 `session.recover` 显式处理。
+
+`health_check_interval_s` 控制后台巡检间隔，设为 `0` 关闭（此时仍保留调用时重连）。
 
 ## 仓库结构
 
@@ -124,6 +136,18 @@ $env:HEADLESS_RE_DIEC = "C:\path\to\diec.exe"   # 可选
 $env:HEADLESS_RE_UPX  = "C:\path\to\upx.exe"    # 可选
 ```
 
+### 安装包
+
+发布版提供 per-user MSI（装到 `%LocalAppData%\HeadlessReMcp`，不需要管理员）。本地构建需要
+WiX Toolset 3.14：
+
+```powershell
+powershell -File .\scripts\build_msi.ps1     # 产出 MSI 与 .sha256
+powershell -File .\scripts\verify_msi.ps1    # 装 → 跑 → 卸，并断言零残留
+```
+
+推 `v*` 标签会由 `release` 工作流构建、跑同一套往返验证，再连同校验和发布。
+
 ## 验收
 
 先跑零窗口 Gate，再按需跑 pytest。集成 Gate 依赖本机后端；缺环境出现 `skip` 时不能当通过。
@@ -152,6 +176,10 @@ npm run build          # 产物直接写入 src/headless_re_mcp/web/spa
 ```
 
 硬约束：分析器进程（IDA / x64dbg headless）顶层窗口必须为 0；目标程序 GUI 不受此限。
+
+`tests/integration/test_m10_ui_*` 会驱动目标窗口，需要独占的交互桌面：跑这几个 gate 时不要在
+同一会话里安装软件或打开别的窗口，否则前台焦点被抢会得到 `no foreground window for SendInput`
+或 `SendMessageTimeout`，那是环境干扰而不是回归。
 
 ## 隔离部署
 
@@ -201,13 +229,18 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 ## 范围与风险
 
-已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate——但整体仍是 **v0.1 原型**：公开提交少，可选后端成熟度不一。
+已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
 当前证据（在一台配好 IDA 9.x + x64dbg headless + DIE/UPX/de4dot/rizin/cdb 的机器上实测）：
 
-- 单元测试 496 passed / 4 skipped
-- 集成 Gate 61 passed / 7 skipped / **0 failed**（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、crackme 端到端）
+- 单元测试 507 passed / 4 skipped
+- 集成 Gate 64 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
 - 剩余 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
+- 197 个工具在敌意输入下全部返回结构化错误信封，无一抛出
+- MSI 装—跑—卸往返零残留
+
+已知不稳定：`test_m10_ui_*` 依赖独占的交互桌面，在全量并发跑时偶发失败（前台焦点被抢），
+单独重跑稳定通过。判定回归前请先单独复跑。
 
 Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` 负责桥接），所以配置好的机器不会因为"没设环境变量"而假跳过。**skip 仍然不等于 pass**：换一台缺后端的机器，对应 Gate 会如实跳过。
 

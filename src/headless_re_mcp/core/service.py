@@ -6027,6 +6027,28 @@ class AnalysisService(
                 details={"capability": capability},
             )
 
+    @staticmethod
+    def _absorb_redundant_run_control(
+        dynamic: DynamicWorker,
+        method: str,
+        wait_for: set[str] | None,
+        failure: XdbgRpcError,
+        timeout: float,
+    ) -> JsonObject:
+        """Treat a run-control command the target already satisfied as success.
+
+        The debugger checks whether the target is running and only then issues the
+        command, so a breakpoint hit in that window makes it reject a pause that
+        has effectively already happened. Reporting that as a failure would make
+        a correct outcome look like a broken session.
+        """
+        if failure.code != "debugger_command_failed" or not wait_for:
+            raise failure
+        current = dynamic.request("debug.state", {}, timeout=min(timeout, 5.0))
+        if str(current.get("state")) not in wait_for:
+            raise failure
+        return current
+
     def _dynamic_request(
         self,
         session_id: str,
@@ -6065,11 +6087,16 @@ class AnalysisService(
                         timeout=min(timeout, 5.0),
                     )
                     after_event_sequence = marker.latest_sequence
-                submitted = runtime.worker.request(
-                    method,
-                    params,
-                    timeout=min(timeout, 30.0),
-                )
+                try:
+                    submitted = runtime.worker.request(
+                        method,
+                        params,
+                        timeout=min(timeout, 30.0),
+                    )
+                except XdbgRpcError as exc:
+                    submitted = self._absorb_redundant_run_control(
+                        dynamic, method, wait_for, exc, timeout
+                    )
                 state = submitted
                 if wait_for is not None:
                     state = dynamic.wait_for_state(
