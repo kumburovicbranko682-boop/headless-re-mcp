@@ -276,7 +276,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 当前证据（在一台配好 IDA 9.x + x64dbg headless + DIE/UPX/de4dot/rizin/cdb 的机器上实测）：
 
-- 单元测试 530 passed / 4 skipped
+- 单元测试 552 passed / 0 skipped
 - 集成 Gate 65 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
 - 剩余 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
 - 198 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
