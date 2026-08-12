@@ -18,12 +18,13 @@ from headless_re_mcp.agent import (
     ProviderConfigStore,
     ProviderProfile,
 )
+from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES
 from headless_re_mcp.agent.providers import OpenAICompatibleProvider
 from headless_re_mcp.config import Settings, default_config_path
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.tools.assembly import bind_all_tools
-from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog
+from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport
 
 JsonObject = dict[str, Any]
 
@@ -49,7 +50,8 @@ def register_agent_routes(
         else default_config_path().parent / "providers.json"
     )
     configs = ProviderConfigStore(config_path)
-    orchestrator = AgentOrchestrator(store, catalog, configs)
+    autonomy = AutonomyPolicy.from_settings(settings)
+    orchestrator = AgentOrchestrator(store, catalog, configs, autonomy=autonomy)
     app.state.agent_store = store
     app.state.provider_configs = configs
     app.state.agent_orchestrator = orchestrator
@@ -199,6 +201,30 @@ def register_agent_routes(
             raise HTTPException(status_code=404, detail="run_not_found")
         return JSONResponse(
             {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
+        )
+
+    @app.get("/api/agent/autonomy")
+    def agent_autonomy(authorization: str | None = Header(default=None)) -> JSONResponse:
+        """Report which tools may run unattended, and why.
+
+        An operator running this unattended needs to be able to read the policy
+        back rather than infer it from config files, and a reviewer needs to see
+        exactly which write tools were opened up.
+        """
+        authorize(authorization)
+        policy = orchestrator.autonomy
+        unattended = sorted(
+            spec.name
+            for spec in catalog.for_transport(CommandTransport.AGENT)
+            if spec.write and policy.decide(spec).approved
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "policy": policy.describe(),
+                "auto_executable_writes": unattended,
+                "auto_executable_write_count": len(unattended),
+            }
         )
 
     @app.get("/api/providers")

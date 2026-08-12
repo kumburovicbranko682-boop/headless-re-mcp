@@ -10,6 +10,8 @@ from typing import Any
 
 from platformdirs import user_config_path, user_data_path
 
+from headless_re_mcp.core.retention import DEFAULT_MAX_TOTAL_BYTES
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -22,6 +24,12 @@ class Settings:
     # Seconds between background backend health sweeps; 0 disables the monitor.
     health_check_interval_s: float = 5.0
     local_full_access: bool = True
+    # Unattended Agent policy. Empty grants exactly what the fail-closed model
+    # already granted (read-only only), so leaving these alone changes nothing.
+    # A denial here outranks every grant, including the read-only baseline.
+    agent_auto_approve_effects: tuple[str, ...] = ()
+    agent_auto_approve_tools: tuple[str, ...] = ()
+    agent_never_auto_approve: tuple[str, ...] = ()
     http_host: str = "127.0.0.1"
     http_port: int = 8765
     diec: Path | None = None
@@ -40,6 +48,9 @@ class Settings:
     # Background drain keeps copying native ring events into the durable log
     # while the MCP consumer is idle (needed for true lag replay).
     debug_event_background_drain: bool = True
+    # Byte budget for registered artifacts, collected oldest-first. 0 disables
+    # collection entirely and accepts unbounded growth.
+    artifact_max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:
@@ -155,8 +166,34 @@ class Settings:
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),
                 data.get("local_full_access", True),
             ),
-            http_host=str(data.get("http_host", "127.0.0.1")),
-            http_port=int(data.get("http_port", 8765)),
+            agent_auto_approve_effects=_as_tuple(
+                os.environ.get("HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS"),
+                data.get("agent_auto_approve_effects", ()),
+            ),
+            agent_auto_approve_tools=_as_tuple(
+                os.environ.get("HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS"),
+                data.get("agent_auto_approve_tools", ()),
+            ),
+            agent_never_auto_approve=_as_tuple(
+                os.environ.get("HEADLESS_RE_AGENT_NEVER_AUTO_APPROVE"),
+                data.get("agent_never_auto_approve", ()),
+            ),
+            # Environment overrides exist here for the same reason as every
+            # other field: a deployment that can only set variables could not
+            # move the console off a busy port.
+            http_host=str(
+                os.environ.get("HEADLESS_RE_HTTP_HOST") or data.get("http_host", "127.0.0.1")
+            ),
+            http_port=_as_int(
+                os.environ.get("HEADLESS_RE_HTTP_PORT"),
+                data.get("http_port", 8765),
+                fallback=8765,
+            ),
+            artifact_max_total_bytes=_as_int(
+                os.environ.get("HEADLESS_RE_ARTIFACT_MAX_TOTAL_BYTES"),
+                data.get("artifact_max_total_bytes", DEFAULT_MAX_TOTAL_BYTES),
+                fallback=DEFAULT_MAX_TOTAL_BYTES,
+            ),
         )
 
 
@@ -330,6 +367,39 @@ def _as_bool(raw: str | None, default: object) -> bool:
     if raw is None:
         return bool(default)
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _as_tuple(raw: str | None, default: object) -> tuple[str, ...]:
+    """Read a list setting from a comma-separated env var or a JSON array.
+
+    Order is not preserved as meaning anywhere these are used, but duplicates are
+    dropped so a repeated entry cannot look like two rules.
+    """
+    if raw is not None:
+        items: list[str] = [part.strip() for part in raw.split(",")]
+    elif isinstance(default, str):
+        items = [part.strip() for part in default.split(",")]
+    elif isinstance(default, (list, tuple)):
+        items = [str(part).strip() for part in default]
+    else:
+        return ()
+    seen: dict[str, None] = {}
+    for item in items:
+        if item:
+            seen[item] = None
+    return tuple(seen)
+
+
+def _as_int(raw: str | None, default: object, *, fallback: int = 0) -> int:
+    """Read a non-negative integer setting, tolerating an unreadable value."""
+    for candidate in (raw, default):
+        if candidate is None:
+            continue
+        try:
+            return max(0, int(str(candidate)))
+        except (TypeError, ValueError):
+            continue
+    return fallback
 
 
 def _as_float(raw: str | None, default: object, *, fallback: float = 0.0) -> float:

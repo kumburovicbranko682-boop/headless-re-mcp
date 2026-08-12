@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import compact_messages
 from headless_re_mcp.agent.models import RunStatus
@@ -151,6 +152,104 @@ def _single_spec(
         input_schema={"type": "object", "properties": {}},
         resource_policy=ResourcePolicy(max_result_bytes=max_result_bytes),
     )
+
+
+@pytest.mark.asyncio
+async def test_a_write_runs_unattended_only_once_the_policy_grants_it(
+    tmp_path: Path,
+) -> None:
+    """The unattended path, end to end: policy in, write executed, no human.
+
+    The policy object being right is not the same as it being wired in. Without
+    a grant this same run parks in AWAITING_APPROVAL until the approval timeout
+    fails it, which is what makes 24/7 operation impossible today.
+    """
+    executed: list[str] = []
+
+    def mutate() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True, "data": {"changed": True}}
+
+    store = AgentStore(tmp_path / "granted.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "do the write")
+    provider = FakeProvider([(ProviderToolCall("w1", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(mutate, effect=ToolEffect.STATE_CHANGE)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+        autonomy=AutonomyPolicy(auto_approve_effects=frozenset({ToolEffect.STATE_CHANGE})),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert executed == ["ran"]
+    events = store.list_events(run["id"])
+    assert not any(event.type == "approval.required" for event in events)
+    # A write that ran without a human must be auditable as exactly that.
+    auto = next(event for event in events if event.type == "approval.auto")
+    assert auto.data["name"] == "test.tool"
+    assert auto.data["reason"] == "allowlisted_effects:state_change"
+    assert auto.data["effects"] == ["state_change"]
+
+
+@pytest.mark.asyncio
+async def test_a_denied_tool_still_waits_even_when_its_effects_are_granted(
+    tmp_path: Path,
+) -> None:
+    """never_auto_approve has to be an unconditional stop, not a default."""
+    store = AgentStore(tmp_path / "denied.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "do the write")
+    provider = FakeProvider([(ProviderToolCall("w1", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog(
+            [_single_spec(lambda: {"ok": True}, effect=ToolEffect.STATE_CHANGE)]
+        ),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+        autonomy=AutonomyPolicy(
+            auto_approve_effects=frozenset({ToolEffect.STATE_CHANGE}),
+            never_auto_approve=frozenset({"test.tool"}),
+        ),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.AWAITING_APPROVAL})
+
+    assert status is RunStatus.AWAITING_APPROVAL
+    events = store.list_events(run["id"])
+    assert any(event.type == "approval.required" for event in events)
+    assert not any(event.type == "approval.auto" for event in events)
+    await runner.cancel(run["id"])
+    await _wait_status(store, run["id"], {RunStatus.CANCELLED})
+
+
+@pytest.mark.asyncio
+async def test_read_only_auto_execution_is_not_announced_as_a_policy_grant(
+    tmp_path: Path,
+) -> None:
+    """Read-only always ran on its own; it must not look like a widened policy."""
+    store = AgentStore(tmp_path / "readonly.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "read")
+    provider = FakeProvider([(ProviderToolCall("r1", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED}) is RunStatus.COMPLETED
+    events = store.list_events(run["id"])
+    assert not any(event.type == "approval.auto" for event in events)
+    assert not any(event.type == "approval.required" for event in events)
 
 
 @pytest.mark.asyncio

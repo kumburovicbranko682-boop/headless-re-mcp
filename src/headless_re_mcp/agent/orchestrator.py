@@ -12,6 +12,7 @@ from typing import Any
 import anyio
 import anyio.to_thread
 
+from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, RunStatus
@@ -49,10 +50,13 @@ class AgentOrchestrator:
         tool_timeout: float = 60.0,
         run_deadline: float = 600.0,
         approval_timeout: float = 300.0,
+        autonomy: AutonomyPolicy | None = None,
     ) -> None:
         self.store = store
         self.catalog = catalog
         self.provider_configs = provider_configs
+        # Defaults to the fail-closed policy: read-only runs, everything else waits.
+        self.autonomy = autonomy or AutonomyPolicy()
         self.provider_factory = provider_factory or (lambda profile: OpenAICompatibleProvider(profile))
         self.max_tool_rounds = max(1, min(max_tool_rounds, 64))
         self.tool_timeout = max(0.1, min(tool_timeout, 600.0))
@@ -224,7 +228,13 @@ class AgentOrchestrator:
         effects = sorted(effect.value for effect in spec.effects)
         proposed = self.store.propose_tool_call(run_id, call_id, name, arguments, effects)
         self.store.append_event(run_id, "tool.proposed", {"tool_call_id": call_id, "name": name, "arguments": redact(arguments), "args_sha256": proposed["args_sha256"], "effects": effects})
-        if not spec.agent_auto_execute:
+        decision = self.autonomy.decide(spec)
+        if decision.approved and decision.reason != "read_only":
+            # A write that ran without a human has to be visible as exactly that,
+            # naming the rule that allowed it, or the audit trail cannot
+            # distinguish it from one somebody approved.
+            self.store.append_event(run_id, "approval.auto", {"tool_call_id": call_id, "name": name, "args_sha256": proposed["args_sha256"], "effects": effects, "reason": decision.reason})
+        if not decision.approved:
             self.store.transition(run_id, RunStatus.AWAITING_APPROVAL)
             self.store.append_event(run_id, "approval.required", {"tool_call_id": call_id, "name": name, "arguments": redact(arguments), "args_sha256": proposed["args_sha256"], "effects": effects})
             deadline = time.monotonic() + self.approval_timeout
