@@ -13,6 +13,7 @@ on:
 jobs:
   gates:
     runs-on: [self-hosted, Windows, headless-re]
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -51,6 +52,16 @@ jobs:
         run: |
           powershell -File .\fixtures\native\build.ps1 -Architecture all
 
+      - name: Record analyzer processes before the gates
+        run: |
+          # Compared against the same list afterwards so the residue check fails
+          # only on processes this job leaked, not on anything the runner was
+          # already hosting.
+          $names = @("x32dbg", "x64dbg", "ida", "ida64", "idat", "idat64", "headless")
+          $before = @(Get-Process -Name $names -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+          $before -join "," | Out-File analyzer_pids_before.txt -Encoding utf8
+          Write-Host "pre-existing analyzer processes: $($before.Count)"
+
       - name: Integration gates
         run: |
           # Run every gate rather than a hardcoded subset, which silently omitted
@@ -58,6 +69,16 @@ jobs:
           $env:PYTHONPATH = "src"
           python -m pytest tests/integration -rs --tb=short
 
-      - name: Residue check hint
+      - name: Residue check
+        if: always()
         run: |
-          Write-Host "Gate tests assert analyzer_windows==[] and cleanup; review pytest output for leftovers."
+          # Was a printed reminder, which nobody reads and which cannot fail.
+          $names = @("x32dbg", "x64dbg", "ida", "ida64", "idat", "idat64", "headless")
+          $before = @((Get-Content analyzer_pids_before.txt -Raw).Trim() -split "," | Where-Object { $_ })
+          $after = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
+          $leaked = @($after | Where-Object { $before -notcontains "$($_.Id)" })
+          if ($leaked.Count -gt 0) {
+            $leaked | ForEach-Object { Write-Host "leaked: $($_.ProcessName) pid=$($_.Id)" }
+            throw "gates leaked $($leaked.Count) analyzer process(es)"
+          }
+          Write-Host "no analyzer processes leaked"

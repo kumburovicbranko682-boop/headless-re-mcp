@@ -11,27 +11,26 @@ import asyncio
 import functools
 import json
 import logging
-import os
 import re
 import sys
-import tempfile
 import threading
 import uuid
 from collections.abc import Callable
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ParamSpec, TypeVar
 
-from platformdirs import user_log_path
+from headless_re_mcp.logging_setup import (
+    UtcFormatter,
+    attach_rotating_handler,
+    resolve_log_dir,
+)
 
 P = ParamSpec("P")
 R = TypeVar("R")
 JsonObject = dict[str, Any]
 
 _LOGGER_NAME = "headless_re_mcp.incidents"
-_LOG_MAX_BYTES = 5 * 1024 * 1024
-_LOG_BACKUPS = 5
 _LOCK = threading.Lock()
 _LOG_PATH: Path | None = None
 _SECRET_PATTERNS = (
@@ -54,34 +53,13 @@ def configure_incident_logging(log_dir: Path | None = None) -> Path:
     with _LOCK:
         if _LOG_PATH is not None:
             return _LOG_PATH
-        configured = os.environ.get("HEADLESS_RE_LOG_DIR")
-        root = (
-            log_dir
-            or (Path(configured) if configured else None)
-            or user_log_path("headless-re-mcp", appauthor=False)
-        ).expanduser()
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            root = Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
-            root.mkdir(parents=True, exist_ok=True)
-        path = (root / "incidents.log").resolve()
-        handler = RotatingFileHandler(
+        path = (resolve_log_dir(log_dir) / "incidents.log").resolve()
+        _LOG_PATH = attach_rotating_handler(
+            _LOGGER_NAME,
             path,
-            maxBytes=_LOG_MAX_BYTES,
-            backupCount=_LOG_BACKUPS,
-            encoding="utf-8",
+            formatter=UtcFormatter("%(asctime)sZ %(levelname)s %(name)s %(message)s"),
         )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)sZ %(levelname)s %(name)s %(message)s")
-        )
-        logger = logging.getLogger(_LOGGER_NAME)
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-        logger.handlers.clear()
-        logger.addHandler(handler)
-        _LOG_PATH = path
-        return path
+        return _LOG_PATH
 
 
 def record_exception(

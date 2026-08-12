@@ -9,6 +9,15 @@ on:
 jobs:
   quality:
     runs-on: windows-latest
+    # A hung backend probe used to burn the full six-hour default before anyone
+    # noticed the job was not going to finish.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python promises 3.11, so 3.11 has to be exercised or the
+        # promise is untested.
+        python-version: ["3.11", "3.12"]
     defaults:
       run:
         shell: pwsh
@@ -17,7 +26,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install package
         run: |
@@ -37,7 +46,17 @@ jobs:
         run: python -m pip check
 
       - name: Unit tests
-        run: python -m pytest tests/unit -q --tb=short
+        # -rs prints every skip reason: a suite that quietly skips half of
+        # itself reads exactly like a suite that passed.
+        run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
 
       - name: License and lock consistency
         run: |
@@ -63,6 +82,7 @@ jobs:
 
   webui:
     runs-on: windows-latest
+    timeout-minutes: 20
     defaults:
       run:
         shell: pwsh

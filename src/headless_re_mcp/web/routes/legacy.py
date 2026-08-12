@@ -15,7 +15,10 @@ if TYPE_CHECKING:
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result
+from headless_re_mcp.core.readiness import build_info
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.metrics_exposition import CONTENT_TYPE as EXPOSITION_CONTENT_TYPE
+from headless_re_mcp.metrics_exposition import render as render_exposition
 from headless_re_mcp.web.commands import WebCommandAdapter
 from headless_re_mcp.web.deps import build_deps_snapshot
 from headless_re_mcp.web.monitor import build_monitor_snapshot
@@ -52,7 +55,13 @@ def register_legacy_routes(
 ) -> None:
     try:
         from fastapi import Header, HTTPException, Query
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+        from fastapi.responses import (
+            FileResponse,
+            HTMLResponse,
+            JSONResponse,
+            PlainTextResponse,
+            StreamingResponse,
+        )
         from fastapi.staticfiles import StaticFiles
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("web extra required: pip install 'headless-re-mcp[web]'") from exc
@@ -101,7 +110,42 @@ def register_legacy_routes(
 
     @app.get("/healthz")
     def healthz() -> JsonObject:
-        return {"ok": True, "service": "headless-re-mcp-web"}
+        """Liveness only: this process is up and serving.
+
+        Deliberately touches nothing else, so a restart loop can never be caused
+        by a slow backend. Readiness is a separate question, answered by /readyz.
+        """
+        return {"ok": True, "service": "headless-re-mcp-web", "build": build_info()}
+
+    @app.get("/readyz")
+    def readyz() -> JSONResponse:
+        """Readiness: 503 once the store or artifact directory stops working.
+
+        Loopback-guarded but unauthenticated, so a local supervisor can probe it
+        without being given the console token.
+        """
+        result = service.readiness()
+        data = result.data if isinstance(result.data, dict) else {}
+        ready = bool(result.ok and data.get("ready"))
+        return JSONResponse(_result_payload(result), status_code=200 if ready else 503)
+
+    @app.get("/metrics")
+    def metrics_exposition() -> Any:
+        """Prometheus scrape endpoint for this process.
+
+        Unauthenticated for the same reason as /readyz, and loopback-guarded for
+        the same reason as everything else.
+        """
+        collected = service.tool_metrics(limit=0)
+        readiness = service.readiness()
+        return PlainTextResponse(
+            render_exposition(
+                collected.data if isinstance(collected.data, dict) else {},
+                build_info(),
+                readiness.data if isinstance(readiness.data, dict) else None,
+            ),
+            media_type=EXPOSITION_CONTENT_TYPE,
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index(

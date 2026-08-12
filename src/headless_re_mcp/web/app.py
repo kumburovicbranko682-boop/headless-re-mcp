@@ -11,6 +11,7 @@ from headless_re_mcp.error_boundary import (
     install_global_exception_hooks,
     register_fastapi_exception_boundary,
 )
+from headless_re_mcp.telemetry import configure_telemetry_logging
 from headless_re_mcp.web.auth import ensure_web_token
 from headless_re_mcp.web.routes.agent import register_agent_routes
 from headless_re_mcp.web.routes.legacy import register_legacy_routes
@@ -87,6 +88,7 @@ def run_web(
         )
         return 3
 
+    configure_telemetry_logging()
     token, token_path = ensure_web_token(settings)
     service = AnalysisService(settings)
     app = create_app(service, token=token, settings=settings)

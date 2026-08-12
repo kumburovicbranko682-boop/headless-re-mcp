@@ -52,8 +52,14 @@ from headless_re_mcp.core.models import (
     Session,
     SessionState,
 )
+from headless_re_mcp.core.readiness import readiness_report
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.retention import (
+    DEFAULT_MAX_TOTAL_BYTES,
+    ArtifactRetention,
+    UsageCache,
+)
 from headless_re_mcp.core.runtime_state import (
     BackendRuntimeOwner,
     BackendRuntimePhase,
@@ -122,6 +128,7 @@ from headless_re_mcp.dotnet.de4dot import run_de4dot
 from headless_re_mcp.dotnet.net_reactor_slayer import (
     run_net_reactor_slayer,
 )
+from headless_re_mcp.telemetry import telemetry_log_path
 from headless_re_mcp.unpack.iat_rank import (
     analyze_import_entries,
     gate_iat_rebuild,
@@ -428,6 +435,12 @@ class AnalysisService(
             self._runtime_owner,
             interval_s=float(getattr(self.settings, "health_check_interval_s", 5.0)),
         )
+        self._retention = ArtifactRetention(
+            max_total_bytes=int(
+                getattr(self.settings, "artifact_max_total_bytes", DEFAULT_MAX_TOTAL_BYTES)
+            )
+        )
+        self._artifact_usage = UsageCache()
         self.services = ApplicationServices(
             runtime=RuntimeApplicationService(self, self._runtime_owner),
             dynamic=DynamicApplicationService(self, self._debuggee_owner),
@@ -904,6 +917,10 @@ class AnalysisService(
             return result
         result = _success({"session": _session_json(closed), "already_closed": False})
         note_session_closed(self, session_id, result)
+        # Closing a session is the natural retention checkpoint: it is the moment
+        # an analysis stops producing artifacts, and it is infrequent enough that
+        # a throttled collection never lands on a hot path.
+        self._retention.maybe_collect(self.repository)
         return result
 
     def session_health(self, session_id: str | None = None) -> Result[JsonObject]:
@@ -932,6 +949,38 @@ class AnalysisService(
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    def backend_health_snapshot(self) -> list[JsonObject]:
+        """Return the last sweep's view without provoking a new one.
+
+        Passive on purpose: a readiness probe runs on a short interval and must
+        never trigger the monitor's reconnect path, which can block on a worker.
+        """
+        return self._health.report()
+
+    def readiness(self) -> Result[JsonObject]:
+        """Report whether this process can accept new work, and which build it is."""
+        try:
+            live = [
+                session
+                for session in self.registry.list()
+                if session.state not in {SessionState.CLOSED, SessionState.FAILED}
+            ]
+            return _success(
+                readiness_report(
+                    repository=self.repository,
+                    artifact_root=self.settings.artifact_root,
+                    open_sessions=len(live),
+                    backends=self.backend_health_snapshot(),
+                    telemetry_log=telemetry_log_path(),
+                    # Cached: a probe runs on a short interval and must not walk
+                    # the whole artifact tree every time.
+                    disk=self._artifact_usage.get(self.settings.artifact_root).as_json(),
+                    disk_budget_bytes=self._retention.max_total_bytes,
+                )
+            )
+        except BaseException as exc:
+            return _failure(exc)
 
     def close_all(self) -> Result[JsonObject]:
         session_ids = [session.id for session in self.registry.list()]

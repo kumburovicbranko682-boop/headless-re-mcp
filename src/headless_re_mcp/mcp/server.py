@@ -15,6 +15,7 @@ from headless_re_mcp.mcp.registry import (
     register_workflow_tools,
 )
 from headless_re_mcp.mcp.routes import register_remaining_tools
+from headless_re_mcp.telemetry import configure_telemetry_logging
 
 
 def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
@@ -44,6 +45,7 @@ def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
 
 def run_stdio(service: AnalysisService | None = None) -> None:
     install_global_exception_hooks("mcp-stdio")
+    configure_telemetry_logging()
     analysis = service or AnalysisService()
     try:
         create_server(analysis).run(transport="stdio")

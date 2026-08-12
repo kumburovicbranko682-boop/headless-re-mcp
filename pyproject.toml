@@ -21,7 +21,7 @@ ida = ["idapro>=0.0.10"]
 pe = ["pefile>=2024.8.26"]
 web = ["fastapi>=0.115", "uvicorn>=0.34", "httpx>=0.28"]
 native = ["PySide6>=6.6"]
-test = ["pytest>=8.3", "pytest-asyncio>=0.25"]
+test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0"]
 dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14"]
 
 [project.scripts]
@@ -62,6 +62,31 @@ addopts = "-ra"
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
+]
+
+[tool.coverage.run]
+source_pkgs = ["headless_re_mcp"]
+branch = true
+omit = [
+  # Run inside a foreign interpreter -- IDA's Python and Ghidra's script host --
+  # so pytest can never execute a line of them. Omitted to keep the number
+  # meaningful, not because they are hard to test.
+  "*/backends/ida/worker.py",
+  "*/backends/ida/gate_worker.py",
+  "*/backends/ghidra/scripts/*",
+]
+
+[tool.coverage.report]
+# Set just below the measured value so it ratchets. Raise it when real coverage
+# rises; never lower it to turn a red build green.
+fail_under = 64
+show_missing = false
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(typing\\.)?overload",
+  "if __name__ == .__main__.:",
 ]
 
 [tool.ruff]
