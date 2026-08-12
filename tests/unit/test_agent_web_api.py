@@ -62,3 +62,74 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
 
         assert client.get("/api/agent/threads").status_code == 401
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The unattended entry point, over the wire.
+
+    A run needs a caller present when it starts and dies at its deadline. A
+    mission is queued once and the scheduler carries it, so this checks the
+    endpoint exists, is authenticated like everything else, and that the loop is
+    actually attached to the app lifespan rather than only constructed.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    assert app.state.mission_scheduler.running is False
+
+    with TestClient(app) as client:
+        assert client.post("/api/agent/missions", json={"objective": "x"}).status_code == 401
+
+        created = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            json={"objective": "recover the serial", "max_runs": 3},
+        )
+        assert created.status_code == 201
+        mission = created.json()["mission"]
+        assert mission["objective"] == "recover the serial"
+        assert mission["max_runs"] == 3
+        # A thread is created for it, so a caller can queue work with one call.
+        assert mission["thread_id"]
+
+        assert client.post("/api/agent/missions", headers=headers, json={"objective": "  "}).status_code == 400
+
+        listed = client.get("/api/agent/missions", headers=headers).json()
+        assert listed["count"] == 1
+        assert listed["scheduler_running"] is True
+
+        fetched = client.get(f"/api/agent/missions/{mission['id']}", headers=headers)
+        assert fetched.status_code == 200
+        assert client.get("/api/agent/missions/nope", headers=headers).status_code == 404
+
+        cancelled = client.post(f"/api/agent/missions/{mission['id']}/cancel", headers=headers)
+        assert cancelled.status_code == 202
+        assert cancelled.json()["mission"]["status"] == "cancelled"
+
+    # The lifespan has to stop the loop, or the process cannot exit cleanly.
+    assert app.state.mission_scheduler.running is False
+
+
+def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_effects=("state_change",),
+    )
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        assert client.get("/api/agent/autonomy").status_code == 401
+        body = client.get("/api/agent/autonomy", headers=headers).json()
+
+    assert body["policy"]["unattended"] is True
+    assert body["policy"]["auto_approve_effects"] == ["state_change"]
+    # The point of the endpoint: see exactly which writes were opened up.
+    assert body["auto_executable_write_count"] > 0
+    assert "dynamic.launch" in body["auto_executable_writes"]

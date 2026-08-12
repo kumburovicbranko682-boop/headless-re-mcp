@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -19,14 +20,36 @@ from headless_re_mcp.agent import (
     ProviderProfile,
 )
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
-from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES
+from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, MissionStatus
 from headless_re_mcp.agent.providers import OpenAICompatibleProvider
+from headless_re_mcp.agent.scheduler import MissionScheduler
 from headless_re_mcp.config import Settings, default_config_path
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.tools.assembly import bind_all_tools
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport
 
 JsonObject = dict[str, Any]
+
+
+def _attach_scheduler_lifespan(app: FastAPI, scheduler: MissionScheduler) -> None:
+    """Run the scheduler for as long as the app is serving.
+
+    Chained onto any existing lifespan rather than replacing it, because the
+    router does not own the app and must not silently drop someone else's
+    startup work.
+    """
+    previous = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(instance: FastAPI) -> AsyncIterator[None]:
+        scheduler.start()
+        try:
+            async with previous(instance):
+                yield
+        finally:
+            await scheduler.stop()
+
+    app.router.lifespan_context = lifespan
 
 
 def register_agent_routes(
@@ -52,10 +75,17 @@ def register_agent_routes(
     configs = ProviderConfigStore(config_path)
     autonomy = AutonomyPolicy.from_settings(settings)
     orchestrator = AgentOrchestrator(store, catalog, configs, autonomy=autonomy)
+    scheduler = MissionScheduler(store, orchestrator.start_run)
     app.state.agent_store = store
     app.state.provider_configs = configs
     app.state.agent_orchestrator = orchestrator
+    app.state.mission_scheduler = scheduler
     app.state.tool_catalog = catalog
+
+    # Bound to the app lifespan rather than started at import, so the loop
+    # attaches to the server's event loop and a test client that never enters
+    # the lifespan does not leave one running.
+    _attach_scheduler_lifespan(app, scheduler)
 
     def authorize(authorization: str | None) -> None:
         provided = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
@@ -202,6 +232,69 @@ def register_agent_routes(
         return JSONResponse(
             {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
         )
+
+    @app.post("/api/agent/missions", status_code=201)
+    def create_mission(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
+        """Queue a durable objective for the scheduler to carry out.
+
+        This is the unattended entry point: unlike a run, nobody has to be
+        present when it starts, and it survives the run deadline and a restart.
+        """
+        authorize(authorization)
+        objective = body.get("objective")
+        if not isinstance(objective, str) or not objective.strip():
+            raise HTTPException(status_code=400, detail="objective_required")
+        thread_id = body.get("thread_id")
+        if thread_id is not None and not isinstance(thread_id, str):
+            raise HTTPException(status_code=400, detail="invalid_thread_id")
+        if thread_id is None:
+            thread_id = store.create_thread(title=objective.strip()[:80]).id
+        try:
+            mission = store.create_mission(
+                thread_id,
+                objective,
+                provider_profile=body.get("profile_id") if isinstance(body.get("profile_id"), str) else None,
+                model=body.get("model") if isinstance(body.get("model"), str) else None,
+                max_runs=int(body.get("max_runs", 8)),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="thread_not_found") from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "mission": mission.dump()}, status_code=201)
+
+    @app.get("/api/agent/missions")
+    def list_missions(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
+        authorize(authorization)
+        try:
+            wanted = MissionStatus(status) if status else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_status") from exc
+        items = [item.dump() for item in store.list_missions(status=wanted, limit=limit)]
+        return JSONResponse(
+            {"ok": True, "missions": items, "count": len(items), "scheduler_running": scheduler.running}
+        )
+
+    @app.get("/api/agent/missions/{mission_id}")
+    def get_mission(mission_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        mission = store.get_mission(mission_id)
+        if mission is None:
+            raise HTTPException(status_code=404, detail="mission_not_found")
+        return JSONResponse({"ok": True, "mission": mission.dump()})
+
+    @app.post("/api/agent/missions/{mission_id}/cancel", status_code=202)
+    def cancel_mission(mission_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        try:
+            mission = store.cancel_mission(mission_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="mission_not_found") from exc
+        return JSONResponse({"ok": True, "mission": mission.dump()}, status_code=202)
 
     @app.get("/api/agent/autonomy")
     def agent_autonomy(authorization: str | None = Header(default=None)) -> JSONResponse:

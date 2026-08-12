@@ -49,6 +49,39 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
+class MissionStatus(StrEnum):
+    """A mission outlives the bounded runs that carry it out.
+
+    One run is capped at a few minutes and a dozen tool rounds, which is far
+    less than an analysis takes. A mission is the durable objective that the
+    scheduler keeps feeding runs to until it is met, gives up, or runs out of
+    budget.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXHAUSTED = "exhausted"
+
+
+TERMINAL_MISSION_STATUSES = frozenset(
+    {
+        MissionStatus.COMPLETED,
+        MissionStatus.FAILED,
+        MissionStatus.CANCELLED,
+        MissionStatus.EXHAUSTED,
+    }
+)
+
+# The marker a run's final message uses to declare the objective met. Chosen to
+# be unmistakable in free text, since the alternative -- inferring completion
+# from the absence of tool calls -- ends a mission the first time the model
+# pauses to think.
+MISSION_COMPLETE_MARKER = "MISSION_COMPLETE"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentThread:
     id: str
@@ -92,6 +125,31 @@ class AgentRun:
         value = asdict(self)
         value["status"] = self.status.value
         return value
+
+
+@dataclass(frozen=True, slots=True)
+class AgentMission:
+    id: str
+    thread_id: str
+    objective: str
+    status: MissionStatus
+    provider_profile: str | None
+    model: str | None
+    max_runs: int
+    runs_used: int
+    last_run_id: str | None
+    error: str | None
+    created_at: str
+    updated_at: str
+
+    def dump(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["status"] = self.status.value
+        return value
+
+    @property
+    def budget_left(self) -> int:
+        return max(0, self.max_runs - self.runs_used)
 
 
 @dataclass(frozen=True, slots=True)

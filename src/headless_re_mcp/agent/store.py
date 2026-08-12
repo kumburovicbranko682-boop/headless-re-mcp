@@ -15,10 +15,13 @@ from typing import Any
 
 from headless_re_mcp.agent.models import (
     RUN_TRANSITIONS,
+    TERMINAL_MISSION_STATUSES,
     TERMINAL_RUN_STATUSES,
     AgentMessage,
+    AgentMission,
     AgentRun,
     AgentThread,
+    MissionStatus,
     RunEvent,
     RunStatus,
 )
@@ -111,6 +114,15 @@ class AgentStore:
           seq INTEGER NOT NULL, type TEXT NOT NULL, data_json TEXT NOT NULL,
           created_at TEXT NOT NULL, PRIMARY KEY(run_id, seq)
         );
+        CREATE TABLE IF NOT EXISTS missions(
+          id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+          objective TEXT NOT NULL, status TEXT NOT NULL,
+          provider_profile TEXT, model TEXT,
+          max_runs INTEGER NOT NULL, runs_used INTEGER NOT NULL DEFAULT 0,
+          last_run_id TEXT, error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS missions_status_idx ON missions(status, created_at, id);
         """
         with self._lock:
             con = self._connect()
@@ -295,4 +307,124 @@ class AgentStore:
                 run_id = str(row["id"])
                 con.execute("UPDATE runs SET status=?,error=?,updated_at=? WHERE id=?", (RunStatus.INTERRUPTED.value, "service_restarted", now, run_id))
                 self._append_event_tx(con, run_id, "run.failed", {"status": RunStatus.INTERRUPTED.value, "error": "service_restarted"})
+            # A mission is durable across restarts by design: its run was killed,
+            # not its objective. Returning it to PENDING is what lets the
+            # scheduler pick the work back up instead of losing it, which is the
+            # difference between surviving a restart and needing a human.
+            con.execute(
+                "UPDATE missions SET status=?,updated_at=? WHERE status=?",
+                (MissionStatus.PENDING.value, now, MissionStatus.RUNNING.value),
+            )
         return len(rows)
+
+    # ---- missions -------------------------------------------------------
+
+    @staticmethod
+    def _mission_from_row(row: sqlite3.Row) -> AgentMission:
+        data = dict(row)
+        data["status"] = MissionStatus(data["status"])
+        return AgentMission(**data)
+
+    def create_mission(
+        self,
+        thread_id: str,
+        objective: str,
+        *,
+        provider_profile: str | None = None,
+        model: str | None = None,
+        max_runs: int = 8,
+    ) -> AgentMission:
+        if self.get_thread(thread_id) is None:
+            raise KeyError(thread_id)
+        text = objective.strip()
+        if not text:
+            raise ValueError("mission objective must not be empty")
+        mission_id = uuid.uuid4().hex
+        now = utc_now()
+        bounded = max(1, min(int(max_runs), 128))
+        with self.transaction() as con:
+            con.execute(
+                "INSERT INTO missions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    mission_id, thread_id, text[:8000], MissionStatus.PENDING.value,
+                    provider_profile, model, bounded, 0, None, None, now, now,
+                ),
+            )
+        mission = self.get_mission(mission_id)
+        assert mission is not None
+        return mission
+
+    def get_mission(self, mission_id: str) -> AgentMission | None:
+        with self._reading() as con:
+            row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
+        return None if row is None else self._mission_from_row(row)
+
+    def list_missions(self, *, status: MissionStatus | None = None, limit: int = 100) -> list[AgentMission]:
+        bounded = max(1, min(limit, 500))
+        with self._reading() as con:
+            if status is None:
+                rows = con.execute("SELECT * FROM missions ORDER BY created_at DESC, id DESC LIMIT ?", (bounded,)).fetchall()
+            else:
+                rows = con.execute("SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ?", (status.value, bounded)).fetchall()
+        return [self._mission_from_row(row) for row in rows]
+
+    def claim_next_mission(self) -> AgentMission | None:
+        """Take the oldest pending mission, atomically.
+
+        The claim is the UPDATE itself rather than a read followed by a write,
+        so two schedulers -- or one that overlapped its own tick -- cannot both
+        start runs for the same objective.
+        """
+        with self.transaction() as con:
+            row = con.execute(
+                "SELECT * FROM missions WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 1",
+                (MissionStatus.PENDING.value,),
+            ).fetchone()
+            if row is None:
+                return None
+            mission_id = str(row["id"])
+            changed = con.execute(
+                "UPDATE missions SET status=?,updated_at=? WHERE id=? AND status=?",
+                (MissionStatus.RUNNING.value, utc_now(), mission_id, MissionStatus.PENDING.value),
+            ).rowcount
+            if not changed:
+                return None
+            row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
+        return self._mission_from_row(row)
+
+    def note_mission_run(self, mission_id: str, run_id: str) -> None:
+        with self.transaction() as con:
+            con.execute(
+                "UPDATE missions SET runs_used=runs_used+1,last_run_id=?,updated_at=? WHERE id=?",
+                (run_id, utc_now(), mission_id),
+            )
+
+    def set_mission_status(
+        self,
+        mission_id: str,
+        status: MissionStatus,
+        *,
+        error: str | None = None,
+    ) -> AgentMission:
+        with self.transaction() as con:
+            row = con.execute("SELECT status FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            current = MissionStatus(row["status"])
+            if current in TERMINAL_MISSION_STATUSES and status != current:
+                raise ValueError(f"mission is already {current.value}")
+            con.execute(
+                "UPDATE missions SET status=?,error=?,updated_at=? WHERE id=?",
+                (status.value, error[:1000] if error else None, utc_now(), mission_id),
+            )
+        mission = self.get_mission(mission_id)
+        assert mission is not None
+        return mission
+
+    def cancel_mission(self, mission_id: str) -> AgentMission:
+        mission = self.get_mission(mission_id)
+        if mission is None:
+            raise KeyError(mission_id)
+        if mission.status in TERMINAL_MISSION_STATUSES:
+            return mission
+        return self.set_mission_status(mission_id, MissionStatus.CANCELLED, error="cancelled")
