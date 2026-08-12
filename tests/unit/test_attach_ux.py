@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import inspect
 
-from headless_re_mcp.core.service import AnalysisService, _ui_finalize_windows
+from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.service_ui import _ui_finalize_windows
 
 
 def test_dynamic_attach_defaults_pause_after_attach_false() -> None:
@@ -12,7 +13,7 @@ def test_dynamic_attach_defaults_pause_after_attach_false() -> None:
 
 def test_ui_finalize_windows_empty_hints_children(monkeypatch) -> None:
     monkeypatch.setattr(
-        "headless_re_mcp.core.service.is_pid_alive",
+        "headless_re_mcp.core.service_ui.is_pid_alive",
         lambda pid: True,
     )
     monkeypatch.setattr(
