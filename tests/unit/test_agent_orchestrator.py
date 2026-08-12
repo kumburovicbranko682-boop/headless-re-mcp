@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import AsyncIterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -203,6 +205,57 @@ async def test_cancel_while_awaiting_approval_is_terminal(tmp_path: Path) -> Non
     await runner.cancel(run["id"])
     assert await _wait_status(store, run["id"], {RunStatus.CANCELLED}) is RunStatus.CANCELLED
     assert any(event.type == "run.cancelled" for event in store.list_events(run["id"]))
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_tool_cannot_starve_the_default_thread_pool(
+    tmp_path: Path,
+) -> None:
+    """A tool that outlives its timeout must not take the event reader with it.
+
+    Python cannot cancel the thread, so an abandoned call keeps its slot until
+    the backend returns. Those used to be the same slots the SSE endpoint
+    offloads its store reads onto, which left a stuck run unobservable as well
+    as stuck. The default pool is shrunk to one worker here so that sharing it
+    would be unmissable.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wedged_tool() -> JsonObject:
+        entered.set()
+        release.wait(30)
+        return {"ok": True}
+
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+    store = AgentStore(tmp_path / "wedged.db")
+    thread = store.create_thread()
+    provider = FakeProvider([(ProviderToolCall("stuck", "test.tool", {}),)])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(wedged_tool)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+        tool_timeout=0.1,
+    )
+    run = await runner.start_run(thread.id)
+    try:
+        for _ in range(500):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set()
+        assert await _wait_status(store, run["id"], {RunStatus.FAILED}) is RunStatus.FAILED
+
+        # The tool thread is still wedged. Reading the run the way the SSE
+        # endpoint does has to keep working while it is.
+        events = await asyncio.wait_for(
+            asyncio.to_thread(store.list_events, run["id"]),
+            timeout=5.0,
+        )
+        assert any(event.type == "tool.completed" for event in events)
+    finally:
+        release.set()
 
 
 @pytest.mark.asyncio

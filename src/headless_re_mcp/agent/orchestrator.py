@@ -9,6 +9,9 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+import anyio
+import anyio.to_thread
+
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, RunStatus
@@ -24,6 +27,14 @@ from headless_re_mcp.tools.catalog import CommandCatalog, CommandTransport
 
 JsonObject = dict[str, Any]
 ProviderFactory = Callable[[ProviderProfile], ProviderPort]
+
+# A tool that outlives its timeout keeps its thread until the backend gives up,
+# because Python cannot cancel one. On the shared pool those abandoned threads
+# accumulate against everything else that offloads work in this process, and the
+# first casualty is the SSE reader that tells the user what went wrong. Tools get
+# their own pool so a stuck backend can only starve more tool calls, and reaching
+# the bound queues them instead of failing silently.
+_TOOL_THREADS = 8
 
 
 class AgentOrchestrator:
@@ -49,6 +60,13 @@ class AgentOrchestrator:
         self.approval_timeout = max(1.0, min(approval_timeout, 1800.0))
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+        # Built on first use because a capacity limiter binds to the running loop.
+        self._tool_threads: anyio.CapacityLimiter | None = None
+
+    def _tool_limiter(self) -> anyio.CapacityLimiter:
+        if self._tool_threads is None:
+            self._tool_threads = anyio.CapacityLimiter(_TOOL_THREADS)
+        return self._tool_threads
 
     def _provider_tools(self) -> list[JsonObject]:
         tools: list[JsonObject] = []
@@ -239,7 +257,19 @@ class AgentOrchestrator:
         self.store.append_event(run_id, "tool.started", {"tool_call_id": call_id, "name": name})
         timeout = min(self.tool_timeout, spec.resource_policy.timeout_seconds)
         try:
-            value = await asyncio.wait_for(asyncio.to_thread(self.catalog.invoke, name, arguments), timeout=timeout)
+            value = await asyncio.wait_for(
+                anyio.to_thread.run_sync(
+                    self.catalog.invoke,
+                    name,
+                    arguments,
+                    # The timeout has to return now rather than wait out a backend
+                    # that already missed it; the thread finishes on its own and
+                    # frees its slot then.
+                    abandon_on_cancel=True,
+                    limiter=self._tool_limiter(),
+                ),
+                timeout=timeout,
+            )
         except TimeoutError as exc:
             failure = {"ok": False, "error": {"code": "tool_timeout", "message": f"tool exceeded {timeout:g}s"}}
             self.store.complete_tool_call(run_id, call_id, failure, ok=False)
