@@ -40,7 +40,7 @@ include = [
   "/THIRD_PARTY_NOTICES.md",
   "/upstream.lock.json",
   "/start_web.py",
-  "/first_setup.py",
+  "/setup.py",
 ]
 exclude = [
   "**/__pycache__",

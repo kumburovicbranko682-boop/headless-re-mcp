@@ -653,6 +653,106 @@ class AnalysisService(
         annotated = self._observe_debuggee_state(session_id, dict(result.data))
         return Result[JsonObject](ok=True, data=annotated, error=None, meta=dict(result.meta))
 
+    def virtual_desktop_snapshot(self, session_id: str) -> Result[JsonObject]:
+        """Return a passive, PID-bounded snapshot of the session desktop."""
+        try:
+            runtime = self._runtime(session_id, BackendKind.X64DBG)
+            snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
+            if not callable(snapshot_fn):
+                raise XdbgRpcError(
+                    "capability_unavailable",
+                    "x64dbg worker does not expose desktop monitoring",
+                )
+            with runtime.lock:
+                state = runtime.worker.request("debug.state", timeout=5.0)
+                allowed, debuggee_pid = _desktop_monitor_pids(state)
+                snapshot = snapshot_fn(allowed_pids=allowed)
+            if not isinstance(snapshot, dict):
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "desktop monitor returned a non-object snapshot",
+                )
+            payload = dict(snapshot)
+            payload.update(
+                {
+                    "session_id": session_id,
+                    "debuggee_pid": debuggee_pid,
+                    "debugger_pid": runtime.worker.pid,
+                    "allowed_pids": sorted(allowed),
+                    "capture_mode": "passive",
+                }
+            )
+            return _success(
+                payload,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(
+                exc,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+
+    def virtual_desktop_capture(
+        self,
+        session_id: str,
+        *,
+        hwnd: int | None = None,
+    ) -> Result[JsonObject]:
+        """Capture one authorized hidden-desktop window without switching desktops."""
+        try:
+            runtime = self._runtime(session_id, BackendKind.X64DBG)
+            snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
+            capture_fn = getattr(runtime.worker, "desktop_capture", None)
+            if not callable(snapshot_fn) or not callable(capture_fn):
+                raise XdbgRpcError(
+                    "capability_unavailable",
+                    "x64dbg worker does not expose hidden-desktop capture",
+                )
+            with runtime.lock:
+                state = runtime.worker.request("debug.state", timeout=5.0)
+                allowed, debuggee_pid = _desktop_monitor_pids(state)
+                snapshot = snapshot_fn(allowed_pids=allowed)
+                windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
+                rows = [row for row in windows or [] if isinstance(row, dict)]
+                selected = _select_desktop_window(rows, hwnd)
+                selected_hwnd = int(selected["hwnd"])
+                output = (
+                    self.settings.artifact_root.expanduser().resolve()
+                    / "sessions"
+                    / session_id
+                    / "desktop"
+                    / f"window-{selected_hwnd}.bmp"
+                )
+                capture = capture_fn(
+                    selected_hwnd,
+                    allowed_pids=allowed,
+                    output_path=output,
+                )
+            if not isinstance(capture, dict):
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "desktop capture returned a non-object payload",
+                )
+            return _success(
+                {
+                    **capture,
+                    "session_id": session_id,
+                    "debuggee_pid": debuggee_pid,
+                    "window": selected,
+                    "intrusion": "on_demand_printwindow",
+                },
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(
+                exc,
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+
 
     def ui_windows_list(
         self,
@@ -5575,7 +5675,11 @@ def _create_xdbg_worker(session: Session, settings: Settings) -> DynamicWorker:
             f"x64dbg {session.architecture.value} headless executable is not configured",
             details={"environment_variable": variable},
         )
-    return XdbgClient(executable, session.architecture)
+    return XdbgClient(
+        executable,
+        session.architecture,
+        hidden_desktop=settings.hidden_desktop,
+    )
 
 
 def _workflow_timeout(value: float) -> float | ValueError:
@@ -5833,3 +5937,48 @@ def _ui_finalize_windows(payload: JsonObject, ctx: JsonObject) -> JsonObject:
                     "include_same_image_children=true"
                 )
     return payload
+
+
+def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None]:
+    """Resolve a bounded target process set for passive desktop monitoring."""
+    value = state.get("process_id") or state.get("debuggee_pid")
+    if type(value) is not int or value <= 0 or not is_pid_alive(value):
+        return frozenset(), None
+    from headless_re_mcp.core.process_tree import enumerate_direct_children
+
+    allowed = {value}
+    for child in enumerate_direct_children(value):
+        if is_pid_alive(child):
+            allowed.add(child)
+    return frozenset(allowed), value
+
+
+def _select_desktop_window(
+    windows: list[JsonObject],
+    requested_hwnd: int | None,
+) -> JsonObject:
+    if requested_hwnd is not None:
+        if type(requested_hwnd) is not int or requested_hwnd <= 0:
+            raise ValueError("hwnd must be a positive integer")
+        for row in windows:
+            if row.get("hwnd") == requested_hwnd:
+                return row
+        raise XdbgRpcError(
+            "not_found",
+            "requested hwnd is not on the authorized hidden desktop",
+            details={"hwnd": requested_hwnd},
+        )
+    if not windows:
+        raise XdbgRpcError(
+            "not_found",
+            "the debuggee has no capturable hidden-desktop window",
+        )
+    return max(
+        windows,
+        key=lambda row: (
+            bool(row.get("visible")),
+            not bool(row.get("minimized")),
+            int(row.get("area") or 0),
+            bool(row.get("title")),
+        ),
+    )

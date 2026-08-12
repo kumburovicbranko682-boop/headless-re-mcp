@@ -5,10 +5,10 @@
 - `headless.exe`
 - 同目录依赖 DLL 与 Qt 插件目录
 
-同步命令：
+也可直接运行一键安装，由固定 Release 依赖包自动配置：
 
 ```powershell
-pwsh -File scripts/sync_external_x64dbg.ps1
+python setup.py
 ```
 
 **禁止**在此放置 IDA 相关文件。

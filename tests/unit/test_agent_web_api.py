@@ -21,6 +21,11 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert page.status_code == 200
         assert '<div id="root"></div>' in page.text
         assert "web-secret" not in page.text
+        deep_link = client.get("/analysis/thread/demo", headers=headers)
+        assert deep_link.status_code == 200
+        assert '<div id="root"></div>' in deep_link.text
+        assert client.get("/api/not-real", headers=headers).status_code == 404
+        assert client.get("/assets/not-real.js", headers=headers).status_code == 404
 
         created = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
         assert created.status_code == 201

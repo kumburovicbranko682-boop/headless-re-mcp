@@ -7,6 +7,10 @@ from typing import Any
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.error_boundary import (
+    install_global_exception_hooks,
+    register_fastapi_exception_boundary,
+)
 from headless_re_mcp.web.auth import ensure_web_token
 from headless_re_mcp.web.routes.agent import register_agent_routes
 from headless_re_mcp.web.routes.legacy import register_legacy_routes
@@ -27,7 +31,9 @@ def create_app(
         ) from exc
 
     cfg = settings or service.settings
+    install_global_exception_hooks("web")
     app = FastAPI(title="Headless RE-MCP Monitor", docs_url=None, redoc_url=None)
+    register_fastapi_exception_boundary(app)
     app.state.service = service
     app.state.token = token
     app.state.settings = cfg

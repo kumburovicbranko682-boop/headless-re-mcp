@@ -706,6 +706,81 @@ def _write_bmp_bgr(path: Path, width: int, height: int, pixels: bytes) -> int:
     return file_size
 
 
+def _estimate_capture_uniformity(
+    pixels: bytes,
+    width: int,
+    height: int,
+    row_stride: int,
+    *,
+    max_samples: int = 4096,
+    dark_threshold: int = 24,
+    dark_ratio_degraded: float = 0.995,
+) -> JsonObject:
+    """Detect blank/uniform captures without switching or re-capturing.
+
+    GPU/DirectX/Chromium surfaces frequently return an all-black or single-color
+    frame to ``PrintWindow``. Callers surface ``degraded`` so the operator can
+    tell a real window apart from an unrenderable one, instead of silently
+    falling back to the input desktop. Sampling is bounded so large captures
+    stay cheap, and the scan is read-only.
+    """
+    total = width * height
+    if total <= 0 or not pixels:
+        return {
+            "degraded": True,
+            "degraded_reason": "empty_capture",
+            "sampled_pixels": 0,
+            "uniform_ratio": 1.0,
+            "dark_ratio": 1.0,
+        }
+    step = max(1, total // max_samples)
+    sampled = 0
+    same = 0
+    dark = 0
+    first: tuple[int, int, int] | None = None
+    for index in range(0, total, step):
+        row = index // width
+        col = index % width
+        offset = row * row_stride + col * 3
+        if offset + 3 > len(pixels):
+            continue
+        pixel = (pixels[offset], pixels[offset + 1], pixels[offset + 2])
+        if first is None:
+            first = pixel
+        if pixel == first:
+            same += 1
+        if pixel[0] + pixel[1] + pixel[2] <= dark_threshold:
+            dark += 1
+        sampled += 1
+    if sampled == 0 or first is None:
+        return {
+            "degraded": True,
+            "degraded_reason": "empty_capture",
+            "sampled_pixels": 0,
+            "uniform_ratio": 1.0,
+            "dark_ratio": 1.0,
+        }
+    uniform = same == sampled
+    dark_ratio = dark / sampled
+    mostly_black = dark_ratio >= dark_ratio_degraded
+    degraded = uniform or mostly_black
+    reason: str | None = None
+    if degraded:
+        if sum(first) <= dark_threshold:
+            reason = "blank_capture"
+        elif uniform:
+            reason = "uniform_capture"
+        else:
+            reason = "mostly_black_capture"
+    return {
+        "degraded": degraded,
+        "degraded_reason": reason,
+        "sampled_pixels": sampled,
+        "uniform_ratio": round(same / sampled, 4),
+        "dark_ratio": round(dark_ratio, 4),
+    }
+
+
 def capture_hwnd_screenshot(
     hwnd: int,
     allowed_pids: frozenset[int],
@@ -835,6 +910,7 @@ def capture_hwnd_screenshot(
         else:
             user32.ReleaseDC(hwnd_ptr, window_dc)
 
+    uniformity = _estimate_capture_uniformity(pixels, width, height, row_stride)
     return {
         "hwnd": int(hwnd),
         "pid": pid,
@@ -847,6 +923,13 @@ def capture_hwnd_screenshot(
         "artifact": str(path.resolve()),
         "path": str(path.resolve()),
         "artifact_bytes": byte_count,
+        "degraded": bool(uniformity["degraded"]),
+        "degraded_reason": uniformity["degraded_reason"],
+        "capture_quality": {
+            "sampled_pixels": uniformity["sampled_pixels"],
+            "uniform_ratio": uniformity["uniform_ratio"],
+            "dark_ratio": uniformity["dark_ratio"],
+        },
     }
 
 

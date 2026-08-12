@@ -18,6 +18,7 @@ class Settings:
     x64dbg_headless_x64: Path | None
     x64dbg_headless_x86: Path | None
     artifact_root: Path
+    hidden_desktop: bool = False
     local_full_access: bool = True
     http_host: str = "127.0.0.1"
     http_port: int = 8765
@@ -131,6 +132,10 @@ class Settings:
             persist_debug_events=_as_bool(
                 os.environ.get("HEADLESS_RE_PERSIST_DEBUG_EVENTS"),
                 data.get("persist_debug_events", False),
+            ),
+            hidden_desktop=_as_bool(
+                os.environ.get("HEADLESS_RE_HIDDEN_DESKTOP"),
+                data.get("hidden_desktop", False),
             ),
             local_full_access=_as_bool(
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),

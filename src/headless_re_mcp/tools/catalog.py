@@ -380,7 +380,12 @@ class CommandCatalog:
         spec = self.require(name)
         if spec.handler is None:
             raise RuntimeError(f"tool handler is not bound: {name}")
-        return spec.handler(**arguments)
+        from headless_re_mcp.error_boundary import exception_envelope
+
+        try:
+            return spec.handler(**arguments)
+        except BaseException as exc:  # noqa: BLE001 - Agent transport must stay alive
+            return exception_envelope(exc, context=f"agent-tool:{name}")
 
 
 COMMAND_CATALOG = CommandCatalog()

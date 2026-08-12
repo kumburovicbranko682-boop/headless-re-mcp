@@ -130,7 +130,7 @@ export function App() {
       </div>
       <form className="composer" onSubmit={(event) => void send(event)}><textarea aria-label="Message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask the Agent to inspect, explain, or operate…" rows={3}/><button disabled={!draft.trim() || Boolean(state.activeRun)}>Send</button></form>
     </section>
-    <Inspector events={state.events} monitor={monitor} artifacts={artifacts} audit={audit} />
+    <Inspector events={state.events} monitor={monitor} artifacts={artifacts} audit={audit} sessionId={sessionId} />
     {settingsOpen && <div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><section className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSettingsOpen(false)}>×</button><h2>Provider & setup</h2><p>Provider secrets are submitted directly to the loopback service and are never retained in DOM or browser storage.</p><ProviderForm onSaved={() => setSettingsOpen(false)} /></section></div>}
   </main>;
 }

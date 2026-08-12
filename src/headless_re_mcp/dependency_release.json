@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "kumburovicbranko682-boop/headless-re-mcp",
+  "tag": "v0.1.0-deps",
+  "asset": "headless-re-mcp-deps-win.x64.zip",
+  "size": 110156652,
+  "sha256": "b0172b140f2f9e8d49ad02890188afb2f5032073f1bca6b36b4d09523cce9263",
+  "never_bundles_ida": true,
+  "download_urls": [
+    "https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/download/v0.1.0-deps/headless-re-mcp-deps-win.x64.zip",
+    "https://ghproxy.net/https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/download/v0.1.0-deps/headless-re-mcp-deps-win.x64.zip",
+    "https://gh-proxy.com/https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/download/v0.1.0-deps/headless-re-mcp-deps-win.x64.zip"
+  ]
+}

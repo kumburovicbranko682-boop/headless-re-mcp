@@ -471,6 +471,56 @@ def register_legacy_routes(
             },
         )
 
+    @app.get("/api/sessions/{session_id}/virtual-desktop")
+    def virtual_desktop(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Passive hidden-desktop window inventory; never switches desktops."""
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.virtual_desktop_snapshot(session_id)))
+
+    @app.get("/api/sessions/{session_id}/virtual-desktop/frame")
+    def virtual_desktop_frame(
+        session_id: str,
+        hwnd: int | None = Query(default=None, gt=0),
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> Any:
+        """Capture one target-owned window on demand without changing input desktop."""
+        _require_token(authorization, token_q)
+        captured = service.virtual_desktop_capture(session_id, hwnd=hwnd)
+        if not captured.ok or captured.data is None:
+            error = captured.error.model_dump(mode="json") if captured.error else None
+            return JSONResponse(
+                {"ok": False, "error": error},
+                status_code=409,
+            )
+        path_value = captured.data.get("path") or captured.data.get("artifact")
+        if not isinstance(path_value, str):
+            raise HTTPException(status_code=500, detail="capture_path_missing")
+        path = Path(path_value).resolve()
+        artifact_root = service.settings.artifact_root.expanduser().resolve()
+        if not path.is_file() or not path.is_relative_to(artifact_root):
+            raise HTTPException(status_code=404, detail="capture_not_found")
+        degraded = bool(captured.data.get("degraded"))
+        frame_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Capture-Degraded": "1" if degraded else "0",
+            "X-Capture-Backend": str(captured.data.get("backend") or ""),
+        }
+        degraded_reason = captured.data.get("degraded_reason")
+        if isinstance(degraded_reason, str) and degraded_reason:
+            frame_headers["X-Capture-Degraded-Reason"] = degraded_reason
+        return FileResponse(
+            path,
+            media_type="image/bmp",
+            filename=f"desktop-{session_id}-{captured.data.get('hwnd')}.bmp",
+            headers=frame_headers,
+        )
+
     @app.get("/api/sessions/{session_id}/timeline")
     def timeline(
         session_id: str,

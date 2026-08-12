@@ -4,10 +4,11 @@ import argparse
 import json
 import os
 import sys
-import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from headless_re_mcp.error_boundary import install_global_exception_hooks, record_exception
 
 JsonObject = dict[str, Any]
 
@@ -1375,6 +1376,7 @@ def _dispatch(command: str, params: JsonObject) -> JsonObject:
 
 
 def run(binary: Path) -> int:
+    install_global_exception_hooks("ida-worker")
     opened = False
     try:
         import idapro
@@ -1434,27 +1436,35 @@ def run(binary: Path) -> int:
                     }
                 )
             except Exception as exc:
+                incident = record_exception(exc, context="ida-worker:request")
                 _emit(
                     {
                         "id": request_id,
                         "ok": False,
                         "error": {
                             "code": "backend_error",
-                            "message": f"{type(exc).__name__}: {exc}",
-                            "details": {},
+                            "message": (
+                                f"{type(exc).__name__}: {incident['message']} "
+                                f"(incident {incident['incident_id']})"
+                            ),
+                            "details": incident,
                             "retryable": False,
                         },
                     }
                 )
         return 0
     except BaseException as exc:
+        incident = record_exception(exc, context="ida-worker:fatal")
         _emit(
             {
                 "event": "fatal",
                 "error": {
                     "code": "worker_start_failed",
-                    "message": f"{type(exc).__name__}: {exc}",
-                    "details": {"traceback": traceback.format_exc()},
+                    "message": (
+                        f"{type(exc).__name__}: {incident['message']} "
+                        f"(incident {incident['incident_id']})"
+                    ),
+                    "details": incident,
                     "retryable": False,
                 },
             }

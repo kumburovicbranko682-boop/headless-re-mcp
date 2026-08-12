@@ -118,7 +118,7 @@ def _run_xdbg_gates(
     return 0 if overall else 1
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings.load(args.config)
 
@@ -168,3 +168,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise AssertionError(f"unhandled config command: {args.config_command}")
 
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    from headless_re_mcp.error_boundary import run_cli_safely
+
+    return run_cli_safely(lambda: _main(argv), context="cli")

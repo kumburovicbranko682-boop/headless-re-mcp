@@ -26,17 +26,19 @@ external/
 也接受：
 
 - `external/x64dbg-x64/Release/headless.exe`
-- 便携包内的 `runtime/x64dbg-{arch}/headless.exe`（由 `scripts/build_portable.ps1` 生成）
+- 便携包内的 `runtime/x64dbg-{arch}/headless.exe`（由 `scripts/release.ps1` 生成）
 
 ## 如何填充 x64dbg（可打包）
 
 1. 先构建 headless（见 `native/xdbg-headless-rpc/README.md`），产物通常在：
    - `artifacts/x64dbg-x64/Release/`
    - `artifacts/x64dbg-x86/Release/`
-2. 同步到本目录：
+2. 可直接保留在 `artifacts/`；设置过程会自动发现。需要手动放到本目录时，复制完整
+   Release 目录，不要只复制 `headless.exe`：
 
 ```powershell
-pwsh -File scripts/sync_external_x64dbg.ps1
+Copy-Item -Recurse artifacts\x64dbg-x64\Release\* external\x64dbg-x64\
+Copy-Item -Recurse artifacts\x64dbg-x86\Release\* external\x64dbg-x86\
 ```
 
 3. 确认：

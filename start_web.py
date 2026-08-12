@@ -61,7 +61,8 @@ def _preflight(settings: object) -> int:
             py = result.get("python") or {}
             web = result.get("web_extra") or {}
             _log(f"  Python：{py.get('version')}（{py.get('executable')}）")
-            _log(f"  Web 依赖：{'已安装' if web.get('ok') else '缺失 — pip install -e \".[web]\"'}")
+            web_status = "已安装" if web.get("ok") else '缺失 — pip install -e ".[web]"'
+            _log(f"  Web 依赖：{web_status}")
             if not ok:
                 hard_fail = True
         elif step == "sync_x64dbg":
@@ -165,7 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         auto=auto_port,
     )
     if reason == "busy":
-        _log(f"端口 {host}:{preferred} 已被占用，且未启用自动换端口（可用默认行为或去掉 --no-auto-port）。")
+        _log(
+            f"端口 {host}:{preferred} 已被占用，且未启用自动换端口"
+            "（可用默认行为或去掉 --no-auto-port）。"
+        )
         return 3
     if reason == "exhausted":
         _log(f"端口 {preferred} 起连续 {args.port_span} 个均不可用，请释放端口或指定 --port。")
@@ -210,4 +214,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _ensure_src_on_path()
+    try:
+        from headless_re_mcp.error_boundary import run_cli_safely
+    except ImportError as exc:
+        _log(f"启动器依赖尚未安装：{exc}")
+        _log("请先运行一键安装：python setup.py")
+        raise SystemExit(1) from None
+    raise SystemExit(run_cli_safely(lambda: main(), context="start-web"))

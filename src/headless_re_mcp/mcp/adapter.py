@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
 
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
+from headless_re_mcp.error_boundary import guard_tool_handler
 from headless_re_mcp.tools.binding import BoundTool
 
 
@@ -21,22 +22,23 @@ def register_tool(
 ) -> None:
     """Register one typed handler and retain its generated schema in the catalog."""
     spec = catalog.require(name)
+    safe_handler = guard_tool_handler(handler, tool_name=name)
     description = handler.__doc__ or spec.description or name
     server.add_tool(
-        handler,
+        safe_handler,
         name=name,
         description=description,
         structured_output=True,
     )
     tool = Tool.from_function(
-        handler,
+        safe_handler,
         name=name,
         description=description,
         structured_output=True,
     )
     catalog.bind_mcp(
         name,
-        handler,
+        safe_handler,
         input_schema=dict(tool.parameters),
         description=tool.description,
     )

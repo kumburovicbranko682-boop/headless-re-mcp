@@ -6,10 +6,10 @@
 - 同目录依赖 DLL（Qt、TitanEngine、asmjit 等）
 - `platforms/`、`plugins/` 等 Qt 插件目录（若构建产物带有）
 
-同步命令：
+也可直接运行一键安装，由固定 Release 依赖包自动配置：
 
 ```powershell
-pwsh -File scripts/sync_external_x64dbg.ps1
+python setup.py
 ```
 
 **禁止**在此放置 IDA 相关文件。

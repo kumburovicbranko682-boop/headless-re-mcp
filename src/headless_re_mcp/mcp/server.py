@@ -3,6 +3,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.error_boundary import install_global_exception_hooks
 from headless_re_mcp.mcp.adapter import install_cursor_underscore_aliases
 from headless_re_mcp.mcp.registry import (
     register_core_session_tools,
@@ -38,6 +39,7 @@ def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
 
 
 def run_stdio(service: AnalysisService | None = None) -> None:
+    install_global_exception_hooks("mcp-stdio")
     analysis = service or AnalysisService()
     try:
         create_server(analysis).run(transport="stdio")

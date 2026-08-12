@@ -6,52 +6,29 @@
 - 官方 x64dbg `headless.exe` 执行 x86/x64 动态调试；
 - MCP stdio 暴露受限的语义工具，不开放任意调试器命令。
 
-## 依赖发行包（不含 IDA）
-
-GitHub Release 提供除 IDA 外的运行时依赖 zip（x64dbg / UPX / DIE / cdb / de4dot / NETReactorSlayer）：
-
-https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0-deps
-
-本机构建同样产物：
-
-`powershell
-powershell -File .\scripts\build_deps_bundle.ps1
-# -> artifacts/release/deps-bundle/headless-re-mcp-deps-win.x64.zip
-`
-
-解压后执行 ctivate_deps.ps1，再单独设置 HEADLESS_RE_IDA_HOME。
-
 ## 快速开始
 
-适合第一次克隆本仓库后的本机配置（Windows + Python 3.11+）。
+第一次克隆后只运行一条命令（Windows + Python 3.11+）：
 
 ```powershell
-cd <本仓库根目录>
-python -m pip install -U pip
-python first_setup.py              # 终端问答（结束时控制台贴出完整 MCP JSON）
-python first_setup.py --gui        # PySide6 现代原生窗口（无 WebView）
-# 等价：
-pip install -e ".[native]"
-python -m headless_re_mcp.native_app
+python setup.py
 ```
 
+该命令会一次完成：
 
-`first_setup.py` / 原生启动器会收集路径并完成配置：
+1. 安装 `ida,pe,web,native` Python 运行依赖；
+2. 自动检测本机授权的 IDA Professional 9.x，并在需要时询问路径；
+3. 缺少 x64dbg/可选 CLI 时自动下载仓库固定的 `v0.1.0-deps` Release；
+4. 官方 GitHub 不通时回退到已验证镜像，下载后强制校验固定大小和 SHA-256；
+5. 安全解压并配置 x86/x64 x64dbg、UPX、DIE、cdb、de4dot、NETReactorSlayer；
+6. 写入用户 `config.json`、激活 idalib、生成通用 MCP 配置并运行 Doctor。
 
-1. （可选）`pip install -e ".[dev,ida,pe,web]"`
-2. 询问并校验 **IDA 9.x 安装目录**、**x64/x86 headless.exe**
-3. 可选询问 UPX / DIE / Rizin / cdb 等
-4. 写入用户 `config.json`（`platformdirs` 下的 headless-re-mcp 配置）
-5. 可选运行 IDA `idalib` Python 激活脚本
-6. 同步/探针 x64dbg、生成 Cursor `.cursor/mcp.json`（本机文件，已 gitignore）
-7. 运行 `doctor`；GUI 还可一键启动/停止 MCP serve
+IDA、idalib、Hex-Rays 和许可证永不进入 Release 依赖包。无人值守可使用
+`python setup.py --non-interactive`；已有依赖时可使用 `--skip-release`。
 
-便携目录（Zerofall 风格布局，**无浏览器套壳**）：
-
-```powershell
-powershell -File .\scripts\build_native_portable.ps1
-# 产物：artifacts/release/native-portable/headless-re-mcp-win.x64/
-```
+所有公共入口还安装同一套最终异常边界。未预期异常会返回 `internal_error`、可关联的
+`incident_id` 和日志路径；完整调用栈写入轮转日志，MCP、Agent、Web 或后台线程不会因
+一次工具异常把整个服务带崩。领域内的预期错误仍保留原有具体错误码。
 
 配置完成后：
 
@@ -65,11 +42,9 @@ python start_web.py
 说明：
 
 - 需要已安装 **IDA Professional 9.x**（含 `idalib.dll`），本项目不捆绑 IDA。
-- 需要本机已有 x64dbg `headless.exe`（通常在 `artifacts/x64dbg-*/Release/` 或
-  `external/x64dbg-*/`）。若还没有，先按下文「构建官方 x64dbg headless RPC」构建，
-  或用 `scripts/sync_upstream.ps1 -Name x64dbg` 拉取源码后再构建。
-- 仅自动发现、不提问：`python first_setup.py --non-interactive`
-- 跳过 pip：`python first_setup.py --skip-pip`
+- x64dbg `headless.exe` 可由一键安装器从 Release 获取，也可使用本机构建产物。
+- 仅自动发现、不提问：`python setup.py --non-interactive`
+- 跳过 pip：`python setup.py --skip-pip`
 - 原生壳使用 **PySide6**（`pip install -e ".[native]"`），深色简洁 UI；保存后右侧与控制台都会贴出可复制 MCP JSON。
 - **禁止** WebView2/Electron 浏览器套壳。
 
@@ -218,10 +193,10 @@ upstream/              # 本地上游 checkout（gitignore；由 lock + sync 脚
 artifacts/             # 本地构建/验收产物（默认 gitignore；含 headless.exe、tools）
 ```
 
-根目录仅保留项目入口与元数据：`pyproject.toml`、`README.md`、`first_setup.py`、
+根目录仅保留项目入口与元数据：`pyproject.toml`、`README.md`、`setup.py`、
 `start_web.py`、`upstream.lock.json`、`LICENSE`、`THIRD_PARTY_NOTICES.md`。
 
-上游源码不进 Git：优先跑 `python first_setup.py` 生成本机 `.cursor/mcp.json`；
+上游源码不进 Git：优先跑 `python setup.py` 生成本机 MCP 配置；
 也可复制 `.cursor/mcp.json.example` 后手改。拉取锁定上游：
 
 ```powershell
@@ -384,10 +359,9 @@ python -m headless_re_mcp doctor --json --strict
 pip install -e ".[web]"
 python -m headless_re_mcp serve-web          # 仅 127.0.0.1 + 本地 token
 python -m headless_re_mcp config generate   # 通用 stdio MCP JSON（默认跑 doctor）
-powershell -File scripts/build_sdist_wheel.ps1
-powershell -File scripts/build_portable.ps1
-powershell -File scripts/build_handoff_zip.ps1
-powershell -File scripts/build_msi.ps1      # 需要 WiX candle/light
+powershell -File scripts/release.ps1 -Target package
+powershell -File scripts/release.ps1 -Target portable,deps
+powershell -File scripts/release.ps1 -Target msi      # 需要 WiX candle/light/heat
 ```
 
 ## 安全与授权

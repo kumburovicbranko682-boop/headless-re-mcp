@@ -201,5 +201,5 @@ def build_deps_snapshot(settings: Settings) -> JsonObject:
         "items": items,
         "missing_core": missing_core,
         "never_bundle": never,
-        "sync_hint": "pwsh -File scripts/sync_external_x64dbg.ps1",
+        "sync_hint": "python setup.py",
     }

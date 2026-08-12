@@ -4,9 +4,10 @@ import argparse
 import json
 import os
 import sys
-import traceback
 from pathlib import Path
 from typing import Any
+
+from headless_re_mcp.error_boundary import install_global_exception_hooks, record_exception
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -15,6 +16,7 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def run(binary: Path, decompile: bool) -> int:
+    install_global_exception_hooks("ida-gate-worker")
     result: dict[str, Any] = {
         "ok": False,
         "binary": str(binary),
@@ -73,10 +75,14 @@ def run(binary: Path, decompile: bool) -> int:
         _emit(result)
         return 0
     except BaseException as exc:
+        incident = record_exception(exc, context="ida-gate-worker:fatal")
         result.update(
             {
-                "error": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc(),
+                "error": (
+                    f"{type(exc).__name__}: {incident['message']} "
+                    f"(incident {incident['incident_id']})"
+                ),
+                "incident": incident,
             }
         )
         _emit(result)

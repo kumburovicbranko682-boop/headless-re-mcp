@@ -19,6 +19,7 @@ from headless_re_mcp.agent.providers import (
 )
 from headless_re_mcp.agent.redaction import redact
 from headless_re_mcp.agent.store import AgentStore
+from headless_re_mcp.error_boundary import record_exception
 from headless_re_mcp.tools.catalog import CommandCatalog, CommandTransport
 
 JsonObject = dict[str, Any]
@@ -111,8 +112,16 @@ class AgentOrchestrator:
         except asyncio.CancelledError:
             await self._finish_cancel(run_id)
             raise
-        except Exception as exc:
-            await self._finish_failure(run_id, f"{type(exc).__name__}: {exc}", event="run.failed")
+        except BaseException as exc:  # keep provider defects from terminating the server
+            incident = record_exception(exc, context=f"agent-run:{run_id}")
+            await self._finish_failure(
+                run_id,
+                (
+                    f"{type(exc).__name__}: {incident['message']} "
+                    f"(incident {incident['incident_id']})"
+                ),
+                event="run.failed",
+            )
 
     async def _finish_failure(self, run_id: str, error: str, *, event: str) -> None:
         run = self.store.get_run(run_id)
