@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, RpcError
@@ -17,6 +17,12 @@ from headless_re_mcp.dotnet.metadata_enum import (
     list_memberref_xrefs,
 )
 from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.session import SessionRegistry
 
 JsonObject = dict[str, Any]
 
@@ -33,14 +39,22 @@ def _session_owns_artifact_path(artifact_root: Path, session_id: str, target: Pa
     return real(artifact_root, session_id, target)
 
 
-def _session_artifact_roots(artifact_root: Path, session_id: str) -> list[Path]:
+def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path, ...]:
     from headless_re_mcp.core.service import _session_artifact_roots as real
 
     return real(artifact_root, session_id)
 
 
 class DotnetAnalysisMixin:
-    """.NET inspect / deobfuscate / IL / verify ops."""
+    """.NET inspect / deobfuscate / IL / verify ops.
+
+    The members below are supplied by ``AnalysisService``, which this mixes into.
+    """
+
+    settings: Settings
+    registry: SessionRegistry
+    _de4dot_runner: Callable[..., Any]
+    _net_reactor_slayer_runner: Callable[..., Any]
 
     def dotnet_inspect(
         self,

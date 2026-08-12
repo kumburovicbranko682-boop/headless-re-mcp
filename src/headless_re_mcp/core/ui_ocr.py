@@ -8,14 +8,16 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from headless_re_mcp.core.ui_win32 import capture_hwnd_screenshot, require_allowed_hwnd
 from headless_re_mcp.core.windows import UiPidBoundaryError
 
 JsonObject = dict[str, Any]
 _MAX_OCR_SECONDS = 30.0
+_T = TypeVar("_T")
 
 
 def discover_tesseract() -> Path | None:
@@ -48,7 +50,7 @@ def windows_ocr_available() -> bool:
         return False
 
 
-def _run_async(coro: Any) -> Any:
+def _run_async(coro: Coroutine[Any, Any, _T]) -> _T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -69,13 +71,16 @@ async def _ocr_bmp_windows_async(path: Path, *, language: str = "en-US") -> Json
     if not data:
         raise UiPidBoundaryError("invalid_params", "OCR input BMP is empty")
     stream = InMemoryRandomAccessStream()
-    writer = DataWriter(stream)
+    # The winsdk stubs type these parameters as the IOutputStream and
+    # IRandomAccessStream interfaces without recording that
+    # InMemoryRandomAccessStream implements both.
+    writer = DataWriter(stream)  # type: ignore[call-overload]
     writer.write_bytes(bytearray(data))
     await writer.store_async()
     await writer.flush_async()
     writer.detach_stream()
     stream.seek(0)
-    decoder = await BitmapDecoder.create_async(stream)
+    decoder = await BitmapDecoder.create_async(stream)  # type: ignore[call-overload]
     bitmap = await decoder.get_software_bitmap_async()
     engine = OcrEngine.try_create_from_language(Language(language))
     if engine is None:
@@ -87,12 +92,8 @@ async def _ocr_bmp_windows_async(path: Path, *, language: str = "en-US") -> Json
             language=language,
         )
     result = await engine.recognize_async(bitmap)
-    lines: list[str] = []
-    try:
-        for line in result.lines:
-            lines.append(str(line.text))
-    except Exception:
-        lines = []
+    # A result with no recognised lines reports them as None rather than empty.
+    lines = [str(line.text) for line in (result.lines or [])]
     text = str(getattr(result, "text", "") or "\n".join(lines))
     return {
         "backend": "windows_ocr",

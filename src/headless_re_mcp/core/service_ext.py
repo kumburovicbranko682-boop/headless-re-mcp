@@ -14,6 +14,7 @@ from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.application_services import ApplicationServices
 from headless_re_mcp.core.capabilities_catalog import describe_capability, list_capabilities
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
@@ -190,6 +191,9 @@ class UiDriveMixin:
 
 class ExtAnalysisMixin(UiDriveMixin):
     """Optional backend and artifact operations with statically declared methods."""
+
+    # Supplied by AnalysisService, which this mixes into.
+    services: ApplicationServices
 
     def capabilities_search(
         self, backend: str | None = None, status: str | None = None

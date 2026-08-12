@@ -265,21 +265,21 @@ def run_cli_setup(
     ida = _ask_path_cli(
         "IDA Professional 9.x 安装目录",
         expect="dir",
-        detected=defaults.get("ida_home"),  # type: ignore[arg-type]
+        detected=defaults.get("ida_home"),
         required=True,
         non_interactive=non_interactive,
     )
     x64 = _ask_path_cli(
         "x64dbg headless.exe (x64)",
         expect="file",
-        detected=defaults.get("x64dbg_headless_x64"),  # type: ignore[arg-type]
+        detected=defaults.get("x64dbg_headless_x64"),
         required=True,
         non_interactive=non_interactive,
     )
     x86 = _ask_path_cli(
         "x64dbg headless.exe (x86)",
         expect="file",
-        detected=defaults.get("x64dbg_headless_x86"),  # type: ignore[arg-type]
+        detected=defaults.get("x64dbg_headless_x86"),
         required=True,
         non_interactive=non_interactive,
     )
@@ -299,7 +299,7 @@ def run_cli_setup(
             updates[key] = _ask_path_cli(
                 title,
                 expect=expect,
-                detected=defaults.get(key),  # type: ignore[arg-type]
+                detected=defaults.get(key),
                 required=False,
                 non_interactive=non_interactive,
             )

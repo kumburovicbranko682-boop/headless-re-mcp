@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
@@ -24,6 +24,13 @@ from headless_re_mcp.unpack.recommend import (
     recommend_unpack_route,
 )
 
+if TYPE_CHECKING:
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import DieScanner, ExeinfopeScanner
+    from headless_re_mcp.core.session import SessionRegistry
+    from headless_re_mcp.detection.die import DieScanResult
+    from headless_re_mcp.detection.exeinfope import ExeinfopeScanResult
+
 JsonObject = dict[str, Any]
 
 
@@ -33,16 +40,24 @@ def _detection_timeout(timeout: float) -> float:
     return real(timeout)
 
 
-def _write_die_artifact(*args: Any, **kwargs: Any) -> Path:
+def _write_die_artifact(
+    artifact_root: Path,
+    session_id: str,
+    result: DieScanResult,
+) -> str:
     from headless_re_mcp.core.service import _write_die_artifact as real
 
-    return real(*args, **kwargs)
+    return real(artifact_root, session_id, result)
 
 
-def _write_exeinfope_artifact(*args: Any, **kwargs: Any) -> Path:
+def _write_exeinfope_artifact(
+    artifact_root: Path,
+    session_id: str,
+    result: ExeinfopeScanResult,
+) -> str:
     from headless_re_mcp.core.service import _write_exeinfope_artifact as real
 
-    return real(*args, **kwargs)
+    return real(artifact_root, session_id, result)
 
 
 def _exeinfope_log_path(artifact_root: Path, session_id: str) -> Path:
@@ -52,7 +67,15 @@ def _exeinfope_log_path(artifact_root: Path, session_id: str) -> Path:
 
 
 class DetectAnalysisMixin:
-    """Detection / packer classify / unpack recommend ops."""
+    """Detection / packer classify / unpack recommend ops.
+
+    The members below are supplied by ``AnalysisService``, which this mixes into.
+    """
+
+    settings: Settings
+    registry: SessionRegistry
+    _die_scanner: DieScanner
+    _exeinfope_scanner: ExeinfopeScanner
 
     def detect_scan(
         self,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, RpcError
@@ -16,6 +16,13 @@ from headless_re_mcp.unpack.session import UnpackPhase
 from headless_re_mcp.unpack.vmp_dumper import VmpDumperError
 from headless_re_mcp.unpack.xvlkc import XvlkcError
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import DieScanner, UpxTester, UpxUnpacker
+    from headless_re_mcp.core.session import SessionRegistry
+
 JsonObject = dict[str, Any]
 
 
@@ -25,7 +32,44 @@ def _detection_timeout(timeout: float) -> float:
 
 
 class UnpackCliMixin:
-    """UPX and external unpacker CLI helpers."""
+    """UPX and external unpacker CLI helpers.
+
+    The members below are supplied by ``AnalysisService``, which this mixes into.
+    """
+
+    settings: Settings
+    registry: SessionRegistry
+    _die_scanner: DieScanner
+    _upx_tester: UpxTester
+    _upx_unpacker: UpxUnpacker
+    _xvlkc_runner: Callable[..., Any]
+    _vmp_dumper_runner: Callable[..., Any]
+    _scylla_runner: Callable[..., Any]
+
+    if TYPE_CHECKING:
+
+        def create_session(self, binary: str) -> Result[JsonObject]: ...
+
+        def open_static(self, session_id: str) -> Result[JsonObject]: ...
+
+        def dynamic_state(self, session_id: str) -> Result[JsonObject]: ...
+
+        def unpack_status(self, session_id: str) -> Result[JsonObject]: ...
+
+        def unpack_start(
+            self,
+            session_id: str,
+            *,
+            mode: ScanMode | str = ScanMode.NORMAL,
+            use_die: bool = True,
+            timeout: float = 120.0,
+            open_ida: bool = False,
+            execute_upx: bool = True,
+            replace: bool = False,
+            force_route: str | None = None,
+        ) -> Result[JsonObject]: ...
+
+        def _annotate_debuggee_pids(self, session_id: str, state: JsonObject) -> JsonObject: ...
 
     def unpack_upx_test(
         self,

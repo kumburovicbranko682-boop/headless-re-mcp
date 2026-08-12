@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
+
+if TYPE_CHECKING:
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import _BackendRuntime
 
 JsonObject = dict[str, Any]
 
@@ -28,7 +32,33 @@ _FATAL_WORKER_ERRORS = frozenset(
 
 
 class StaticAnalysisMixin:
-    """Mixin providing static_* MCP surface methods for AnalysisService."""
+    """Mixin providing static_* MCP surface methods for AnalysisService.
+
+    The members below are supplied by ``AnalysisService``; declaring them is
+    what makes this module type checkable, and mypy checks the declarations
+    against the real definitions when the service is assembled.
+    """
+
+    settings: Settings
+
+    if TYPE_CHECKING:
+
+        def _runtime(self, session_id: str, kind: BackendKind) -> _BackendRuntime: ...
+
+        def _require_current_runtime(
+            self,
+            session_id: str,
+            kind: BackendKind,
+            runtime: _BackendRuntime,
+        ) -> None: ...
+
+        def _fail_runtime(
+            self,
+            session_id: str,
+            kind: BackendKind,
+            *,
+            failure: BaseException | None = None,
+        ) -> None: ...
 
     def static_functions(
         self,

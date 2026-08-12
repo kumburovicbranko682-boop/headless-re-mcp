@@ -21,23 +21,42 @@ from headless_re_mcp.workflows.engine import (
 )
 from headless_re_mcp.workflows.executor import (
     WorkflowExecutionError,
+    WorkflowExecutionPort,
     execute_workflow_transition,
 )
 from headless_re_mcp.workflows.navigation import EventPattern, EventScalar
 from headless_re_mcp.workflows.runtime import WorkflowRunStatus, create_workflow_runtime
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from headless_re_mcp.core.addressing import RebasedModuleMapping
+    from headless_re_mcp.core.events import DebugEventCursor
+    from headless_re_mcp.core.runtime_state import BackendRuntimeOwner, WorkflowStateOwner
     from headless_re_mcp.core.service import _BackendRuntime
+    from headless_re_mcp.core.session import SessionRegistry
+    from headless_re_mcp.workflows.engine import WorkflowTransition
+    from headless_re_mcp.workflows.runtime import WorkflowRuntime
 
 from headless_re_mcp.core.results import _failure, _success
 
 JsonObject = dict[str, Any]
 
 
-def _ServiceWorkflowPort(service: object, session_id: str, runtime: object) -> object:
+def _ServiceWorkflowPort(
+    service: WorkflowAnalysisMixin,
+    session_id: str,
+    runtime: _BackendRuntime,
+) -> WorkflowExecutionPort:
+    """Build the real port, imported late to keep the service import acyclic.
+
+    The cast is the honest part of the mixin arrangement: the port needs the
+    assembled ``AnalysisService``, and this only ever runs on ``self``.
+    """
+    from headless_re_mcp.core.service import AnalysisService
     from headless_re_mcp.core.service import _ServiceWorkflowPort as real
 
-    return real(service, session_id, runtime)
+    return real(cast(AnalysisService, service), session_id, runtime)
 
 
 def _workflow_timeout(value: float) -> float | ValueError:
@@ -53,7 +72,101 @@ def _max_workflow_event_budget() -> int:
 
 
 class WorkflowAnalysisMixin:
-    """Workflow status / breakpoint / navigation MCP surface."""
+    """Workflow status / breakpoint / navigation MCP surface.
+
+    The members below are supplied by ``AnalysisService``, which this mixes
+    into. Declaring them is what lets the module be type checked at all, and
+    mypy verifies the declarations against the real definitions: a signature
+    that drifts shows up as an incompatible override on the service.
+    """
+
+    registry: SessionRegistry
+    _runtime_owner: BackendRuntimeOwner[_BackendRuntime]
+    _workflow_owner: WorkflowStateOwner[WorkflowRuntime]
+
+    if TYPE_CHECKING:
+
+        def _workflow_request(
+            self,
+            session_id: str,
+            action: Callable[[_BackendRuntime], JsonObject],
+        ) -> Result[JsonObject]: ...
+
+        def _execute_workflow_transition_locked(
+            self,
+            session_id: str,
+            runtime: _BackendRuntime,
+            workflow: WorkflowRuntime,
+            transition: WorkflowTransition,
+            *,
+            timeout: float,
+            status: WorkflowRunStatus | None = None,
+        ) -> WorkflowRuntime: ...
+
+        def _require_mutable_workflow(self, session_id: str) -> WorkflowRuntime: ...
+
+        def _require_workflow(self, session_id: str) -> WorkflowRuntime: ...
+
+        def _workflow_resolve_module_locked(
+            self,
+            session_id: str,
+            runtime: _BackendRuntime,
+            selector: ModuleSelector,
+            *,
+            timeout: float,
+        ) -> RebasedModuleMapping: ...
+
+        def _workflow_navigate(
+            self,
+            session_id: str,
+            pattern: EventPattern,
+            *,
+            timeout: float,
+            event_budget: int,
+        ) -> Result[JsonObject]: ...
+
+        def _navigate_locked(
+            self,
+            session_id: str,
+            runtime: _BackendRuntime,
+            workflow: WorkflowRuntime,
+            pattern: EventPattern,
+            *,
+            timeout: float,
+            event_budget: int,
+        ) -> JsonObject: ...
+
+        def _require_current_runtime(
+            self,
+            session_id: str,
+            kind: BackendKind,
+            runtime: _BackendRuntime,
+        ) -> None: ...
+
+        def _record_workflow_failure_locked(
+            self,
+            session_id: str,
+            workflow: WorkflowRuntime,
+            error: WorkflowExecutionError,
+        ) -> WorkflowRuntime: ...
+
+        def dynamic_events(
+            self,
+            session_id: str,
+            *,
+            limit: int = 100,
+            timeout: float = 10.0,
+        ) -> Result[JsonObject]: ...
+
+        def _workflow_ensure_paused_locked(
+            self,
+            session_id: str,
+            runtime: _BackendRuntime,
+            *,
+            timeout: float,
+        ) -> None: ...
+
+        def _require_event_cursor(self, runtime: _BackendRuntime) -> DebugEventCursor: ...
 
     def workflow_status(self, session_id: str) -> Result[JsonObject]:
         try:

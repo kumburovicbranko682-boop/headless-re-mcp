@@ -397,7 +397,9 @@ class NativeLauncherWindow(QMainWindow):
 
 
 def run_native_gui() -> int:
-    app = QApplication.instance() or QApplication(sys.argv)
+    # instance() is typed as the QCoreApplication base, which has no styling.
+    existing = QApplication.instance()
+    app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
     app.setFont(QFont("Segoe UI", 10))
