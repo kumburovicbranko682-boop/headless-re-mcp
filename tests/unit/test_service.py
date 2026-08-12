@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -588,6 +589,40 @@ def test_a_worker_that_cannot_be_terminated_still_ends_the_session(
     state = service.registry.get(session_id).state
     assert state in {SessionState.CLOSED, SessionState.FAILED}
     assert not service.registry.get(session_id).backends
+
+
+def test_repeated_session_cycles_leave_nothing_behind(tmp_path: Path) -> None:
+    """What a long-lived server actually does: open and close, forever.
+
+    Measured over 500 cycles this held its thread count and process handle count
+    flat, which is what the sqlite connections being closed buys. The registry
+    did not: every session ever opened stayed resident, so this pins the bound.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = AnalysisService(_settings(tmp_path), worker_factory=lambda a, b: FakeWorker())
+    before = {thread.name for thread in threading.enumerate()}
+
+    cycles = 150
+    for _ in range(cycles):
+        session_id = _session_id(service.create_session(str(binary)).data)
+        assert service.open_static(session_id).ok
+        assert service.static_functions(session_id, limit=1).ok
+        assert service.close_session(session_id).ok
+
+    assert service._runtime_owner.snapshot() == []
+    assert service.session_health().data == {"backends": [], "count": 0, "healthy": None}
+    tracked = service.registry.list()
+    assert 0 < len(tracked) < cycles
+    assert all(item.state is SessionState.CLOSED for item in tracked)
+
+    # The health sweep starts with the first backend and must not outlive the last.
+    for _ in range(100):
+        leaked = {thread.name for thread in threading.enumerate()} - before
+        if not leaked:
+            break
+        time.sleep(0.02)
+    assert not leaked
 
 
 def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:

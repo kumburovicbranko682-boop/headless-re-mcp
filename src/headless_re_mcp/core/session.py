@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,9 +41,18 @@ class InvalidStateTransition(RuntimeError):
     pass
 
 
+# A closed session is kept so the caller can still read how it ended, but the
+# registry is in memory and a long-lived server closes sessions forever. Nothing
+# called remove_closed outside tests, so every session ever opened stayed
+# resident and session.list returned the entire history.
+_RETAINED_CLOSED_SESSIONS = 64
+
+
 class SessionRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
         self._sessions: dict[str, Session] = {}
+        self._closed_order: deque[str] = deque()
+        self._retained_closed = max(0, retained_closed)
         self._lock = RLock()
 
     def create(self, binary: Path) -> Session:
@@ -84,7 +94,15 @@ class SessionRegistry:
                 )
             session.state = target
             session.updated_at = datetime.now(UTC)
+            if target is SessionState.CLOSED:
+                self._retire_closed(session_id)
             return session.model_copy(deep=True)
+
+    def _retire_closed(self, session_id: str) -> None:
+        """Drop the oldest closed sessions once the retained history is full."""
+        self._closed_order.append(session_id)
+        while len(self._closed_order) > self._retained_closed:
+            self._sessions.pop(self._closed_order.popleft(), None)
 
     def attach_backend(self, session_id: str, handle: BackendHandle) -> Session:
         with self._lock:
@@ -117,6 +135,8 @@ class SessionRegistry:
             if session.state != SessionState.CLOSED:
                 raise InvalidStateTransition("only closed sessions can be removed")
             del self._sessions[session_id]
+            if session_id in self._closed_order:
+                self._closed_order.remove(session_id)
 
     def _require(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)

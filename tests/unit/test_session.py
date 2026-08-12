@@ -51,6 +51,50 @@ def test_registry_state_machine(tmp_path: Path) -> None:
         registry.get(session.id)
 
 
+def test_closed_sessions_are_retained_but_bounded(tmp_path: Path) -> None:
+    """A closed session stays readable for a while, but not forever.
+
+    The registry lives in memory and nothing outside tests ever called
+    remove_closed, so every session a long-lived server had ever opened stayed
+    resident and session.list handed back the entire history. Five hundred
+    open/close cycles left five hundred sessions behind.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    registry = SessionRegistry(retained_closed=3)
+
+    ids = []
+    for _ in range(10):
+        session = registry.create(binary)
+        ids.append(session.id)
+        registry.transition(session.id, SessionState.CLOSING)
+        registry.transition(session.id, SessionState.CLOSED)
+
+    assert len(registry.list()) == 3
+    # The newest closures are the ones a caller might still ask about.
+    assert [item.id for item in registry.list()] == ids[-3:]
+    for stale in ids[:-3]:
+        with pytest.raises(KeyError):
+            registry.get(stale)
+
+
+def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> None:
+    """A long-running session must survive any number of closures around it."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    registry = SessionRegistry(retained_closed=2)
+    survivor = registry.create(binary)
+    registry.transition(survivor.id, SessionState.OPENING)
+    registry.transition(survivor.id, SessionState.READY)
+
+    for _ in range(10):
+        session = registry.create(binary)
+        registry.transition(session.id, SessionState.CLOSING)
+        registry.transition(session.id, SessionState.CLOSED)
+
+    assert registry.get(survivor.id).state == SessionState.READY
+
+
 def test_registry_rejects_invalid_transition(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary, 0x014C)
