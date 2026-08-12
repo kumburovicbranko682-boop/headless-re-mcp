@@ -2011,6 +2011,40 @@ def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_k
     assert recovered.data["replaced"] is False
 
 
+def test_session_recover_replaces_a_dead_worker_it_could_still_reach_over(
+    tmp_path: Path,
+) -> None:
+    """A worker can die while its registration and connection object survive.
+
+    Nothing had to call into the backend for the process to exit, so the runtime
+    is still registered and ``transport_connected`` still answers True. Trusting
+    either would report the session as kept and healthy immediately before every
+    subsequent call fails against a process that is gone.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    dead = FakeDynamicWorker()
+    replacement = FakeDynamicWorker()
+    service = _service_with_dynamic_workers(tmp_path, [dead, replacement])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    service._health.stop()
+
+    dead.exit_code = 1  # type: ignore[attr-defined]
+
+    recovered = service.session_recover(session_id, ["x64dbg"])
+
+    assert recovered.ok and recovered.data is not None
+    entry = recovered.data["backends"][0]
+    assert entry["action"] == "reopened" and entry["ok"]
+    assert recovered.data["kept"] == 0
+    assert recovered.data["failed"] == 0
+    assert dead.terminated
+    # The replacement has to be the worker the session now talks to.
+    assert service.dynamic_state(session_id).ok
+    assert replacement.requests
+
+
 def test_session_recover_reports_a_failed_reconnect_per_backend(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

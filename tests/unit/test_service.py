@@ -33,6 +33,8 @@ class FakeWorker:
         self.closed = False
         self.terminated = False
         self.requests: list[tuple[str, JsonObject]] = []
+        # Mirrors IdaWorkerClient: None while the worker process is running.
+        self.exit_code: int | None = None
 
     @property
     def pid(self) -> int:
@@ -380,6 +382,54 @@ def test_fatal_worker_error_marks_session_failed(tmp_path: Path) -> None:
     assert result.error.code == "worker_exited"
     assert worker.terminated
     assert service.registry.get(session_id).state == SessionState.FAILED
+
+
+def test_a_dead_ida_worker_is_reported_and_then_reopened(tmp_path: Path) -> None:
+    """The static backend has to be recoverable, not only the dynamic one.
+
+    IDA speaks over the worker's stdio pipes, so there is no connection to
+    rebuild independently of the process: a dead worker can only be reopened.
+    The health report is what tells the caller which of the two it is.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    opened: list[FakeWorker] = []
+
+    def factory(session: Session, settings: Settings) -> StaticWorker:
+        del session, settings
+        worker = FakeWorker()
+        opened.append(worker)
+        return worker
+
+    service = AnalysisService(_settings(tmp_path), worker_factory=factory)
+    session_id = _session_id(service.create_session(str(binary)).data)
+    assert service.open_static(session_id).ok
+    assert len(opened) == 1
+
+    healthy = service.session_health(session_id)
+    assert healthy.ok and healthy.data is not None
+    assert healthy.data["healthy"] is True
+
+    opened[0].exit_code = 1
+    reported = service.session_health(session_id)
+    assert reported.ok and reported.data is not None
+    assert reported.data["healthy"] is False
+    entry = reported.data["backends"][0]
+    assert entry["backend"] == "ida"
+    assert entry["worker_alive"] is False
+    # Reporting is not repairing: a dead worker is never restarted behind the
+    # caller's back, because the replacement analyses nothing until asked.
+    assert entry["reconnects"] == 0
+    assert len(opened) == 1
+
+    recovered = service.session_recover(session_id, ["ida"])
+    assert recovered.ok and recovered.data is not None
+    assert recovered.data["failed"] == 0
+    # The dead registration must be replaced rather than reported as kept.
+    assert [item["action"] for item in recovered.data["backends"]] == ["reopened"]
+    assert len(opened) == 2
+    assert opened[0].terminated
+    assert service.static_functions(session_id, limit=1).ok
 
 
 def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:

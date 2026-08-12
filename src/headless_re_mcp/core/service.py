@@ -519,9 +519,17 @@ class AnalysisService(
             entries: list[JsonObject] = []
             for kind in requested:
                 backend = self._runtime_owner.get(session_id, kind)
-                if backend is not None:
+                if backend is not None and self._worker_is_alive(backend):
                     entries.append(self._restore_backend_transport(kind, backend))
                     continue
+                if backend is not None:
+                    # A worker can die without anything having called into it, so
+                    # the runtime is still registered and reconnecting would say
+                    # "kept" about a process that no longer exists. IDA makes this
+                    # unmissable: its transport is the worker's own pipes, so there
+                    # is nothing to rebuild and the caller would be told the
+                    # session recovered right before the next call fails.
+                    self._discard_dead_runtime(session_id, kind)
                 entries.append(self._reopen_backend(session_id, kind))
             return _success(
                 {
@@ -541,6 +549,34 @@ class AnalysisService(
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    @staticmethod
+    def _worker_is_alive(runtime: _BackendRuntime) -> bool:
+        """Treat a worker that reports no exit code as running.
+
+        A backend that does not expose ``exit_code`` cannot be judged dead, and
+        inventing a death would tear down a session that is working.
+        """
+        return getattr(runtime.worker, "exit_code", None) is None
+
+    def _discard_dead_runtime(self, session_id: str, kind: BackendKind) -> None:
+        """Drop the registration of a worker whose process is gone.
+
+        Unlike ``_fail_runtime`` this leaves the session state alone: recovery is
+        about to open a replacement, and moving the session to FAILED here would
+        make the very next open refuse to run.
+        """
+        runtime = self._runtime_owner.pop(session_id, kind)
+        if runtime is None:
+            return
+        with suppress(BaseException):
+            runtime.worker.terminate()
+        if kind == BackendKind.X64DBG:
+            self._workflow_owner.clear(session_id)
+            self._finalize_trace_after_worker_loss(session_id, reason="worker_died")
+        self._health.forget(session_id)
+        with suppress(KeyError, InvalidStateTransition):
+            self.registry.detach_backend(session_id, kind)
 
     @staticmethod
     def _restore_backend_transport(kind: BackendKind, runtime: _BackendRuntime) -> JsonObject:
