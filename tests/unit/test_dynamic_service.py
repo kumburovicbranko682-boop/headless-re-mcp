@@ -1791,7 +1791,7 @@ def test_trace_api_arguments_stops_when_break_is_not_ours(tmp_path: Path) -> Non
 
 
 def test_stack_arguments_skip_the_return_address() -> None:
-    from headless_re_mcp.core.service import _stack_arguments
+    from headless_re_mcp.core.service_trace import _stack_arguments
 
     payload = {
         "base": 0x120000,
@@ -1814,7 +1814,7 @@ def test_stack_arguments_skip_the_return_address() -> None:
 
 
 def test_stack_arguments_tolerate_missing_payloads() -> None:
-    from headless_re_mcp.core.service import _stack_arguments
+    from headless_re_mcp.core.service_trace import _stack_arguments
 
     assert _stack_arguments(None, 2) == []
     assert _stack_arguments({"entries": "nope"}, 2) == []

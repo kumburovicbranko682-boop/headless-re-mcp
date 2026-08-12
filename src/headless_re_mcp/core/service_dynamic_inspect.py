@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.addressing import RuntimeModuleCatalog
+from headless_re_mcp.core.limits import MAX_MODULE_DUMP_BYTES
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _timeline_append
@@ -34,8 +35,6 @@ if TYPE_CHECKING:
     from headless_re_mcp.core.service import _BackendRuntime
 
 JsonObject = dict[str, Any]
-
-_MAX_MODULE_DUMP_BYTES = 64 * 1024 * 1024
 
 
 def _module_base_present(modules_payload: object, base: int) -> bool:
@@ -391,7 +390,7 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="size must be a positive integer"),
             )
-        if size is not None and size > _MAX_MODULE_DUMP_BYTES:
+        if size is not None and size > MAX_MODULE_DUMP_BYTES:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
@@ -399,7 +398,7 @@ class DynamicInspectMixin:
                     message="requested dump exceeds the configured maximum",
                     details={
                         "size": size,
-                        "max_dump_bytes": _MAX_MODULE_DUMP_BYTES,
+                        "max_dump_bytes": MAX_MODULE_DUMP_BYTES,
                     },
                 ),
             )

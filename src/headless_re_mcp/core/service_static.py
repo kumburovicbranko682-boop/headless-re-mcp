@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
+from headless_re_mcp.core.limits import MAX_STATIC_BATCH_COMMANDS, MAX_STATIC_INLINE_TEXT
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 
@@ -17,8 +18,7 @@ if TYPE_CHECKING:
 
 JsonObject = dict[str, Any]
 
-_MAX_STATIC_INLINE_TEXT = 64 * 1024
-_MAX_STATIC_BATCH_COMMANDS = 32
+
 _FATAL_WORKER_ERRORS = frozenset(
     {
         "analyzer_window_detected",
@@ -198,7 +198,7 @@ class StaticAnalysisMixin:
             rendered = "\n".join(
                 str(item.get("text", "")) for item in instructions if isinstance(item, dict)
             )
-            if len(rendered) > _MAX_STATIC_INLINE_TEXT:
+            if len(rendered) > MAX_STATIC_INLINE_TEXT:
                 spilled = self._maybe_spill_static_text(
                     session_id,
                     {
@@ -570,15 +570,15 @@ class StaticAnalysisMixin:
                 session_id=session_id,
                 backend=BackendKind.IDA.value,
             )
-        if len(commands) > _MAX_STATIC_BATCH_COMMANDS:
+        if len(commands) > MAX_STATIC_BATCH_COMMANDS:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
                     code="invalid_argument",
-                    message=(f"static.batch is limited to {_MAX_STATIC_BATCH_COMMANDS} commands"),
+                    message=(f"static.batch is limited to {MAX_STATIC_BATCH_COMMANDS} commands"),
                     details={
                         "count": len(commands),
-                        "max_items": _MAX_STATIC_BATCH_COMMANDS,
+                        "max_items": MAX_STATIC_BATCH_COMMANDS,
                     },
                 ),
             )
@@ -651,7 +651,7 @@ class StaticAnalysisMixin:
         text_key: str,
     ) -> JsonObject:
         text = data.get(text_key)
-        if not isinstance(text, str) or len(text) <= _MAX_STATIC_INLINE_TEXT:
+        if not isinstance(text, str) or len(text) <= MAX_STATIC_INLINE_TEXT:
             return data
         directory = (
             self.settings.artifact_root.expanduser().resolve() / "static" / session_id / "oversized"
