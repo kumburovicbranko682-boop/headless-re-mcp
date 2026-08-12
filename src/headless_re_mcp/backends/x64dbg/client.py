@@ -1167,17 +1167,25 @@ class XdbgClient:
                     self._observed_windows.update(windows)
 
     def _observe_windows(self) -> None:
+        """Refuse the call while a window is up, without latching on history.
+
+        ``analyzer_windows`` stays cumulative because a gate has to fail on a
+        window that appeared and closed between two calls. Refusing on that same
+        history would be a different rule: the passive monitor records windows
+        the request path never saw, so one dialog x64dbg opened and dismissed on
+        its own would kill the next call and every call after it, against a
+        worker that is once again headless.
+        """
         windows = self._describe_analyzer_windows()
-        if windows:
-            with self._window_lock:
-                self._observed_windows.update(windows)
-        observed = self.analyzer_windows
-        if observed:
-            raise XdbgRpcError(
-                "analyzer_window_detected",
-                "x64dbg created a top-level analyzer window",
-                details={"windows": list(observed)},
-            )
+        if not windows:
+            return
+        with self._window_lock:
+            self._observed_windows.update(windows)
+        raise XdbgRpcError(
+            "analyzer_window_detected",
+            "x64dbg has a top-level analyzer window open",
+            details={"windows": sorted(windows)},
+        )
 
     def _describe_analyzer_windows(self) -> list[str]:
         desktop: HiddenDesktop | None = getattr(self, "_desktop", None)

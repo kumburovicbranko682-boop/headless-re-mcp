@@ -259,13 +259,21 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             self._stdout_log.append(json.dumps(message, ensure_ascii=False))
 
     def _observe_windows(self) -> None:
-        self._observed_windows.update(describe_process_windows(self._process.pid))
-        if self._observed_windows:
-            raise IdaWorkerError(
-                "analyzer_window_detected",
-                "IDA worker created an analyzer window",
-                details={"windows": sorted(self._observed_windows)},
-            )
+        """Refuse the call while a window is up, without latching on history.
+
+        ``analyzer_windows`` stays cumulative so a gate still fails on a window
+        that opened and closed mid-analysis. Refusing on that history instead
+        would retire the worker permanently over a dialog that is already gone.
+        """
+        windows = describe_process_windows(self._process.pid)
+        if not windows:
+            return
+        self._observed_windows.update(windows)
+        raise IdaWorkerError(
+            "analyzer_window_detected",
+            "IDA worker has an analyzer window open",
+            details={"windows": sorted(windows)},
+        )
 
     def _process_exit_error(self) -> IdaWorkerError:
         return IdaWorkerError(

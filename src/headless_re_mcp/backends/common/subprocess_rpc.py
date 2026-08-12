@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
 
@@ -50,15 +49,3 @@ class ManagedSubprocessMixin:
                 except subprocess.TimeoutExpired:
                     self._process.kill()
                     self._process.wait(timeout=wait_timeout)
-
-    def ensure_no_analyzer_windows(
-        self,
-        *,
-        error_factory: Callable[[str, str], BaseException],
-    ) -> None:
-        observed = self.analyzer_windows
-        if observed:
-            raise error_factory(
-                "analyzer_window_detected",
-                f"analyzer window detected: {observed[0]}",
-            )

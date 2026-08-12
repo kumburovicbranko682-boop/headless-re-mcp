@@ -188,6 +188,35 @@ def test_request_frames_are_bounded_and_ids_are_monotonic() -> None:
     assert len(transport.writes) == 2
 
 
+def test_a_window_blocks_the_call_only_while_it_is_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dismissed dialog must not retire a worker that is headless again.
+
+    The passive monitor records windows the request path never saw, so latching
+    on the cumulative set meant one dialog x64dbg opened and closed on its own
+    turned every later call into analyzer_window_detected, which the service
+    treats as fatal. The cumulative set still has to keep the sighting, because
+    that is what the zero-window gates assert on.
+    """
+    client = _client(ScriptedTransport())
+    visible: list[str] = []
+    monkeypatch.setattr(client, "_describe_analyzer_windows", lambda: list(visible))
+
+    client._observe_windows()
+
+    visible.append("x64dbg [Modules]")
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client._observe_windows()
+    assert exc_info.value.code == "analyzer_window_detected"
+
+    visible.clear()
+    client._observe_windows()
+
+    # The sighting survives for the gates even though calls work again.
+    assert client.analyzer_windows == ("x64dbg [Modules]",)
+
+
 @pytest.mark.parametrize("response_size", [0, client_module._MAX_FRAME_BYTES + 1])
 def test_invalid_response_frame_boundary_is_rejected(response_size: int) -> None:
     client = _client(ScriptedTransport(response_size=response_size))
