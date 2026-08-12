@@ -8,6 +8,7 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+from headless_re_mcp.tools.limits import ExternalToolTimeout, RunControlTimeout
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -207,7 +208,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         iat_size: int | None = None,
         module_base: int | None = None,
         auto_dump: bool = False,
-        dump_timeout: float = 60.0,
+        dump_timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """Record caller-confirmed OEP; set auto_dump to also dump and enter dumped phase."""
         return _dump(
@@ -229,7 +230,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         base: int,
         size: int | None = None,
         save_headers: bool = True,
-        timeout: float = 60.0,
+        timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """Dump module by runtime size and preserve PE headers for later rebuild."""
         return _dump(
@@ -269,7 +270,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         search_size: int | None = None,
         max_candidates: int = 8,
         mode: str = "all",
-        timeout: float = 60.0,
+        timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """List IAT candidates; caller must confirm before rebuild."""
         return _dump(
@@ -292,7 +293,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         oep_rva: int | None = None,
         module_base: int | None = None,
         dump_path: str | None = None,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Validate a caller-confirmed IAT VA/size and optional OEP RVA."""
         return _dump(
@@ -314,7 +315,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         iat_va: int,
         size: int,
         oep_rva: int | None = None,
-        timeout: float = 60.0,
+        timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """Rebuild import tables on a dumped PE using a confirmed IAT range."""
         return _dump(
@@ -335,7 +336,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         entry_point_rva: int | None = None,
         iat_va: int | None = None,
         iat_size: int | None = None,
-        timeout: float = 60.0,
+        timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """Remap a runtime dump to file layout and optionally rebuild imports."""
         return _dump(
@@ -356,7 +357,8 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         use_die: bool = True,
         open_ida: bool = False,
         baseline_session_id: str | None = None,
-        timeout: float = 60.0,
+        # Wider than run control: open_ida can sit through a full idalib analysis.
+        timeout: ExternalToolTimeout = 60.0,
         expect_window_title: str | None = None,
         expect_window_class: str | None = None,
         ui_pid: int | None = None,

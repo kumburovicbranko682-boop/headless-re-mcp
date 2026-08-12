@@ -256,3 +256,29 @@ async def test_minimal_mcp_tool_surface() -> None:
             "selector",
             "address",
         }
+
+
+@pytest.mark.asyncio
+async def test_every_timeout_parameter_declares_an_upper_bound() -> None:
+    """No caller may buy an unbounded wait.
+
+    A synchronous tool holds one slot of the bounded MCP thread pool for its
+    whole duration, so a tool that accepts ``timeout`` without a maximum lets a
+    single call park a slot for as long as it likes. Schema validation has to
+    reject that before any backend is reached.
+    """
+    server = create_server(AnalysisService())
+    tools = await server.list_tools()
+    unbounded: list[str] = []
+    for tool in tools:
+        for parameter, schema in tool.inputSchema.get("properties", {}).items():
+            if "timeout" not in parameter and not parameter.endswith(("_ms", "_seconds")):
+                continue
+            # Optional parameters are wrapped in anyOf with a null branch.
+            candidates = schema.get("anyOf") or [schema]
+            numeric = [item for item in candidates if item.get("type") in {"number", "integer"}]
+            if numeric and not any(
+                "maximum" in item or "exclusiveMaximum" in item for item in numeric
+            ):
+                unbounded.append(f"{tool.name}.{parameter}")
+    assert unbounded == []

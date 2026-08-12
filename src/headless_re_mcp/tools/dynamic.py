@@ -8,6 +8,7 @@ from headless_re_mcp.core.events import DEFAULT_DEBUG_EVENT_BATCH, MAX_DEBUG_EVE
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+from headless_re_mcp.tools.limits import RunControlTimeout
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -42,7 +43,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def dynamic_wait(
         session_id: str,
         state: str,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Wait with a bound until the debugger reaches idle, running, or paused."""
         return _dump(analysis.dynamic_wait(session_id, state, timeout=timeout))
@@ -52,7 +53,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         arguments: str = "",
         working_directory: str | None = None,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
         pass_system_breakpoint: bool = False,
     ) -> dict[str, Any]:
         """Launch the session binary and wait for its initial debugger pause.
@@ -74,7 +75,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def dynamic_attach(
         session_id: str,
         pid: int,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
         pause_after_attach: bool = False,
     ) -> dict[str, Any]:
         """Attach to an authorized process; default waits for paused|running (GUI-friendly)."""
@@ -88,12 +89,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         )
 
     @tools.tool(name="dynamic.stop")
-    def dynamic_stop(session_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    def dynamic_stop(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
         """Stop the active debuggee and wait until the backend is idle."""
         return _dump(analysis.dynamic_stop(session_id, timeout=timeout))
 
     @tools.tool(name="dynamic.pause")
-    def dynamic_pause(session_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    def dynamic_pause(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
         """Pause the active debuggee and wait for a stable paused state."""
         return _dump(analysis.dynamic_pause(session_id, timeout=timeout))
 
@@ -101,7 +102,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def dynamic_resume(
         session_id: str,
         wait_for_pause: bool = False,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Resume the debuggee, optionally waiting for its next pause or exit."""
         return _dump(
@@ -113,12 +114,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         )
 
     @tools.tool(name="dynamic.step_into")
-    def dynamic_step_into(session_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    def dynamic_step_into(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
         """Execute one step into and wait for the next pause or process exit."""
         return _dump(analysis.dynamic_step_into(session_id, timeout=timeout))
 
     @tools.tool(name="dynamic.step_over")
-    def dynamic_step_over(session_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    def dynamic_step_over(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
         """Execute one step over and wait for the next pause or process exit."""
         return _dump(analysis.dynamic_step_over(session_id, timeout=timeout))
 

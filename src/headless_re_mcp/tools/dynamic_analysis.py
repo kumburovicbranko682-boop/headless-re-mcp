@@ -7,6 +7,7 @@ from pydantic import Field
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+from headless_re_mcp.tools.limits import RunControlTimeout
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -23,7 +24,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         offset: int = 0,
         limit: int | None = None,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """List paused-only VirtualQuery-style memory regions with pagination."""
         return _dump(
@@ -39,7 +40,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def memory_protect_query(
         session_id: str,
         address: int,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Query the memory region containing one address on a paused debuggee."""
         return _dump(analysis.memory_protect_query(session_id, address, timeout=timeout))
@@ -145,7 +146,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         base: int,
         size: int | None = None,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Dump one loaded module into a session artifact path (no raw bytes over MCP)."""
         return _dump(analysis.modules_dump(session_id, base, size=size, timeout=timeout))
@@ -155,7 +156,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         base: int,
         save_artifact: bool = True,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Read paused-only runtime PE headers and optionally keep a header artifact."""
         return _dump(
@@ -175,7 +176,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         search_size: int | None = None,
         max_candidates: int = 8,
         mode: str = "all",
-        timeout: float = 60.0,
+        timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
         """Scan IAT candidates (consecutive/sparse/call_site/all); never blind-selects."""
         return _dump(
@@ -195,7 +196,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         iat_va: int,
         size: int,
-        timeout: float = 30.0,
+        timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Read one confirmed IAT range and resolve thunks against loaded exports."""
         return _dump(analysis.imports_read(session_id, iat_va, size, timeout=timeout))
