@@ -862,7 +862,14 @@ class AnalysisService(
                     runtime.worker.close()
                 except BaseException as exc:
                     close_errors.append((kind, exc))
-                    runtime.worker.terminate()
+                    # Terminate is already the fallback for a failed close, and
+                    # it can throw in its own right: on Windows the worker's
+                    # temporary userdir is often still held when it runs. Letting
+                    # that escape stranded the session in CLOSING, which accepts
+                    # only CLOSED or FAILED, after the runtime had already been
+                    # popped and nothing held the worker any more.
+                    with suppress(BaseException):
+                        runtime.worker.terminate()
             if kind == BackendKind.X64DBG:
                 self._finalize_trace_after_worker_loss(
                     session_id,

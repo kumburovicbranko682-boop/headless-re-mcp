@@ -366,7 +366,12 @@ class XdbgClient:
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._user_directory = TemporaryDirectory(
-            prefix=f"headless-re-xdbg-rpc-{architecture.value}-"
+            prefix=f"headless-re-xdbg-rpc-{architecture.value}-",
+            # x64dbg writes symbols and a database here, and the handles are not
+            # always gone the moment the process is. A userdir that outlives its
+            # worker is a stale directory; a cleanup that throws would abort the
+            # shutdown that was removing it.
+            ignore_cleanup_errors=True,
         )
         seed_headless_event_settings(Path(self._user_directory.name))
 
@@ -1226,7 +1231,11 @@ class XdbgClient:
             with suppress(OSError):
                 desktop.close()
         if hasattr(self, "_user_directory"):
-            self._user_directory.cleanup()
+            # Belt and braces with ignore_cleanup_errors: this runs from close
+            # and from terminate, and a userdir this refuses to remove must not
+            # be able to abort either one.
+            with suppress(OSError):
+                self._user_directory.cleanup()
 
     def _process_exit_error(self) -> XdbgRpcError:
         return XdbgRpcError(

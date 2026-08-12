@@ -37,6 +37,8 @@ class FakeWorker:
         self.requests: list[tuple[str, JsonObject]] = []
         # Mirrors IdaWorkerClient: None while the worker process is running.
         self.exit_code: int | None = None
+        self.close_error: BaseException | None = None
+        self.terminate_error: BaseException | None = None
 
     @property
     def pid(self) -> int:
@@ -273,9 +275,13 @@ class FakeWorker:
     def close(self, *, timeout: float = 15.0) -> None:
         del timeout
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
     def terminate(self) -> None:
         self.terminated = True
+        if self.terminate_error is not None:
+            raise self.terminate_error
 
 
 def _service(
@@ -550,6 +556,38 @@ def test_a_dead_ida_worker_is_reported_and_then_reopened(tmp_path: Path) -> None
     assert len(opened) == 2
     assert opened[0].terminated
     assert service.static_functions(session_id, limit=1).ok
+
+
+def test_a_worker_that_cannot_be_terminated_still_ends_the_session(
+    tmp_path: Path,
+) -> None:
+    """Cleanup that throws must not strand the session in CLOSING.
+
+    Terminate is the fallback for a close that already failed, and on Windows it
+    genuinely can throw: the worker's temporary userdir is routinely still held
+    by an antivirus scan or a handle the exited process has not released. That
+    exception escaped the close, so the session never reached a terminal state,
+    and the runtime had already been popped, meaning nothing held the worker any
+    more. CLOSING accepts only CLOSED or FAILED, so the session was stuck for
+    good and could not even be recovered.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeWorker()
+    worker.close_error = IdaWorkerError("worker_timeout", "worker did not answer close")
+    worker.terminate_error = PermissionError("temporary userdir is still in use")
+    service = _service(tmp_path, worker)
+    session_id = _session_id(service.create_session(str(binary)).data)
+    assert service.open_static(session_id).ok
+
+    closed = service.close_session(session_id)
+
+    assert not closed.ok and closed.error is not None
+    assert closed.error.code == "worker_timeout"
+    assert worker.terminated
+    state = service.registry.get(session_id).state
+    assert state in {SessionState.CLOSED, SessionState.FAILED}
+    assert not service.registry.get(session_id).backends
 
 
 def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:
