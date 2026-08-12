@@ -46,6 +46,37 @@ def build_parser() -> argparse.ArgumentParser:
     serve_web.add_argument("--host", default=None, help="Must be a loopback address")
     serve_web.add_argument("--port", type=int, default=None)
 
+    supervise = subcommands.add_parser(
+        "supervise",
+        help="Run a server under a restarting supervisor (unattended operation)",
+    )
+    supervise.add_argument("--target", choices=("serve-web", "serve"), default="serve-web")
+    supervise.add_argument("--host", default=None, help="Must be a loopback address")
+    supervise.add_argument("--port", type=int, default=None)
+    supervise.add_argument(
+        "--check-interval",
+        type=float,
+        default=10.0,
+        help="Seconds between liveness and readiness checks",
+    )
+    supervise.add_argument(
+        "--grace-period",
+        type=float,
+        default=30.0,
+        help="Seconds before the first readiness verdict, so startup is not a restart",
+    )
+    supervise.add_argument(
+        "--max-restarts",
+        type=int,
+        default=None,
+        help="Stop after this many restarts; default is unlimited until a crash loop",
+    )
+    supervise.add_argument(
+        "--no-readiness",
+        action="store_true",
+        help="Restart only on exit, never on a failed /readyz probe",
+    )
+
     config_cmd = subcommands.add_parser("config", help="Configuration helpers")
     config_subs = config_cmd.add_subparsers(dest="config_command", required=True)
     generate = config_subs.add_parser(
@@ -118,6 +149,37 @@ def _run_xdbg_gates(
     return 0 if overall else 1
 
 
+def _run_supervisor(settings: Settings, args: argparse.Namespace) -> int:
+    """Keep a server process alive, restarting it on exit or lost readiness."""
+    from headless_re_mcp.supervisor import Supervisor, build_child_argv
+
+    host = args.host or settings.http_host
+    port = args.port if args.port is not None else settings.http_port
+    # Readiness only exists on the web target; stdio has no HTTP surface, so
+    # supervising it means restarting on exit alone.
+    ready_url = (
+        None
+        if args.no_readiness or args.target != "serve-web"
+        else f"http://{host}:{port}/readyz"
+    )
+    supervisor = Supervisor(
+        build_child_argv(
+            args.target,
+            host=args.host,
+            port=args.port,
+            config=str(args.config) if args.config else None,
+        ),
+        ready_url=ready_url,
+        check_interval_s=max(1.0, float(args.check_interval)),
+        grace_period_s=max(0.0, float(args.grace_period)),
+        max_restarts=args.max_restarts,
+    )
+    report = supervisor.run_forever()
+    clean = report.stopped_reason == "child_exited_cleanly"
+    print(json.dumps({"ok": clean, **report.as_json()}, ensure_ascii=False))
+    return 0 if clean else 1
+
+
 def _main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings.load(args.config)
@@ -146,6 +208,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
         from headless_re_mcp.web.app import run_web
 
         return run_web(settings, host=args.host, port=args.port)
+
+    if args.command == "supervise":
+        return _run_supervisor(settings, args)
 
     if args.command == "config":
         if args.config_command == "generate":

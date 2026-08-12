@@ -24,7 +24,9 @@ from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, MissionStatus
 from headless_re_mcp.agent.providers import OpenAICompatibleProvider
 from headless_re_mcp.agent.scheduler import MissionScheduler
 from headless_re_mcp.config import Settings, default_config_path
+from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.watchdog import Watchdog, WatchdogPolicy
 from headless_re_mcp.tools.assembly import bind_all_tools
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport
 
@@ -75,11 +77,21 @@ def register_agent_routes(
     configs = ProviderConfigStore(config_path)
     autonomy = AutonomyPolicy.from_settings(settings)
     orchestrator = AgentOrchestrator(store, catalog, configs, autonomy=autonomy)
-    scheduler = MissionScheduler(store, orchestrator.start_run)
+    watchdog_policy = WatchdogPolicy.from_settings(settings)
+    watchdog = Watchdog(service, policy=watchdog_policy)
+    isolation_policy = IsolationPolicy.from_settings(settings)
+    scheduler = MissionScheduler(
+        store,
+        orchestrator.start_run,
+        watchdog=watchdog if watchdog_policy.enabled else None,
+        watchdog_interval_s=watchdog_policy.interval_s,
+        isolation=IsolationRunner(isolation_policy) if isolation_policy.configured else None,
+    )
     app.state.agent_store = store
     app.state.provider_configs = configs
     app.state.agent_orchestrator = orchestrator
     app.state.mission_scheduler = scheduler
+    app.state.watchdog = watchdog
     app.state.tool_catalog = catalog
 
     # Bound to the app lifespan rather than started at import, so the loop
@@ -295,6 +307,27 @@ def register_agent_routes(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="mission_not_found") from exc
         return JSONResponse({"ok": True, "mission": mission.dump()}, status_code=202)
+
+    @app.get("/api/agent/watchdog")
+    def agent_watchdog(
+        limit: int = Query(default=50, ge=1, le=128),
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """Recent alerts and what the watchdog is permitted to fix by itself."""
+        authorize(authorization)
+        return JSONResponse(
+            {
+                "ok": True,
+                "policy": {
+                    "enabled": watchdog_policy.enabled,
+                    "interval_s": watchdog_policy.interval_s,
+                    "auto_recover_backends": watchdog_policy.auto_recover_backends,
+                },
+                "recovered_total": watchdog.recovered,
+                "alerts_total": watchdog.raised,
+                "alerts": watchdog.recent_alerts(limit),
+            }
+        )
 
     @app.get("/api/agent/autonomy")
     def agent_autonomy(authorization: str | None = Header(default=None)) -> JSONResponse:

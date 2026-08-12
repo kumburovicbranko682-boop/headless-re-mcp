@@ -14,6 +14,7 @@ mission returns to PENDING, so the work resumes rather than being lost.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,8 +54,18 @@ class MissionScheduler:
     store: AgentStore
     start_run: RunStarter
     interval_s: float = 2.0
+    # Swept from this loop rather than a thread of its own: it is already the
+    # process's periodic tick, and one place that can fall behind is easier to
+    # reason about than two.
+    watchdog: Any | None = None
+    watchdog_interval_s: float = 30.0
+    # Run between missions rather than between runs: the runs of one mission
+    # share a target, and rolling the machine back underneath them would destroy
+    # the very state the next run needs.
+    isolation: Any | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False)
     _stop: asyncio.Event | None = field(default=None, init=False)
+    _last_sweep: float = field(default=0.0, init=False)
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -82,6 +93,7 @@ class MissionScheduler:
         stop = self._stop
         assert stop is not None
         while not stop.is_set():
+            self._maybe_sweep()
             # A scheduler that can raise stops scheduling, which is the one
             # failure an unattended deployment cannot notice on its own.
             try:
@@ -95,6 +107,21 @@ class MissionScheduler:
                 await asyncio.wait_for(stop.wait(), timeout=self.interval_s)
             except TimeoutError:
                 continue
+
+    def _maybe_sweep(self) -> None:
+        """Run the watchdog on its own slower cadence, if one is attached."""
+        if self.watchdog is None or self.watchdog_interval_s <= 0:
+            return
+        now = time.monotonic()
+        if now - self._last_sweep < self.watchdog_interval_s:
+            return
+        self._last_sweep = now
+        # sweep() is documented never to raise, but the loop must survive it
+        # even if that ever stops being true.
+        try:
+            self.watchdog.sweep()
+        except BaseException as exc:  # noqa: BLE001 - recorded, never fatal
+            record_exception(exc, context="watchdog-sweep")
 
     async def tick(self) -> bool:
         """Advance one mission by at most one run. True if anything happened."""
@@ -120,6 +147,19 @@ class MissionScheduler:
                 error=f"objective not met within {mission.max_runs} runs",
             )
             return
+
+        if mission.runs_used == 0 and self.isolation is not None:
+            # Only before the first run of a mission: that is the sample
+            # boundary. A failure here is fatal to the mission by design, since
+            # continuing would analyse a new sample on a dirty machine.
+            outcome = self.isolation.rotate(reason=f"mission:{mission.id}")
+            if not outcome.get("ok", True):
+                self.store.set_mission_status(
+                    mission.id,
+                    MissionStatus.FAILED,
+                    error=f"isolation step failed: {outcome.get('detail')}",
+                )
+                return
 
         attempt = mission.runs_used + 1
         self.store.add_message(

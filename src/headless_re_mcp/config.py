@@ -30,6 +30,16 @@ class Settings:
     agent_auto_approve_effects: tuple[str, ...] = ()
     agent_auto_approve_tools: tuple[str, ...] = ()
     agent_never_auto_approve: tuple[str, ...] = ()
+    # Watchdog. Reporting is always on; correcting is not, because a recovered
+    # dynamic backend comes back attached to nothing.
+    watchdog_interval_s: float = 30.0
+    watchdog_auto_recover_backends: bool = False
+    # Isolation between samples. The debugger executes the sample, so continuous
+    # intake needs the VM rolled back; the command is the deployment's, since the
+    # hypervisor and snapshot names are not this service's to guess.
+    isolation_command: tuple[str, ...] = ()
+    isolation_timeout_s: float = 600.0
+    isolation_required: bool = True
     http_host: str = "127.0.0.1"
     http_port: int = 8765
     diec: Path | None = None
@@ -177,6 +187,28 @@ class Settings:
             agent_never_auto_approve=_as_tuple(
                 os.environ.get("HEADLESS_RE_AGENT_NEVER_AUTO_APPROVE"),
                 data.get("agent_never_auto_approve", ()),
+            ),
+            watchdog_interval_s=_as_float(
+                os.environ.get("HEADLESS_RE_WATCHDOG_INTERVAL_S"),
+                data.get("watchdog_interval_s", 30.0),
+                fallback=30.0,
+            ),
+            watchdog_auto_recover_backends=_as_bool(
+                os.environ.get("HEADLESS_RE_WATCHDOG_AUTO_RECOVER_BACKENDS"),
+                data.get("watchdog_auto_recover_backends", False),
+            ),
+            isolation_command=_as_tuple(
+                os.environ.get("HEADLESS_RE_ISOLATION_COMMAND"),
+                data.get("isolation_command", ()),
+            ),
+            isolation_timeout_s=_as_float(
+                os.environ.get("HEADLESS_RE_ISOLATION_TIMEOUT_S"),
+                data.get("isolation_timeout_s", 600.0),
+                fallback=600.0,
+            ),
+            isolation_required=_as_bool(
+                os.environ.get("HEADLESS_RE_ISOLATION_REQUIRED"),
+                data.get("isolation_required", True),
             ),
             # Environment overrides exist here for the same reason as every
             # other field: a deployment that can only set variables could not

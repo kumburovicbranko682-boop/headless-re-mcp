@@ -222,3 +222,88 @@ async def test_the_loop_survives_a_scheduler_error(tmp_path: Path) -> None:
     assert calls, "the scheduler should have attempted the run"
     assert store.get_mission(mission.id).status is MissionStatus.FAILED
     assert "provider exploded" in str(store.get_mission(mission.id).error)
+
+@pytest.mark.asyncio
+async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_path: Path) -> None:
+    """The sample boundary is the mission, not the run.
+
+    Runs within one mission share a target, so rolling the machine back between
+    them would destroy the state the next run needs. A failed rotation stops the
+    mission outright, because continuing would analyse a new sample on a machine
+    the previous one touched.
+    """
+    calls: list[str] = []
+
+    class Isolation:
+        def __init__(self, ok: bool) -> None:
+            self.ok = ok
+
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            calls.append(reason)
+            return {"ok": self.ok, "performed": True, "detail": None if self.ok else "snapshot missing"}
+
+    scheduler, store, runner = _scheduler(tmp_path, ["keep going", f"{MISSION_COMPLETE_MARKER} ok"])
+    scheduler.isolation = Isolation(ok=True)
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "two runs", max_runs=4)
+
+    await scheduler.tick()
+    await scheduler.tick()
+
+    assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
+    assert len(runner.started) == 2
+    assert calls == [f"mission:{mission.id}"], "rotation belongs between samples, not between runs"
+
+    blocked_scheduler, blocked_store, blocked_runner = _scheduler(tmp_path / "second", ["never"])
+    blocked_scheduler.isolation = Isolation(ok=False)
+    blocked_thread = blocked_store.create_thread()
+    blocked = blocked_store.create_mission(blocked_thread.id, "dirty machine")
+
+    await blocked_scheduler.tick()
+
+    assert blocked_runner.started == [], "no run may start on a machine that was not rotated"
+    final = blocked_store.get_mission(blocked.id)
+    assert final.status is MissionStatus.FAILED
+    assert "isolation step failed" in str(final.error)
+
+
+@pytest.mark.asyncio
+async def test_the_watchdog_is_swept_from_the_scheduler_loop(tmp_path: Path) -> None:
+    """One periodic tick, not two: a single place that can fall behind."""
+    sweeps: list[int] = []
+
+    class FakeWatchdog:
+        def sweep(self) -> dict[str, Any]:
+            sweeps.append(1)
+            return {"checked": 0}
+
+    scheduler, store, _ = _scheduler(tmp_path, [])
+    scheduler.watchdog = FakeWatchdog()
+    scheduler.watchdog_interval_s = 0.0
+
+    scheduler._maybe_sweep()
+    assert sweeps == [], "an interval of zero disables the sweep"
+
+    scheduler.watchdog_interval_s = 0.01
+    scheduler._maybe_sweep()
+    assert len(sweeps) == 1
+
+    scheduler._maybe_sweep()
+    assert len(sweeps) == 1, "the sweep must respect its own slower cadence"
+
+
+@pytest.mark.asyncio
+async def test_a_watchdog_that_raises_does_not_stop_the_scheduler(tmp_path: Path) -> None:
+    class Exploding:
+        def sweep(self) -> dict[str, Any]:
+            raise RuntimeError("watchdog blew up")
+
+    scheduler, store, runner = _scheduler(tmp_path, [f"{MISSION_COMPLETE_MARKER} fine"])
+    scheduler.watchdog = Exploding()
+    scheduler.watchdog_interval_s = 0.01
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "still works")
+
+    scheduler._maybe_sweep()
+    assert await scheduler.tick() is True
+    assert store.get_mission(mission.id).status is MissionStatus.COMPLETED

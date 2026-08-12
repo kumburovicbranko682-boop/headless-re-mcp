@@ -242,6 +242,34 @@ def record_tool_call(
     return record
 
 
+def record_alert(
+    kind: str,
+    *,
+    severity: str = "warning",
+    fields: dict[str, Any] | None = None,
+) -> None:
+    """Emit one alert onto the telemetry stream.
+
+    Alerts go down the same channel as tool calls so an external collector
+    already tailing that log sees them without being told about a second
+    endpoint. Nothing here notifies anyone directly: choosing who to wake is the
+    operator's, and a service that mails people is a service with credentials.
+    """
+    _LOGGER.warning(
+        json.dumps(
+            {
+                "event": "alert",
+                "kind": kind,
+                "severity": severity,
+                "at": datetime.now(UTC).isoformat(),
+                **(fields or {}),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    )
+
+
 def _session_parameter_index(handler: Callable[..., Any]) -> int | None:
     """Locate ``session_id`` in the handler signature, once per registration.
 

@@ -21,6 +21,7 @@ from headless_re_mcp.agent.providers import (
     ProviderPort,
     ProviderToolCall,
 )
+from headless_re_mcp.agent.providers.retrying import RetryingProvider
 from headless_re_mcp.agent.redaction import redact
 from headless_re_mcp.agent.store import AgentStore
 from headless_re_mcp.error_boundary import record_exception
@@ -57,7 +58,12 @@ class AgentOrchestrator:
         self.provider_configs = provider_configs
         # Defaults to the fail-closed policy: read-only runs, everything else waits.
         self.autonomy = autonomy or AutonomyPolicy()
-        self.provider_factory = provider_factory or (lambda profile: OpenAICompatibleProvider(profile))
+        # Wrapped so a rate limit or a 503 costs seconds instead of the mission's
+        # whole budget. An injected factory is left alone: a test that supplies a
+        # provider is testing the loop, not the network.
+        self.provider_factory = provider_factory or (
+            lambda profile: RetryingProvider(OpenAICompatibleProvider(profile))
+        )
         self.max_tool_rounds = max(1, min(max_tool_rounds, 64))
         self.tool_timeout = max(0.1, min(tool_timeout, 600.0))
         self.run_deadline = max(1.0, min(run_deadline, 3600.0))
