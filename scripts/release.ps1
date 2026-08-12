@@ -237,47 +237,14 @@ Manual activation is unnecessary. See MANIFEST.json and THIRD_PARTY_NOTICES.md.
     if ($missing.Count) { Write-Warning "Missing: $($missing -join ', ')" }
 }
 
-function Resolve-WixTool([string]$Name) {
-    if ($WixDir) {
-        $candidate = Join-Path $WixDir "$Name.exe"
-        if (Test-Path -LiteralPath $candidate) { return $candidate }
-    }
-    $command = Get-Command $Name -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    return $null
-}
-
 function Build-Msi {
-    $candle = Resolve-WixTool "candle"
-    $light = Resolve-WixTool "light"
-    $heat = Resolve-WixTool "heat"
-    if (-not $candle -or -not $light -or -not $heat) {
-        throw "WiX candle/light/heat not found; pass -WixDir"
-    }
-    $stageRoot = Reset-Stage (Join-Path $ResolvedOutput "_msi_stage")
-    $stage = Join-Path $stageRoot "HeadlessReMcp"
-    New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Copy-AppTree $stage
-    $launcher = @(
-        '@echo off', 'setlocal', 'cd /d "%~dp0"',
-        'python setup.py', 'if errorlevel 1 pause'
-    ) -join "`r`n"
-    Set-Content -LiteralPath (Join-Path $stage "setup.cmd") -Value $launcher -Encoding ASCII
-
-    $harvest = Join-Path $ResolvedOutput "ProductFiles.wxs"
-    $transform = Join-Path $ResolvedRoot "packaging\wix\PerUserKeyPath.xslt"
-    & $heat dir $stage -cg ProductFiles -dr INSTALLFOLDER -srd -sreg -gg `
-        -var var.StageDir -t $transform -out $harvest
-    if ($LASTEXITCODE -ne 0) { throw "WiX heat failed: $LASTEXITCODE" }
-    $product = Join-Path $ResolvedRoot "packaging\wix\Product.wxs"
-    & $candle $product $harvest "-dStageDir=$stage" -out (Join-Path $ResolvedOutput "")
-    if ($LASTEXITCODE -ne 0) { throw "WiX candle failed: $LASTEXITCODE" }
-    $msi = Join-Path $ResolvedOutput "headless-re-mcp.msi"
-    & $light (Join-Path $ResolvedOutput "Product.wixobj") `
-        (Join-Path $ResolvedOutput "ProductFiles.wixobj") `
-        -sice:ICE64 -sice:ICE91 -out $msi
-    if ($LASTEXITCODE -ne 0) { throw "WiX light failed: $LASTEXITCODE" }
-    Write-ArtifactHash $msi
+    # Delegated rather than reimplemented: the MSI has to carry the interpreter
+    # and the full dependency closure, and build_msi.ps1 is the copy that does
+    # that and is exercised by the release workflow and verify_msi.ps1.
+    $builder = Join-Path $PSScriptRoot "build_msi.ps1"
+    & $builder -OutDir $OutDir -WixDir $WixDir
+    if ($LASTEXITCODE -eq 2) { throw "WiX candle/light/heat not found; pass -WixDir" }
+    if ($LASTEXITCODE -ne 0) { throw "MSI build failed: $LASTEXITCODE" }
 }
 
 $targets = @($Target.Split(",") | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
