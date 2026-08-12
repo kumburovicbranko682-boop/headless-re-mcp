@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Session, SessionState
+from headless_re_mcp.core.models import BackendKind, Session, SessionState
 from headless_re_mcp.core.service import AnalysisService, JsonObject, StaticWorker
 
 
@@ -382,6 +384,86 @@ def test_fatal_worker_error_marks_session_failed(tmp_path: Path) -> None:
     assert result.error.code == "worker_exited"
     assert worker.terminated
     assert service.registry.get(session_id).state == SessionState.FAILED
+
+
+def test_opening_backends_for_different_sessions_is_not_serialised(tmp_path: Path) -> None:
+    """Starting one analyser must not block starting another.
+
+    Every open used to hold the service-wide lock across the whole worker
+    launch, and an IDA worker is allowed 300 seconds to come up. That made
+    batch.analyze's max_workers a lie: it hands the opens to a thread pool, and
+    they queued behind each other anyway.
+
+    A barrier rather than a stopwatch, so this fails outright when the opens are
+    serialised instead of being slow and flaky.
+    """
+    workers = 3
+    barrier = threading.Barrier(workers, timeout=10)
+
+    def rendezvous_factory(session: Session, settings: Settings) -> StaticWorker:
+        del session, settings
+        barrier.wait()
+        return FakeWorker()
+
+    service = AnalysisService(_settings(tmp_path), worker_factory=rendezvous_factory)
+    session_ids = []
+    for index in range(workers):
+        binary = tmp_path / f"fixture-{index}.exe"
+        _write_minimal_pe(binary)
+        session_ids.append(_session_id(service.create_session(str(binary)).data))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(service.open_static, session_ids))
+
+    assert [result.ok for result in results] == [True] * workers
+    for session_id in session_ids:
+        assert service.registry.get(session_id).state == SessionState.READY
+
+
+def test_two_backends_of_one_new_session_cannot_open_concurrently(tmp_path: Path) -> None:
+    """A session opening its first backend refuses the second, and leaks nothing.
+
+    This is the state machine, not the lock: a brand new session moves to
+    OPENING for its first backend and no open is allowed from there. A caller
+    that fires both at once therefore gets one backend and one refusal, and must
+    open the second after the first returns. Pinned here because the refusal has
+    to stay a clean error rather than a half-registered worker.
+    """
+    started = threading.Event()
+    proceed = threading.Event()
+    built: list[FakeWorker] = []
+
+    def blocking_factory(session: Session, settings: Settings) -> StaticWorker:
+        del session, settings
+        started.set()
+        proceed.wait(10)
+        worker = FakeWorker()
+        built.append(worker)
+        return worker
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = AnalysisService(
+        _settings(tmp_path),
+        static_worker_factory=blocking_factory,
+        dynamic_worker_factory=blocking_factory,
+    )
+    session_id = _session_id(service.create_session(str(binary)).data)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.open_static, session_id)
+        assert started.wait(10)
+        second = pool.submit(service.open_dynamic, session_id)
+        refused = second.result()
+        proceed.set()
+        opened = first.result()
+
+    assert opened.ok
+    assert not refused.ok and refused.error is not None
+    assert refused.error.code == "invalid_request"
+    # The refusal happened before any worker was built, so nothing to clean up.
+    assert len(built) == 1
+    assert set(service.registry.get(session_id).backends) == {BackendKind.IDA}
 
 
 def test_a_dead_ida_worker_is_reported_and_then_reopened(tmp_path: Path) -> None:

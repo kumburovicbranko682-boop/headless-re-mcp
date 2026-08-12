@@ -686,8 +686,14 @@ class AnalysisService(
         endpoint_scheme: str,
         factory: StaticWorkerFactory,
     ) -> Result[JsonObject]:
-        with self._lock:
-            try:
+        opening_session = False
+        try:
+            # Claim under the lock, then let go of it. begin_open is itself the
+            # atomic claim, so holding the service-wide lock across the launch
+            # bought nothing and cost everything else its turn: an IDA worker has
+            # 300 seconds to start, and every other session's open and close
+            # waited behind it.
+            with self._lock:
                 session = self.registry.get(session_id)
                 existing = self._runtime_owner.get(session_id, kind)
                 if existing is not None:
@@ -720,19 +726,34 @@ class AnalysisService(
                 if opening_session:
                     self.registry.transition(session_id, SessionState.OPENING)
                 self._runtime_owner.begin_open(session_id, kind)
+
+            try:
+                worker = factory(session, self.settings)
+                event_log: PersistentDebugEventLog | None = None
+                drain_cursor: DebugEventCursor | None = None
+                event_cursor = None
+                if kind == BackendKind.X64DBG:
+                    event_cursor = DebugEventCursor()
+                    drain_cursor = DebugEventCursor()
+                    log_dir = self.settings.artifact_root / "debug-events" / session_id
+                    event_log = PersistentDebugEventLog(log_dir / "events.sqlite3")
+            except BaseException:
+                self._abandon_open(session_id, kind, opening_session=opening_session)
+                raise
+
+            with self._lock:
                 try:
-                    worker = factory(session, self.settings)
+                    # Re-checked because the lock was released: a session that was
+                    # already READY can be closed while its second backend starts,
+                    # and registering into it would leak this worker.
+                    current = self.registry.get(session_id)
+                    if current.state in {SessionState.CLOSING, SessionState.CLOSED}:
+                        raise InvalidStateTransition(
+                            f"session was closed while {kind.value} was opening"
+                        )
                     workflow = (
                         create_workflow_runtime() if kind == BackendKind.X64DBG else None
                     )
-                    event_log: PersistentDebugEventLog | None = None
-                    drain_cursor: DebugEventCursor | None = None
-                    event_cursor = None
-                    if kind == BackendKind.X64DBG:
-                        event_cursor = DebugEventCursor()
-                        drain_cursor = DebugEventCursor()
-                        log_dir = self.settings.artifact_root / "debug-events" / session_id
-                        event_log = PersistentDebugEventLog(log_dir / "events.sqlite3")
                     runtime = _BackendRuntime(
                         worker,
                         event_cursor=event_cursor,
@@ -773,21 +794,32 @@ class AnalysisService(
                     else:
                         current = self.registry.get(session_id)
                 except BaseException:
-                    self._runtime_owner.fail(session_id, kind)
-                    if "worker" in locals():
-                        worker.terminate()
-                    if opening_session:
-                        self.registry.transition(session_id, SessionState.FAILED)
+                    self._abandon_open(session_id, kind, opening_session=opening_session)
+                    worker.terminate()
                     raise
-                return _success(
-                    {
-                        "session": _session_json(current),
-                        "backend": worker.metadata,
-                        "reused": False,
-                    }
-                )
-            except BaseException as exc:
-                return _failure(exc, session_id=session_id, backend=kind.value)
+            return _success(
+                {
+                    "session": _session_json(current),
+                    "backend": worker.metadata,
+                    "reused": False,
+                }
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend=kind.value)
+
+    def _abandon_open(
+        self,
+        session_id: str,
+        kind: BackendKind,
+        *,
+        opening_session: bool,
+    ) -> None:
+        """Release a claim that will not become a runtime."""
+        with self._lock:
+            self._runtime_owner.fail(session_id, kind)
+            if opening_session:
+                with suppress(KeyError, InvalidStateTransition):
+                    self.registry.transition(session_id, SessionState.FAILED)
 
     def close_session(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.close_session(session_id)
