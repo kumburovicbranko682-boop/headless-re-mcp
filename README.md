@@ -113,6 +113,35 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `health_check_interval_s` 控制后台巡检间隔，设为 `0` 关闭（此时仍保留调用时重连）。
 
+### 无人值守（默认全部关闭）
+
+以下能力都是显式 opt-in，不配置时行为与之前完全一致。
+
+- **写操作自动批准**：`agent_auto_approve_effects` / `agent_auto_approve_tools` 按 effect 类别或
+  工具名放开；`agent_never_auto_approve` 优先级高于一切授权（含只读基线），写进去就是无条件停止。
+  自动执行的写操作会发 `approval.auto` 事件并写明是哪条规则批准的——审计日志分不清"策略批准"
+  和"人工批准"就不算审计日志。`GET /api/agent/autonomy` 可读回策略与它实际放开的工具清单。
+- **持久目标与调度**：run 有界（分钟级、十来轮工具），mission 是跨 run 存活的目标。调度器按最早
+  优先认领、一次喂一个 run，完成判据是 run 自己输出 `MISSION_COMPLETE` 标记，而不是"没有再调用
+  工具"——后者会在模型停下来思考时误判。`max_runs` 是强制预算。重启时在途 mission 退回 PENDING
+  而不是丢弃。接口在 `POST /api/agent/missions`。
+- **进程守护**：`headless-re-mcp supervise` 在子进程退出或连续探测不到 `/readyz` 时重启它（进程
+  活着但卡死是两种不同故障）。退避递增，单次探测失败不算故障，启动期不做就绪判定；快速反复崩溃
+  会诚实地停下并报 `crash_loop`，而不是用重启循环伪装成正常运行。`scripts/install_service.ps1`
+  注册开机自启——用计划任务而非 Windows 服务，因为后端需要交互式会话和持有 IDA 授权的用户配置。
+- **看门狗**：`watchdog_interval_s` 控制巡检；发现死掉或反复掉线的后端会告警。
+  `watchdog_auto_recover_backends` 默认关闭——恢复后的动态后端不再附着任何进程，是否重启目标
+  是真实决策。告警走 telemetry 通道，外部采集器无需第二个端点。
+- **样本间隔离**：`isolation_command` 在 mission 之间（不是 run 之间，同一 mission 的 run 共享目标）
+  执行你提供的命令。本服务不管理虚拟机——hypervisor、快照名和凭据属于部署方。必需步骤失败会
+  中止该 mission，因为继续下去正是会静默交叉污染结果的那种情况。
+- **provider 韧性**：限流和 5xx 会退避重试，但**只在流还没吐出任何内容之前**——过了第一个 token
+  重放会重复输出，还可能把工具调用再执行一遍。客户端错误不重试。
+
+运维探针：`/healthz` 只回答存活（刻意不碰别的，慢后端不该引发重启循环），`/readyz` 单独回答就绪
+并在存储或产物目录失效时返 503，`/metrics` 是 Prometheus 抓取点。后两者不需要控制台 token，
+便于本机守护进程探测。
+
 ### 只读部署
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
@@ -276,7 +305,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 当前证据（在一台配好 IDA 9.x + x64dbg headless + DIE/UPX/de4dot/rizin/cdb 的机器上实测）：
 
-- 单元测试 563 passed / 0 skipped
+- 单元测试 658 passed / 0 skipped
 - 集成 Gate 65 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
 - 剩余 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
 - 198 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
@@ -289,8 +318,13 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` 负责桥接），所以配置好的机器不会因为"没设环境变量"而假跳过。**skip 仍然不等于 pass**：换一台缺后端的机器，对应 Gate 会如实跳过。
 
-不适合：跨平台、无 IDA 授权、需要稳定长期 SLA 的生产工作流。  
-适合：已有 Windows + IDA 9.x，想在隔离环境试 MCP 驱动的逆向辅助。
+无人值守的机制已经具备（自动批准策略、持久目标与调度、进程守护、看门狗、隔离钩子、provider 退避），
+但这不等于本项目替你承担了 SLA。仍然成立的限制：真机 Gate 只在配好后端的机器上手动跑过，
+自建 runner 的那条 CI 从未绿过；单维护者、公开历史短；IDA idalib 与 x64dbg headless 本身都不是
+为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺可用性数字，这三条得先自己解决。
+
+不适合：跨平台、无 IDA 授权、把可用性责任外包给上游的场景。  
+适合：已有 Windows + IDA 9.x，愿意自己盯着跑，想要 MCP 驱动的逆向辅助（可长期无人值守运行）。
 
 仅分析你拥有或获明确授权的样本。本地服务含写寄存器/内存能力，勿对不可信代理暴露，勿在未隔离环境处理未知样本。
 
