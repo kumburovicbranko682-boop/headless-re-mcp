@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -60,8 +61,16 @@ CREATE TABLE IF NOT EXISTS knowledge (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id, kind);
 """
+
+# The audit log is the only table with no natural end: sessions and artifacts are
+# bounded by what the operator opens and by artifacts.gc, but a long-lived server
+# appends here forever. Trimming is amortised over a batch of writes rather than
+# run per insert, so the bound is approximate by design.
+AUDIT_RETAINED_ROWS = 50_000
+AUDIT_TRIM_INTERVAL = 256
 
 
 class SessionStore:
@@ -69,13 +78,28 @@ class SessionStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self.audit_retained_rows = AUDIT_RETAINED_ROWS
+        self.audit_trim_interval = AUDIT_TRIM_INTERVAL
+        self._audit_writes = 0
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection for one operation and close it again.
+
+        ``with sqlite3.connect(...)`` is a transaction scope, not a connection
+        scope, so the previous form left every handle to be reclaimed whenever
+        the interpreter got around to it. That is a file handle per call on a
+        database a long-lived server writes to constantly.
+        """
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def upsert_session(
         self,
@@ -269,6 +293,16 @@ class SessionStore:
                     json.dumps(result_summary, ensure_ascii=False)[:4000],
                 ),
             )
+            self._audit_writes += 1
+            if self._audit_writes >= self.audit_trim_interval:
+                self._audit_writes = 0
+                # Ordered the same way list_audit reads, so what survives is what
+                # a caller would have been able to see.
+                conn.execute(
+                    "DELETE FROM audit WHERE id IN ("
+                    " SELECT id FROM audit ORDER BY at DESC, id DESC LIMIT -1 OFFSET ?)",
+                    (self.audit_retained_rows,),
+                )
             conn.commit()
 
     def list_audit(

@@ -1,4 +1,4 @@
-﻿"""Independent transactional SQLite repository for Agent state."""
+"""Independent transactional SQLite repository for Agent state."""
 
 from __future__ import annotations
 
@@ -66,6 +66,20 @@ class AgentStore:
             finally:
                 con.close()
 
+    @contextmanager
+    def _reading(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection for one read and close it again.
+
+        The connection is autocommit, so a read needs no transaction scope, but
+        it does need closing: ``with sqlite3.connect(...)`` would leave the
+        handle for the interpreter to reclaim whenever it noticed.
+        """
+        con = self._connect()
+        try:
+            yield con
+        finally:
+            con.close()
+
     def _init_schema(self) -> None:
         script = """
         CREATE TABLE IF NOT EXISTS threads(
@@ -113,12 +127,12 @@ class AgentStore:
         return AgentThread(thread_id, title[:200], session_id, now, now)
 
     def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
-        with self._connect() as con:
+        with self._reading() as con:
             rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:
-        with self._connect() as con:
+        with self._reading() as con:
             row = con.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
         return AgentThread(**dict(row)) if row else None
 
@@ -135,7 +149,7 @@ class AgentStore:
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
     def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:
-        with self._connect() as con:
+        with self._reading() as con:
             rows = con.execute("SELECT * FROM messages WHERE thread_id=? ORDER BY created_at,id LIMIT ?", (thread_id, max(1, min(limit, 2000)))).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 
@@ -161,7 +175,7 @@ class AgentStore:
         return AgentRun(**data)
 
     def get_run(self, run_id: str) -> AgentRun | None:
-        with self._connect() as con:
+        with self._reading() as con:
             row = con.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return self._run_from_row(row) if row else None
 
@@ -192,7 +206,7 @@ class AgentStore:
         return RunEvent(run_id, seq, event_type, safe, created)
 
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
-        with self._connect() as con:
+        with self._reading() as con:
             rows = con.execute("SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run_id, max(0, after), max(1, min(limit, 5000)))).fetchall()
         return [RunEvent(str(row["run_id"]), int(row["seq"]), str(row["type"]), json.loads(row["data_json"]), str(row["created_at"])) for row in rows]
 
@@ -239,7 +253,7 @@ class AgentStore:
             return True
 
     def get_tool_call(self, run_id: str, tool_call_id: str) -> JsonObject:
-        with self._connect() as con:
+        with self._reading() as con:
             row = con.execute("SELECT * FROM tool_calls WHERE id=? AND run_id=?", (tool_call_id, run_id)).fetchone()
         if row is None:
             raise KeyError(tool_call_id)

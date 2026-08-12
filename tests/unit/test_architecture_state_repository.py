@@ -186,6 +186,36 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == []
 
 
+def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
+    """The audit table is the one store with no natural end.
+
+    Sessions and artifacts are bounded by what the operator opens and by
+    artifacts.gc, but a server that runs for months appends audit rows forever,
+    and list_audit counts the whole table on every page.
+    """
+    repository = SqliteAnalysisRepository(tmp_path / "audit-quota")
+    store = repository.store
+    store.audit_retained_rows = 5
+    store.audit_trim_interval = 4
+
+    for index in range(12):
+        repository.append_audit(
+            session_id="s1",
+            action=f"action-{index:02d}",
+            params_summary={},
+            ok=True,
+            result_summary={},
+        )
+
+    listed = repository.list_audit("s1", limit=50)
+    actions = [entry["action"] for entry in listed["entries"]]
+    # Trimming is amortised over a batch, so the bound is approximate; what has
+    # to hold is that it stops growing and keeps the newest rows.
+    assert len(actions) <= store.audit_retained_rows + store.audit_trim_interval
+    assert actions[0] == "action-11"
+    assert listed["total"] == len(actions)
+
+
 def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:
     image = bytearray(0x200)
     image[:2] = b"MZ"
