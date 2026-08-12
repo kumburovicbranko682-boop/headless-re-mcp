@@ -833,6 +833,15 @@ class AnalysisService(
                     result = _success({"session": _session_json(session), "already_closed": True})
                     note_session_closed(self, session_id, result)
                     return result
+                if session.state is SessionState.OPENING:
+                    # Opening no longer holds the service-wide lock, so a close
+                    # can arrive mid-launch instead of queueing behind it. Say
+                    # what to do about it rather than leaving the caller with the
+                    # state machine's "opening -> closing is not allowed".
+                    raise InvalidStateTransition(
+                        "session is still opening its first backend; "
+                        "close it once that open returns"
+                    )
                 self.registry.transition(session_id, SessionState.CLOSING)
                 runtimes = self._runtime_owner.pop_session(session_id)
                 self._health.forget(session_id)

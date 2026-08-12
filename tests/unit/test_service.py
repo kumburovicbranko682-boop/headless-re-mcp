@@ -420,6 +420,44 @@ def test_opening_backends_for_different_sessions_is_not_serialised(tmp_path: Pat
         assert service.registry.get(session_id).state == SessionState.READY
 
 
+def test_closing_a_session_mid_open_is_refused_with_something_actionable(
+    tmp_path: Path,
+) -> None:
+    """Opening no longer holds the lock, so a close can now arrive during one.
+
+    It used to queue behind the launch and then succeed. Failing fast is the
+    better trade, since the alternative is a close that blocks for an analyser
+    startup, but only if the caller is told what to do next rather than being
+    handed the raw state machine transition.
+    """
+    started = threading.Event()
+    proceed = threading.Event()
+
+    def blocking_factory(session: Session, settings: Settings) -> StaticWorker:
+        del session, settings
+        started.set()
+        proceed.wait(10)
+        return FakeWorker()
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = AnalysisService(_settings(tmp_path), worker_factory=blocking_factory)
+    session_id = _session_id(service.create_session(str(binary)).data)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        opening = pool.submit(service.open_static, session_id)
+        assert started.wait(10)
+        refused = pool.submit(service.close_session, session_id).result(timeout=10)
+        proceed.set()
+        assert opening.result(timeout=10).ok
+
+    assert not refused.ok and refused.error is not None
+    assert refused.error.code == "invalid_request"
+    assert "once that open returns" in refused.error.message
+    # And the retry the message asks for has to work.
+    assert service.close_session(session_id).ok
+
+
 def test_two_backends_of_one_new_session_cannot_open_concurrently(tmp_path: Path) -> None:
     """A session opening its first backend refuses the second, and leaks nothing.
 
