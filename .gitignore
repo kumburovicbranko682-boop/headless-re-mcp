@@ -4,13 +4,32 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
 dist/
 build/
 node_modules/
+webui/dist/
 # Stale duplicate copies left behind by a bad directory sync
 *__dup
 # Local agent scratch (transcripts, one-off probes, tool logs)
 agent-tools/
+.tmp/
+.tmp-*/
+tmp/
+temp/
+*.tmp
+*.part
+*.bak
+*.swp
+*.orig
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+npm-debug.log*
+artifacts_ci_config.json
+ProductFiles.wxs
+*.wixobj
 artifacts/*
 !artifacts/.gitkeep
 *.idb

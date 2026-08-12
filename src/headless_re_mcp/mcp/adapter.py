@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
 
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
+from headless_re_mcp.error_boundary import guard_tool_handler
 from headless_re_mcp.telemetry import instrument
 from headless_re_mcp.tools.binding import BoundTool
 
@@ -69,8 +70,10 @@ def register_tool(
     spec = catalog.require(name)
     description = handler.__doc__ or spec.description or name
     # One wrapper serves both transports: the server calls it directly and the
-    # catalog binding is what the agent transport invokes.
-    observed = instrument(handler, name=name)
+    # catalog binding is what the agent transport invokes. The boundary sits
+    # inside the instrumentation so a defect is recorded as the envelope's
+    # internal_error rather than as a raw exception type.
+    observed = instrument(guard_tool_handler(handler, tool_name=name), name=name)
     tool = Tool.from_function(
         observed,
         name=name,

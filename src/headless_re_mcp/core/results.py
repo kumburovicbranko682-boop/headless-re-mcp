@@ -74,9 +74,15 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
     elif isinstance(exc, (InvalidStateTransition, ValueError)):
         error = RpcError(code="invalid_request", message=str(exc), details=dict(details))
     else:
+        from headless_re_mcp.error_boundary import record_exception
+
+        incident = record_exception(exc, context="service-result")
         error = RpcError(
             code="internal_error",
-            message=f"{type(exc).__name__}: {exc}",
-            details=dict(details),
+            message=(
+                f"Unexpected {type(exc).__name__}: {incident['message']} "
+                f"(incident {incident['incident_id']})"
+            ),
+            details={**details, **incident},
         )
     return Result[JsonObject](ok=False, error=error)

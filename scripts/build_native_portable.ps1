@@ -22,7 +22,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $stage "src\headless_re_mcp")
-Copy-Item "pyproject.toml","README.md","LICENSE","upstream.lock.json","first_setup.py","start_web.py" $stage -ErrorAction SilentlyContinue
+Copy-Item "pyproject.toml","README.md","LICENSE","upstream.lock.json","setup.py","start_web.py" $stage -ErrorAction SilentlyContinue
 Copy-Item -Recurse "docs" (Join-Path $stage "docs") -ErrorAction SilentlyContinue
 Copy-Item -Recurse "scripts" (Join-Path $stage "scripts") -ErrorAction SilentlyContinue
 Get-ChildItem -LiteralPath $stage -Directory -Recurse -Force |
@@ -66,10 +66,10 @@ $setupCmd = @(
     'setlocal',
     'cd /d "%~dp0"',
     'set PYTHONPATH=%~dp0src',
-    'python first_setup.py',
+    'python setup.py',
     'if errorlevel 1 pause'
 ) -join "`r`n"
-Set-Content -Path (Join-Path $stage "run_first_setup.cmd") -Value $setupCmd -Encoding ASCII
+Set-Content -Path (Join-Path $stage "run_setup.cmd") -Value $setupCmd -Encoding ASCII
 
 $webCmd = @(
     '@echo off',
@@ -87,7 +87,7 @@ $firstRun = @(
     '',
     '1. Install Python 3.11+ on PATH (embeddable runtime is a follow-up checkpoint).',
     '2. Double-click run_native.cmd  -> Tk/Win32 native launcher',
-    '   or run_first_setup.cmd       -> terminal wizard',
+    '   or run_setup.cmd             -> one-command installer',
     '3. Point IDA to your licensed install (NOT bundled).',
     '4. x64dbg headless (if present) is under runtime/x64dbg-*',
     '5. run_web.cmd starts the React browser workbench; no WebView2/Electron shell is used.'

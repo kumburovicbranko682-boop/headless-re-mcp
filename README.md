@@ -57,14 +57,16 @@ Python 运行时与全部依赖在包内，装完直接用：
 
 ```powershell
 cd <repo-root>
-python -m pip install -U pip
-python first_setup.py              # 终端问答，生成本机 MCP JSON
-python first_setup.py --gui        # 可选 PySide6 原生壳（无 WebView）
+python setup.py                    # 一条命令完成安装与配置
 python -m headless_re_mcp doctor --json --strict
 python -m headless_re_mcp serve
 ```
 
-`first_setup.py` 会校验 IDA / headless 路径，写入用户 `config.json`，并可选生成 `.cursor/mcp.json`（本机文件，已 gitignore）。
+`setup.py` 会依次安装 `ida,pe,web,native` 依赖、发现本机授权的 IDA Professional 9.x、
+按固定大小与 SHA-256 校验下载缺失的 x64dbg/可选 CLI 依赖包、写入用户 `config.json`、
+激活 idalib，最后生成 MCP 配置并跑一遍 Doctor。IDA、idalib、Hex-Rays 与许可证永远不进依赖包。
+
+无人值守用 `--non-interactive`；已有依赖用 `--skip-release`；不装 Python 包用 `--skip-pip`。
 
 ```powershell
 python -m headless_re_mcp serve-web   # 仅 loopback + 本地 token
@@ -140,9 +142,9 @@ upstream/              # 本地上游 checkout（gitignore）
 artifacts/             # 本地构建产物（gitignore）
 ```
 
-根目录元数据：`pyproject.toml`、`README.md`、`first_setup.py`、`start_web.py`、`upstream.lock.json`、`LICENSE`。
+根目录元数据：`pyproject.toml`、`README.md`、`setup.py`、`start_web.py`、`upstream.lock.json`、`LICENSE`。
 
-上游不进 Git：复制 `.cursor/mcp.json.example` 或跑 `first_setup.py`；拉取锁定上游：
+上游不进 Git：复制 `.cursor/mcp.json.example` 或跑 `python setup.py`；拉取锁定上游：
 
 ```powershell
 powershell -File .\scripts\sync_upstream.ps1

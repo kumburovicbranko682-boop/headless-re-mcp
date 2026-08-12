@@ -240,7 +240,7 @@ def _step_sync_x64dbg(_settings: Settings) -> JsonObject:
         "ok": any(item.get("ok") for item in items),
         "step": "sync_x64dbg",
         "items": items,
-        "hint": "pwsh -File scripts/sync_external_x64dbg.ps1",
+        "hint": "python setup.py",
         "packable": True,
         "never_bundle_ida": True,
     }

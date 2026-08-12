@@ -38,7 +38,7 @@ include = [
   "/LICENSE",
   "/upstream.lock.json",
   "/start_web.py",
-  "/first_setup.py",
+  "/setup.py",
 ]
 exclude = [
   "**/__pycache__",
