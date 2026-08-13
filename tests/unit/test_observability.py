@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
@@ -191,6 +192,56 @@ def test_artifact_probe_leaves_nothing_behind(tmp_path: Path) -> None:
 
     assert probe_artifact_root(root).ok is True
     assert list(root.iterdir()) == []
+
+
+def test_routine_stdio_logs_do_not_go_on_the_pipe_a_client_may_not_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stderr on stdio is a pipe the client owns, and may never drain.
+
+    The SDK logs every request at INFO. A client that does not read that fills
+    the buffer, and the server then blocks inside write() and answers nothing
+    further -- silently, and permanently. Measured against a client that never
+    read it: the server stopped answering at the 25th tool call, and survived
+    900 once the routine records went to a file instead.
+
+    Warnings still reach stderr. They are where a client surfaces a real
+    problem, and they are rare enough not to accumulate.
+    """
+    from headless_re_mcp.cli import _keep_routine_logs_off_the_pipe
+
+    monkeypatch.setenv("HEADLESS_RE_LOG_DIR", str(tmp_path))
+    # Configured against a private logger rather than the root one: attaching
+    # closes the handlers already there, and closing pytest's own capture
+    # handler breaks whatever test runs next.
+    name = "probe.stdio.logging"
+    private = logging.getLogger(name)
+    try:
+        _keep_routine_logs_off_the_pipe(name)
+        stderr_handlers = [
+            handler
+            for handler in private.handlers
+            if isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+        ]
+        assert len(stderr_handlers) == 1, "exactly one stream handler, and it is the loud one"
+        assert stderr_handlers[0].level == logging.WARNING
+
+        captured = io.StringIO()
+        stderr_handlers[0].setStream(captured)
+        logging.getLogger(f"{name}.server").info("processing request of type CallToolRequest")
+        logging.getLogger(f"{name}.server").warning("a real problem")
+
+        assert "CallToolRequest" not in captured.getvalue(), "routine chatter must stay off stderr"
+        assert "a real problem" in captured.getvalue(), "a warning must still reach the client"
+
+        written = (tmp_path / "mcp-stdio.log").read_text(encoding="utf-8", errors="replace")
+        assert "CallToolRequest" in written, "and must still be recorded somewhere"
+    finally:
+        for handler in list(private.handlers):
+            private.removeHandler(handler)
+            handler.close()
 
 
 def test_the_readiness_probe_never_waits_for_the_disk_walk(

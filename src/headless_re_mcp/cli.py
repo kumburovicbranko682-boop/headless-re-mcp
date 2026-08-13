@@ -12,6 +12,38 @@ from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.doctor import format_report, run_doctor
 
 
+def _keep_routine_logs_off_the_pipe(logger_name: str = "") -> None:
+    """Send routine logs to a file, because stderr is a pipe nobody may drain.
+
+    The SDK logs every request at INFO, and on stdio that lands on a pipe the
+    client owns. A client that does not read it fills the buffer and the server
+    then blocks inside write() and answers nothing further -- silently, and for
+    good. Measured against a client that never read it: the server stopped
+    answering at the 25th tool call, which an unattended session reaches in its
+    first minute.
+
+    Warnings and errors still go to stderr, since that is where a client
+    surfaces them and they are rare enough not to accumulate. Everything below
+    goes to the rotating log beside the incident and telemetry ones.
+    """
+    import logging
+
+    from headless_re_mcp.logging_setup import (
+        UtcFormatter,
+        attach_rotating_handler,
+        resolve_log_dir,
+    )
+
+    attach_rotating_handler(
+        logger_name,
+        (resolve_log_dir(None) / "mcp-stdio.log").resolve(),
+        formatter=UtcFormatter("%(asctime)sZ %(levelname)s %(name)s %(message)s"),
+    )
+    loud_enough_to_interrupt = logging.StreamHandler()
+    loud_enough_to_interrupt.setLevel(logging.WARNING)
+    logging.getLogger(logger_name).addHandler(loud_enough_to_interrupt)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="headless-re-mcp",
@@ -201,6 +233,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         from headless_re_mcp.core.service import AnalysisService
         from headless_re_mcp.mcp.server import run_stdio
 
+        _keep_routine_logs_off_the_pipe()
         run_stdio(AnalysisService(settings))
         return 0
 
