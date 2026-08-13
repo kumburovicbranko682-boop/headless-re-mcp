@@ -256,8 +256,28 @@ class MissionScheduler:
         self.store.set_mission_status(
             mission.id,
             MissionStatus.FAILED,
-            error=f"run {run_id} ended as {status.value}",
+            error=self._failure_reason(run_id, status),
         )
+
+    def _failure_reason(self, run_id: str, status: RunStatus) -> str:
+        """Why the run ended, not just that it did.
+
+        The run records something specific and incident-linked -- invalid tool
+        arguments at a given index, a tool name that does not exist, a message
+        over the size cap -- and this used to replace all of it with "run <id>
+        ended as failed". The mission is what an operator reads, and three
+        unrelated causes arrived there looking identical.
+        """
+        detail = ""
+        try:
+            run = self.store.get_run(run_id)
+        except Exception:  # noqa: BLE001 - a failure here must not hide the failure
+            run = None
+        if run is not None:
+            detail = str(getattr(run, "error", "") or "").strip()
+        if not detail:
+            return f"run {run_id} ended as {status.value}"
+        return f"run {run_id} ended as {status.value}: {detail}"
 
     def _note_if_nothing_was_rotated(self, outcome: JsonObject) -> None:
         """Say once that samples are following each other on the same machine.

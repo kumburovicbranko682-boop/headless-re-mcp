@@ -318,6 +318,59 @@ async def test_the_loop_survives_an_incident_log_that_cannot_be_written(
 
 
 @pytest.mark.asyncio
+async def test_a_failed_mission_carries_the_reason_the_run_recorded(tmp_path: Path) -> None:
+    """The mission is what an operator reads, so the cause has to reach it.
+
+    Runs record something specific and incident-linked. Measured against a
+    provider answering badly in three different ways -- invalid tool arguments,
+    a tool name that does not exist, a message over the size cap -- the mission
+    said "run <id> ended as failed" for all three, so three unrelated causes
+    were indistinguishable at the only level anyone looks at.
+    """
+    scheduler, store, _ = _scheduler(tmp_path, ["nothing useful"])
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=600)
+    store.transition(run.id, RunStatus.STREAMING)
+    store.transition(
+        run.id,
+        RunStatus.FAILED,
+        error="ValueError: provider emitted invalid tool arguments at index 0 (incident abc)",
+    )
+
+    reason = scheduler._failure_reason(run.id, RunStatus.FAILED)
+
+    assert "invalid tool arguments" in reason, reason
+    assert "incident abc" in reason, "the incident id has to survive too"
+    assert run.id in reason, "and the run is still named, for anyone digging further"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_nothing_recorded_still_names_the_run(tmp_path: Path) -> None:
+    """No detail is not a reason to lose the run id as well."""
+    scheduler, store, _ = _scheduler(tmp_path, ["nothing useful"])
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=600)
+    store.transition(run.id, RunStatus.STREAMING)
+    store.transition(run.id, RunStatus.FAILED)
+
+    reason = scheduler._failure_reason(run.id, RunStatus.FAILED)
+
+    assert reason == f"run {run.id} ended as failed"
+
+
+@pytest.mark.asyncio
+async def test_a_reason_that_cannot_be_read_does_not_replace_the_failure(
+    tmp_path: Path,
+) -> None:
+    """Looking up the detail must not become a second failure on top of the first."""
+    scheduler, _store, _ = _scheduler(tmp_path, ["nothing useful"])
+
+    reason = scheduler._failure_reason("no-such-run", RunStatus.FAILED)
+
+    assert reason == "run no-such-run ended as failed"
+
+
+@pytest.mark.asyncio
 async def test_a_queue_running_without_isolation_says_so_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
