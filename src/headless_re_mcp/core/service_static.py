@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -14,6 +16,7 @@ from headless_re_mcp.core.results import _failure, _success
 
 if TYPE_CHECKING:
     from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.repository import AnalysisRepository
     from headless_re_mcp.core.service import _BackendRuntime
 
 JsonObject = dict[str, Any]
@@ -40,6 +43,7 @@ class StaticAnalysisMixin:
     """
 
     settings: Settings
+    repository: AnalysisRepository
 
     if TYPE_CHECKING:
 
@@ -653,19 +657,44 @@ class StaticAnalysisMixin:
         text = data.get(text_key)
         if not isinstance(text, str) or len(text) <= MAX_STATIC_INLINE_TEXT:
             return data
+        preview = text[:1024]
+        payload = text.encode("utf-8")
+        spilled = dict(data)
+        spilled[text_key] = preview
+        spilled["truncated"] = True
+        spilled["preview_chars"] = len(preview)
+        spilled["artifact_bytes"] = len(payload)
+
         directory = (
             self.settings.artifact_root.expanduser().resolve() / "static" / session_id / "oversized"
         )
-        directory.mkdir(parents=True, exist_ok=True)
         artifact_path = directory / f"{kind}-{uuid4().hex}.txt"
-        artifact_path.write_text(text, encoding="utf-8")
-        preview = text[:1024]
-        spilled = dict(data)
-        spilled[text_key] = preview
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_bytes(payload)
+        except OSError as exc:
+            # Returning the preview with the reason beats raising: the caller
+            # keeps a usable partial answer instead of retrying a call that
+            # will fail again for as long as the volume stays full.
+            spilled["spill_failed"] = f"{type(exc).__name__}: {exc}"
+            return spilled
         spilled["artifact"] = str(artifact_path)
-        spilled["artifact_bytes"] = len(text.encode("utf-8"))
-        spilled["truncated"] = True
-        spilled["preview_chars"] = len(preview)
+
+        # Register it, or the text is unreachable: no tool on the surface opens
+        # a bare path, and gc only reclaims what the repository knows about.
+        try:
+            artifact = self.repository.register_artifact(
+                session_id=session_id,
+                kind=f"static_{kind}",
+                path=artifact_path,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                source=f"static.{kind}",
+                size=len(payload),
+            )
+            spilled["artifact_id"] = str(artifact["id"])
+            spilled["hint"] = "full_text_in_artifact"
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            spilled["artifact_unregistered"] = f"{type(exc).__name__}: {exc}"
         return spilled
 
     def _static_request(

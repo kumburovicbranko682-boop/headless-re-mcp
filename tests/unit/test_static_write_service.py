@@ -217,3 +217,84 @@ def test_static_disassemble_spills_oversized_artifact(tmp_path: Path) -> None:
     assert "oversized" in artifact.as_posix()
     assert int(result.data["artifact_bytes"]) > 64 * 1024
     assert len(str(result.data.get("text") or "")) <= 1024
+
+
+class _HugeDecompileWorker(_WriteCapableStaticWorker):
+    """Returns a decompilation far past the inline cap."""
+
+    body = "// line of recovered C\n" * 4000
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return frozenset({"static.functions", "static.decompile", "static.batch"})
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        del timeout
+        if command == "decompile":
+            return {"address": 0x140001000, "code": self.body, "name": "big_function"}
+        return super().request(command, params)
+
+
+def _service_with(worker: FakeStaticWorker, tmp_path: Path) -> tuple[AnalysisService, str]:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    settings = Settings(
+        ida_home=tmp_path / "fake-ida",
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+    )
+    (tmp_path / "fake-ida").mkdir(parents=True, exist_ok=True)
+    service = AnalysisService(settings, static_worker_factory=lambda session, cfg: worker)
+    session_id = _create(service, binary)
+    assert service.open_static(session_id).ok
+    return service, session_id
+
+
+def test_a_spilled_decompilation_can_actually_be_read_back(tmp_path: Path) -> None:
+    """The caller must be able to reach the text, not just be told a path.
+
+    A path alone is a dead end: no tool on the surface opens an arbitrary file,
+    so an unattended caller that decompiles a large function would see 1 KiB of
+    it and have no way to fetch the rest.
+    """
+    worker = _HugeDecompileWorker()
+    service, session_id = _service_with(worker, tmp_path)
+
+    result = service.static_decompile(session_id, address=0x140001000)
+    assert result.ok and result.data is not None
+    assert result.data.get("truncated") is True
+
+    artifact_id = result.data.get("artifact_id")
+    assert artifact_id, "a spilled result must name an artifact the caller can read"
+
+    read = service.artifacts_read(str(artifact_id), offset=0, limit=256 * 1024)
+    assert read.ok and read.data is not None, "the spilled artifact must be readable"
+    recovered = bytes.fromhex(str(read.data["data"])).decode("utf-8")
+    assert recovered == worker.body, "reading it back must yield the whole decompilation"
+
+
+def test_a_spilled_artifact_is_tracked_so_gc_can_reclaim_it(tmp_path: Path) -> None:
+    """Untracked spill files would accumulate in the artifact root forever."""
+    service, session_id = _service_with(_HugeDecompileWorker(), tmp_path)
+    first = service.static_decompile(session_id, address=0x140001000)
+    second = service.static_decompile(session_id, address=0x140002000)
+    assert first.ok and first.data is not None
+    assert second.ok and second.data is not None
+
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    kinds = [str(item["kind"]) for item in listed.data["artifacts"]]
+    assert kinds.count("static_decompile") == 2, "spills must be registered, or gc never sees them"
+
+    reclaimed = service.artifacts_gc(max_total_bytes=0)
+    assert reclaimed.ok
+    # gc deliberately keeps the newest artifact, so only the first is reclaimed.
+    assert not Path(str(first.data["artifact"])).exists(), "gc must be able to delete a spill"
