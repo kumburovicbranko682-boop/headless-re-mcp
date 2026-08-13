@@ -2,10 +2,10 @@
 
 Two separate problems live here. Registered artifacts have rows in the database
 and can be collected oldest-first against a byte budget. Everything else --
-screenshots, spilled decompilation, dumps written straight to disk -- has no row,
-so garbage collection cannot see it. Deleting unregistered files by guesswork is
-how an analysis loses the evidence it was run to produce, so those are measured
-and reported instead, and the operator decides.
+screenshots, the undo records behind static writes, anything written straight to
+disk -- has no row, so garbage collection cannot see it. Deleting unregistered
+files by guesswork is how an analysis loses the evidence it was run to produce,
+so those are measured and reported instead, and the operator decides.
 """
 
 from __future__ import annotations
