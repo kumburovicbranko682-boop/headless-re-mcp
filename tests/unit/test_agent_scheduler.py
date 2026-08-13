@@ -452,3 +452,57 @@ async def test_a_mission_that_really_ran_out_says_only_that(tmp_path: Path) -> N
     final = store.get_mission(mission.id)
     assert final.status is MissionStatus.EXHAUSTED
     assert str(final.error) == "objective not met within 2 runs"
+
+@pytest.mark.asyncio
+async def test_a_failing_provider_does_not_take_the_whole_queue_with_it(
+    tmp_path: Path,
+) -> None:
+    """One outage must not spend every queued mission on itself.
+
+    A failed run ends its mission, which is the intended policy. What was not
+    intended is the speed: the loop treated a failure as progress and came
+    straight back, so every queued mission met the same broken provider within
+    milliseconds. A six-second blip turned a fifty-mission queue into fifty
+    permanent failures in 1.7 seconds, at an hour when nobody requeues anything.
+    """
+    store = AgentStore(tmp_path / "outage.db")
+    store.recover_after_restart()
+    thread = store.create_thread()
+    for index in range(20):
+        store.create_mission(thread.id, f"objective {index}", max_runs=3)
+
+    async def provider_is_down(thread_id: str, **kwargs: Any) -> JsonObject:
+        run = store.create_run(
+            thread_id, provider_profile="p", model=None, deadline_seconds=60
+        )
+        store.transition(run.id, RunStatus.STREAMING)
+        store.transition(run.id, RunStatus.FAILED, error="provider unreachable")
+        return run.dump()
+
+    scheduler = MissionScheduler(store, provider_is_down, interval_s=0.2)
+    scheduler.start()
+    await asyncio.sleep(0.7)
+    await scheduler.stop()
+
+    missions = store.list_missions(limit=100)
+    failed = [m for m in missions if m.status is MissionStatus.FAILED]
+    pending = [m for m in missions if m.status is MissionStatus.PENDING]
+
+    assert failed, "the outage is real, so something must have failed"
+    assert len(failed) <= 6, (
+        f"the outage consumed {len(failed)} of 20 missions; the loop is not waiting"
+    )
+    assert len(pending) >= 14, "the rest of the queue must survive to be retried later"
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_failed_reports_that_it_should_not_be_repeated(
+    tmp_path: Path,
+) -> None:
+    """The loop reads tick()'s answer to decide whether to wait."""
+    scheduler, store, _ = _scheduler(tmp_path, ["__fail__"])
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "will fail")
+
+    assert await scheduler.tick() is False
+    assert store.get_mission(mission.id).status is MissionStatus.FAILED

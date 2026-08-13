@@ -142,7 +142,19 @@ class MissionScheduler:
             record_exception(exc, context="watchdog-sweep")
 
     async def tick(self) -> bool:
-        """Advance one mission by at most one run. True if anything happened."""
+        """Advance one mission by at most one run.
+
+        Returns whether the loop should come straight back instead of waiting
+        out its interval. A mission that failed answers no. The usual reason a
+        run fails is the provider, and every queued mission is about to meet
+        that same provider: coming straight back walks the whole queue into the
+        outage as fast as the loop can spin. Measured without this, a six-second
+        blip turned fifty queued missions into fifty permanent failures in 1.7
+        seconds -- at an hour when nobody is going to requeue them.
+
+        Waiting does not make a failure retryable, which is a separate decision.
+        It stops one outage from spending the entire queue on itself.
+        """
         mission = self.store.claim_next_mission()
         if mission is None:
             return False
@@ -155,7 +167,9 @@ class MissionScheduler:
                 MissionStatus.FAILED,
                 error=f"{type(exc).__name__}: {incident['message']} (incident {incident['incident_id']})",
             )
-        return True
+            return False
+        current = self.store.get_mission(mission.id)
+        return current is None or current.status is not MissionStatus.FAILED
 
     async def _advance(self, mission: AgentMission) -> None:
         if mission.budget_left <= 0:
