@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import os
 import platform
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from headless_re_mcp import __version__
 
 JsonObject = dict[str, Any]
 
 UNKNOWN_COMMIT = "unknown"
-_PROBE_NAME = ".readyz-probe"
+_PROBE_PREFIX = ".readyz-probe"
 
 
 class _Repository(Protocol):
@@ -72,14 +74,25 @@ def probe_artifact_root(root: Path) -> Check:
     Actually writes, because a directory that exists but has become read-only or
     sits on a full volume passes every cheaper test and then fails the first
     real analysis.
+
+    The name is unique per call. Readiness routes are synchronous, so the server
+    runs them on a thread pool, and two probes sharing one path collide: on
+    Windows, unlinking a file the other still holds open is a sharing violation.
+    Measured on a fixed name, 261 of 360 concurrent probes reported the instance
+    unready -- enough consecutive strikes to make a supervisor restart a process
+    that was serving perfectly.
     """
+    probe = root / f"{_PROBE_PREFIX}-{os.getpid()}-{uuid4().hex}"
     try:
         root.mkdir(parents=True, exist_ok=True)
-        probe = root / _PROBE_NAME
         probe.write_bytes(b"")
-        probe.unlink()
     except OSError as exc:
         return Check("artifact_root", False, _describe(exc))
+    finally:
+        # Best effort: a probe left behind is a stray zero-byte file, while a
+        # failure to remove one is not a reason to drain the instance.
+        with suppress(OSError):
+            probe.unlink()
     return Check("artifact_root", True, str(root))
 
 

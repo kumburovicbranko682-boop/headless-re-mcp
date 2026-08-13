@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -190,6 +191,36 @@ def test_artifact_probe_leaves_nothing_behind(tmp_path: Path) -> None:
 
     assert probe_artifact_root(root).ok is True
     assert list(root.iterdir()) == []
+
+
+def test_two_readiness_probes_at_once_do_not_fail_each_other(tmp_path: Path) -> None:
+    """Sharing one probe file makes concurrent checks report a false failure.
+
+    Readiness routes are synchronous, so the server runs them on a thread pool
+    and a supervisor probing beside any other monitor gets two at once. One
+    unlinking while the other still holds the file is an OSError, which reads as
+    unready -- and three of those restart a process that was serving fine.
+    """
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    failures: list[str] = []
+    start = threading.Barrier(6)
+
+    def hammer() -> None:
+        start.wait()
+        for _ in range(60):
+            check = probe_artifact_root(root)
+            if not check.ok:
+                failures.append(check.detail)
+
+    threads = [threading.Thread(target=hammer, name=f"probe-{i}") for i in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not failures, f"{len(failures)} probes failed, first: {failures[0]}"
+    assert list(root.iterdir()) == [], "a probe must still clean up after itself"
 
 
 def test_exposition_is_scrapeable_and_escapes_labels() -> None:
