@@ -541,6 +541,51 @@ def test_compaction_keeps_the_newest_turns_and_says_what_it_dropped() -> None:
     assert "compacted" in str(compacted[1]["content"])
     assert str(compacted[-1]["content"]).startswith("turn 39"), "the newest turn must survive"
 
+def test_a_tool_result_larger_than_the_budget_does_not_erase_the_conversation() -> None:
+    """One oversized result must not leave the model with nothing to work from.
+
+    Tool results are capped at 256 KiB, which is larger than the compaction
+    budget, so a single large read makes a message no tail can hold. It was kept
+    alone, then dropped as an orphan, and what reached the provider was the
+    system prompt and a note that three messages had been omitted -- no task and
+    no tool output. A model given that answers without calling anything, which
+    the orchestrator reads as the run completing, so the run reports success
+    having done nothing and every later run rebuilds the same context.
+    """
+    conversation: list[JsonObject] = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "unpack the sample and report the OEP"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "type": "function",
+                    "function": {"name": "static.strings", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call1", "content": "s" * 200_000},
+    ]
+
+    compacted = compact_messages(conversation, threshold_percent=90)
+
+    roles = [str(item.get("role")) for item in compacted]
+    assert "user" in roles, "the task must survive, or the model has nothing to act on"
+    assert "tool" in roles, "the result the model asked for must survive in some form"
+
+    kept = next(item for item in compacted if item.get("role") == "tool")
+    assert len(str(kept["content"])) < 200_000, "an oversized result must be trimmed, not dropped"
+    offered = {
+        str(call["id"])
+        for item in compacted
+        if item.get("role") == "assistant"
+        for call in item.get("tool_calls") or []
+    }
+    assert str(kept["tool_call_id"]) in offered, "trimming must not orphan the result"
+
+
 def test_redaction_covers_the_configuration_secrets_it_missed() -> None:
     """Key names that are unambiguously credentials, and nothing more."""
     payload = {
