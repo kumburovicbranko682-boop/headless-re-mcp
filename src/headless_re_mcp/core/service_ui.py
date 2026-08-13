@@ -98,7 +98,12 @@ def _select_desktop_window(
             bool(row.get("title")),
         ),
     )
-def _ui_finalize_windows(payload: JsonObject, ctx: JsonObject) -> JsonObject:
+def _ui_finalize_windows(
+    payload: JsonObject,
+    ctx: JsonObject,
+    *,
+    hidden_desktop: bool = False,
+) -> JsonObject:
     allowed = ctx["allowed"]
     windows = payload.get("windows")
     if not isinstance(windows, list):
@@ -134,6 +139,19 @@ def _ui_finalize_windows(payload: JsonObject, ctx: JsonObject) -> JsonObject:
                     "Pass allow_child_pids=suggested_child_pids or "
                     "include_same_image_children=true"
                 )
+    if len(windows) == 0 and hidden_desktop and "hint" not in payload:
+        # This enumerates the desktop the service itself runs on. Under
+        # hidden_desktop the debuggee's windows belong to a different Win32
+        # desktop object, so an empty list here means "not on this desktop",
+        # not "this program has no GUI". A caller that cannot tell those apart
+        # concludes the sample is headless and stops looking, so name the two
+        # tools that can actually see it.
+        payload["hint"] = "windows_on_hidden_desktop"
+        payload["suggestion"] = (
+            "This session runs on a hidden desktop, which this enumeration "
+            "cannot reach. Use ui.virtual_desktop.snapshot to list its windows "
+            "and ui.virtual_desktop.capture to image one."
+        )
     return payload
 
 
@@ -302,7 +320,9 @@ class UiAutomationMixin:
                     "debugger_pid/host are blocked"
                 ),
             },
-            finalize=lambda payload, ctx: _ui_finalize_windows(payload, ctx),
+            finalize=lambda payload, ctx: _ui_finalize_windows(
+                payload, ctx, hidden_desktop=bool(self.settings.hidden_desktop)
+            ),
         )
     def ui_process_tree(
         self,

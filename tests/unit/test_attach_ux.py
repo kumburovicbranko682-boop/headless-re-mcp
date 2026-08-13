@@ -32,3 +32,31 @@ def test_ui_finalize_windows_empty_hints_children(monkeypatch) -> None:
 
 def test_ui_process_tree_method_exists() -> None:
     assert hasattr(AnalysisService, "ui_process_tree")
+
+
+def test_an_empty_window_list_on_a_hidden_desktop_says_why() -> None:
+    """"No windows" and "not on this desktop" are different answers.
+
+    ui.windows.list enumerates the desktop the service runs on. Under
+    hidden_desktop the debuggee's windows live on a separate Win32 desktop
+    object, so the list comes back empty -- and an unattended caller reading
+    count=0 concludes the sample has no user interface and stops looking.
+    hidden_desktop is the setting an unattended deployment is most likely to
+    have on, so this is the configuration where the answer misleads.
+    """
+    from headless_re_mcp.core.service_ui import _ui_finalize_windows
+
+    ctx = {"allowed": frozenset({4242}), "debuggee_pid": 0, "debugger_pid": 1}
+
+    on_visible_desktop = _ui_finalize_windows({"windows": []}, ctx, hidden_desktop=False)
+    assert "hint" not in on_visible_desktop, "an ordinary empty list needs no excuse"
+
+    on_hidden_desktop = _ui_finalize_windows({"windows": []}, ctx, hidden_desktop=True)
+    assert on_hidden_desktop["hint"] == "windows_on_hidden_desktop"
+    assert "ui.virtual_desktop.snapshot" in on_hidden_desktop["suggestion"]
+
+    found = _ui_finalize_windows(
+        {"windows": [{"pid": 4242, "hwnd": 7, "title": "x"}]}, ctx, hidden_desktop=True
+    )
+    assert found["count"] == 1
+    assert "hint" not in found, "the hint is for the empty case only"

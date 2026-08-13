@@ -243,7 +243,7 @@ def test_the_real_default_spawn_starts_and_restarts_an_actual_process(
         encoding="utf-8",
     )
 
-    records: list[JsonObject] = []
+    records: list[dict[str, Any]] = []
     supervisor = Supervisor(
         argv=[sys.executable, str(child), str(marker)],
         ready_url=None,
