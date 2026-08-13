@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.supervisor import (
     HEALTHY_UPTIME_S,
     MAX_RAPID_RESTARTS,
@@ -239,6 +243,80 @@ def test_a_log_sink_that_fails_does_not_take_the_supervisor_with_it() -> None:
 
     assert report.crash_restarts == 1
     assert report.stopped_reason == "child_exited_cleanly"
+
+
+def test_an_interrupted_supervisor_does_not_leave_its_child_behind() -> None:
+    """Stopping the supervisor is how the whole service is stopped.
+
+    A child outlives its parent on Windows, so an interrupt left a web server
+    running -- along with the debuggers and the debuggees it owns -- with
+    nothing supervising it. Measured against a real supervise run: killing the
+    supervisor left the server up, and the next start would then crash-loop
+    against a port the orphan still holds.
+    """
+    child = FakeChild(exits_after=99, code=0)
+    harness = Harness([child])
+    supervisor = harness.build()
+    sleeps = {"count": 0}
+
+    def interrupt_on_the_second_wait(seconds: float) -> None:
+        sleeps["count"] += 1
+        if sleeps["count"] >= 2:
+            raise KeyboardInterrupt
+        harness.sleep(seconds)
+
+    supervisor.sleep = interrupt_on_the_second_wait
+
+    with pytest.raises(KeyboardInterrupt):
+        supervisor.run_forever()
+
+    assert child.terminated is True, "the child must go down with the supervisor"
+
+
+def test_a_clean_exit_still_leaves_nothing_to_terminate() -> None:
+    """The guard must not fire on the path where the child already stopped."""
+    child = FakeChild(exits_after=1, code=0)
+    harness = Harness([child])
+
+    report = harness.build().run_forever()
+
+    assert report.stopped_reason == "child_exited_cleanly"
+    assert child.terminated is False, "a child that exited is not terminated again"
+
+
+def test_a_real_child_is_tied_to_this_process_and_a_fake_one_is_not() -> None:
+    """Force-killing the supervisor has to take the server with it.
+
+    TerminateProcess delivers no signal, so the cleanup above cannot run, and
+    stopping a scheduled task is exactly that. A job object is what closes it.
+    A fake child must be left alone: its pid is invented, and grouping it would
+    put whatever really owns that number in line to be killed.
+    """
+    from headless_re_mcp import process_group
+    from headless_re_mcp import supervisor as supervisor_module
+
+    real = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        **no_window_popen_kwargs(),
+    )
+    try:
+        assert process_group.assign_to_process_group(real.pid) is True
+        assert process_group.assign_to_process_group(0) is False
+    finally:
+        real.kill()
+        real.wait(timeout=10)
+
+    grouped: list[int] = []
+    harness = Harness([FakeChild(exits_after=1, code=0)])
+    supervisor = harness.build()
+    original = supervisor_module.assign_to_process_group
+    supervisor_module.assign_to_process_group = lambda pid: (grouped.append(pid), True)[1]
+    try:
+        supervisor.run_forever()
+    finally:
+        supervisor_module.assign_to_process_group = original
+
+    assert grouped == [], "an injected fake child must never be grouped by pid"
 
 
 def test_a_crash_loop_stops_instead_of_pretending_to_be_uptime() -> None:

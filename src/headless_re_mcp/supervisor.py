@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
 
@@ -111,13 +112,29 @@ class Supervisor:
         default=lambda record: print(json.dumps(record, ensure_ascii=False), flush=True)
     )
     report: SupervisorReport = field(default_factory=SupervisorReport)
+    # The child currently being watched, so an interrupt can take it down too.
+    _running: Any | None = field(default=None, init=False, repr=False)
 
     def run_forever(self) -> SupervisorReport:
+        try:
+            return self._supervise()
+        finally:
+            # Nothing else will. A child outlives its parent on Windows, so an
+            # interrupt here left a web server running -- with the debuggers
+            # and the debuggees it owns -- and nothing supervising it, while
+            # the next start crash-looped against the port it still held.
+            running = self._running
+            self._running = None
+            if running is not None and running.poll() is None:
+                self._terminate(running)
+
+    def _supervise(self) -> SupervisorReport:
         backoff = BACKOFF_START_S
         rapid = 0
         while True:
             started_at = self.clock()
             child = self._spawn_child()
+            self._running = child
             if child is None:
                 # Nothing started, so nothing ran. Counted and backed off as a
                 # child that died at once, which is what it amounts to.
@@ -183,7 +200,7 @@ class Supervisor:
         the crash loop the backoff exists to bound.
         """
         try:
-            return self.spawn(self.argv)
+            child = self.spawn(self.argv)
         except Exception as exc:  # noqa: BLE001 - a failed start is a restart, not an exit
             self._log(
                 "child.spawn_failed",
@@ -191,6 +208,11 @@ class Supervisor:
                 attempt=self.report.starts + 1,
             )
             return None
+        # Only a real process, so an injected fake cannot name a pid that
+        # belongs to something else and have it killed when this exits.
+        if isinstance(child, subprocess.Popen) and not assign_to_process_group(child.pid):
+            self._log("child.not_grouped", pid=child.pid)
+        return child
 
     def _probe_once(self) -> tuple[bool, str]:
         """A probe that raises means not ready, not that the supervisor is over.
