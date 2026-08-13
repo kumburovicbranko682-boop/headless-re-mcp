@@ -131,8 +131,11 @@ def _bring_to_foreground(hwnd: int, allowed_pids: frozenset[int]) -> None:
     user32.BringWindowToTop(ctypes.c_void_p(root))
     target = root
     current_tid = int(kernel32.GetCurrentThreadId())
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
+    # Monotonic: this is an in-process wait, and a wall clock that steps -- an
+    # NTP correction, or the guest resuming from the snapshot the isolation step
+    # rolls back to -- would either cut the wait short or extend it indefinitely.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
         fg = foreground_hwnd()
         if fg == target and hwnd_owner_pid(target) in allowed_pids:
             require_foreground_allowed(allowed_pids)
