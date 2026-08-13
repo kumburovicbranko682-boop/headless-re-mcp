@@ -13,6 +13,7 @@ that looks like uptime is worse than an honest stop.
 
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import sys
@@ -20,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,7 +50,15 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
             return (200 <= code < 300, f"http {code}")
     except urllib.error.HTTPError as exc:
         return (False, f"http {exc.code}")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        # A child wedged badly enough to answer with a malformed response raises
+        # this, and it is not an OSError. That is the case a readiness check
+        # exists to catch, so it must read as unreachable rather than escape.
+        http.client.HTTPException,
+    ) as exc:
         return (False, f"unreachable: {type(exc).__name__}")
 
 
@@ -107,28 +117,39 @@ class Supervisor:
         rapid = 0
         while True:
             started_at = self.clock()
-            child = self.spawn(self.argv)
-            self.report.starts += 1
-            self._log("child.started", pid=getattr(child, "pid", None), attempt=self.report.starts)
-
-            reason = self._watch(child, started_at)
-            uptime = self.clock() - started_at
-            self.report.last_exit_code = child.poll()
-
-            if reason == "stopped":
-                self.report.stopped_reason = "child_exited_cleanly"
-                self._log(
-                    "child.exited",
-                    code=self.report.last_exit_code,
-                    uptime_s=round(uptime, 1),
-                )
-                return self.report
-
-            if reason == "unhealthy":
-                self.report.unhealthy_restarts += 1
-                self._terminate(child)
-            else:
+            child = self._spawn_child()
+            if child is None:
+                # Nothing started, so nothing ran. Counted and backed off as a
+                # child that died at once, which is what it amounts to.
                 self.report.crash_restarts += 1
+                reason = "spawn_failed"
+                uptime = 0.0
+            else:
+                self.report.starts += 1
+                self._log(
+                    "child.started",
+                    pid=getattr(child, "pid", None),
+                    attempt=self.report.starts,
+                )
+
+                reason = self._watch(child, started_at)
+                uptime = self.clock() - started_at
+                self.report.last_exit_code = child.poll()
+
+                if reason == "stopped":
+                    self.report.stopped_reason = "child_exited_cleanly"
+                    self._log(
+                        "child.exited",
+                        code=self.report.last_exit_code,
+                        uptime_s=round(uptime, 1),
+                    )
+                    return self.report
+
+                if reason == "unhealthy":
+                    self.report.unhealthy_restarts += 1
+                    self._terminate(child)
+                else:
+                    self.report.crash_restarts += 1
 
             # An immediate re-crash is one failure repeating, not many separate
             # ones, so only short-lived children count toward the loop limit.
@@ -153,6 +174,36 @@ class Supervisor:
             )
             self.sleep(backoff)
 
+    def _spawn_child(self) -> Any | None:
+        """Start the child, or report why it could not start.
+
+        Popen fails for reasons that pass: a box out of memory or handles
+        refuses to start a process. Raising here ended the supervisor, which
+        left nothing running and nothing to restart it -- a worse outcome than
+        the crash loop the backoff exists to bound.
+        """
+        try:
+            return self.spawn(self.argv)
+        except Exception as exc:  # noqa: BLE001 - a failed start is a restart, not an exit
+            self._log(
+                "child.spawn_failed",
+                error=f"{type(exc).__name__}: {exc}",
+                attempt=self.report.starts + 1,
+            )
+            return None
+
+    def _probe_once(self) -> tuple[bool, str]:
+        """A probe that raises means not ready, not that the supervisor is over.
+
+        probe_ready catches what urlopen documents, but http.client.HTTPException
+        is not an OSError, and a wedged child answering with a malformed response
+        raises exactly that -- the case readiness checking exists to catch.
+        """
+        try:
+            return self.probe(self.ready_url or "", self.probe_timeout_s)
+        except Exception as exc:  # noqa: BLE001 - an unanswerable probe is a failed probe
+            return (False, f"probe raised: {type(exc).__name__}")
+
     def _watch(self, child: Any, started_at: float) -> str:
         """Block until the child exits or fails readiness. Returns why."""
         strikes = 0
@@ -165,7 +216,7 @@ class Supervisor:
                 continue
             if self.clock() - started_at < self.grace_period_s:
                 continue
-            ready, detail = self.probe(self.ready_url, self.probe_timeout_s)
+            ready, detail = self._probe_once()
             if ready:
                 strikes = 0
                 continue
@@ -188,7 +239,11 @@ class Supervisor:
                     kill()
 
     def _log(self, event: str, **fields: Any) -> None:
-        self.log({"event": event, "component": "supervisor", **fields})
+        # Started detached, the default sink prints to a stdout nobody is
+        # holding open. Losing a log line must not end the process whose whole
+        # job is keeping the service alive.
+        with suppress(Exception):
+            self.log({"event": event, "component": "supervisor", **fields})
 
 
 def build_child_argv(

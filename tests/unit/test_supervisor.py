@@ -161,6 +161,86 @@ def test_readiness_is_not_judged_during_the_grace_period() -> None:
     assert "child.unhealthy" not in harness.events()
 
 
+def test_a_spawn_that_fails_is_a_failed_start_not_a_dead_supervisor() -> None:
+    """Popen fails transiently: on Windows, under memory or handle pressure.
+
+    Raising out of run_forever leaves nothing running and nothing left to
+    restart it, which is a worse outcome than the crash loop the backoff exists
+    to bound. A shortage at 3am must cost a retry, not the service.
+    """
+    harness = Harness([])
+    attempts: list[int] = []
+
+    def refuse_twice(argv: Any) -> FakeChild:
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise OSError(12, "Not enough memory resources are available")
+        return FakeChild(exits_after=1, code=0)
+
+    supervisor = harness.build()
+    supervisor.spawn = refuse_twice
+
+    report = supervisor.run_forever()
+
+    assert len(attempts) == 3, "a failed spawn must be retried, not raised"
+    assert report.stopped_reason == "child_exited_cleanly"
+    assert "child.spawn_failed" in harness.events()
+
+
+def test_a_spawn_that_never_works_stops_the_way_a_crash_loop_does() -> None:
+    """The bound that applies to a child that keeps dying applies here too."""
+    harness = Harness([])
+
+    def always_refuse(argv: Any) -> FakeChild:
+        raise OSError(2, "No such file or directory")
+
+    supervisor = harness.build()
+    supervisor.spawn = always_refuse
+
+    report = supervisor.run_forever()
+
+    assert report.stopped_reason == "crash_loop"
+    assert "supervisor.giving_up" in harness.events()
+
+
+def test_a_probe_that_raises_is_a_failed_check_not_a_dead_supervisor() -> None:
+    """urlopen raises more than probe_ready catches.
+
+    http.client.HTTPException is not an OSError, and a wedged child answering
+    with a malformed response produces exactly that -- the case the probe was
+    added to catch, killing the supervisor instead of restarting the child.
+    """
+    wedged = FakeChild(exits_after=99, code=0)
+    harness = Harness([wedged, FakeChild(exits_after=1, code=0)])
+
+    def raising_probe(url: str, timeout: float) -> tuple[bool, str]:
+        raise RuntimeError("BadStatusLine")
+
+    supervisor = harness.build(ready_url="http://127.0.0.1:8765/readyz")
+    supervisor.probe = raising_probe
+
+    report = supervisor.run_forever()
+
+    assert report.unhealthy_restarts == 1, "a probe that raises is a child that is not ready"
+    assert wedged.terminated is True
+
+
+def test_a_log_sink_that_fails_does_not_take_the_supervisor_with_it() -> None:
+    """Started detached, the default sink writes to a stdout nobody is reading."""
+    harness = Harness([FakeChild(exits_after=1, code=1), FakeChild(exits_after=1, code=0)])
+
+    def broken_log(record: dict[str, Any]) -> None:
+        raise OSError(22, "Invalid argument")
+
+    supervisor = harness.build()
+    supervisor.log = broken_log
+
+    report = supervisor.run_forever()
+
+    assert report.crash_restarts == 1
+    assert report.stopped_reason == "child_exited_cleanly"
+
+
 def test_a_crash_loop_stops_instead_of_pretending_to_be_uptime() -> None:
     """Restarting forever hides a broken deployment behind a running process."""
     harness = Harness([FakeChild(exits_after=0, code=1) for _ in range(20)])
