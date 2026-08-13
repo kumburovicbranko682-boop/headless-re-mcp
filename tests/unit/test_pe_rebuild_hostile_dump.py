@@ -98,3 +98,29 @@ def test_alignments_within_the_format_are_still_accepted(
     rebuilt, _report = remap_dump_to_file(_with(offset, struct.pack("<I", value)))
 
     assert len(rebuilt) > 0, label
+
+
+def test_the_import_rebuild_reads_the_same_headers_and_needs_the_same_bound() -> None:
+    """The sibling call site, which pads the appended import section.
+
+    Fixing remap_dump_to_file alone left this one behind: measured at a
+    FileAlignment of 0x40000000, a 14 KB image produced a 2 GB output and
+    peaked at 5 GB of heap on the way there, which is enough to take the
+    machine with it.
+    """
+    from headless_re_mcp.unpack.pe_rebuild import rebuild_imports
+
+    optional, _table = _offsets()
+    entries = [
+        {"kind": "api", "module": "kernel32.dll", "name": "GetProcAddress", "thunk_rva": 0x3000},
+        {"kind": "api", "module": "kernel32.dll", "name": "LoadLibraryA", "thunk_rva": 0x3008},
+    ]
+
+    with pytest.raises(PeRebuildError) as caught:
+        rebuild_imports(_with(optional + 36, struct.pack("<I", 0x40000000)), entries)
+    assert "FileAlignment" in str(caught.value)
+
+    within_the_format, _report = rebuild_imports(
+        _with(optional + 36, struct.pack("<I", 0x10000)), entries
+    )
+    assert 0 < len(within_the_format) < 1_000_000, "the format's own ceiling still works"

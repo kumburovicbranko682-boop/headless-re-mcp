@@ -370,8 +370,19 @@ def rebuild_imports(
             modules.append((str(item.get("module")), by_module[key]))
 
     pe_offset = int(headers["pe_offset"])
-    file_alignment = max(int(headers["file_alignment"]), 0x200)
-    section_alignment = max(int(headers["section_alignment"]), 0x1000)
+    # The same headers, read from the same untrusted image, and used the same
+    # way: this one pads the appended import section. Measured before the
+    # check, a FileAlignment of 0x40000000 turned a 14 KB image into a 2 GB
+    # output and peaked at 5 GB of heap getting there.
+    file_alignment = _usable_alignment(
+        headers["file_alignment"], floor=0x200, ceiling=MAX_FILE_ALIGNMENT, what="FileAlignment"
+    )
+    section_alignment = _usable_alignment(
+        headers["section_alignment"],
+        floor=0x1000,
+        ceiling=MAX_SECTION_ALIGNMENT,
+        what="SectionAlignment",
+    )
     out = bytearray(pe_bytes)
 
     # New section placed after current image virtual size.
