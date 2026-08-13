@@ -127,16 +127,22 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.timeline_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="sessions.unclean")
-    def sessions_unclean() -> dict[str, Any]:
-        """Every session that has not been closed cleanly, which includes live ones.
+    def sessions_unclean(
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Sessions that have not been closed cleanly, newest first, one page at a time.
 
         A session is marked clean only by session.close, so one that is open and
         working right now appears here exactly like one abandoned by a process
         that died. This is not a list of sessions that are safe to clean up.
         Cross-check session.list, which covers only this process, and
         session.health before acting on anything here.
+
+        Paged because nothing clears these: read `total` and `has_more` rather
+        than assuming the page is the whole list.
         """
-        return _dump(analysis.sessions_unclean())
+        return _dump(analysis.sessions_unclean(offset=offset, limit=limit))
 
     @tools.tool(name="audit.list")
     def audit_list(
@@ -169,6 +175,13 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         backends: list[str] | None = None,
     ) -> dict[str, Any]:
         """Re-open backends whose worker process died, without resuming execution.
+
+        Recovery replaces the session rather than repairing it. The reply
+        carries the new session_id alongside previous_session_id and
+        replaced=true, and every later call has to use the new one: the old id
+        answers invalid_request from here on, and asking to recover it again is
+        refused the same way, so a caller that keeps the old id is stuck with no
+        way back.
 
         Defaults to the backends this session already had; pass ida/x64dbg to
         force specific ones. A recovered dynamic backend is attached to nothing,

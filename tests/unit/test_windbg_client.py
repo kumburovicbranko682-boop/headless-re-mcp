@@ -57,7 +57,7 @@ def test_a_dump_analysis_cut_at_the_cap_says_it_was_cut(
     def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"A" * 500, stderr=b"")
 
-    monkeypatch.setattr(windbg_module.subprocess, "run", huge)
+    monkeypatch.setattr(windbg_module, "run_bounded", huge)
     monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
 
     payload = WindbgClient(cdb).modules(dump)
@@ -86,7 +86,7 @@ def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
     def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"ok", stderr=b"")
 
-    monkeypatch.setattr(windbg_module.subprocess, "run", small)
+    monkeypatch.setattr(windbg_module, "run_bounded", small)
     monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
 
     payload = WindbgClient(cdb).modules(dump)
@@ -118,7 +118,7 @@ def test_launch_failure_becomes_a_structured_error(
     def denied(*_args: Any, **_kwargs: Any) -> Any:
         raise PermissionError(5, "Access is denied")
 
-    monkeypatch.setattr(windbg_module.subprocess, "run", denied)
+    monkeypatch.setattr(windbg_module, "run_bounded", denied)
 
     with pytest.raises(WindbgError) as exc:
         client.modules(dump)

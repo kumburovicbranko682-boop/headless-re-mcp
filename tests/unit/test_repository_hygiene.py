@@ -255,6 +255,10 @@ def test_every_long_lived_backend_ties_its_worker_to_this_process() -> None:
     owners = (
         ROOT / "src" / "headless_re_mcp" / "backends" / "ida" / "client.py",
         ROOT / "src" / "headless_re_mcp" / "backends" / "x64dbg" / "client.py",
+        # The CLI tools go through one runner, and the same argument applies to
+        # them: jadx, apktool and Ghidra start a JVM that will happily keep
+        # analysing a sample after the service that asked for it is gone.
+        ROOT / "src" / "headless_re_mcp" / "backends" / "common" / "bounded_run.py",
     )
     for path in owners:
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -290,3 +294,24 @@ def test_no_python_source_is_written_in_the_wrong_encoding() -> None:
         elif b"\x00" in raw:
             offenders.append(f"{path.relative_to(ROOT)} (NUL byte -- probably utf-16, no BOM)")
     assert offenders == [], f"rewrite as plain UTF-8: {offenders}"
+
+
+def test_session_recover_warns_that_it_replaces_the_session() -> None:
+    """Recovery hands back a different session id, and the old one is dead.
+
+    Measured against a killed IDA worker: recover answers ok with a new
+    session_id, the old id answers invalid_request from then on, and asking to
+    recover the old id again is refused the same way. A caller that keeps its
+    original id is stuck with no way back, and the only thing that tells it
+    otherwise is a field in the reply it has no reason to read.
+    """
+    source = (ROOT / "src" / "headless_re_mcp" / "tools" / "meta.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    described = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and _tool_name(node) == "session.recover":
+            described = ast.get_docstring(node) or ""
+    assert described, "session.recover must describe itself"
+    assert "replaces the session" in described
+    assert "new session_id" in described
+    assert "invalid_request" in described
