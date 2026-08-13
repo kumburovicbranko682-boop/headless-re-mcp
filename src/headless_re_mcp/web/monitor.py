@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from headless_re_mcp.core.models import BackendKind
 from headless_re_mcp.core.service import AnalysisService
 
 JsonObject = dict[str, Any]
@@ -48,6 +49,41 @@ def _timeline_tail(service: AnalysisService, session_id: str, limit: int) -> Any
     return service.timeline_list(session_id, offset=total - limit, limit=limit)
 
 
+def _event_tail(
+    service: AnalysisService,
+    session_id: str,
+    limit: int,
+) -> tuple[JsonObject | None, JsonObject | None]:
+    """The newest events, read without consuming anybody's.
+
+    dynamic_events reads through the session's one consumer cursor and advances
+    it, so every frame drawn here took events the agent would then never be
+    handed. No gap is reported either, because the cursor moved legitimately:
+    the agent cannot tell it lost anything, and it only happens while somebody
+    is watching.
+
+    The durable log takes its cursor as an argument and keeps none of its own,
+    so tailing it is a read and nothing else. Reaching for the runtime is the
+    price of that -- the service surface only offers the consuming call.
+    """
+    runtime = service._runtime_owner.get(session_id, BackendKind.X64DBG)
+    log = getattr(runtime, "event_log", None) if runtime is not None else None
+    if log is None:
+        return None, {
+            "code": "events_unavailable",
+            "message": "session has no durable debugger event log",
+        }
+    try:
+        latest = int(log.latest_sequence)
+        batch = log.read_after(max(0, latest - limit), limit=limit).batch
+    except BaseException as exc:  # noqa: BLE001 - a frame has to render regardless
+        return None, {"code": "events_unavailable", "message": str(exc)}
+    return {
+        "events": [event.to_dict() for event in batch.events],
+        "next_cursor": batch.next_cursor,
+    }, None
+
+
 def build_monitor_snapshot(
     service: AnalysisService,
     session_id: str,
@@ -74,15 +110,7 @@ def build_monitor_snapshot(
     timeline = _timeline_tail(service, session_id, timeline_limit)
     artifacts = service.artifacts_list(session_id=session_id, offset=0, limit=12)
 
-    events_payload: JsonObject | None = None
-    events_error: JsonObject | None = None
-    try:
-        events = service.dynamic_events(session_id, limit=events_limit, timeout=0.05)
-        events_payload = _safe_data(events)
-        if events_payload is None:
-            events_error = _safe_error(events)
-    except BaseException as exc:  # pragma: no cover - defensive
-        events_error = {"code": "events_unavailable", "message": str(exc)}
+    events_payload, events_error = _event_tail(service, session_id, events_limit)
 
     dynamic_data = _safe_data(dynamic) or {}
     workflow_data = _safe_data(workflow)
