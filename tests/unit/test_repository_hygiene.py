@@ -189,19 +189,26 @@ def test_the_console_suppression_guard_can_actually_see_a_violation() -> None:
     assert any(how == "helper" for _, _, how in sites)
     assert any(how == "creationflags" for _, _, how in sites)
 
-def test_no_python_source_carries_a_byte_order_mark() -> None:
+def test_no_python_source_is_written_in_the_wrong_encoding() -> None:
     """A BOM is invisible in an editor and breaks tools that read plain UTF-8.
 
     CPython tolerates one, so a BOM'd file imports and tests green while any
     tool doing read_text("utf-8") -> ast.parse dies on U+FEFF. Twenty-two files
     had picked one up from an editor writing UTF-8-with-signature, which is the
     kind of damage that stays invisible until something downstream trips on it.
+
+    The NUL check is the same failure without the marker in front of it: a file
+    written as UTF-16 with no BOM looks like text with a NUL after every
+    character, and CPython does not tolerate that at all. Checking only the
+    first four bytes missed it, because there is nothing distinctive there.
     """
     offenders = []
     for path in [*(ROOT / "src").rglob("*.py"), *(ROOT / "tests").rglob("*.py")]:
-        head = path.read_bytes()[:4]
-        if head.startswith(b"\xef\xbb\xbf"):
+        raw = path.read_bytes()
+        if raw.startswith(b"\xef\xbb\xbf"):
             offenders.append(f"{path.relative_to(ROOT)} (utf-8 BOM)")
-        elif head.startswith((b"\xff\xfe", b"\xfe\xff")):
-            offenders.append(f"{path.relative_to(ROOT)} (utf-16 -- file is corrupt)")
-    assert offenders == [], f"strip the byte-order mark from: {offenders}"
+        elif raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            offenders.append(f"{path.relative_to(ROOT)} (utf-16 BOM -- file is corrupt)")
+        elif b"\x00" in raw:
+            offenders.append(f"{path.relative_to(ROOT)} (NUL byte -- probably utf-16, no BOM)")
+    assert offenders == [], f"rewrite as plain UTF-8: {offenders}"
