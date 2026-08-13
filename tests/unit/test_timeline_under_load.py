@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -40,6 +41,59 @@ def test_a_timeline_that_cannot_be_written_does_not_fail_the_call(
 
     assert entry["event"] == "modules.dump", "the caller still gets its entry"
     assert "No space left" in str(entry["write_failed"]), "and is told it was not stored"
+
+
+def test_a_session_that_never_existed_is_not_reported_as_a_quiet_one(
+    tmp_path: Path,
+) -> None:
+    """An empty answer and a missing session are different things.
+
+    Creating a session writes its first timeline entry, so no file at all means
+    no such session. Answering ok with an empty list reads as "that analysis did
+    nothing", and an agent holding an id from before a restart would take it for
+    one. Every other session-scoped call reports session_not_found.
+    """
+    page = list_session_timeline(tmp_path / "sessions" / "ghost" / "timeline.jsonl")
+
+    assert page["exists"] is False
+    assert page["events"] == []
+
+
+def test_a_session_with_no_events_yet_is_not_mistaken_for_a_missing_one(
+    tmp_path: Path,
+) -> None:
+    """The distinction has to hold in the other direction too."""
+    path = tmp_path / "sessions" / "real" / "timeline.jsonl"
+    append_session_timeline(path, event="session.created", message="opened")
+
+    page = list_session_timeline(path, offset=50)
+
+    assert "exists" not in page, "a real session must not look missing"
+    assert page["total"] == 1
+
+
+def test_the_service_reports_a_missing_session_rather_than_an_empty_log() -> None:
+    """The store says which it is; this is the layer that turns that into an error.
+
+    A KeyError is what the envelope maps to session_not_found, which is the code
+    every other session-scoped call already answers with.
+    """
+    from headless_re_mcp.core.application_services import ArtifactApplicationService
+
+    class Missing:
+        def list_timeline(self, session_id: str, *, offset: int, limit: int) -> dict[str, object]:
+            return {"events": [], "count": 0, "total": 0, "exists": False}
+
+    class Quiet:
+        def list_timeline(self, session_id: str, *, offset: int, limit: int) -> dict[str, object]:
+            return {"events": [], "count": 0, "total": 0}
+
+    absent = ArtifactApplicationService(facade=cast(Any, None), repository=cast(Any, Missing()))
+    with pytest.raises(KeyError):
+        absent.list_timeline("ghost")
+
+    empty = ArtifactApplicationService(facade=cast(Any, None), repository=cast(Any, Quiet()))
+    assert empty.list_timeline("real")["total"] == 0, "an empty log is still an answer"
 
 
 def test_reading_the_timeline_does_not_collide_with_trimming_it(

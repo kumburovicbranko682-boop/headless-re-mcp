@@ -133,7 +133,18 @@ class ArtifactApplicationService:
         offset: int = 0,
         limit: int = 100,
     ) -> Any:
-        return self.repository.list_timeline(session_id, offset=offset, limit=limit)
+        """Read one session's timeline, or say the session is not there.
+
+        Asking about a session that does not exist used to answer ok with an
+        empty list, which reads as "that analysis did nothing" rather than
+        "there is no such analysis". An agent holding an id from before a
+        restart would take the first for an answer. Every other session-scoped
+        call reports session_not_found, and a KeyError is what produces it.
+        """
+        page = self.repository.list_timeline(session_id, offset=offset, limit=limit)
+        if isinstance(page, dict) and page.get("exists") is False:
+            raise KeyError(f"session not found: {session_id}")
+        return page
 
     def list_audit(
         self,

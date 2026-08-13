@@ -137,7 +137,11 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
     }
     with _timeline_lock(path):
         if not path.is_file():
-            return empty
+            # Creating a session writes its first entry, so no file at all means
+            # no such session -- which is a different answer from a session that
+            # has not done anything yet, and the caller has to be able to tell
+            # them apart.
+            return {**empty, "exists": False}
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError as exc:
