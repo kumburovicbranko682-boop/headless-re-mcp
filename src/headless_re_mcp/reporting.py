@@ -62,6 +62,29 @@ def _summarize_value(value: object) -> str:
     return _cell(value)
 
 
+def _note_if_partial(
+    lines: list[str], section: JsonObject | None, *, shown: int, noun: str
+) -> None:
+    """Say so when a section is only part of what the session holds.
+
+    report.generate caps each section, so a session that recorded more than the
+    cap produced a report that read as complete and was not. This is the
+    artefact someone keeps and acts on, and a finding it never mentions is
+    indistinguishable from a finding that was never made.
+    """
+    total = (section or {}).get("total")
+
+    if not isinstance(total, int) or total <= shown:
+        return
+
+    lines.append(
+        f"> Showing {shown} of {total} {noun}. "
+        f"The rest are in the session, not in this report."
+    )
+
+    lines.append("")
+
+
 def render_markdown_report(
 
     *,
@@ -132,6 +155,8 @@ def render_markdown_report(
 
     lines.append("")
 
+    _note_if_partial(lines, knowledge, shown=len(entries), noun="findings")
+
     if not entries:
 
         lines.append("No findings were recorded for this session yet.")
@@ -187,6 +212,8 @@ def render_markdown_report(
     lines.append("## Artifacts")
 
     lines.append("")
+
+    _note_if_partial(lines, artifacts, shown=len(artifact_entries), noun="artifacts")
 
     if not artifact_entries:
 

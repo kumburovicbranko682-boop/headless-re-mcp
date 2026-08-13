@@ -153,3 +153,48 @@ def test_report_includes_audit_when_supplied() -> None:
     assert "static.open" in markdown
 
     assert "failed" in markdown
+
+
+def test_a_capped_report_says_it_is_capped() -> None:
+    """The report is the artefact someone keeps; it must not read as complete.
+
+    report.generate caps findings at 500 and artifacts at 100. A session that
+    recorded more produced a report that looked like the whole picture, and a
+    finding the report never mentions is indistinguishable from one that was
+    never made -- which is the wrong conclusion to hand someone.
+    """
+    session = {
+        "id": "s1",
+        "binary": "target.exe",
+        "sha256": "ab" * 32,
+        "architecture": "x64",
+        "state": "ready",
+        "backends": ["x64dbg"],
+    }
+
+    whole = render_markdown_report(
+        session=session,
+        knowledge={"entries": [{"kind": "note", "key": "k", "value": 1}], "count": 1, "total": 1},
+        artifacts={
+            "entries": [{"kind": "dump", "path": "a.bin", "size": 10}],
+            "count": 1,
+            "total": 1,
+        },
+    )
+    assert "Showing" not in whole, "a complete report needs no disclaimer"
+
+    partial = render_markdown_report(
+        session=session,
+        knowledge={
+            "entries": [{"kind": "note", "key": f"k{i}", "value": i} for i in range(500)],
+            "count": 500,
+            "total": 913,
+        },
+        artifacts={
+            "entries": [{"kind": "dump", "path": "a.bin", "size": 10}] * 100,
+            "count": 100,
+            "total": 247,
+        },
+    )
+    assert "Showing 500 of 913 findings" in partial
+    assert "Showing 100 of 247 artifacts" in partial
