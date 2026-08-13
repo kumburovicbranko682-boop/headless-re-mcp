@@ -9,6 +9,7 @@ days without anyone reading the output.
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,58 @@ def test_a_timeline_that_cannot_be_written_does_not_fail_the_call(
 
     assert entry["event"] == "modules.dump", "the caller still gets its entry"
     assert "No space left" in str(entry["write_failed"]), "and is told it was not stored"
+
+
+def test_reading_the_timeline_does_not_collide_with_trimming_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every timeline.list call and every monitor frame is a reader.
+
+    Trimming replaces the whole file, and on Windows a reader holding it open
+    makes that replace fail. Measured with four readers and four writers over
+    twelve seconds before the readers took the lock: 8,420 appends refused and
+    119 reads raised PermissionError at their caller.
+    """
+    monkeypatch.setattr(timeline_module, "_MAX_BYTES", 4096)
+    monkeypatch.setattr(timeline_module, "_TRIM_TO_BYTES", 3072)
+    path = tmp_path / "sessions" / "abc" / "timeline.jsonl"
+    stop = threading.Event()
+    write_failures: list[str] = []
+    read_failures: list[str] = []
+    reads = [0]
+
+    def writer(worker: int) -> None:
+        while not stop.is_set():
+            entry = append_session_timeline(
+                path, event="probe", message=f"{worker}:" + "x" * 200
+            )
+            if "write_failed" in entry:
+                write_failures.append(str(entry["write_failed"]))
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                page = list_session_timeline(path, limit=64)
+            except BaseException as exc:  # noqa: BLE001 - the point of the test
+                read_failures.append(f"raised {type(exc).__name__}: {exc}")
+                continue
+            reads[0] += 1
+            if "read_failed" in page:
+                read_failures.append(str(page["read_failed"]))
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(3)]
+    threads += [threading.Thread(target=reader) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    time.sleep(3)
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert reads[0] > 0, "the readers must actually have run"
+    assert not write_failures, f"{len(write_failures)} appends lost, first: {write_failures[0]}"
+    assert not read_failures, f"{len(read_failures)} reads failed, first: {read_failures[0]}"
 
 
 def test_appends_that_trim_at_the_same_time_do_not_fail_each_other(

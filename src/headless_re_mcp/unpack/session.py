@@ -447,11 +447,16 @@ def write_timeline_jsonl(state: UnpackSessionState, path: Path) -> str | None:
     """Mirror the timeline as JSONL for readers. Reports failure, never raises.
 
     Every event here is already inside ``state.to_dict()``, so this file is a
-    convenience copy and losing it costs nothing durable. It is written first,
-    though, which meant a full volume failed here and the state snapshot that
-    follows never ran -- the one write that makes an unpack survive a restart,
-    skipped because a redundant one could not be made. The caller saw the whole
-    step fail after the dump it was recording had already succeeded.
+    convenience copy and losing it costs nothing that is not held elsewhere. It
+    is written first, though, which meant a full volume failed here and the
+    state snapshot that follows never ran -- the record of what the unpack
+    actually did, skipped because a duplicate of it could not be made. The
+    caller then saw the whole step fail after the dump it was recording had
+    already succeeded.
+
+    Nothing reads ``state.json`` back, and that is deliberate: an unpack session
+    is bound to a live debuggee, so a restart has nothing to resume into. It is
+    the forensic record of a run, not a resume point.
     """
     partial = path.with_suffix(f"{path.suffix}.{uuid4().hex}.partial")
     try:

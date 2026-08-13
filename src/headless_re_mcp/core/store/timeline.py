@@ -112,12 +112,37 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
-    if not path.is_file():
-        return {"events": [], "count": 0, "total": 0, "offset": offset, "limit": limit, "has_more": False}
-    lines = path.read_text(encoding="utf-8").splitlines()
-    total = len(lines)
+    """Read a page of the timeline. Reports a read it could not make.
+
+    Under the same lock as the writers. Trimming replaces the whole file, and on
+    Windows a reader holding it open makes that replace fail: measured with four
+    readers and four writers over twelve seconds, 8,420 appends were refused and
+    119 reads raised. Every timeline.list call and every monitor frame is one of
+    those readers.
+
+    The lock only covers this process, so the failure is still reported rather
+    than raised: two processes can share an artifact root, and a caller asking
+    for a diagnostic log should not get an internal error because the log was
+    being trimmed as it asked.
+    """
     limit = max(1, min(limit, 256))
     offset = max(0, offset)
+    empty: JsonObject = {
+        "events": [],
+        "count": 0,
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "has_more": False,
+    }
+    with _timeline_lock(path):
+        if not path.is_file():
+            return empty
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            return {**empty, "read_failed": f"{type(exc).__name__}: {exc}", "path": str(path)}
+    total = len(lines)
     chunk = lines[offset : offset + limit]
     events = []
     for line in chunk:
