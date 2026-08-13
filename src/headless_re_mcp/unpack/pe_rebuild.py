@@ -64,6 +64,31 @@ def _u64(data: bytes | bytearray, offset: int) -> int:
     return int(struct.unpack_from("<Q", data, offset)[0])
 
 
+# The PE specification bounds FileAlignment to a power of two between 512 and
+# 64 KiB, and SectionAlignment to a power of two no smaller than it. These are
+# read out of the dump, which the target wrote, and they multiply every length
+# computed below: a FileAlignment of 0x40000000 rounded the headers and each
+# section up to a gigabyte apiece, and the rebuild had not returned after 20
+# seconds.
+MAX_FILE_ALIGNMENT = 0x10000
+MAX_SECTION_ALIGNMENT = 0x1000000
+
+
+def _usable_alignment(value: Any, *, floor: int, ceiling: int, what: str) -> int:
+    """An alignment the rebuild can multiply by, or a refusal naming the field."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise PeRebuildError(f"{what} is not a number")
+    alignment = value
+    if alignment > ceiling:
+        raise PeRebuildError(
+            f"{what} {alignment:#x} exceeds the {ceiling:#x} the format allows; "
+            "the dump's headers are not usable for a rebuild"
+        )
+    if alignment > 0 and alignment & (alignment - 1):
+        raise PeRebuildError(f"{what} {alignment:#x} is not a power of two")
+    return max(alignment, floor)
+
+
 def _align(value: int, alignment: int) -> int:
     if alignment <= 0:
         raise PeRebuildError("alignment must be positive")
@@ -167,8 +192,15 @@ def remap_dump_to_file(
     report = RebuildReport()
     headers = parse_runtime_headers(dump)
     pe_offset = int(headers["pe_offset"])
-    file_alignment = max(int(headers["file_alignment"]), 0x200)
-    section_alignment = max(int(headers["section_alignment"]), 0x1000)
+    file_alignment = _usable_alignment(
+        headers["file_alignment"], floor=0x200, ceiling=MAX_FILE_ALIGNMENT, what="FileAlignment"
+    )
+    section_alignment = _usable_alignment(
+        headers["section_alignment"],
+        floor=0x1000,
+        ceiling=MAX_SECTION_ALIGNMENT,
+        what="SectionAlignment",
+    )
     pe32_plus = headers["architecture"] == "x64"
     sections = list(headers["sections"])
     if not sections:
@@ -190,6 +222,17 @@ def remap_dump_to_file(
         va = int(section["virtual_address"])
         vsize = int(section["virtual_size"])
         mapped = max(vsize, int(section["raw_size"]))
+        if mapped > len(dump):
+            # The dump is the whole mapped image, so no single section inside it
+            # can be larger. A header claiming otherwise is the target's own
+            # number, and it was being used as an allocation size: a section
+            # declaring 0x7fffffff turned a 15 KB dump into a 2 GB file.
+            report.warnings.append(
+                f"section {section['name']}: declares {mapped:#x} bytes, larger than the "
+                f"{len(dump):#x} byte dump; truncated to the dump"
+            )
+            report.unfixed.append(f"section {section['name']}: declared size not trusted")
+            mapped = len(dump)
         if va >= len(dump):
             report.warnings.append(
                 f"section {section['name']}: virtual_address {va:#x} beyond dump"
