@@ -110,5 +110,14 @@ def run_web(
         print(f"Token 文件：{token_path}")
         print("仅本机回环可访问；非本机连接将返回 403。")
 
-    uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
+    try:
+        uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
+    finally:
+        # The stdio transport has always done this on the way out; this one
+        # never did. A session owns a real IDA or x64dbg process and the
+        # debuggee under it, none of which exit because the server did, so
+        # every shutdown left them running -- and the supervised deployment
+        # restarts this process on purpose. An IDA instance is measured in
+        # gigabytes, so a few restarts is a machine that has to be rebooted.
+        service.close_all()
     return 0

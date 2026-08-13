@@ -63,3 +63,43 @@ def test_run_web_chinese_refuse_non_loopback(tmp_path: Path, capsys: pytest.Capt
     assert code == 2
     out = capsys.readouterr().out
     assert "拒绝绑定" in out
+
+
+def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) -> None:
+    """The stdio transport always did this; the web one never did.
+
+    A session owns a real IDA or x64dbg process, and the debuggee under it.
+    None of them exit because the server did, so every shutdown left them
+    running -- and the supervised deployment restarts this process on purpose,
+    on a schedule, whenever readiness fails. An IDA instance is measured in
+    gigabytes, so a handful of restarts is a machine that needs rebooting.
+    """
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    import uvicorn
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.web import app as web_app
+
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        http_host="127.0.0.1",
+        http_port=0,
+    )
+    closed: list[bool] = []
+
+    class TrackingService(web_app.AnalysisService):  # type: ignore[name-defined, misc]
+        def close_all(self):  # type: ignore[no-untyped-def]
+            closed.append(True)
+            return super().close_all()
+
+    with (
+        patch.object(web_app, "AnalysisService", TrackingService),
+        patch.object(uvicorn, "run", lambda *args, **kwargs: None),
+    ):
+        code = web_app.run_web(settings, host="127.0.0.1", port=0, quiet_banner=True)
+
+    assert code == 0
+    assert closed, "the server exited without releasing its sessions"
