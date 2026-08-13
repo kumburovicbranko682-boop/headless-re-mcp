@@ -191,3 +191,61 @@ def test_recovery_is_still_available_and_still_adopts_orphans(tmp_path: Path) ->
     assert adopted == 1
     assert successor.get_run(run.id).status is RunStatus.INTERRUPTED
     assert successor.get_mission(mission.id).status is MissionStatus.PENDING
+
+def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> None:
+    """Pin which end of an over-full collection each list method returns.
+
+    This is the contract the list_messages bug broke, and it broke invisibly:
+    below the cap every one of these looks identical, so the first sign of
+    trouble is an agent that has quietly stopped seeing anything recent. Each
+    method is named here with the end it is supposed to keep, so changing one
+    is a decision rather than an accident.
+    """
+    store = AgentStore(tmp_path / "ends.db")
+    store.recover_after_restart()
+
+    # A recency window: over the cap, the newest item must be present.
+    thread = store.create_thread()
+    for index in range(1, 61):
+        store.add_message(thread.id, "user", f"message {index}")
+    window = store.list_messages(thread.id, limit=10)
+    assert [m.content for m in window] == [f"message {i}" for i in range(51, 61)], (
+        "list_messages is a recency window and must end at the newest message"
+    )
+
+    # Also a recency window, ordered newest first.
+    for _ in range(12):
+        store.create_thread(title="later")
+    newest_threads = store.list_threads(limit=5)
+    assert len(newest_threads) == 5
+    assert all(item.title == "later" for item in newest_threads), (
+        "list_threads is newest-first, so a cap must drop the oldest"
+    )
+
+    # Missions are newest-first too.
+    for index in range(1, 21):
+        store.create_mission(thread.id, f"objective {index}")
+    missions = store.list_missions(limit=3)
+    assert [m.objective for m in missions] == [
+        "objective 20",
+        "objective 19",
+        "objective 18",
+    ], "list_missions is newest-first"
+
+    # The queue is the exception, and deliberately so: it is FIFO.
+    claimed = store.claim_next_mission()
+    assert claimed is not None and claimed.objective == "objective 1", (
+        "claim_next_mission takes the oldest, which is what makes it a queue"
+    )
+
+    # Events are a cursor page, not a window: they run forward from `after`.
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    for index in range(30):
+        store.append_event(run.id, "message.delta", {"n": index})
+    first_page = store.list_events(run.id, after=0, limit=5)
+    assert [event.seq for event in first_page] == sorted(event.seq for event in first_page)
+    assert first_page[0].seq < first_page[-1].seq, (
+        "list_events pages forward from the cursor; the caller advances it"
+    )
+    second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
+    assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
