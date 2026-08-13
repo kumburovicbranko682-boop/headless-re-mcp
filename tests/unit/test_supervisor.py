@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.supervisor import (
@@ -218,3 +220,50 @@ def test_child_argv_reuses_this_interpreter_and_carries_the_config() -> None:
 def test_stdio_child_argv_has_no_http_flags() -> None:
     argv = build_child_argv("serve", host="127.0.0.1", port=9001)
     assert "--host" not in argv and "--port" not in argv
+
+def test_the_real_default_spawn_starts_and_restarts_an_actual_process(
+    tmp_path: Path,
+) -> None:
+    """Exercise the spawn production uses, not an injected fake.
+
+    Every other test here supplies its own `spawn`, so the default -- which is
+    also where the console-window suppression lives -- is never executed. A
+    mistake in it would leave the supervisor unable to start anything while the
+    suite stayed green.
+    """
+    marker = tmp_path / "starts.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "p = Path(sys.argv[1])\n"
+        "p.write_text((p.read_text() if p.exists() else '') + 'start\\n')\n"
+        "time.sleep(0.2)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+
+    records: list[JsonObject] = []
+    supervisor = Supervisor(
+        argv=[sys.executable, str(child), str(marker)],
+        ready_url=None,
+        check_interval_s=0.05,
+        grace_period_s=0.0,
+        max_restarts=2,
+        log=records.append,
+        sleep=lambda _seconds: None,  # skip the restart backoff, not the restart
+    )
+
+    report = supervisor.run_forever()
+
+    assert marker.exists(), "the child never ran, so the default spawn is broken"
+    assert len(marker.read_text().splitlines()) == 2, "the crashed child must be restarted"
+    assert report.starts == 2
+    assert report.crash_restarts == 2
+    assert report.last_exit_code == 3, "the child's real exit code must come back"
+    assert [record["event"] for record in records] == [
+        "child.started",
+        "child.restarting",
+        "child.started",
+        "supervisor.restart_limit",
+    ]
