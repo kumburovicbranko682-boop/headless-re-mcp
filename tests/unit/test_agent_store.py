@@ -249,3 +249,39 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     )
     second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
+
+def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path) -> None:
+    """The rollback must not become the error report.
+
+    Seen for real when a soak filled the disk: BEGIN IMMEDIATE returned "disk
+    I/O error", the rollback in the handler then raised "cannot rollback - no
+    transaction is active" because no transaction had started, and that is what
+    reached the incident log. The recorded cause described the cleanup and
+    pointed nowhere near the disk -- on an unattended box, where that record is
+    the only account anyone gets.
+    """
+    import sqlite3
+
+    class BeginFails:
+        """A connection whose BEGIN fails the way a full disk makes it fail."""
+
+        def __init__(self, con: object) -> None:
+            self._con = con
+
+        def execute(self, sql: str, *args: object, **kwargs: object) -> object:
+            if sql == "BEGIN IMMEDIATE":
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._con.execute(sql, *args, **kwargs)  # type: ignore[attr-defined]
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._con, name)
+
+    store = AgentStore(tmp_path / "full.db")
+    store.recover_after_restart()
+    thread = store.create_thread()
+
+    real_connect = store._connect
+    store._connect = lambda: BeginFails(real_connect())  # type: ignore[assignment, return-value]
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        store.create_mission(thread.id, "will not fit on disk")

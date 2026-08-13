@@ -7,7 +7,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -86,14 +86,29 @@ class AgentStore:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction, and the real reason if it fails.
+
+        The rollback used to run whatever went wrong. When the failure was
+        BEGIN itself -- which is what a full disk looks like: "disk I/O error"
+        -- there was no transaction to roll back, so ROLLBACK raised
+        "cannot rollback - no transaction is active" and that replaced the
+        original exception. The incident an operator reads then describes the
+        cleanup rather than the disk, and points nowhere near the cause.
+        """
         with self._lock:
             con = self._connect()
             try:
                 con.execute("BEGIN IMMEDIATE")
+            except BaseException:
+                con.close()
+                raise
+            try:
                 yield con
                 con.execute("COMMIT")
             except BaseException:
-                con.execute("ROLLBACK")
+                # A rollback that cannot run must not become the error report.
+                with suppress(sqlite3.Error):
+                    con.execute("ROLLBACK")
                 raise
             finally:
                 con.close()
