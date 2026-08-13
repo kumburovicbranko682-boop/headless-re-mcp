@@ -53,6 +53,22 @@ class _RuntimeSource(Protocol):
     def is_current(self, session_id: str, kind: BackendKind, runtime: Any) -> bool: ...
 
 
+# Skip this many checks after the nth consecutive reconnect failure. The first
+# failure is retried immediately, because the common case is a transient drop
+# that the very next attempt repairs; the cap is what a pipe that is never
+# coming back settles down to.
+_MAX_SKIPPED_CHECKS = 60
+
+
+def _checks_to_skip(consecutive_failures: int) -> int:
+    if consecutive_failures <= 1:
+        return 0
+    # Shifted rather than raised to a power: the result stays an int, and the
+    # shift is bounded so a long-dead backend cannot ask for a huge one.
+    shift = min(consecutive_failures - 1, 16)
+    return min((1 << shift) - 1, _MAX_SKIPPED_CHECKS)
+
+
 @dataclass(slots=True)
 class BackendHealthMonitor:
     """Repair dropped connections without waiting for the caller to notice.
@@ -68,6 +84,9 @@ class BackendHealthMonitor:
     runtimes: _RuntimeSource
     interval_s: float = 5.0
     _entries: dict[tuple[str, str], BackendHealth] = field(default_factory=dict)
+    # Consecutive reconnect failures, and how many checks to sit out before the
+    # next attempt. Keyed like _entries and cleared by forget().
+    _reconnect_backoff: dict[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
@@ -135,15 +154,20 @@ class BackendHealthMonitor:
         connected = bool(getattr(worker, "transport_connected", True))
         reconnect = getattr(worker, "reconnect", None)
         if worker_alive and not connected and callable(reconnect):
-            try:
-                reconnect()
-            except BaseException as exc:  # noqa: BLE001 - recorded, not raised
-                failures += 1
-                last_error = f"{type(exc).__name__}: {exc}"
-            else:
-                reconnects += 1
-                last_error = None
-                connected = bool(getattr(worker, "transport_connected", True))
+            if self._reconnect_is_due(key):
+                try:
+                    reconnect()
+                except BaseException as exc:  # noqa: BLE001 - recorded, not raised
+                    failures += 1
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    self._note_reconnect_failed(key)
+                else:
+                    reconnects += 1
+                    last_error = None
+                    self._reconnect_backoff.pop(key, None)
+                    connected = bool(getattr(worker, "transport_connected", True))
+        elif connected:
+            self._reconnect_backoff.pop(key, None)
 
         # Published as one finished value: a reader must never see a row that is
         # half updated, for instance connected already true but the repair not
@@ -162,10 +186,33 @@ class BackendHealthMonitor:
             self._entries[key] = entry
         return entry
 
+    def _reconnect_is_due(self, key: tuple[str, str]) -> bool:
+        """Whether to attempt a reconnect on this check, or sit this one out.
+
+        A pipe that cannot be rebuilt was being retried every interval for as
+        long as the process lived -- 17,280 attempts a day at the default five
+        seconds. The cost is not the attempts but the queue behind them: checks
+        run serially on one thread, and XdbgClient gives a reconnect thirty
+        seconds, so one unreachable backend delays every other session's health
+        check by that much on every sweep.
+        """
+        failures, skip_remaining = self._reconnect_backoff.get(key, (0, 0))
+        if skip_remaining > 0:
+            self._reconnect_backoff[key] = (failures, skip_remaining - 1)
+            return False
+        return True
+
+    def _note_reconnect_failed(self, key: tuple[str, str]) -> None:
+        failures, _ = self._reconnect_backoff.get(key, (0, 0))
+        failures += 1
+        self._reconnect_backoff[key] = (failures, _checks_to_skip(failures))
+
     def forget(self, session_id: str) -> None:
         with self._lock:
             for key in [item for item in self._entries if item[0] == session_id]:
                 del self._entries[key]
+            for key in [item for item in self._reconnect_backoff if item[0] == session_id]:
+                del self._reconnect_backoff[key]
 
     def report(self, session_id: str | None = None) -> list[JsonObject]:
         with self._lock:

@@ -176,3 +176,67 @@ def test_the_background_sweep_repairs_without_being_asked() -> None:
     # The whole point of the monitor is that nobody had to call it first.
     assert worker.reconnects >= 1
     assert worker.transport_connected is True
+
+
+def test_a_reconnect_that_keeps_failing_backs_off() -> None:
+    """A pipe that cannot be rebuilt must not be retried every five seconds.
+
+    The cost is not the attempts, it is the queue behind them: checks run
+    serially on one thread and XdbgClient allows a reconnect thirty seconds, so
+    one unreachable backend delayed every other session's health check by that
+    much, on every sweep, for as long as the process lived -- 17,280 attempts a
+    day at the default interval.
+    """
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("pipe is gone")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+
+    for _ in range(120):  # ten minutes at the default five-second interval
+        monitor.check_once()
+
+    assert worker.reconnects < 15, (
+        f"attempted {worker.reconnects} reconnects in 120 checks; it is not backing off"
+    )
+    assert worker.reconnects >= 5, "it must keep trying occasionally, not give up for good"
+    row = monitor.report("s1")[0]
+    assert row["connected"] is False
+    assert row["failures"] == worker.reconnects
+
+
+def test_backing_off_never_delays_a_connection_that_can_be_rebuilt() -> None:
+    """The common drop is transient, and the very next attempt repairs it."""
+    worker = FakeWorker(connected=False)
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+
+    monitor.check_once()
+
+    assert worker.reconnects == 1
+    assert monitor.report("s1")[0]["connected"] is True
+
+
+def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:
+    """Backoff describes the current failure, not the backend's history."""
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("pipe is gone")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+
+    for _ in range(30):
+        monitor.check_once()
+    while_failing = worker.reconnects
+
+    worker.reconnect_error = None
+    for _ in range(70):  # let the backoff elapse, then it repairs
+        monitor.check_once()
+        if worker.transport_connected:
+            break
+    assert worker.transport_connected, "it must eventually try again and succeed"
+
+    worker.transport_connected = False
+    worker.reconnect_error = ConnectionError("gone again")
+    before = worker.reconnects
+    monitor.check_once()
+
+    assert worker.reconnects == before + 1, (
+        "a fresh drop must be retried at once, not held back by the previous failure"
+    )
+    assert while_failing < 15
