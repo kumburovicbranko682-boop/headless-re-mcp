@@ -161,3 +161,66 @@ def test_policy_reads_settings_and_can_be_disabled(tmp_path) -> None:  # type: i
 
     off = WatchdogPolicy.from_settings(replace(base, watchdog_interval_s=0.0))
     assert off.enabled is False
+
+def test_one_dead_backend_is_reported_once_not_on_every_sweep() -> None:
+    """A failure that persists is one alert, not one per sweep.
+
+    At the default thirty-second interval a backend that stays dead produced
+    2,880 identical alerts a day. The cost is not the alerts themselves but
+    what they bury: an operator or a collector looking for the alert that is
+    not identical has to find it in that.
+    """
+    health = FakeHealth([_row("s1", "ida", alive=False, connected=False)])
+    watchdog = Watchdog(health, policy=WatchdogPolicy(interval_s=30.0))
+
+    for _ in range(120):  # an hour
+        report = watchdog.sweep()
+
+    assert watchdog.raised == 1, f"raised {watchdog.raised} alerts for one dead backend"
+    assert report["dead"] == 1, "it must still be reported as dead every sweep"
+    assert report["actions"][0]["action"] == "still_dead"
+
+
+def test_recovery_gives_up_on_a_backend_that_will_not_come_back() -> None:
+    """Relaunching forever is not recovery, it is a loop.
+
+    The supervisor already refuses to restart a child that keeps dying
+    immediately; a backend that has refused to start five times running gets
+    the same treatment, because the reasons it does not come back -- an
+    uninstalled IDA, a deleted binary, an expired licence -- are not the kind
+    that a sixth attempt fixes.
+    """
+    health = FakeHealth([_row("s1", "ida", alive=False, connected=False)], recover_ok=False)
+    watchdog = Watchdog(
+        health,
+        policy=WatchdogPolicy(auto_recover_backends=True, interval_s=30.0, max_recovery_attempts=5),
+    )
+
+    for _ in range(120):
+        report = watchdog.sweep()
+
+    assert len(health.recover_calls) == 5, "it must stop trying"
+    assert report["actions"][0]["action"] == "abandoned"
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts(limit=20)]
+    assert "backend_recovery_abandoned" in kinds, "giving up has to be said out loud"
+    assert kinds.count("backend_recovery_abandoned") == 1, "and said once"
+
+
+def test_a_backend_that_comes_back_and_dies_again_is_treated_as_new() -> None:
+    """Giving up applies to one failure, not to the backend forever."""
+    row = _row("s1", "ida", alive=False, connected=False)
+    health = FakeHealth([row], recover_ok=True)
+    watchdog = Watchdog(health, policy=WatchdogPolicy(auto_recover_backends=True))
+
+    watchdog.sweep()
+    assert len(health.recover_calls) == 1
+
+    row["worker_alive"] = True
+    row["connected"] = True
+    watchdog.sweep()
+
+    row["worker_alive"] = False
+    row["connected"] = False
+    watchdog.sweep()
+
+    assert len(health.recover_calls) == 2, "a fresh failure deserves a fresh attempt"

@@ -41,6 +41,10 @@ class WatchdogPolicy:
     # relaunching the target is a decision the operator opts into.
     auto_recover_backends: bool = False
     interval_s: float = 30.0
+    # Mirrors the supervisor's crash-loop limit. A backend that cannot come back
+    # -- IDA uninstalled, the binary gone, a licence expired -- would otherwise
+    # be relaunched every interval for as long as the process lives.
+    max_recovery_attempts: int = 5
 
     @classmethod
     def from_settings(cls, settings: object) -> WatchdogPolicy:
@@ -68,6 +72,9 @@ class Watchdog:
     )
     recovered: int = 0
     raised: int = 0
+    # How many consecutive sweeps each (session, backend) has been found dead.
+    # Pruned every sweep, so it holds one entry per currently-dead backend.
+    _dead_streak: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def sweep(self) -> JsonObject:
         """One pass. Never raises: a watchdog that dies stops watching."""
@@ -90,6 +97,13 @@ class Watchdog:
             for row in rows
             if row.get("worker_alive", True) and not row.get("connected", True)
         ]
+        # Forget anything that is no longer dead, so a backend that comes back
+        # and dies again is reported as a fresh failure rather than as a
+        # continuation of the old one.
+        still_dead = {self._key(row) for row in dead}
+        for key in [key for key in self._dead_streak if key not in still_dead]:
+            del self._dead_streak[key]
+
         actions: list[JsonObject] = []
         for row in dead:
             actions.append(self._handle_dead(row))
@@ -112,22 +126,58 @@ class Watchdog:
             "alerts_total": self.raised,
         }
 
+    @staticmethod
+    def _key(row: JsonObject) -> tuple[str, str]:
+        return (str(row.get("session_id") or ""), str(row.get("backend") or ""))
+
     def _handle_dead(self, row: JsonObject) -> JsonObject:
-        session_id = str(row.get("session_id") or "")
-        backend = str(row.get("backend") or "")
+        """React to one dead backend, once, and stop trying if it will not come back.
+
+        Both halves of this used to repeat on every sweep for as long as the
+        backend stayed dead. At the default interval that is 2,880 identical
+        alerts a day for one failure -- which buries the alerts that are not
+        identical -- and, with recovery on, 2,880 attempts to relaunch a worker
+        that has already refused to start.
+        """
+        session_id, backend = key = self._key(row)
+        seen_before = self._dead_streak.get(key, 0)
+        self._dead_streak[key] = seen_before + 1
+
         if not self.policy.auto_recover_backends:
-            self._alert(
-                "backend_dead",
-                session_id=session_id,
-                backend=backend,
-                detail="worker process is gone; session.recover was not attempted",
-            )
-            return {"session_id": session_id, "backend": backend, "action": "reported"}
+            if seen_before == 0:
+                self._alert(
+                    "backend_dead",
+                    session_id=session_id,
+                    backend=backend,
+                    detail="worker process is gone; session.recover was not attempted",
+                )
+                return {"session_id": session_id, "backend": backend, "action": "reported"}
+            return {
+                "session_id": session_id,
+                "backend": backend,
+                "action": "still_dead",
+                "sweeps": seen_before + 1,
+            }
+
+        limit = max(1, self.policy.max_recovery_attempts)
+        if seen_before >= limit:
+            if seen_before == limit:
+                self._alert(
+                    "backend_recovery_abandoned",
+                    session_id=session_id,
+                    backend=backend,
+                    detail=(
+                        f"recovery failed {limit} times in a row; not trying again "
+                        "until this backend comes back or the session is closed"
+                    ),
+                )
+            return {"session_id": session_id, "backend": backend, "action": "abandoned"}
 
         outcome = self.health.session_recover(session_id, [backend] if backend else None)
         ok = bool(getattr(outcome, "ok", False))
         if ok:
             self.recovered += 1
+            self._dead_streak.pop(key, None)
             self._alert(
                 "backend_recovered",
                 session_id=session_id,
@@ -143,6 +193,8 @@ class Watchdog:
             session_id=session_id,
             backend=backend,
             detail=str(getattr(error, "message", error) or "recovery returned no error"),
+            attempt=seen_before + 1,
+            of=limit,
         )
         return {"session_id": session_id, "backend": backend, "action": "recovery_failed"}
 
