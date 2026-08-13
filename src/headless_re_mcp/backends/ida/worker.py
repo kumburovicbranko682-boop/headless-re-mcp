@@ -20,6 +20,32 @@ class WorkerRequestError(RuntimeError):
         self.details = details
 
 
+# idalib opens the binary in place, so one sample has one database and a second
+# process asking for it is refused with this.
+_DATABASE_IN_USE = 4
+
+
+def _open_database_error(code: int, binary: Path) -> RuntimeError:
+    """Say why idalib refused, and whether waiting would have helped.
+
+    Measured with two processes cycling the same fixture, 40 of 50 opens failed
+    on code 4 and none did when the same cycles ran one after another. Reported
+    as a bare error code and not retryable, it read as a broken sample rather
+    than a lock about to be released, and an unattended caller abandoned work it
+    only had to repeat -- batch.analyze opens up to eight static sessions at
+    once, which is the paths own doing.
+    """
+    if code == _DATABASE_IN_USE:
+        error = RuntimeError(
+            f"the IDA database for {binary.name} is already open in another process; "
+            "idalib keeps one database per binary, so analyses of the same sample "
+            "cannot overlap"
+        )
+        error.retryable = True  # type: ignore[attr-defined]
+        return error
+    return RuntimeError(f"idapro.open_database failed with code {code}")
+
+
 def _emit(payload: JsonObject) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -1386,7 +1412,7 @@ def run(binary: Path) -> int:
 
         open_result = idapro.open_database(str(binary), run_auto_analysis=True)
         if open_result:
-            raise RuntimeError(f"idapro.open_database failed with code {open_result}")
+            raise _open_database_error(int(open_result), binary)
         opened = True
         ida_auto.auto_wait()
         overview = _overview()
@@ -1465,7 +1491,10 @@ def run(binary: Path) -> int:
                         f"(incident {incident['incident_id']})"
                     ),
                     "details": incident,
-                    "retryable": False,
+                    # Startup failures are permanent apart from the ones that
+                    # are not, and calling those permanent costs a caller the
+                    # sample. The exception says which it is when it knows.
+                    "retryable": bool(getattr(exc, "retryable", False)),
                 },
             }
         )
