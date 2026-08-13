@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.models import BackendKind
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from tests.unit.test_dynamic_service import FakeStaticWorker, _create, _write_minimal_pe
 
@@ -148,6 +152,37 @@ def test_static_writes_emit_patch_artifact_and_timeline(tmp_path: Path) -> None:
     assert patched.ok and patched.data is not None
     assert patched.data["after_hex"] == "90"
     assert Path(str(patched.data["patch_artifact"])).is_file()
+
+
+def test_a_patch_that_landed_is_not_reported_as_a_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unwritable undo record must not disguise a write that already applied.
+
+    The database is changed before the record is written. Failing the call
+    invites a retry, and the retry reports the patch itself as the previous
+    value, which is what an undo would then restore.
+    """
+    service, session_id = _write_service(tmp_path)
+    worker = service._runtime(session_id, BackendKind.IDA).worker
+    assert isinstance(worker, _WriteCapableStaticWorker)
+
+    real_write_text = Path.write_text
+
+    def refuse_patch_records(self: Path, *args: Any, **kwargs: Any) -> int:
+        if "patches" in self.as_posix():
+            raise OSError(28, "No space left on device")
+        return int(real_write_text(self, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "write_text", refuse_patch_records)
+
+    renamed = service.static_name_set(session_id, address=0x140001000, name="first_name")
+    assert renamed.ok and renamed.data is not None, "the rename applied, so the call succeeded"
+    assert renamed.data["previous_name"] == "", "the original name is still the one recorded"
+    assert "patch_record_failed" in renamed.data, "the missing undo record must be disclosed"
+    assert "patch_artifact" not in renamed.data, "no path may be named for a file never written"
+    assert worker.names[0x140001000] == "first_name"
 
 
 def test_static_batch_is_bounded(tmp_path: Path) -> None:

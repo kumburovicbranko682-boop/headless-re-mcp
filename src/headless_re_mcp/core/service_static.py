@@ -609,18 +609,27 @@ class StaticAnalysisMixin:
         if not result.ok or result.data is None:
             return result
         payload = dict(result.data)
-        directory = self._static_patch_dir(session_id)
-        artifact_path = directory / f"{operation.replace('.', '-')}-{uuid4().hex}.json"
         record = {
             "session_id": session_id,
             "operation": operation,
             "payload": payload,
         }
-        artifact_path.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        payload["patch_artifact"] = str(artifact_path)
+        artifact_path: Path | None = None
+        try:
+            directory = self._static_patch_dir(session_id)
+            written = directory / f"{operation.replace('.', '-')}-{uuid4().hex}.json"
+            written.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            # The database was already changed. Failing the call would invite a
+            # retry, and the retry reports the patch itself as the previous
+            # value -- which is what an undo would then restore.
+            payload["patch_record_failed"] = f"{type(exc).__name__}: {exc}"
+        else:
+            artifact_path = written
+            payload["patch_artifact"] = str(written)
         try:
             from headless_re_mcp.core.store.timeline import (
                 append_session_timeline,
@@ -633,7 +642,7 @@ class StaticAnalysisMixin:
                 message=f"static write {operation}",
                 details={
                     "operation": operation,
-                    "patch_artifact": str(artifact_path),
+                    "patch_artifact": str(artifact_path) if artifact_path else None,
                     "address": payload.get("address"),
                 },
             )
