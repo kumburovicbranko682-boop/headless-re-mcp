@@ -1,4 +1,14 @@
-"""Recursive secret redaction shared by provider, API, audit and SSE paths."""
+"""Recursive secret redaction shared by provider, API, audit and SSE paths.
+
+This also runs over tool results, which is what keeps it narrow. The results
+carry what the analysis found in the target: strings, dumps, symbol names. A
+credential hardcoded in a sample is the deliverable, not a leak, so matching
+secret-looking *values* would destroy the finding the run was started to
+produce. Only key names are matched, and only names that belong to
+configuration rather than to anything a binary could be described with --
+"cookie" is deliberately absent, because ``__security_cookie`` is a real symbol
+in almost every Windows binary.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +16,11 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-_SECRET_KEY = re.compile(r"(?:api[_-]?key|authorization|token|secret|password|providerApiKeys)", re.I)
+_SECRET_KEY = re.compile(
+    r"(?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|token|secret"
+    r"|password|passwd|credential|providerApiKeys)",
+    re.I,
+)
 _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 
 

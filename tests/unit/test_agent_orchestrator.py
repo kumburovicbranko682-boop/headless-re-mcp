@@ -540,3 +540,43 @@ def test_compaction_keeps_the_newest_turns_and_says_what_it_dropped() -> None:
     assert compacted[0] == conversation[0], "the system prompt is not optional"
     assert "compacted" in str(compacted[1]["content"])
     assert str(compacted[-1]["content"]).startswith("turn 39"), "the newest turn must survive"
+
+def test_redaction_covers_the_configuration_secrets_it_missed() -> None:
+    """Key names that are unambiguously credentials, and nothing more."""
+    payload = {
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----",
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "credentials": "REALCRED",
+        "passwd": "hunter2",
+    }
+
+    safe = redact(payload)
+
+    assert all(value == "***REDACTED***" for value in safe.values()), safe
+
+
+def test_redaction_leaves_the_analysis_result_it_also_runs_over() -> None:
+    """This runs over tool results, so over-redacting destroys the deliverable.
+
+    A credential hardcoded in a sample is the finding, not a leak. The rules are
+    limited to key names for that reason, and "cookie" is deliberately not one
+    of them: __security_cookie is a symbol in almost every Windows binary, and
+    redacting it would blank a field the analysis is reporting on.
+    """
+    findings = {
+        "ok": True,
+        "data": {
+            "symbols": [{"name": "__security_cookie", "address": "0x140021000"}],
+            "strings": ["https://admin:hunter2@c2.example/beacon"],
+            "cookie": "0x2b992ddfa232",
+        },
+    }
+
+    safe = redact(findings)
+
+    data = safe["data"]
+    assert data["symbols"][0]["name"] == "__security_cookie"
+    assert data["cookie"] == "0x2b992ddfa232"
+    assert data["strings"][0] == "https://admin:hunter2@c2.example/beacon", (
+        "a credential found in the target is the result, not a secret to hide"
+    )
