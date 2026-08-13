@@ -11,6 +11,10 @@ from headless_re_mcp.core.events import (
     DebugEventBatch,
     DebugEventCursor,
 )
+from headless_re_mcp.telemetry import record_alert
+
+# Ceiling for the retry wait once draining starts failing.
+_MAX_DRAIN_BACKOFF_S = 2.0
 
 
 class _EventReader(Protocol):
@@ -78,6 +82,7 @@ class EventDrainPump:
         self._event_log = event_log
         self._lock = lock
         self._interval_s = interval_s
+        self.consecutive_failures = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -92,18 +97,50 @@ class EventDrainPump:
         self._stop.set()
         self._thread.join(timeout=timeout)
 
+    def drain_once(self) -> bool:
+        """One drain attempt. Never raises; answers whether it worked.
+
+        A failure used to be swallowed whole. This pump is what keeps the log
+        ahead of the 1024-slot native ring, and a gap is only ever recorded by a
+        drain that ran -- so a pump that had stopped working left the log
+        claiming an unbroken sequence while events were being overwritten, which
+        is the one thing true replay is supposed to guarantee.
+        """
+        try:
+            with self._lock:
+                drain_native_into_log(
+                    self._worker,
+                    self._drain_cursor,
+                    self._event_log,
+                    timeout=0.05,
+                    max_rounds=8,
+                )
+        except Exception as exc:  # noqa: BLE001 - the pump must not end the session
+            self.consecutive_failures += 1
+            if self.consecutive_failures == 1:
+                # Edge-triggered: at twenty attempts a second, one alert per
+                # failure would bury the log it is meant to draw attention to.
+                record_alert(
+                    "event_drain_failing",
+                    fields={"error": f"{type(exc).__name__}: {exc}"},
+                )
+            return False
+        if self.consecutive_failures:
+            record_alert(
+                "event_drain_recovered",
+                severity="info",
+                fields={"failed_attempts": self.consecutive_failures},
+            )
+            self.consecutive_failures = 0
+        return True
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                with self._lock:
-                    drain_native_into_log(
-                        self._worker,
-                        self._drain_cursor,
-                        self._event_log,
-                        timeout=0.05,
-                        max_rounds=8,
-                    )
-            except Exception:
-                # Pump must not kill the session; next consumer call can retry.
-                pass
-            self._stop.wait(self._interval_s)
+            delay = self._interval_s
+            if not self.drain_once():
+                # Every attempt takes the runtime lock that tool calls need, so
+                # a worker that is not answering must not be retried twenty
+                # times a second while holding it.
+                shift = min(self.consecutive_failures - 1, 6)
+                delay = min(_MAX_DRAIN_BACKOFF_S, max(self._interval_s, 0.05) * (1 << shift))
+            self._stop.wait(delay)

@@ -373,3 +373,68 @@ def test_drain_copies_native_batch_into_log_before_ring_loss() -> None:
     assert drain.value == 3
     served = log.read_after(0, limit=10)
     assert [event.sequence for event in served.batch.events] == [1, 2, 3]
+
+
+def test_a_drain_pump_that_stops_draining_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence here reads as "no events lost" while events are being lost.
+
+    The pump is what keeps the log ahead of the 1024-slot native ring, and a gap
+    is only ever recorded by a drain that ran. Swallowing every failure meant a
+    pump that had stopped working left the log claiming an unbroken sequence,
+    which is the one thing true replay is supposed to guarantee.
+    """
+    import threading
+
+    from headless_re_mcp.core import event_drain as drain_module
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEventBatch, DebugEventCursor
+
+    alerts: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        drain_module,
+        "record_alert",
+        lambda kind, **kwargs: alerts.append((kind, kwargs)),
+    )
+
+    class _BrokenNative:
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.healthy = False
+
+        def read_events(
+            self, cursor: int, *, limit: int = 100, timeout: float = 10.0
+        ) -> DebugEventBatch:
+            self.attempts += 1
+            if not self.healthy:
+                raise OSError("pipe is gone")
+            return DebugEventBatch(
+                events=(),
+                cursor=cursor,
+                next_cursor=cursor,
+                oldest_sequence=0,
+                latest_sequence=cursor,
+                dropped=0,
+                dropped_total=0,
+                has_more=False,
+                capacity=DEBUG_EVENT_CAPACITY,
+            )
+
+    native = _BrokenNative()
+    pump = drain_module.EventDrainPump(
+        native,
+        DebugEventCursor(),
+        PersistentDebugEventLog(),
+        lock=threading.RLock(),
+        interval_s=0.0,
+    )
+
+    for _ in range(4):
+        pump.drain_once()
+    assert pump.consecutive_failures == 4, "a pump that cannot drain must know it"
+    failing = [kind for kind, _ in alerts]
+    assert failing.count("event_drain_failing") == 1, "reported once, not on every tick"
+
+    native.healthy = True
+    pump.drain_once()
+    assert pump.consecutive_failures == 0
+    assert [kind for kind, _ in alerts][-1] == "event_drain_recovered"
