@@ -112,9 +112,9 @@ async def test_a_failed_run_stops_the_mission_rather_than_burning_the_budget(tmp
 async def test_a_restart_resumes_the_mission_instead_of_losing_it(tmp_path: Path) -> None:
     """The objective survives what killed its run.
 
-    interrupt_incomplete_runs marks the in-flight run INTERRUPTED, which is
-    correct, but the mission has to go back to the queue or the work is simply
-    gone and no one is there to notice.
+    recover_after_restart marks the in-flight run INTERRUPTED, which is correct,
+    but the mission has to go back to the queue or the work is simply gone and
+    no one is there to notice.
     """
     store = AgentStore(tmp_path / "agent.db")
     thread = store.create_thread()
@@ -123,8 +123,10 @@ async def test_a_restart_resumes_the_mission_instead_of_losing_it(tmp_path: Path
     assert claimed is not None and claimed.id == mission.id
     assert store.get_mission(mission.id).status is MissionStatus.RUNNING
 
-    # Restart: a fresh store over the same database, as the service does.
+    # Restart: a fresh store over the same database, as the service does, and
+    # then the explicit hand-over the service performs on startup.
     reopened = AgentStore(tmp_path / "agent.db")
+    reopened.recover_after_restart()
 
     resumed = reopened.get_mission(mission.id)
     assert resumed.status is MissionStatus.PENDING

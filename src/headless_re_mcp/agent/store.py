@@ -47,7 +47,11 @@ class AgentStore:
         self.journal_mode = "unknown"
         self._enable_wal()
         self._init_schema()
-        self.interrupt_incomplete_runs()
+        # Deliberately not recovering here. Opening a database is what a
+        # diagnostic script, a second tool or a test does, and recovery rewrites
+        # every non-terminal run and requeues every RUNNING mission -- so merely
+        # looking at the state of a live service destroyed the work it was doing.
+        # The process taking ownership calls recover_after_restart() itself.
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
@@ -339,7 +343,14 @@ class AgentStore:
         assert run is not None
         return run
 
-    def interrupt_incomplete_runs(self) -> int:
+    def recover_after_restart(self) -> int:
+        """Adopt whatever the previous process left behind. Call once, on startup.
+
+        Destructive by design: every non-terminal run is declared dead and every
+        RUNNING mission goes back to the queue. That is right for a process
+        taking over an abandoned database and wrong for anything else, so it is
+        not part of opening one.
+        """
         active = tuple(status.value for status in RunStatus if status not in TERMINAL_RUN_STATUSES)
         placeholders = ",".join("?" for _ in active)
         with self.transaction() as con:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.agent.models import RunStatus
+from headless_re_mcp.agent.models import MissionStatus, RunStatus
 from headless_re_mcp.agent.store import AgentStore, canonical_args_sha256
 
 
@@ -28,6 +28,7 @@ def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     assert not store.consume_approval(run.id, "call-1", proposed["args_sha256"])
 
     reopened = AgentStore(path)
+    reopened.recover_after_restart()
     interrupted = reopened.get_run(run.id)
     assert interrupted is not None and interrupted.status is RunStatus.INTERRUPTED
     events = reopened.list_events(run.id)
@@ -148,3 +149,45 @@ def test_a_short_thread_is_returned_whole(tmp_path: Path) -> None:
 
     assert [m.content for m in store.list_messages(thread.id)] == ["m0", "m1", "m2", "m3", "m4"]
     assert [m.content for m in store.list_messages(thread.id, limit=2)] == ["m3", "m4"]
+
+def test_opening_the_database_does_not_disturb_a_running_service(tmp_path: Path) -> None:
+    """Reading the state of a live service must not be what stops it.
+
+    recover_after_restart declares every non-terminal run dead and requeues
+    every RUNNING mission. That is right for a process adopting an abandoned
+    database and catastrophic for anything else, and it used to happen inside
+    __init__ -- so an operator opening the database to see what the service was
+    doing, or any second tool pointed at it, silently killed the work in flight.
+    """
+    path = tmp_path / "live.db"
+    live = AgentStore(path)
+    live.recover_after_restart()
+    thread = live.create_thread()
+    run = live.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=600)
+    live.transition(run.id, RunStatus.STREAMING)
+    mission = live.create_mission(thread.id, "in flight")
+    live.claim_next_mission()
+
+    observer = AgentStore(path)
+    assert len(observer.list_missions(limit=10)) == 1, "the observer can still read"
+
+    assert live.get_run(run.id).status is RunStatus.STREAMING
+    assert live.get_mission(mission.id).status is MissionStatus.RUNNING
+
+
+def test_recovery_is_still_available_and_still_adopts_orphans(tmp_path: Path) -> None:
+    """Moving it out of __init__ must not have moved it out of reach."""
+    path = tmp_path / "orphans.db"
+    previous = AgentStore(path)
+    thread = previous.create_thread()
+    run = previous.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=600)
+    previous.transition(run.id, RunStatus.STREAMING)
+    mission = previous.create_mission(thread.id, "abandoned")
+    previous.claim_next_mission()
+
+    successor = AgentStore(path)
+    adopted = successor.recover_after_restart()
+
+    assert adopted == 1
+    assert successor.get_run(run.id).status is RunStatus.INTERRUPTED
+    assert successor.get_mission(mission.id).status is MissionStatus.PENDING

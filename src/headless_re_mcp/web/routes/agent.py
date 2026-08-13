@@ -68,6 +68,9 @@ def register_agent_routes(
     # Bind handlers and schemas directly from protocol-independent tool domains.
     bind_all_tools(service, catalog)
     store = AgentStore(settings.artifact_root / "meta" / "agent.db")
+    # This process is taking ownership of the database, so anything the previous
+    # one left mid-flight is dead and its missions belong back in the queue.
+    store.recover_after_restart()
     configured_path = os.environ.get("HEADLESS_RE_PROVIDER_CONFIG")
     config_path = (
         Path(configured_path)
