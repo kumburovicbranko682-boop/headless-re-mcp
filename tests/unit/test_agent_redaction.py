@@ -97,3 +97,27 @@ def test_a_secret_below_a_few_levels_is_still_found() -> None:
         nested = {"wrapper": nested}
 
     assert "sk-live-abcdef" not in str(redact(nested))
+
+
+def test_the_credential_test_itself_cannot_be_made_to_recurse_away() -> None:
+    """Deciding whether a value could be a credential walks the value too.
+
+    That walk is separate from redact's own depth counter, so it needed its own
+    bound: a secret key holding a list nested three thousand deep raised
+    RecursionError here while the same list under an ordinary key was fine.
+    Too deep to inspect resolves to masked, which is the safe answer for
+    something already sitting under a credential's name.
+    """
+    import sys
+
+    sys.setrecursionlimit(20_000)
+    try:
+        deep: Any = "leaf"
+        for _ in range(3_000):
+            deep = [deep]
+    finally:
+        sys.setrecursionlimit(1_000)
+
+    assert "***REDACTED***" in str(redact({"api_key": deep})), "a deep value under a secret name"
+    assert "***REDACTED***" not in str(redact({"harmless": deep})), "but not under an ordinary one"
+    assert redact({"call_tokens": [1, 2, 3]}) == {"call_tokens": [1, 2, 3]}

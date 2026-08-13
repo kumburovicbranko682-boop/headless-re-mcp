@@ -29,7 +29,7 @@ def is_secret_key(key: object) -> bool:
     return isinstance(key, str) and bool(_SECRET_KEY.search(key))
 
 
-def _could_hold_a_credential(value: Any) -> bool:
+def _could_hold_a_credential(value: Any, _depth: int = 0) -> bool:
     """A credential is text. A metadata token is a number.
 
     "token" matches the same way "cookie" would have, and a .NET metadata token
@@ -42,10 +42,17 @@ def _could_hold_a_credential(value: Any) -> bool:
     Checking the value rather than narrowing the key keeps every string token
     masked, which is the shape an actual credential arrives in.
     """
+    if _depth >= MAX_DEPTH:
+        # This walks the value on its own, so redact's depth counter does not
+        # cover it: a secret key holding a list nested three thousand deep
+        # raised RecursionError here while the same list under an ordinary key
+        # was fine. Too deep to inspect means masked, which is the safe answer
+        # for a value already sitting under a credential's name.
+        return True
     if isinstance(value, (bool, int, float)):
         return False
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_could_hold_a_credential(item) for item in value)
+        return any(_could_hold_a_credential(item, _depth + 1) for item in value)
     return True
 
 
