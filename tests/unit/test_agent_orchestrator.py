@@ -480,3 +480,63 @@ def test_context_compaction_and_nested_redaction() -> None:
             {"nested": {"providerApiKeys": "***REDACTED***"}},
         ]
     }
+
+
+def test_compaction_never_orphans_a_tool_result_from_its_tool_call() -> None:
+    """A cut between an assistant's tool_calls and its results is a provider 400.
+
+    The tail kept by compaction is a suffix, so a role="tool" at its front is
+    answering a tool_calls message the cut left behind. An OpenAI-compatible API
+    rejects that outright, the run fails, and the scheduler counts a failed run
+    as the mission failing -- so a thread that has grown past the budget starts
+    losing missions to a malformed request rather than to anything about the
+    work. It needs the assistant turns to carry text of their own, which is what
+    a model that narrates before calling a tool produces.
+    """
+    conversation: list[JsonObject] = [{"role": "system", "content": "system prompt"}]
+    for turn in range(60):
+        conversation.append({"role": "user", "content": "x" * 600})
+        conversation.append(
+            {
+                "role": "assistant",
+                "content": "z" * 400,
+                "tool_calls": [
+                    {
+                        "id": f"call{turn}",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        conversation.append(
+            {"role": "tool", "tool_call_id": f"call{turn}", "content": "y" * 1021}
+        )
+
+    compacted = compact_messages(conversation, threshold_percent=70)
+
+    assert len(compacted) < len(conversation), "this input must actually compact"
+    offered: set[str] = set()
+    for message in compacted:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                offered.add(str(call["id"]))
+        elif message.get("role") == "tool":
+            assert str(message["tool_call_id"]) in offered, (
+                "a tool result survived without the tool_calls it answers, "
+                "which the provider rejects with 400"
+            )
+
+
+def test_compaction_keeps_the_newest_turns_and_says_what_it_dropped() -> None:
+    """Dropping the front is the point; dropping it silently is not."""
+    conversation: list[JsonObject] = [{"role": "system", "content": "system prompt"}]
+    conversation += [
+        {"role": "user", "content": f"turn {index}: " + "x" * 4000} for index in range(40)
+    ]
+
+    compacted = compact_messages(conversation, threshold_percent=10, max_chars=20_000)
+
+    assert compacted[0] == conversation[0], "the system prompt is not optional"
+    assert "compacted" in str(compacted[1]["content"])
+    assert str(compacted[-1]["content"]).startswith("turn 39"), "the newest turn must survive"
