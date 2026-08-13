@@ -97,3 +97,54 @@ def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: P
         "provider-reused-id",
         str(second_call["args_sha256"]),
     )
+
+
+def test_the_message_window_keeps_the_recent_end_of_a_long_thread(tmp_path: Path) -> None:
+    """A capped history has to be the latest messages, not the earliest.
+
+    Returning the oldest `limit` froze a long thread at its 500th message: the
+    orchestrator rebuilt that same stale conversation for the provider on every
+    subsequent run, so the agent never saw a later turn on a thread that only
+    grows -- which is what an unattended thread does.
+    """
+    store = AgentStore(tmp_path / "window.db")
+    thread = store.create_thread()
+    for index in range(1, 621):
+        store.add_message(thread.id, "user", f"message {index}")
+
+    window = store.list_messages(thread.id)
+
+    assert len(window) == 500
+    assert window[-1].content == "message 620", "the newest message must be present"
+    assert window[0].content == "message 121", "the window slides, oldest first"
+    assert [m.content for m in window] == [f"message {i}" for i in range(121, 621)]
+
+
+def test_a_message_written_now_is_visible_on_an_already_long_thread(tmp_path: Path) -> None:
+    """The scheduler reads back the marker its own run just wrote.
+
+    With the window pinned to the oldest messages this returned nothing once a
+    thread passed the cap, so every mission burned its full budget and was then
+    reported as "objective not met" -- for an objective that had been met.
+    """
+    store = AgentStore(tmp_path / "marker.db")
+    thread = store.create_thread()
+    for index in range(700):
+        store.add_message(thread.id, "user", f"filler {index}")
+
+    store.add_message(thread.id, "assistant", "MISSION_COMPLETE done", run_id="run-xyz")
+
+    mine = [m for m in store.list_messages(thread.id) if m.run_id == "run-xyz"]
+    assert len(mine) == 1
+    assert mine[0].content.startswith("MISSION_COMPLETE")
+
+
+def test_a_short_thread_is_returned_whole(tmp_path: Path) -> None:
+    """The window only bites past the cap; below it nothing is dropped."""
+    store = AgentStore(tmp_path / "short.db")
+    thread = store.create_thread()
+    for index in range(5):
+        store.add_message(thread.id, "user", f"m{index}")
+
+    assert [m.content for m in store.list_messages(thread.id)] == ["m0", "m1", "m2", "m3", "m4"]
+    assert [m.content for m in store.list_messages(thread.id, limit=2)] == ["m3", "m4"]

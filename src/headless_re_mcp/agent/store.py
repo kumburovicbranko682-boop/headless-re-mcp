@@ -186,8 +186,25 @@ class AgentStore:
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
     def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:
+        """The most recent `limit` messages, oldest first.
+
+        The window has to be the recent end. Taking the oldest `limit` instead
+        froze a long thread at its five-hundredth message: the orchestrator
+        rebuilt the same ancient conversation for the provider on every run and
+        never saw a later turn, and the scheduler could not find the completion
+        marker its own run had just written, so it burned each mission's whole
+        budget and reported an objective that had in fact been met as
+        "not met within N runs". Both are silent on a thread that only grows.
+        """
+        capped = max(1, min(limit, 2000))
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM messages WHERE thread_id=? ORDER BY created_at,id LIMIT ?", (thread_id, max(1, min(limit, 2000)))).fetchall()
+            rows = con.execute(
+                "SELECT * FROM ("
+                "  SELECT * FROM messages WHERE thread_id=?"
+                "  ORDER BY created_at DESC, id DESC LIMIT ?"
+                ") ORDER BY created_at, id",
+                (thread_id, capped),
+            ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 
     def create_run(self, thread_id: str, *, provider_profile: str, model: str | None, deadline_seconds: float) -> AgentRun:

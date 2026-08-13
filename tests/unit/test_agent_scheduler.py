@@ -384,3 +384,29 @@ async def test_a_run_that_never_finishes_does_not_park_the_scheduler(
     # And the queue keeps moving: a second mission is still reachable.
     other = store.create_mission(thread.id, "next one")
     assert store.claim_next_mission().id == other.id
+
+@pytest.mark.asyncio
+async def test_a_mission_still_completes_on_a_thread_past_the_message_cap(
+    tmp_path: Path,
+) -> None:
+    """The failure an unattended deployment hits after a few days of uptime.
+
+    The completion check reads the thread back to find the marker its own run
+    just wrote. While the history window returned the oldest messages, that
+    read came back empty on any thread past the cap, so a met objective was
+    retried until the budget ran out and then filed as EXHAUSTED -- with the
+    error text claiming it was "not met within N runs".
+    """
+    scheduler, store, runner = _scheduler(tmp_path, [f"{MISSION_COMPLETE_MARKER} found it"])
+    thread = store.create_thread()
+    for index in range(700):
+        store.add_message(thread.id, "user", f"earlier turn {index}")
+    mission = store.create_mission(thread.id, "one more objective", max_runs=3)
+
+    assert await scheduler.tick() is True
+
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.COMPLETED, (
+        f"objective was met but the mission ended {final.status.value}: {final.error}"
+    )
+    assert len(runner.started) == 1, "it must not have retried a completed objective"
