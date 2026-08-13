@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from threading import Lock
 from typing import Any
 
 from headless_re_mcp.agent.config import ProviderProfile
@@ -13,6 +14,27 @@ from headless_re_mcp.telemetry import record_alert
 JsonObject = dict[str, Any]
 
 _reported_bad_proxy_env = False
+_ssl_context: Any = None
+_ssl_lock = Lock()
+
+
+def shared_ssl_context(httpx: Any) -> Any:
+    """One verifying SSL context for every provider client.
+
+    httpx builds its own per client and loads the CA bundle each time, which
+    measured 352ms here against 20ms when the context is reused. That cost is
+    paid synchronously, on the event loop the web server shares, once for every
+    LLM round -- so a run with a dozen tool rounds froze the console and the
+    health endpoint for four seconds spread over it.
+
+    Built the way httpx builds its own, so verification is unchanged: the first
+    caller still pays for it once, and nobody pays again.
+    """
+    global _ssl_context
+    with _ssl_lock:
+        if _ssl_context is None:
+            _ssl_context = httpx.create_ssl_context()
+        return _ssl_context
 
 
 def build_client(httpx: Any, **options: Any) -> Any:
@@ -32,6 +54,8 @@ def build_client(httpx: Any, **options: Any) -> Any:
     network, and the alert says which variable to look at.
     """
     global _reported_bad_proxy_env
+    if options.get("transport") is None and "verify" not in options:
+        options["verify"] = shared_ssl_context(httpx)
     try:
         return httpx.AsyncClient(**options)
     except httpx.InvalidURL as exc:

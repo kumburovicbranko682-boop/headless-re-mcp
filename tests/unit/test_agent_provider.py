@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from pathlib import Path
 
 import httpx
@@ -181,6 +182,41 @@ async def test_a_proxy_setting_httpx_cannot_parse_does_not_end_every_run(
     assert client.trust_env is False, "the unusable environment must be left out"
     assert alerts == ["proxy_env_unparseable"], "and the operator must be told which"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_every_client_shares_one_ssl_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building the context per client cost 352ms, on the shared event loop.
+
+    A client is built for every LLM round, so a run with a dozen tool rounds
+    froze the console and the health endpoint for four seconds spread across
+    it. Reusing the context measured 20ms and leaves verification alone.
+    """
+    monkeypatch.setattr(openai_compatible, "_ssl_context", None)
+    seen: list[object] = []
+    real = httpx.AsyncClient
+
+    class Spy:
+        InvalidURL = httpx.InvalidURL
+
+        @staticmethod
+        def AsyncClient(**options: object) -> httpx.AsyncClient:
+            seen.append(options.get("verify"))
+            return real(**options)  # type: ignore[arg-type]
+
+        @staticmethod
+        def create_ssl_context() -> object:
+            return httpx.create_ssl_context()
+
+    first = openai_compatible.build_client(Spy, timeout=5.0, transport=None)
+    second = openai_compatible.build_client(Spy, timeout=5.0, transport=None)
+
+    assert seen[0] is not None, "a client must still verify certificates"
+    assert seen[0] is seen[1], "the context is built once and reused"
+    assert seen[0].verify_mode == ssl.CERT_REQUIRED  # type: ignore[union-attr]
+    assert seen[0].check_hostname is True  # type: ignore[union-attr]
+    await first.aclose()
+    await second.aclose()
 
 
 @pytest.mark.asyncio
