@@ -693,3 +693,39 @@ def test_redaction_leaves_the_analysis_result_it_also_runs_over() -> None:
     assert data["strings"][0] == "https://admin:hunter2@c2.example/beacon", (
         "a credential found in the target is the result, not a secret to hide"
     )
+
+
+@pytest.mark.asyncio
+async def test_arguments_too_deep_to_encode_are_refused_like_oversized_ones(
+    tmp_path: Path,
+) -> None:
+    """The size check encodes the arguments, and encoding is what blows up first.
+
+    Two thousand levels of nesting is 14 KB, well inside the byte limit, and
+    json.dumps gives up before the limit is ever compared. Same answer as too
+    large, since the model has to be told either way.
+    """
+    import sys
+
+    store = AgentStore(tmp_path / "deep.db")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+    )
+
+    sys.setrecursionlimit(20_000)
+    try:
+        nested: Any = "leaf"
+        for _ in range(5_000):
+            nested = {"a": nested}
+    finally:
+        sys.setrecursionlimit(1_000)
+
+    refusal = runner._arguments_too_large({"payload": nested})
+
+    assert refusal is not None
+    assert refusal["error"]["code"] == "arguments_too_large"
+    assert "nested too deeply" in refusal["error"]["message"]
+    assert runner._arguments_too_large({"session_id": "abc"}) is None

@@ -261,7 +261,23 @@ class AgentOrchestrator:
         The refusal goes back as a tool result, which is the one thing the model
         reads, so it can correct itself instead of repeating the call.
         """
-        encoded = len(json.dumps(arguments, ensure_ascii=False, default=str).encode("utf-8"))
+        try:
+            encoded = len(json.dumps(arguments, ensure_ascii=False, default=str).encode("utf-8"))
+        except RecursionError:
+            # Nesting deep enough to exhaust the encoder is the same answer as
+            # too many bytes, and it arrives first: this check runs before
+            # anything else touches the arguments, and 14 KB nested two
+            # thousand deep gets here well inside the size limit.
+            return {
+                "ok": False,
+                "error": {
+                    "code": "arguments_too_large",
+                    "message": (
+                        "arguments are nested too deeply to encode; send a reference "
+                        "such as an artifact_id rather than inline data"
+                    ),
+                },
+            }
         if encoded <= self.max_argument_bytes:
             return None
         return {

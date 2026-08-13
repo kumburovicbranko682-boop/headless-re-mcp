@@ -22,6 +22,7 @@ _SECRET_KEY = re.compile(
     re.I,
 )
 _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+MAX_DEPTH = 250
 
 
 def is_secret_key(key: object) -> bool:
@@ -48,16 +49,24 @@ def _could_hold_a_credential(value: Any) -> bool:
     return True
 
 
-def redact(value: Any) -> Any:
+def redact(value: Any, *, _depth: int = 0) -> Any:
+    if _depth >= MAX_DEPTH:
+        # This walks every tool argument and every tool result, and it recurses.
+        # Python gives up at 1000 frames, and a structure 2000 deep encoded in
+        # 14 KB -- comfortably inside the argument size bound -- raised
+        # RecursionError from inside the store transaction, failing the run with
+        # nothing to explain it. Real payloads are nowhere near: the whole
+        # 263-tool schema export is 12 deep and a detection report is 7.
+        return {"redaction_depth_exceeded": True, "depth": MAX_DEPTH}
     if isinstance(value, Mapping):
         return {
             str(key): "***REDACTED***"
             if is_secret_key(key) and _could_hold_a_credential(item)
-            else redact(item)
+            else redact(item, _depth=_depth + 1)
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [redact(item) for item in value]
+        return [redact(item, _depth=_depth + 1) for item in value]
     if isinstance(value, str):
         return _BEARER.sub("Bearer ***REDACTED***", value)
     return value

@@ -60,3 +60,40 @@ def test_a_bearer_inside_a_string_is_still_masked() -> None:
     assert redact({"header": "Authorization: Bearer abc.def"}) == {
         "header": "Authorization: Bearer ***REDACTED***"
     }
+
+
+def test_a_structure_too_deep_to_walk_is_marked_rather_than_raising() -> None:
+    """This runs over every tool argument and every tool result, and it recurses.
+
+    Python gives up at 1000 frames. A structure two thousand deep encodes in
+    14 KB, comfortably inside the argument size bound, and raised RecursionError
+    from inside the store transaction, failing the run with nothing to explain
+    it. Real payloads are nowhere near: the whole 263-tool schema export is 12
+    deep and a detection report is 7.
+    """
+    import sys
+
+    def build(levels: int) -> Any:
+        sys.setrecursionlimit(20_000)
+        try:
+            value: Any = "leaf"
+            for _ in range(levels):
+                value = {"a": value}
+            return value
+        finally:
+            sys.setrecursionlimit(1_000)
+
+    shallow = redact(build(12))
+    assert "redaction_depth_exceeded" not in str(shallow), "ordinary payloads are untouched"
+
+    deep = redact(build(2_000))
+    assert "redaction_depth_exceeded" in str(deep), "and the cut is stated, not silent"
+
+
+def test_a_secret_below_a_few_levels_is_still_found() -> None:
+    """The depth bound must not become a way to smuggle a credential past it."""
+    nested: Any = {"api_key": "sk-live-abcdef"}
+    for _ in range(20):
+        nested = {"wrapper": nested}
+
+    assert "sk-live-abcdef" not in str(redact(nested))
