@@ -166,7 +166,15 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         reason: str = "cancelled by caller",
     ) -> dict[str, Any]:
-        """Cancel unpack orchestration; original input is never overwritten."""
+        """Stop unpack orchestration. Undoes nothing that already happened.
+
+        The original input is never overwritten, but that is the only guarantee:
+        dumps already written stay on disk and stay registered, and a debuggee
+        whose memory the run altered keeps those changes. The reply says so as
+        artifacts_retained and safe_rollback, which is worth reading before
+        cancelling in order to retry, since the next attempt starts from what
+        this one left behind.
+        """
         return _dump(analysis.unpack_cancel(session_id, reason=reason))
 
     @tools.tool(name="unpack.artifacts")
