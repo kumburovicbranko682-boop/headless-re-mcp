@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 JsonObject = dict[str, Any]
 _MAX_LINES = 10_000
@@ -15,6 +18,17 @@ _MAX_BYTES = 8 * 1024 * 1024
 # those took three. Every tool call writes here, so that slowdown was the
 # session's, not just the log's.
 _TRIM_TO_BYTES = 6 * 1024 * 1024
+
+# Trimming rewrites the file, and on Windows replacing one that another thread
+# still holds open for append fails outright, so the two have to be serialised.
+# Striped rather than one lock per path: the stripe count bounds the memory a
+# long-lived process spends on this, and two unrelated sessions sharing a stripe
+# wait microseconds for each other.
+_STRIPES = tuple(Lock() for _ in range(64))
+
+
+def _timeline_lock(path: Path) -> Lock:
+    return _STRIPES[hash(str(path)) % len(_STRIPES)]
 
 
 def session_timeline_path(artifact_root: Path, session_id: str) -> Path:
@@ -28,7 +42,15 @@ def append_session_timeline(
     message: str,
     details: JsonObject | None = None,
 ) -> JsonObject:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Append one diagnostic entry. Reports a write failure, never raises it.
+
+    This is a log, not a result. Raising made a full volume fail the operation
+    that had already succeeded and was only recording that it had -- the caller
+    saw internal_error for a dump that was on disk. One call site guarded it and
+    the shared one did not, so the answer depended on which path reached here.
+    ``write_failed`` in the returned entry is how a caller that wants to say so
+    finds out.
+    """
     entry = {
         "at": datetime.now(UTC).isoformat(),
         "event": event,
@@ -36,19 +58,24 @@ def append_session_timeline(
         "details": dict(details or {}),
     }
     line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
-    size = path.stat().st_size if path.is_file() else 0
-    if size + len(line) > _MAX_BYTES:
-        size = _trim_timeline(path, reserve=len(line))
-    # Appended rather than rewritten, which gives up whole-file atomicity for one
-    # line. A torn line fails to parse and list_session_timeline already skips
-    # those; a torn diagnostic log is a better trade than a session that slows
-    # down as it runs.
-    with path.open("ab+") as stream:
-        if size:
-            stream.seek(-1, os.SEEK_END)
-            if stream.read(1) != b"\n":
-                stream.write(b"\n")
-        stream.write(line)
+    try:
+        with _timeline_lock(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            size = path.stat().st_size if path.is_file() else 0
+            if size + len(line) > _MAX_BYTES:
+                size = _trim_timeline(path, reserve=len(line))
+            # Appended rather than rewritten, which gives up whole-file atomicity
+            # for one line. A torn line fails to parse and list_session_timeline
+            # already skips those; a torn diagnostic log is a better trade than a
+            # session that slows down as it runs.
+            with path.open("ab+") as stream:
+                if size:
+                    stream.seek(-1, os.SEEK_END)
+                    if stream.read(1) != b"\n":
+                        stream.write(b"\n")
+                stream.write(line)
+    except OSError as exc:
+        entry["write_failed"] = f"{type(exc).__name__}: {exc}"
     return entry
 
 
@@ -70,9 +97,17 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
         total += len(raw)
     kept.reverse()
     payload = b"".join(kept)
-    partial = path.with_suffix(path.suffix + ".partial")
-    partial.write_bytes(payload)
-    partial.replace(path)
+    # Unique per trim. Nothing serialises appends to one session, so two that
+    # cross the cap together would otherwise share this path, and on Windows
+    # replacing a file the other still holds open is a sharing violation.
+    partial = path.with_suffix(f"{path.suffix}.{uuid4().hex}.partial")
+    try:
+        partial.write_bytes(payload)
+        partial.replace(path)
+    except OSError:
+        with suppress(OSError):
+            partial.unlink()
+        raise
     return len(payload)
 
 

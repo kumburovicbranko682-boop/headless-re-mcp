@@ -630,25 +630,25 @@ class StaticAnalysisMixin:
         else:
             artifact_path = written
             payload["patch_artifact"] = str(written)
-        try:
-            from headless_re_mcp.core.store.timeline import (
-                append_session_timeline,
-                session_timeline_path,
-            )
+        from headless_re_mcp.core.store.timeline import (
+            append_session_timeline,
+            session_timeline_path,
+        )
 
-            append_session_timeline(
-                session_timeline_path(self.settings.artifact_root, session_id),
-                event=f"static.{operation}",
-                message=f"static write {operation}",
-                details={
-                    "operation": operation,
-                    "patch_artifact": str(artifact_path) if artifact_path else None,
-                    "address": payload.get("address"),
-                },
-            )
-            payload["timeline_event"] = f"static.{operation}"
-        except OSError:
+        logged = append_session_timeline(
+            session_timeline_path(self.settings.artifact_root, session_id),
+            event=f"static.{operation}",
+            message=f"static write {operation}",
+            details={
+                "operation": operation,
+                "patch_artifact": str(artifact_path) if artifact_path else None,
+                "address": payload.get("address"),
+            },
+        )
+        if "write_failed" in logged:
             payload["timeline_write_failed"] = True
+        else:
+            payload["timeline_event"] = f"static.{operation}"
         return _success(
             payload,
             session_id=session_id,
