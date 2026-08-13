@@ -118,7 +118,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def timeline_list(
         session_id: str, offset: int = 0, limit: Annotated[int, Field(ge=1, le=256)] = 100
     ) -> dict[str, Any]:
-        """Read one session's event log: what was attempted, in order, and how it ended."""
+        """What a session did that left a mark: opened, closed, wrote, drove a UI.
+
+        Not a log of every call. Reads are absent, so a session that analysed
+        for an hour without changing anything shows only its open and close.
+        Each write carries the undo record written alongside it.
+        """
         return _dump(analysis.timeline_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="sessions.unclean")
@@ -139,7 +144,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
-        """Read the audit trail of state-changing calls: what ran, with what, and the outcome."""
+        """Session opens, session closes and UI drives, with arguments and outcome.
+
+        Narrower than it sounds: a static write appears in timeline.list rather
+        than here. Use this to ask which sessions ran and how they ended, and
+        timeline.list to ask what one of them changed.
+        """
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="session.health")
