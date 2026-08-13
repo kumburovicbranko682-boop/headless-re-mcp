@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -59,3 +61,38 @@ def pytest_configure() -> None:
         if value:
             os.environ[variable] = str(value)
     _default_ida_gate_binary()
+
+
+def _hidden_desktop_is_on() -> bool:
+    override = os.environ.get("HEADLESS_RE_HIDDEN_DESKTOP")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        return bool(Settings.load().hidden_desktop)
+    except Exception:  # noqa: BLE001 - never block collection on config problems
+        return False
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip window-driving gates when the session runs on a hidden desktop.
+
+    Those gates enumerate and click windows on the desktop the test process
+    owns. Under hidden_desktop the debuggee's windows are on a separate Win32
+    desktop object, so the gates find nothing and fail with "window not
+    observed" -- which reads like a broken debugger rather than a
+    configuration that put the windows somewhere else.
+
+    It matters because hidden_desktop is what an unattended deployment runs,
+    so the suite was unrunnable in its own production configuration without
+    nine confusing failures. A skip that names the variable says which of the
+    two the operator is looking at.
+    """
+    if not _hidden_desktop_is_on():
+        return
+    skip = pytest.mark.skip(
+        reason="HEADLESS_RE_HIDDEN_DESKTOP is on; this gate drives windows on the "
+        "visible desktop. Unset it to run these."
+    )
+    for item in items:
+        if "visible_desktop" in item.keywords:
+            item.add_marker(skip)

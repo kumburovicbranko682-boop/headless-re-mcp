@@ -12,6 +12,10 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Architecture, ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 
+# These gates enumerate and click real windows on the desktop this process
+# owns, so they cannot see a debuggee running on a hidden desktop.
+pytestmark = pytest.mark.visible_desktop
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _INTENT_ID = "gui-transform"
 _MODULE_KEY = "gui-fixture"

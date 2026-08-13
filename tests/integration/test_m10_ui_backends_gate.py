@@ -14,6 +14,10 @@ from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.core.ui_ocr import windows_ocr_available
 from headless_re_mcp.core.ui_uia import uia_available
 
+# These gates enumerate and click real windows on the desktop this process
+# owns, so they cannot see a debuggee running on a hidden desktop.
+pytestmark = pytest.mark.visible_desktop
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 

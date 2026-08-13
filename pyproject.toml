@@ -62,6 +62,7 @@ addopts = "-ra"
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
+  "visible_desktop: drives real windows, so it cannot run under HEADLESS_RE_HIDDEN_DESKTOP",
 ]
 
 [tool.coverage.run]

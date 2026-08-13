@@ -234,6 +234,7 @@ python -m compileall -q src tests
 python -m pip check
 python -m pytest tests/unit -q
 python -m pytest tests/integration -q -rs   # 需本机后端；-rs 会列出每个 skip 的原因
+#   开了 HEADLESS_RE_HIDDEN_DESKTOP 时 test_m10_ui_* 会跳过，见下方「硬约束」一节
 python -m headless_re_mcp doctor --json --strict
 ```
 
@@ -252,6 +253,10 @@ npm run build          # 产物直接写入 src/headless_re_mcp/web/spa
 `tests/integration/test_m10_ui_*` 会驱动目标窗口，需要独占的交互桌面：跑这几个 gate 时不要在
 同一会话里安装软件或打开别的窗口，否则前台焦点被抢会得到 `no foreground window for SendInput`
 或 `SendMessageTimeout`，那是环境干扰而不是回归。
+
+它们枚举的是**当前**桌面，所以和 `HEADLESS_RE_HIDDEN_DESKTOP=1` 互斥：开着隐藏桌面时被调试进程
+的窗口在另一个 Win32 Desktop 对象上，这 9 个 gate 会带 `visible_desktop` 标记明确跳过（而不是
+以「窗口没观察到」失败）。要覆盖这部分就临时取消该变量再单独跑。
 
 ## 隔离部署
 
