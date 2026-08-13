@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -268,8 +269,15 @@ def test_a_transport_fault_during_a_call_does_not_kill_the_debuggee(
     settings: Settings,
     fixture_binary: Path,
 ) -> None:
-    """The fault has to arrive the way it does in production: through a request."""
-    service = AnalysisService(settings)
+    """The fault has to arrive the way it does in production: through a request.
+
+    The background drain is off for this one. It polls every 50ms, so it reaches
+    the broken pipe first, closes the channel, and the request below then finds
+    no transport and quietly rebuilds one -- which is the right thing to happen
+    and the wrong thing to be measuring here. Whichever got there first decided
+    whether this passed.
+    """
+    service = AnalysisService(replace(settings, debug_event_background_drain=False))
     session_id = str(
         _object(_data(service.create_session(str(fixture_binary)))["session"])["id"]
     )
