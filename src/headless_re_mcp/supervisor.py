@@ -97,6 +97,14 @@ class Supervisor:
     grace_period_s: float = 30.0
     unhealthy_strikes: int = 3
     max_restarts: int | None = None
+    # An exit meaning the target declined to run rather than failed to. 78 is
+    # the sysexits convention for a correct invocation against a configuration
+    # that cannot work, and it is far enough from the small numbers an ordinary
+    # crash produces not to catch one by accident. Measured before this: a
+    # second supervisor restarted a child that was refusing on a 2, 4, 8, 16
+    # second backoff, logging only "crashed", while the reason the child gave
+    # went to its own console rather than the supervisor's log.
+    refusal_exit_codes: frozenset[int] = frozenset({78})
     # Spawned without a console: the supervisor exists to restart the child, so
     # a visible window here means one new window per restart on a machine that
     # is meant to be running unattended.
@@ -159,6 +167,20 @@ class Supervisor:
                         "child.exited",
                         code=self.report.last_exit_code,
                         uptime_s=round(uptime, 1),
+                    )
+                    return self.report
+
+                if self.report.last_exit_code in self.refusal_exit_codes:
+                    # Not a crash. The target looked at its environment, decided
+                    # it must not run, and said so. Restarting cannot change
+                    # that, and the reason it printed went to its own console
+                    # rather than here, so an operator reading this log would
+                    # otherwise see nothing but "crashed" on a loop.
+                    self.report.stopped_reason = "child_refused_to_start"
+                    self._log(
+                        "supervisor.child_refused",
+                        exit_code=self.report.last_exit_code,
+                        detail="the target refused to start; a restart cannot change that",
                     )
                     return self.report
 

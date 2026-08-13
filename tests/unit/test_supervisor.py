@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -378,6 +379,97 @@ def test_child_argv_reuses_this_interpreter_and_carries_the_config() -> None:
 def test_stdio_child_argv_has_no_http_flags() -> None:
     argv = build_child_argv("serve", host="127.0.0.1", port=9001)
     assert "--host" not in argv and "--port" not in argv
+
+def test_a_child_that_refuses_to_start_is_not_restarted(tmp_path: Path) -> None:
+    """A refusal is not a crash, and a retry cannot change it.
+
+    The web console exits 78, the sysexits code for a configuration that
+    cannot work, when another instance already holds the artifact root.
+    Measured with two supervisors against one root: the second restarted its
+    refused child on a 2, 4, 8, 16 second backoff, logging only reason crashed,
+    while the reason the child printed went to its own console rather than the
+    supervisor's log.
+    """
+    starts: list[int] = []
+
+    class Refuses:
+        def __init__(self) -> None:
+            self.pid = 4242
+            self._code: int | None = None
+
+        def poll(self) -> int | None:
+            self._code = 78
+            return self._code
+
+        def terminate(self) -> None:
+            return
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 78
+
+    def spawn(argv: Sequence[str]) -> Refuses:
+        starts.append(1)
+        return Refuses()
+
+    records: list[dict[str, object]] = []
+    supervisor = Supervisor(
+        argv=["x"],
+        ready_url=None,
+        check_interval_s=0.01,
+        grace_period_s=0.0,
+        spawn=spawn,
+        sleep=lambda _seconds: None,
+        log=records.append,
+        max_restarts=20,
+    )
+
+    report = supervisor.run_forever()
+
+    assert len(starts) == 1, "a refusal must be tried exactly once"
+    assert report.stopped_reason == "child_refused_to_start"
+    refusal = [item for item in records if item.get("event") == "supervisor.child_refused"]
+    assert refusal and refusal[0]["exit_code"] == 78
+    assert "restart cannot change" in str(refusal[0]["detail"])
+
+
+def test_a_child_that_really_crashed_is_still_restarted(tmp_path: Path) -> None:
+    """The distinction has to hold the other way, or nothing gets restarted."""
+    starts: list[int] = []
+
+    class Crashes:
+        def __init__(self) -> None:
+            self.pid = 99
+            self.terminated = False
+
+        def poll(self) -> int | None:
+            return 1
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    def spawn(argv: Sequence[str]) -> Crashes:
+        starts.append(1)
+        return Crashes()
+
+    supervisor = Supervisor(
+        argv=["x"],
+        ready_url=None,
+        check_interval_s=0.01,
+        grace_period_s=0.0,
+        spawn=spawn,
+        sleep=lambda _seconds: None,
+        log=lambda _record: None,
+        max_restarts=3,
+    )
+
+    report = supervisor.run_forever()
+
+    assert len(starts) > 1, "an ordinary crash must still be restarted"
+    assert report.stopped_reason in {"crash_loop", "restart_limit"}
+
 
 def test_the_real_default_spawn_starts_and_restarts_an_actual_process(
     tmp_path: Path,

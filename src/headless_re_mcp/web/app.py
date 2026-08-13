@@ -134,7 +134,10 @@ def run_web(
             "第二个实例会把前一个正在执行的 run 标记为中断并重新排队它的任务，"
             "两个调度器随后会抢同一个数据库。请先停止它，或改用其它 artifact_root。"
         )
-        return 4
+        # 78 is the sysexits code for a correct invocation against a
+        # configuration that cannot work. A supervisor reads it as a refusal and
+        # stops, rather than restarting a child that will refuse again.
+        return 78
 
     configure_telemetry_logging()
     token, token_path = ensure_web_token(settings)
