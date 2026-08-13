@@ -193,6 +193,54 @@ def test_artifact_probe_leaves_nothing_behind(tmp_path: Path) -> None:
     assert list(root.iterdir()) == []
 
 
+def test_the_readiness_probe_never_waits_for_the_disk_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walk is capped by file count, not by time, so it cannot be inline.
+
+    Measured here: 938 files took 154ms and 50,000 -- the cap -- took 5.9s. The
+    supervisor allows a probe five seconds before counting a strike, and disk
+    use is reported rather than gated, so an informational field was deciding
+    whether the process looked alive. Worse, a walk slower than the TTL leaves
+    every probe refreshing, which is three late answers in a row and a restart.
+    """
+    from headless_re_mcp.core import retention as module
+
+    walks: list[float] = []
+
+    def slow_walk(root: Path, *, file_limit: int = 0) -> module.DiskUsage:
+        walks.append(time.perf_counter())
+        time.sleep(0.6)
+        return module.DiskUsage(bytes=4096, files=7, truncated=False)
+
+    monkeypatch.setattr(module, "measure_usage", slow_walk)
+    cache = module.UsageCache(ttl_s=0.05)
+
+    started = time.perf_counter()
+    first = cache.get(tmp_path)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.2, f"the probe waited {elapsed:.2f}s on a walk it must not run"
+    assert first.files == 0 and first.truncated is True, "an unmeasured floor, said as one"
+
+    for _ in range(100):
+        if cache.get(tmp_path).files == 7:
+            break
+        time.sleep(0.02)
+    measured = cache.get(tmp_path)
+    assert measured.files == 7, "the background walk must land"
+    assert measured.bytes == 4096
+
+    time.sleep(0.1)  # let it go stale
+    started = time.perf_counter()
+    stale = cache.get(tmp_path)
+    assert time.perf_counter() - started < 0.2, "a stale value is still served immediately"
+    assert stale.files == 7, "the previous answer stands until a new one arrives"
+
+    assert len(walks) <= 3, f"one refresh at a time, saw {len(walks)}"
+
+
 def test_two_readiness_probes_at_once_do_not_fail_each_other(tmp_path: Path) -> None:
     """Sharing one probe file makes concurrent checks report a false failure.
 

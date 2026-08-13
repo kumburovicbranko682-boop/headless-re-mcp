@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any, Protocol
 
 JsonObject = dict[str, Any]
@@ -105,20 +105,57 @@ class ArtifactRetention:
 
 @dataclass(slots=True)
 class UsageCache:
-    """Cache the directory walk so probes can ask often and cheaply."""
+    """Serve the last directory walk, and take the next one off the caller.
+
+    The walk is bounded by a file count rather than by time: 938 files measured
+    154ms here and 50,000 -- the cap -- took 5.9 seconds. Refreshing inside the
+    caller made every probe that landed on an expiry pay that, which showed up
+    as a readiness endpoint answering in 20ms and then 200ms once every TTL.
+
+    The supervisor allows a probe five seconds before it counts a strike, so on
+    a large tree an expiry answers late; and a tree slow enough that one walk
+    outlasts the TTL leaves every probe refreshing, which is three late answers
+    in a row and a restart of a healthy service. Disk use is reported and never
+    gated, so none of that was deciding anything -- it was an informational
+    field deciding whether the process looked alive.
+
+    So the caller never walks. It gets whatever was measured last, and a stale
+    value starts one background refresh for whoever asks next.
+    """
 
     ttl_s: float = DEFAULT_USAGE_TTL_S
     _value: DiskUsage | None = field(default=None)
     _at: float = field(default=0.0)
     _lock: Lock = field(default_factory=Lock)
+    _refreshing: bool = field(default=False)
 
     def get(self, root: Path, *, now: float | None = None) -> DiskUsage:
         moment = time.monotonic() if now is None else now
         with self._lock:
-            if self._value is not None and moment - self._at < self.ttl_s:
-                return self._value
-        measured = measure_usage(root)
+            value = self._value
+            stale = value is None or moment - self._at >= self.ttl_s
+            claim = stale and not self._refreshing
+            if claim:
+                self._refreshing = True
+        if claim:
+            Thread(
+                target=self._refresh,
+                args=(root,),
+                name="artifact-usage",
+                daemon=True,
+            ).start()
+        if value is not None:
+            return value
+        # Never measured. Zero with truncated set is what this already means
+        # elsewhere: a floor, not the whole story.
+        return DiskUsage(bytes=0, files=0, truncated=True)
+
+    def _refresh(self, root: Path) -> None:
+        try:
+            measured = measure_usage(root)
+        finally:
+            with self._lock:
+                self._refreshing = False
         with self._lock:
             self._value = measured
-            self._at = moment
-        return measured
+            self._at = time.monotonic()
