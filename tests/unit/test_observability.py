@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sqlite3
 import threading
 import time
 import tomllib
@@ -192,6 +193,44 @@ def test_artifact_probe_leaves_nothing_behind(tmp_path: Path) -> None:
 
     assert probe_artifact_root(root).ok is True
     assert list(root.iterdir()) == []
+
+
+def test_a_collector_that_has_stopped_working_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken collector stops enforcing the byte budget, silently.
+
+    Not raising is right, since retention runs from ordinary paths such as
+    closing a session and must not fail them. But it was also not reported, so
+    the only symptom was disk use climbing past the budget with nothing to
+    explain it. Once, because collection runs on every registration.
+    """
+    from headless_re_mcp.core import retention as retention_module
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        retention_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    class Broken:
+        def __init__(self) -> None:
+            self.works = False
+
+        def gc_artifacts(self, *, max_total_bytes: int) -> dict[str, object]:
+            if not self.works:
+                raise sqlite3.OperationalError("database disk image is malformed")
+            return {"removed": []}
+
+    collector = Broken()
+    policy = retention_module.ArtifactRetention(max_total_bytes=1024, min_interval_s=0.0)
+
+    assert policy.maybe_collect(collector) is None
+    assert policy.maybe_collect(collector) is None
+    assert alerts == ["artifact_collection_failing"], f"once, not per call: {alerts}"
+
+    collector.works = True
+    assert policy.maybe_collect(collector) is not None
+    assert alerts[-1] == "artifact_collection_recovered", "and says when it is working again"
 
 
 def test_routine_stdio_logs_do_not_go_on_the_pipe_a_client_may_not_read(

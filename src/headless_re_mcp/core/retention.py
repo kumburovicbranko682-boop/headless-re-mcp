@@ -16,6 +16,8 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Protocol
 
+from headless_re_mcp.telemetry import record_alert
+
 JsonObject = dict[str, Any]
 
 DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -78,29 +80,64 @@ class ArtifactRetention:
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
     min_interval_s: float = DEFAULT_MIN_INTERVAL_S
     _last_run: float = field(default=0.0)
+    _pending_bytes: int = field(default=0)
+    _failing: bool = field(default=False)
     _lock: Lock = field(default_factory=Lock)
 
     @property
     def enabled(self) -> bool:
         return self.max_total_bytes > 0
 
+    @property
+    def burst_bytes(self) -> int:
+        """How much new material makes a collection worth doing immediately."""
+        return max(1, self.max_total_bytes // 2)
+
     def maybe_collect(
-        self, collector: _Collector, *, now: float | None = None
+        self, collector: _Collector, *, now: float | None = None, added_bytes: int = 0
     ) -> JsonObject | None:
-        """Collect if the budget is set and the throttle window has elapsed."""
+        """Collect when the window has elapsed, or sooner if a burst demands it.
+
+        Time alone is the wrong throttle for a producer that outruns it. A UI
+        loop writing multi-megabyte bitmaps put 60 MB on disk against an 8 MB
+        budget in under a second, all of it inside one throttle window, so the
+        budget never applied. Registered volume is therefore a trigger of its
+        own, which bounds the overshoot to the burst threshold instead of to
+        whatever the producer manages in a minute.
+        """
         if not self.enabled:
             return None
         moment = time.monotonic() if now is None else now
         with self._lock:
-            if moment - self._last_run < self.min_interval_s:
+            self._pending_bytes += max(0, added_bytes)
+            elapsed = moment - self._last_run >= self.min_interval_s
+            if not elapsed and self._pending_bytes < self.burst_bytes:
                 return None
             self._last_run = moment
+            self._pending_bytes = 0
         try:
-            return collector.gc_artifacts(max_total_bytes=self.max_total_bytes)
-        except Exception:
+            collected = collector.gc_artifacts(max_total_bytes=self.max_total_bytes)
+        except Exception as exc:
             # Retention is maintenance. A failure here must never turn into a
             # failed session close for the caller that happened to trigger it.
+            # It must still be audible: a collector that has stopped working
+            # stops enforcing the budget, and the only visible symptom is disk
+            # use climbing past it with nothing to explain why. Once, because
+            # this runs on every registration.
+            if not self._failing:
+                self._failing = True
+                record_alert(
+                    "artifact_collection_failing",
+                    fields={
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "consequence": "the artifact byte budget is no longer being enforced",
+                    },
+                )
             return None
+        if self._failing:
+            self._failing = False
+            record_alert("artifact_collection_recovered", fields={"detail": "collection succeeded"})
+        return collected
 
 
 @dataclass(slots=True)
