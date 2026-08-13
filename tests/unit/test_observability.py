@@ -195,6 +195,30 @@ def test_artifact_probe_leaves_nothing_behind(tmp_path: Path) -> None:
     assert list(root.iterdir()) == []
 
 
+def test_disk_usage_is_not_reported_before_it_has_been_measured() -> None:
+    """A zero here reads as the disk having been emptied.
+
+    The artifact walk runs in the background so a readiness probe never waits
+    on it, and until the first one finishes the answer is zero bytes marked
+    truncated -- a floor, not a measurement. The supervisor restarts the
+    console often enough that a scrape lands in that window. No sample is the
+    honest answer: a gap in the series says nothing, a zero says something
+    false.
+    """
+    def document(disk: dict[str, object]) -> str:
+        return render({}, build_info(), readiness={"ready": True, "disk": disk})
+
+    not_yet = document({"bytes": 0, "truncated": True, "budget_bytes": 100})
+    assert "headless_re_artifact_bytes " not in not_yet
+    assert "headless_re_artifact_budget_bytes " in not_yet, "the budget is configuration"
+
+    measured = document({"bytes": 4096, "truncated": False, "budget_bytes": 100})
+    assert "headless_re_artifact_bytes 4096" in measured
+
+    partial = document({"bytes": 4096, "truncated": True, "budget_bytes": 100})
+    assert "headless_re_artifact_bytes 4096" in partial, "a capped walk is still a real floor"
+
+
 def test_a_collector_that_has_stopped_working_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

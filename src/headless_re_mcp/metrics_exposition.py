@@ -27,6 +27,19 @@ def _labels(pairs: Mapping[str, str]) -> str:
     return "{" + rendered + "}"
 
 
+def _has_been_measured(disk: Mapping[str, object]) -> bool:
+    """Whether the artifact walk has produced a figure yet.
+
+    The walk runs in the background so a readiness probe never waits on it, and
+    until the first one finishes the answer is zero bytes marked truncated: a
+    floor, not a measurement. Emitted as a gauge that reads as the disk having
+    been emptied, and the supervisor restarts the console often enough that a
+    scrape catches that window. No sample is the honest answer -- a gap in the
+    series says nothing, where a zero says something false.
+    """
+    return not (disk.get("truncated") and not disk.get("bytes"))
+
+
 def _family(
     name: str,
     kind: str,
@@ -126,12 +139,15 @@ def render(
         )
         disk = readiness.get("disk", {})
         if disk:
-            lines += _family(
-                f"{PREFIX}_artifact_bytes",
-                "gauge",
-                "Bytes under the artifact root, including files no collector tracks.",
-                [({}, float(disk.get("bytes", 0)))],
-            )
+            if _has_been_measured(disk):
+                lines += _family(
+                    f"{PREFIX}_artifact_bytes",
+                    "gauge",
+                    "Bytes under the artifact root, including files no collector tracks.",
+                    [({}, float(disk.get("bytes", 0)))],
+                )
+            # The budget is configuration rather than a measurement, so it is
+            # known from the first scrape and always reported.
             lines += _family(
                 f"{PREFIX}_artifact_budget_bytes",
                 "gauge",

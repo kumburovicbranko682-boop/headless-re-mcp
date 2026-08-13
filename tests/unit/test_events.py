@@ -490,3 +490,52 @@ def test_a_drain_pump_that_stops_draining_says_so(monkeypatch: pytest.MonkeyPatc
     pump.drain_once()
     assert pump.consecutive_failures == 0
     assert [kind for kind, _ in alerts][-1] == "event_drain_recovered"
+
+
+def test_reading_across_the_memory_window_loses_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the newest events stay in memory; the rest come back from SQLite.
+
+    The window keeps a long session from holding every debug event in RAM, and
+    it put a seam in the middle of the read path. A consumer walking the log
+    with a cursor crosses that seam without knowing it, and an event dropped or
+    repeated there is a workflow decision made on the wrong history.
+    """
+    import headless_re_mcp.core.event_log as event_log
+    from headless_re_mcp.core.events import DebugEvent
+
+    monkeypatch.setattr(event_log, "MEMORY_WINDOW_EVENTS", 64)
+    log = event_log.PersistentDebugEventLog(tmp_path / "events.db")
+    total = 64 * 3 + 17
+    log.append_events(
+        [
+            DebugEvent(
+                sequence=index,
+                timestamp_unix_ms=index,
+                source="x64dbg",
+                kind="debug.stopped",
+                data={},
+            )
+            for index in range(1, total + 1)
+        ]
+    )
+
+    for after in (0, 1, 63, 64, 65, total // 2, total - 1, total, total + 5):
+        read = log.read_after(after, limit=1_000_000)
+        assert [event.sequence for event in read.batch.events] == list(
+            range(after + 1, total + 1)
+        ), f"cursor {after} did not return the whole tail"
+
+    cursor, seen, from_disk = 0, [], 0
+    while True:
+        page = log.read_after(cursor, limit=7)
+        if not page.batch.events:
+            break
+        from_disk += 1 if page.replayed_from_store else 0
+        seen.extend(event.sequence for event in page.batch.events)
+        cursor = page.batch.events[-1].sequence
+
+    assert seen == list(range(1, total + 1)), "a paged walk must see every event exactly once"
+    assert from_disk > 0, "and must actually have crossed out of the window"
