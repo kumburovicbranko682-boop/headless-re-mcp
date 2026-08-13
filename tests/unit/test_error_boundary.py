@@ -72,6 +72,38 @@ def test_web_exception_returns_json_instead_of_crashing(incident_log: Path) -> N
     assert incident_log.is_file()
 
 
+def test_the_boundary_still_answers_when_its_own_log_cannot_be_opened(
+    incident_log: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A volume with no space must not turn one failure into two.
+
+    Every caller of record_exception is already handling a failure: except
+    blocks, the three excepthooks, the asyncio handler, and the scheduler loop.
+    A second exception thrown from inside the recorder escapes all of them, and
+    in the scheduler that ends the task for good while HTTP carries on
+    answering 200 -- the outage with no symptom anyone is watching.
+    """
+
+    def full_disk(*args: object, **kwargs: object) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(boundary, "attach_rotating_handler", full_disk)
+
+    incident = boundary.record_exception(RuntimeError("original failure"), context="probe")
+
+    assert incident["incident_id"], "the caller still needs an id to report"
+    assert incident["message"] == "original failure", "the original failure must survive"
+    assert incident["log_path"] is None, "an unwritten log must not be claimed as written"
+
+    def boom() -> dict[str, object]:
+        raise RuntimeError("broken")
+
+    result = boundary.guard_tool_handler(boom, tool_name="test.boom")()
+    assert result["ok"] is False
+    assert result["error"]["code"] == "internal_error"  # type: ignore[index]
+
+
 def test_background_thread_exception_is_logged(incident_log: Path) -> None:
     boundary.install_global_exception_hooks("test-process")
 

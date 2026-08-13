@@ -68,31 +68,42 @@ def record_exception(
     context: str,
     traceback: TracebackType | None = None,
 ) -> JsonObject:
-    """Write one traceback and return the safe fields exposed to callers."""
+    """Write one traceback and return the safe fields exposed to callers.
+
+    Never raises. Every caller is already handling a failure -- except blocks,
+    the three excepthooks, the asyncio handler, the scheduler loop -- and most
+    have nowhere to put a second one. Opening the log is what fails: a volume
+    with no space left raises here, and in the scheduler that exception leaves
+    the loop, ending the task for good while HTTP carries on answering 200.
+    """
 
     incident_id = uuid.uuid4().hex
-    log_path = configure_incident_logging()
     safe_message = _redact_text(exc)
-    safe_exception = RuntimeError(f"{type(exc).__name__}: {safe_message}")
-    logger = logging.getLogger(_LOGGER_NAME)
-    logger.error(
-        "incident_id=%s context=%s exception=%s message=%s",
-        incident_id,
-        _redact_text(context, limit=300),
-        type(exc).__name__,
-        safe_message,
-        exc_info=(
-            type(safe_exception),
-            safe_exception,
-            traceback if traceback is not None else exc.__traceback__,
-        ),
-    )
+    safe_context = _redact_text(context, limit=300)
+    log_path: Path | None = None
+    try:
+        log_path = configure_incident_logging()
+        safe_exception = RuntimeError(f"{type(exc).__name__}: {safe_message}")
+        logging.getLogger(_LOGGER_NAME).error(
+            "incident_id=%s context=%s exception=%s message=%s",
+            incident_id,
+            safe_context,
+            type(exc).__name__,
+            safe_message,
+            exc_info=(
+                type(safe_exception),
+                safe_exception,
+                traceback if traceback is not None else exc.__traceback__,
+            ),
+        )
+    except BaseException:  # noqa: BLE001 - the last resort cannot have one of its own
+        log_path = None
     return {
         "incident_id": incident_id,
-        "context": _redact_text(context, limit=300),
+        "context": safe_context,
         "exception_type": type(exc).__name__,
         "message": safe_message,
-        "log_path": str(log_path),
+        "log_path": str(log_path) if log_path is not None else None,
     }
 
 
@@ -100,9 +111,14 @@ def exception_envelope(exc: BaseException, *, context: str) -> JsonObject:
     """Return the canonical AI-readable envelope for an unexpected exception."""
 
     incident = record_exception(exc, context=context)
+    where = (
+        "was written to the local log"
+        if incident["log_path"] is not None
+        else "could not be written to the local log"
+    )
     message = (
         f"Unexpected {incident['exception_type']}: {incident['message']}. "
-        f"Incident {incident['incident_id']} was written to the local log."
+        f"Incident {incident['incident_id']} {where}."
     )
     return {
         "ok": False,

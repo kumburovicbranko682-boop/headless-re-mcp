@@ -272,6 +272,52 @@ async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_the_loop_survives_an_incident_log_that_cannot_be_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recorder this loop leans on used to raise on a full volume.
+
+    Every tick is wrapped so one bad mission cannot stop the scheduler, but the
+    wrapper reports the failure through record_exception, and that call opened
+    the incident log. With no space left it raised from inside the except block,
+    left _loop, and ended the task permanently -- no missions ever again, while
+    the web server in the same process kept answering 200.
+    """
+    import headless_re_mcp.error_boundary as boundary
+
+    def full_disk(*args: object, **kwargs: object) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(boundary, "_LOG_PATH", None)
+    monkeypatch.setattr(boundary, "attach_rotating_handler", full_disk)
+
+    attempts: list[str] = []
+    store = AgentStore(tmp_path / "agent.db")
+
+    async def start_but_explode(thread_id: str, **kwargs: Any) -> JsonObject:
+        attempts.append(thread_id)
+        raise RuntimeError("provider exploded")
+
+    scheduler = MissionScheduler(store, start_but_explode, interval_s=0.01)
+    for _ in range(3):
+        store.create_mission(store.create_thread().id, "objective")
+
+    scheduler.start()
+    try:
+        for _ in range(200):
+            if len(attempts) >= 3:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        running = scheduler.running
+        await scheduler.stop()
+
+    assert len(attempts) >= 3, "the loop stopped at the first failure it could not log"
+    assert running, "the scheduler task must still be alive"
+
+
+@pytest.mark.asyncio
 async def test_the_isolation_step_does_not_freeze_the_event_loop(tmp_path: Path) -> None:
     """The rotation runs an operator command whose timeout defaults to 600s.
 
