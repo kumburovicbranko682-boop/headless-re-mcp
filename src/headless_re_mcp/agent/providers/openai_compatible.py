@@ -8,8 +8,43 @@ from typing import Any
 
 from headless_re_mcp.agent.config import ProviderProfile
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
+from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
+
+_reported_bad_proxy_env = False
+
+
+def build_client(httpx: Any, **options: Any) -> Any:
+    """Build a client, tolerating a proxy environment httpx cannot parse.
+
+    httpx reads no_proxy while the client is constructed, and an entry of
+    ``::1/128`` -- ordinary, and part of the default no_proxy on many machines
+    -- raises ``InvalidURL: Invalid port: ':1'``. Every run then failed before
+    it reached the network, with a message naming neither the variable nor a
+    proxy, so an unattended deployment spent its whole mission budget on it.
+
+    Only when no transport is supplied, which is every real call and no test:
+    httpx skips environment proxies entirely when one is passed.
+
+    Ignoring the environment is the lesser loss. A proxy that really was
+    required then fails as a connection error, which at least points at the
+    network, and the alert says which variable to look at.
+    """
+    global _reported_bad_proxy_env
+    try:
+        return httpx.AsyncClient(**options)
+    except httpx.InvalidURL as exc:
+        if not _reported_bad_proxy_env:
+            _reported_bad_proxy_env = True
+            record_alert(
+                "proxy_env_unparseable",
+                fields={
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "detail": "ignoring http_proxy/https_proxy/no_proxy for provider calls",
+                },
+            )
+        return httpx.AsyncClient(trust_env=False, **options)
 
 
 class OpenAICompatibleProvider:
@@ -59,7 +94,8 @@ class OpenAICompatibleProvider:
         finish_reason: str | None = None
         timeout = httpx.Timeout(self.timeout, connect=min(self.timeout, 30.0))
         async with (
-            httpx.AsyncClient(
+            build_client(
+                httpx,
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self.transport,
@@ -149,7 +185,8 @@ class OpenAICompatibleProvider:
             import httpx
         except ImportError as exc:
             raise RuntimeError("web extra requires httpx") from exc
-        async with httpx.AsyncClient(
+        async with build_client(
+            httpx,
             timeout=min(self.timeout, 30.0),
             follow_redirects=False,
             transport=self.transport,

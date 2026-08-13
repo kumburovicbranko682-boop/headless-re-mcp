@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+import headless_re_mcp.agent.providers.openai_compatible as openai_compatible
 from headless_re_mcp.agent.config import ProviderProfile
 from headless_re_mcp.agent.providers.openai_compatible import OpenAICompatibleProvider
 from headless_re_mcp.agent.providers.retrying import is_retryable
@@ -144,6 +145,56 @@ async def test_a_rejected_request_carries_what_the_provider_said(tmp_path: Path)
     assert "429" in message
     assert "retry in 12s" in message, "the provider's own explanation must survive"
     assert is_retryable(caught.value), "enriching the message must not break retry classification"
+
+
+@pytest.mark.asyncio
+async def test_a_proxy_setting_httpx_cannot_parse_does_not_end_every_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """no_proxy is read while the client is built, before any request is made.
+
+    An entry of ::1/128 is ordinary -- it is in the default no_proxy on this
+    machine and plenty of others -- and httpx 0.28 raises InvalidURL: Invalid
+    port: ':1' on it. Every agent run then died before reaching the network,
+    with a message naming neither the variable nor a proxy, so an unattended
+    deployment spent its whole mission budget on it.
+
+    Built with transport=None, which is what every real call does and what no
+    other test here does: httpx skips environment proxies when one is supplied,
+    so a MockTransport hides this entirely.
+    """
+    # Set under both spellings: one key on Windows, two on POSIX.
+    broken = "127.0.0.1,localhost,::1,127.0.0.0/8,::1/128"
+    monkeypatch.setenv("NO_PROXY", broken)
+    monkeypatch.setenv("no_proxy", broken)
+    monkeypatch.setattr(openai_compatible, "_reported_bad_proxy_env", False)
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        openai_compatible, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    with pytest.raises(httpx.InvalidURL):
+        httpx.AsyncClient(transport=None)  # the environment really is unparseable
+
+    client = openai_compatible.build_client(httpx, timeout=5.0, transport=None)
+
+    assert client.trust_env is False, "the unusable environment must be left out"
+    assert alerts == ["proxy_env_unparseable"], "and the operator must be told which"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_usable_proxy_environment_is_still_honoured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is for an environment httpx rejects, not for all of them."""
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
+    client = openai_compatible.build_client(httpx, timeout=5.0, transport=None)
+
+    assert client.trust_env is True, "a proxy the operator configured must still apply"
+    await client.aclose()
 
 
 @pytest.mark.asyncio
