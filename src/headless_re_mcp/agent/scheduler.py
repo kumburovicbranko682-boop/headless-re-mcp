@@ -21,6 +21,7 @@ from typing import Any
 
 from headless_re_mcp.agent.models import (
     MISSION_COMPLETE_MARKER,
+    RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
     AgentMission,
     MissionStatus,
@@ -218,7 +219,12 @@ class MissionScheduler:
         if current is not None and current.status is MissionStatus.CANCELLED:
             return
 
-        if status is RunStatus.COMPLETED:
+        # A run that used up its tool rounds has spent its budget, not broken.
+        # Treating it as a failure contradicted the whole point of a mission:
+        # an objective large enough to need several runs died on the first one,
+        # with the rest of its run budget unspent, filed as failed. That is the
+        # objective this mechanism exists for.
+        if status is RunStatus.COMPLETED or self._run_spent_its_rounds(run_id):
             if self._objective_met(mission.thread_id, run_id):
                 self.store.set_mission_status(mission.id, MissionStatus.COMPLETED)
                 return
@@ -273,6 +279,11 @@ class MissionScheduler:
                 # mission fails, the scheduler moves on, and the alert says why.
                 return RunStatus.INTERRUPTED
             await asyncio.sleep(self.run_poll_interval_s)
+
+    def _run_spent_its_rounds(self, run_id: str) -> bool:
+        """Did this run end by using up its tool rounds rather than by breaking?"""
+        run = self.store.get_run(run_id)
+        return run is not None and RUN_ROUNDS_EXHAUSTED in (run.error or "")
 
     def _exhausted_reason(self, mission: AgentMission, run_id: str) -> str:
         """Say which kind of exhaustion this was.

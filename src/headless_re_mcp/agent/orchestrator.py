@@ -15,7 +15,11 @@ import anyio.to_thread
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
-from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, RunStatus
+from headless_re_mcp.agent.models import (
+    RUN_ROUNDS_EXHAUSTED,
+    TERMINAL_RUN_STATUSES,
+    RunStatus,
+)
 from headless_re_mcp.agent.providers import (
     OpenAICompatibleProvider,
     ProviderPort,
@@ -188,7 +192,7 @@ class AgentOrchestrator:
                 await self._finish_cancel(run_id)
                 return
             if round_index >= self.max_tool_rounds:
-                raise RuntimeError("maximum tool rounds exceeded")
+                raise RuntimeError(RUN_ROUNDS_EXHAUSTED)
             compacted = compact_messages(conversation, threshold_percent=profile.context_compression_threshold_percent)
             text_parts: list[str] = []
             completed_calls: tuple[ProviderToolCall, ...] = ()

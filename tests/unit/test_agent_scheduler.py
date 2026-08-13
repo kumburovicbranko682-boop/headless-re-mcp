@@ -8,6 +8,7 @@ import pytest
 
 from headless_re_mcp.agent.models import (
     MISSION_COMPLETE_MARKER,
+    RUN_ROUNDS_EXHAUSTED,
     MissionStatus,
     RunStatus,
 )
@@ -505,4 +506,67 @@ async def test_a_tick_that_failed_reports_that_it_should_not_be_repeated(
     mission = store.create_mission(thread.id, "will fail")
 
     assert await scheduler.tick() is False
+    assert store.get_mission(mission.id).status is MissionStatus.FAILED
+
+@pytest.mark.asyncio
+async def test_a_run_that_uses_up_its_tool_rounds_continues_the_mission(
+    tmp_path: Path,
+) -> None:
+    """Spending a run's budget is how a bounded run ends, not how a mission dies.
+
+    A mission exists to carry one objective across several bounded runs. Running
+    out of tool rounds is exactly what the end of a bounded run looks like when
+    there is more to do -- and it was being treated as a failure, so an
+    objective big enough to need a second run died on the first with the rest of
+    its budget unspent. That is precisely the objective this mechanism is for.
+    """
+    store = AgentStore(tmp_path / "rounds.db")
+    store.recover_after_restart()
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "a big objective", max_runs=4)
+
+    async def run_out_of_rounds(thread_id: str, **kwargs: Any) -> JsonObject:
+        run = store.create_run(
+            thread_id, provider_profile="p", model=None, deadline_seconds=60
+        )
+        store.transition(run.id, RunStatus.STREAMING)
+        store.transition(run.id, RunStatus.FAILED, error=f"RuntimeError: {RUN_ROUNDS_EXHAUSTED}")
+        return run.dump()
+
+    scheduler = MissionScheduler(store, run_out_of_rounds, interval_s=0.01)
+
+    assert await scheduler.tick() is True
+    assert store.get_mission(mission.id).status is MissionStatus.PENDING, (
+        "the mission must go back to the queue for its next run"
+    )
+
+    for _ in range(6):
+        if store.get_mission(mission.id).status is not MissionStatus.PENDING:
+            break
+        await scheduler.tick()
+
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.EXHAUSTED, "the run budget must still bind"
+    assert final.runs_used == 4, f"it should have spent all four runs, used {final.runs_used}"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_actually_broke_still_ends_the_mission(tmp_path: Path) -> None:
+    """Only the rounds ending is forgiven; a broken provider is still fatal."""
+    store = AgentStore(tmp_path / "broke.db")
+    store.recover_after_restart()
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "will break", max_runs=4)
+
+    async def broken(thread_id: str, **kwargs: Any) -> JsonObject:
+        run = store.create_run(
+            thread_id, provider_profile="p", model=None, deadline_seconds=60
+        )
+        store.transition(run.id, RunStatus.STREAMING)
+        store.transition(run.id, RunStatus.FAILED, error="ConnectionError: provider unreachable")
+        return run.dump()
+
+    scheduler = MissionScheduler(store, broken, interval_s=0.01)
+    await scheduler.tick()
+
     assert store.get_mission(mission.id).status is MissionStatus.FAILED

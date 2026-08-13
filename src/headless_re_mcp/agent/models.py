@@ -81,6 +81,12 @@ TERMINAL_MISSION_STATUSES = frozenset(
 # pauses to think.
 MISSION_COMPLETE_MARKER = "MISSION_COMPLETE"
 
+# A run that uses up its tool rounds has spent its budget, not broken. Shared so
+# the scheduler can tell that ending apart from a genuine failure: a mission is
+# meant to be carried across several bounded runs, and this is what the end of a
+# bounded run looks like when there is more to do.
+RUN_ROUNDS_EXHAUSTED = "maximum tool rounds exceeded"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentThread:
