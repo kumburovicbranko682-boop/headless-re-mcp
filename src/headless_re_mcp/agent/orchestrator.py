@@ -56,11 +56,18 @@ class AgentOrchestrator:
         tool_timeout: float = 60.0,
         run_deadline: float = 600.0,
         approval_timeout: float = 300.0,
+        max_argument_bytes: int = 262_144,
         autonomy: AutonomyPolicy | None = None,
+        tool_profile_provider: Callable[[], str] | None = None,
     ) -> None:
         self.store = store
         self.catalog = catalog
         self.provider_configs = provider_configs
+        # The workspace work direction, read per run so a landing-page change
+        # focuses the agent's tool surface without recreating the orchestrator.
+        # Defaults to "full" (offer everything), so this is a no-op unless a
+        # profile is chosen.
+        self.tool_profile_provider = tool_profile_provider or (lambda: "full")
         # Defaults to the fail-closed policy: read-only runs, everything else waits.
         self.autonomy = autonomy or AutonomyPolicy()
         # Wrapped so a rate limit or a 503 costs seconds instead of the mission's
@@ -73,6 +80,10 @@ class AgentOrchestrator:
         self.tool_timeout = max(0.1, min(tool_timeout, 600.0))
         self.run_deadline = max(1.0, min(run_deadline, 3600.0))
         self.approval_timeout = max(1.0, min(approval_timeout, 1800.0))
+        # The same ceiling results are held to. Every legitimate call in the
+        # catalog passes identifiers, addresses and short strings; anything
+        # approaching this is a model that lost its place mid-argument.
+        self.max_argument_bytes = max(4_096, min(max_argument_bytes, 4_194_304))
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         # Built on first use because a capacity limiter binds to the running loop.
@@ -84,9 +95,14 @@ class AgentOrchestrator:
         return self._tool_threads
 
     def _provider_tools(self) -> list[JsonObject]:
+        from headless_re_mcp.core.workspace import is_tool_visible
+
+        profile = self.tool_profile_provider()
         tools: list[JsonObject] = []
         for spec in self.catalog.for_transport(CommandTransport.AGENT):
             if spec.handler is None or spec.input_schema is None:
+                continue
+            if not is_tool_visible(spec.name, profile):
                 continue
             tools.append({
                 "type": "function",
@@ -232,10 +248,45 @@ class AgentOrchestrator:
                     return
             self.store.transition(run_id, RunStatus.STREAMING)
 
+    def _arguments_too_large(self, arguments: JsonObject) -> JsonObject | None:
+        """Refuse a call whose arguments are too big to be meant, and say so.
+
+        Results are bounded before they are stored; arguments were not, so a
+        model that ran away in the middle of a function call wrote whatever it
+        produced straight into the database and then executed it. Refusing
+        rather than truncating, because a truncated argument is a different
+        instruction from the one the model gave -- a shortened address, a
+        clipped path -- and running that is worse than not running anything.
+
+        The refusal goes back as a tool result, which is the one thing the model
+        reads, so it can correct itself instead of repeating the call.
+        """
+        encoded = len(json.dumps(arguments, ensure_ascii=False, default=str).encode("utf-8"))
+        if encoded <= self.max_argument_bytes:
+            return None
+        return {
+            "ok": False,
+            "error": {
+                "code": "arguments_too_large",
+                "message": (
+                    f"arguments are {encoded} bytes, over the {self.max_argument_bytes} byte "
+                    "limit; send a reference such as an artifact_id rather than inline data"
+                ),
+            },
+        }
+
     async def _handle_tool_call(self, run_id: str, call_id: str, name: str, arguments: JsonObject) -> JsonObject:
         spec = self.catalog.require(name)
         if CommandTransport.AGENT not in spec.transports or not spec.effects:
             raise PermissionError(f"tool is unavailable to Agent: {name}")
+        oversized = self._arguments_too_large(arguments)
+        if oversized is not None:
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {"tool_call_id": call_id, "name": name, "ok": False, "error": "arguments_too_large"},
+            )
+            return oversized
         effects = sorted(effect.value for effect in spec.effects)
         proposed = self.store.propose_tool_call(run_id, call_id, name, arguments, effects)
         self.store.append_event(run_id, "tool.proposed", {"tool_call_id": call_id, "name": name, "arguments": redact(arguments), "args_sha256": proposed["args_sha256"], "effects": effects})

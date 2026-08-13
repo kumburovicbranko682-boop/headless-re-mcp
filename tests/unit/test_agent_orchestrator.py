@@ -155,6 +155,74 @@ def _single_spec(
 
 
 @pytest.mark.asyncio
+async def test_a_runaway_argument_is_refused_rather_than_stored_and_run(
+    tmp_path: Path,
+) -> None:
+    """Results are bounded before storage. Arguments were not.
+
+    A model that lost its place mid-function-call wrote whatever it produced
+    into the database and then had it executed. Refused rather than truncated:
+    a shortened address or a clipped path is a different instruction from the
+    one given, and running that is worse than running nothing. The refusal
+    comes back as the tool result, which is what the model reads.
+    """
+    executed: list[str] = []
+
+    def note(session_id: str = "") -> JsonObject:
+        executed.append(session_id)
+        return {"ok": True}
+
+    store = AgentStore(tmp_path / "runaway.db")
+    thread = store.create_thread()
+    provider = FakeProvider(
+        [[ProviderToolCall(id="big", name="test.tool", arguments={"session_id": "x" * 400_000})]]
+    )
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(note)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+        max_argument_bytes=8_192,
+    )
+
+    run = await runner.start_run(thread.id)
+    await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert executed == [], "the tool must not run on arguments that were refused"
+    messages = store.list_messages(thread.id)
+    refusals = [item for item in messages if "arguments_too_large" in str(item.content)]
+    assert refusals, "the model has to be told, or it just sends it again"
+    assert "artifact_id" in str(refusals[0].content), "and told what to do instead"
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_argument_is_left_alone(tmp_path: Path) -> None:
+    """The limit is far above anything the catalog actually takes."""
+    executed: list[str] = []
+
+    def note(session_id: str = "") -> JsonObject:
+        executed.append(session_id)
+        return {"ok": True}
+
+    store = AgentStore(tmp_path / "ordinary.db")
+    thread = store.create_thread()
+    provider = FakeProvider(
+        [[ProviderToolCall(id="ok", name="test.tool", arguments={"session_id": "abc123"})]]
+    )
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(note)]),
+        _configs(tmp_path / "ordinary-config"),
+        provider_factory=lambda _: provider,
+    )
+
+    run = await runner.start_run(thread.id)
+    await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert executed == ["abc123"]
+
+
+@pytest.mark.asyncio
 async def test_a_write_runs_unattended_only_once_the_policy_grants_it(
     tmp_path: Path,
 ) -> None:
