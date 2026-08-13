@@ -62,7 +62,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """List debuggee threads."""
+        """List debuggee threads.
+
+        Answers with threads, each carrying tid, entry, teb, cip and the
+        suspend count.
+        """
         return _dump(analysis.threads_list(session_id, timeout=timeout))
 
     @tools.tool(name="threads.current")
@@ -100,7 +104,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         count: Annotated[int, Field(ge=1, le=256)] = 32,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Read pointer-sized stack words from CSP or an explicit address."""
+        """Read pointer-sized stack words from CSP or an explicit address.
+
+        Answers with entries, each a pointer-sized value read at an address,
+        plus base, count and pointer_size.
+        """
         return _dump(analysis.stack_read(session_id, address=address, count=count, timeout=timeout))
 
     @tools.tool(name="stack.trace")
@@ -129,7 +137,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         limit: Annotated[int, Field(ge=1, le=4096)] = 256,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Enumerate a bounded symbol list for one loaded module."""
+        """Enumerate a bounded symbol list for one loaded module.
+
+        Answers with symbols, plus count and truncated, so a caller can tell a
+        short module from a list that stopped at the limit.
+        """
         return _dump(analysis.symbols_list(session_id, module_base, limit=limit, timeout=timeout))
 
     @tools.tool(name="symbols.resolve")
@@ -203,7 +215,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
 
     @tools.tool(name="modules.list")
     def modules_list(session_id: str) -> dict[str, Any]:
-        """Return the validated current runtime module catalog without hashing files."""
+        """Return the validated current runtime module catalog without hashing files.
+
+        Answers with modules, validated against the session target rather than
+        taken from the debugger as-is.
+        """
         return _dump(analysis.module_catalog(session_id))
 
     @tools.tool(name="modules.resolve")

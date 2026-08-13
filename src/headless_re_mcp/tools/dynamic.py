@@ -143,7 +143,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: int,
         size: int,
     ) -> dict[str, Any]:
-        """Read up to 2 MiB from a paused debuggee as hexadecimal bytes."""
+        """Read up to 2 MiB from a paused debuggee as hexadecimal bytes.
+
+        Answers with data holding the hex string and encoding naming the form,
+        alongside the address and size that were read.
+        """
         return _dump(analysis.dynamic_memory_read(session_id, address, size))
 
     @tools.tool(name="dynamic.memory.write")
@@ -157,12 +161,22 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.modules")
     def dynamic_modules(session_id: str) -> dict[str, Any]:
-        """List loaded image modules for a paused debuggee."""
+        """List loaded image modules for a paused debuggee.
+
+        Answers with modules, each carrying base, size, name and path, plus a
+        count.
+        """
         return _dump(analysis.dynamic_modules(session_id))
 
     @tools.tool(name="dynamic.breakpoints")
     def dynamic_breakpoints(session_id: str) -> dict[str, Any]:
-        """List debugger breakpoints for the active debuggee."""
+        """List debugger breakpoints for the active debuggee.
+
+        Answers with breakpoints, which includes the entry breakpoint the
+        debugger sets itself, not only the ones that were asked for. An empty
+        list here after a successful set means the debuggee is gone, not that
+        the breakpoint was refused.
+        """
         return _dump(analysis.dynamic_breakpoints(session_id))
 
     @tools.tool(name="dynamic.breakpoint.set")
