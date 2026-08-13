@@ -13,10 +13,10 @@ from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.core.limits import MAX_STATIC_BATCH_COMMANDS, MAX_STATIC_INLINE_TEXT
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _record_artifact
 
 if TYPE_CHECKING:
     from headless_re_mcp.config import Settings
-    from headless_re_mcp.core.repository import AnalysisRepository
     from headless_re_mcp.core.service import _BackendRuntime
 
 JsonObject = dict[str, Any]
@@ -43,7 +43,6 @@ class StaticAnalysisMixin:
     """
 
     settings: Settings
-    repository: AnalysisRepository
 
     if TYPE_CHECKING:
 
@@ -691,8 +690,11 @@ class StaticAnalysisMixin:
 
         # Register it, or the text is unreachable: no tool on the surface opens
         # a bare path, and gc only reclaims what the repository knows about.
+        # Through the service rather than the repository, so this takes the same
+        # retention checkpoint every other artifact-producing path does.
         try:
-            artifact = self.repository.register_artifact(
+            artifact = _record_artifact(
+                self,
                 session_id=session_id,
                 kind=f"static_{kind}",
                 path=artifact_path,

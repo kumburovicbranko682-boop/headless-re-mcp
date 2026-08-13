@@ -12,7 +12,12 @@ skip or point it somewhere else.
 
 from __future__ import annotations
 
+import json
 import os
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -20,6 +25,22 @@ import pytest
 from headless_re_mcp.config import Settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# One integration run per machine. idalib opens a binary in place, so a sample
+# has exactly one database and a second process asking for it is refused --
+# measured with two runs of this suite against the same fixtures, most opens
+# failed and the failures landed on whichever gates happened to overlap.
+# The path is inside the checkout so two runs of the same tree agree on it
+# without either being configured.
+_GATE_LOCK = _PROJECT_ROOT / ".pytest-integration.lock"
+_LOCK_WAIT_S = 1800.0
+_LOCK_POLL_S = 2.0
+# Held as a lease rather than a pid: os.kill(pid, 0) returns normally for a dead
+# process on Windows, so it cannot tell a crashed holder from a live one. The
+# holder touches the file while it runs and a lock nobody has touched recently
+# is abandoned, which needs nothing from the operating system either way.
+_LEASE_REFRESH_S = 10.0
+_LEASE_STALE_S = 60.0
 
 _PATH_SETTINGS = {
     "HEADLESS_RE_X64DBG_HEADLESS_X64": "x64dbg_headless_x64",
@@ -61,6 +82,79 @@ def pytest_configure() -> None:
         if value:
             os.environ[variable] = str(value)
     _default_ida_gate_binary()
+
+
+def _lease_is_stale(lock: Path) -> bool:
+    """True when nobody has touched the lock recently enough to still hold it."""
+    try:
+        return (time.time() - lock.stat().st_mtime) > _LEASE_STALE_S
+    except OSError:
+        return True  # gone between the failed create and this call
+
+
+def _acquire_gate_lock() -> bool:
+    """Take the lock, or give up waiting and say so."""
+    deadline = time.monotonic() + _LOCK_WAIT_S
+    while True:
+        try:
+            handle = os.open(_GATE_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if _lease_is_stale(_GATE_LOCK):
+                with suppress(OSError):
+                    _GATE_LOCK.unlink()
+                continue
+            if time.monotonic() >= deadline:
+                # Run anyway rather than fail for a reason nobody caused. The
+                # collisions this avoids are visible in the report; a suite that
+                # never ran is not.
+                print(f"\n[gate-lock] still held after {_LOCK_WAIT_S:g}s, running anyway")
+                return False
+            time.sleep(_LOCK_POLL_S)
+            continue
+        except OSError:
+            return False  # cannot create it at all, which is not a reason to refuse
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": os.getpid(), "started_at": time.time()}))
+        return True
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _one_integration_run_at_a_time() -> Iterator[None]:
+    """Serialise whole suites, because they contend for the same IDA databases.
+
+    idalib opens a binary in place, so two runs over the same fixtures refuse
+    each other instead of queueing. The failures land on whichever gates
+    happened to overlap, so they move between runs and read as flake rather
+    than as a collision.
+
+    Waiting is bounded and the lease expires on its own: this must never be the
+    reason a suite does not finish.
+    """
+    held = _acquire_gate_lock()
+    stop = threading.Event()
+
+    def keep_alive() -> None:
+        # A crashed run cannot clean up after itself, so holding is something
+        # the holder has to keep doing rather than something it declares once.
+        while not stop.wait(_LEASE_REFRESH_S):
+            try:
+                os.utime(_GATE_LOCK, None)
+            except OSError:
+                return
+
+    keeper: threading.Thread | None = None
+    if held:
+        keeper = threading.Thread(target=keep_alive, name="gate-lock-lease", daemon=True)
+        keeper.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if keeper is not None:
+            keeper.join(timeout=_LEASE_REFRESH_S + 5.0)
+        if held:
+            with suppress(OSError):
+                _GATE_LOCK.unlink()
 
 
 def _hidden_desktop_is_on() -> bool:

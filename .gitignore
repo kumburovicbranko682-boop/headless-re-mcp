@@ -62,3 +62,4 @@ external/x64dbg-x64/**
 external/optional/**
 !external/optional/README.md
 !external/optional/.gitkeep
+.pytest-integration.lock
