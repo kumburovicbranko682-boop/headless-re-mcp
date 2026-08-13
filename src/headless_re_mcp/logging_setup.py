@@ -11,6 +11,7 @@ import logging
 import os
 import tempfile
 import time
+from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -42,7 +43,12 @@ def resolve_log_dir(explicit: Path | None = None) -> Path:
         root.mkdir(parents=True, exist_ok=True)
     except OSError:
         root = Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
-        root.mkdir(parents=True, exist_ok=True)
+        # The fallback can fail too -- a full volume takes both with it -- and
+        # raising here would defeat the sentence above. The handler is built
+        # with delay=True, so a directory that does not exist costs the logs and
+        # nothing else.
+        with suppress(OSError):
+            root.mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -63,6 +69,13 @@ def attach_rotating_handler(
         maxBytes=LOG_MAX_BYTES,
         backupCount=LOG_BACKUPS,
         encoding="utf-8",
+        # Opened on the first record rather than here. Built eagerly, a path the
+        # process cannot open raised out of whichever entry point installed the
+        # hooks, so a full volume stopped the service from starting at all --
+        # and the supervisor restarts what exits during startup, so that became
+        # a crash loop. Deferred, the failure surfaces in emit(), where
+        # RotatingFileHandler already routes it to handleError.
+        delay=True,
     )
     handler.setFormatter(formatter)
     logger = logging.getLogger(logger_name)

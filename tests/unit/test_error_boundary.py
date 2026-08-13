@@ -104,6 +104,33 @@ def test_the_boundary_still_answers_when_its_own_log_cannot_be_opened(
     assert result["error"]["code"] == "internal_error"  # type: ignore[index]
 
 
+def test_startup_survives_a_log_file_it_cannot_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process that cannot write its logs must still start.
+
+    resolve_log_dir says exactly that, and then the handler was built eagerly,
+    so an unopenable path raised out of the first entry point that installed the
+    hooks. The supervisor restarts a process that exits during startup, which
+    turns one unwritable file into a crash loop and takes the service down for
+    as long as the volume stays full.
+    """
+    (tmp_path / "incidents.log").mkdir()
+    logger = logging.getLogger("headless_re_mcp.incidents")
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+    monkeypatch.setattr(boundary, "_LOG_PATH", None)
+    monkeypatch.setenv("HEADLESS_RE_LOG_DIR", str(tmp_path))
+
+    path = boundary.install_global_exception_hooks("test-process")
+
+    assert path == (tmp_path / "incidents.log").resolve()
+    incident = boundary.record_exception(RuntimeError("still works"), context="probe")
+    assert incident["incident_id"], "the boundary must keep answering"
+
+
 def test_background_thread_exception_is_logged(incident_log: Path) -> None:
     boundary.install_global_exception_hooks("test-process")
 
