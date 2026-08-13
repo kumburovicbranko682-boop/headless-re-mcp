@@ -1,4 +1,4 @@
-﻿"""Process-tree helpers for UI child-PID discovery (Windows)."""
+"""Process-tree helpers for UI child-PID discovery (Windows)."""
 
 from __future__ import annotations
 

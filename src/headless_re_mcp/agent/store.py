@@ -44,16 +44,41 @@ class AgentStore:
         self.path = path.expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self.journal_mode = "unknown"
+        self._enable_wal()
         self._init_schema()
         self.interrupt_incomplete_runs()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        # foreign_keys and busy_timeout are per-connection, so they belong here.
+        # journal_mode does not: it is a property of the database file, applied
+        # once by _enable_wal. Re-asserting it per connection was not measurably
+        # slower, but it did mean nothing ever checked whether WAL was actually
+        # in force -- see _enable_wal for why that matters.
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout=30000")
         return connection
+
+    def _enable_wal(self) -> None:
+        """Put the database file in WAL mode, once, and check that it took.
+
+        WAL is what lets readers run while a write is in flight, and this store
+        is read by SSE streams while the orchestrator writes to it. It is not
+        available on every filesystem: on a network share the pragma is accepted
+        and silently ignored, leaving the database in rollback-journal mode
+        where every read blocks every write. Setting it on each connection hid
+        that -- the failure looked identical to success. The mode is read back
+        here so `journal_mode` reports what the database is actually doing.
+        """
+        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+        finally:
+            connection.close()
+        self.journal_mode = mode.lower()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

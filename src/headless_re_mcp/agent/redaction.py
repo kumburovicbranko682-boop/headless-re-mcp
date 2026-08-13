@@ -1,4 +1,4 @@
-﻿"""Recursive secret redaction shared by provider, API, audit and SSE paths."""
+"""Recursive secret redaction shared by provider, API, audit and SSE paths."""
 
 from __future__ import annotations
 

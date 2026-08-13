@@ -1,4 +1,4 @@
-﻿"""Bounded conversation context and untrusted tool-result summaries."""
+"""Bounded conversation context and untrusted tool-result summaries."""
 
 from __future__ import annotations
 

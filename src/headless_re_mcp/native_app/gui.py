@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+
 STYLE = """
 QMainWindow, QWidget {
     background: #0f1419;
@@ -368,6 +370,7 @@ class NativeLauncherWindow(QMainWindow):
         self.mcp_proc = subprocess.Popen(
             [sys.executable, "-m", "headless_re_mcp", "serve"],
             cwd=str(self.repo_root),
+            **no_window_popen_kwargs(),
         )
         self._append(f"已启动 MCP serve pid={self.mcp_proc.pid}")
 
@@ -384,6 +387,7 @@ class NativeLauncherWindow(QMainWindow):
         self.web_proc = subprocess.Popen(
             [sys.executable, "-m", "headless_re_mcp", "serve-web"],
             cwd=str(self.repo_root),
+            **no_window_popen_kwargs(),
         )
         self._append(
             f"已启动 serve-web pid={self.web_proc.pid}（请用系统浏览器访问，窗口不内嵌）"

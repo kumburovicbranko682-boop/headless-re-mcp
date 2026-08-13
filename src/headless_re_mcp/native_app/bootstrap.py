@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+
 JsonObject = dict[str, Any]
 
 
@@ -151,7 +153,11 @@ def run_doctor_summary() -> JsonObject:
 
 def pip_install_editable(repo_root: Path, extras: str = ".[dev,ida,pe,web]") -> int:
     cmd = [sys.executable, "-m", "pip", "install", "-e", extras]
-    completed = subprocess.run(cmd, cwd=str(repo_root), check=False)
+    # Inherited stdout still reaches an existing console, so pip's progress is
+    # not lost; this only stops a fresh window when the parent is the GUI.
+    completed = subprocess.run(
+        cmd, cwd=str(repo_root), check=False, **no_window_popen_kwargs()
+    )
     return int(completed.returncode)
 
 
@@ -160,6 +166,7 @@ def start_mcp_serve() -> subprocess.Popen[Any]:
     return subprocess.Popen(
         [sys.executable, "-m", "headless_re_mcp", "serve"],
         cwd=str(ensure_repo_on_path()),
+        **no_window_popen_kwargs(),
     )
 
 
@@ -168,6 +175,7 @@ def start_web_console() -> subprocess.Popen[Any]:
     return subprocess.Popen(
         [sys.executable, "-m", "headless_re_mcp", "serve-web"],
         cwd=str(ensure_repo_on_path()),
+        **no_window_popen_kwargs(),
     )
 
 

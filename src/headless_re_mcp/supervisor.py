@@ -23,6 +23,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+
 JsonObject = dict[str, Any]
 
 # Restarts that happen faster than this are treated as a crash loop rather than
@@ -84,8 +86,11 @@ class Supervisor:
     grace_period_s: float = 30.0
     unhealthy_strikes: int = 3
     max_restarts: int | None = None
+    # Spawned without a console: the supervisor exists to restart the child, so
+    # a visible window here means one new window per restart on a machine that
+    # is meant to be running unattended.
     spawn: Callable[[Sequence[str]], Any] = field(
-        default=lambda argv: subprocess.Popen(list(argv))
+        default=lambda argv: subprocess.Popen(list(argv), **no_window_popen_kwargs())
     )
     probe: Callable[[str, float], tuple[bool, str]] = field(
         default=lambda url, timeout: probe_ready(url, timeout=timeout)

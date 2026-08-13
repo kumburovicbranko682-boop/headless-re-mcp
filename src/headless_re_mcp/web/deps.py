@@ -1,4 +1,4 @@
-﻿"""Snapshot of external dependency presence for web console / onboarding."""
+"""Snapshot of external dependency presence for web console / onboarding."""
 
 from __future__ import annotations
 

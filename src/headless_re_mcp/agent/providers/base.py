@@ -1,4 +1,4 @@
-﻿"""Provider streaming port."""
+"""Provider streaming port."""
 
 from __future__ import annotations
 

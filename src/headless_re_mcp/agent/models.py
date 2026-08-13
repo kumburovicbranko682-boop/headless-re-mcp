@@ -1,4 +1,4 @@
-﻿"""Persistent Agent domain records and legal run transitions."""
+"""Persistent Agent domain records and legal run transitions."""
 
 from __future__ import annotations
 

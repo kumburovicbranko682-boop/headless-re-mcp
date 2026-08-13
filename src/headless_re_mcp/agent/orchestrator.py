@@ -1,4 +1,4 @@
-﻿"""Persistent, cancellable Agent tool loop with fail-closed approvals."""
+"""Persistent, cancellable Agent tool loop with fail-closed approvals."""
 
 from __future__ import annotations
 

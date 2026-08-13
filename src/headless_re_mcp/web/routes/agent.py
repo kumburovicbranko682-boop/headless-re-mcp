@@ -1,4 +1,4 @@
-﻿"""Agent, provider and replayable SSE routes."""
+"""Agent, provider and replayable SSE routes."""
 
 from __future__ import annotations
 
@@ -148,7 +148,11 @@ def register_agent_routes(
         message = body.get("message")
         if isinstance(message, str) and message.strip():
             try:
-                store.add_message(thread_id, "user", message.strip())
+                # Off the loop: the store serialises on a lock and waits up to
+                # busy_timeout (30s) for SQLite, and the scheduler writes to the
+                # same database continuously. Inline, a contended write freezes
+                # every other request and SSE stream for as long as it waits.
+                await asyncio.to_thread(store.add_message, thread_id, "user", message.strip())
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="thread_not_found") from exc
         try:
@@ -203,7 +207,7 @@ def register_agent_routes(
         after: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
         authorize(authorization)
-        if store.get_run(run_id) is None:
+        if await asyncio.to_thread(store.get_run, run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
 
         async def generate() -> AsyncIterator[bytes]:

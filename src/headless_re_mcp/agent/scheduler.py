@@ -28,6 +28,7 @@ from headless_re_mcp.agent.models import (
 )
 from headless_re_mcp.agent.store import AgentStore
 from headless_re_mcp.error_boundary import record_exception
+from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 RunStarter = Callable[..., Awaitable[JsonObject]]
@@ -63,6 +64,10 @@ class MissionScheduler:
     # share a target, and rolling the machine back underneath them would destroy
     # the very state the next run needs.
     isolation: Any | None = None
+    # Backstop for a run that never records a terminal status. Comfortably above
+    # the orchestrator's own 3600s ceiling so it only fires when that failed.
+    run_wait_timeout_s: float = 3900.0
+    run_poll_interval_s: float = 0.05
     _task: asyncio.Task[None] | None = field(default=None, init=False)
     _stop: asyncio.Event | None = field(default=None, init=False)
     _last_sweep: float = field(default=0.0, init=False)
@@ -93,7 +98,7 @@ class MissionScheduler:
         stop = self._stop
         assert stop is not None
         while not stop.is_set():
-            self._maybe_sweep()
+            await self._maybe_sweep()
             # A scheduler that can raise stops scheduling, which is the one
             # failure an unattended deployment cannot notice on its own.
             try:
@@ -108,18 +113,31 @@ class MissionScheduler:
             except TimeoutError:
                 continue
 
-    def _maybe_sweep(self) -> None:
-        """Run the watchdog on its own slower cadence, if one is attached."""
+    def _due_watchdog(self) -> Any | None:
+        """The watchdog if its cadence has come round, else None."""
         if self.watchdog is None or self.watchdog_interval_s <= 0:
-            return
+            return None
         now = time.monotonic()
         if now - self._last_sweep < self.watchdog_interval_s:
-            return
+            return None
         self._last_sweep = now
+        return self.watchdog
+
+    async def _maybe_sweep(self) -> None:
+        """Run the watchdog on its own slower cadence, off the event loop.
+
+        The sweep is synchronous and can reconnect a backend, which XdbgClient
+        allows thirty seconds for. Calling it inline froze the loop this shares
+        with the web server for that whole time: no HTTP, no SSE, no other
+        mission. Measured at one second of sleep, a 20ms await took 1000ms.
+        """
+        watchdog = self._due_watchdog()
+        if watchdog is None:
+            return
         # sweep() is documented never to raise, but the loop must survive it
         # even if that ever stops being true.
         try:
-            self.watchdog.sweep()
+            await asyncio.to_thread(watchdog.sweep)
         except BaseException as exc:  # noqa: BLE001 - recorded, never fatal
             record_exception(exc, context="watchdog-sweep")
 
@@ -212,13 +230,35 @@ class MissionScheduler:
         )
 
     async def _await_run(self, run_id: str) -> RunStatus:
+        """Wait for a run to reach a terminal state, but not forever.
+
+        The orchestrator bounds its own runs, so in the normal case this always
+        returns. It is the abnormal case this guards: a run whose task died
+        without recording a status stays non-terminal for good, and an unbounded
+        wait here would park the scheduler on it. Every other mission then
+        starves while the process stays up and /readyz keeps answering 200 --
+        the exact failure an unattended deployment cannot see.
+        """
+        deadline = time.monotonic() + self.run_wait_timeout_s
         while True:
             run = self.store.get_run(run_id)
             if run is None:
                 return RunStatus.INTERRUPTED
             if run.status in TERMINAL_RUN_STATUSES:
                 return run.status
-            await asyncio.sleep(0.05)
+            if time.monotonic() >= deadline:
+                record_alert(
+                    "run_wait_timeout",
+                    fields={
+                        "run_id": run_id,
+                        "status": run.status.value,
+                        "waited_s": round(self.run_wait_timeout_s, 1),
+                    },
+                )
+                # Reported as interrupted rather than silently abandoned: the
+                # mission fails, the scheduler moves on, and the alert says why.
+                return RunStatus.INTERRUPTED
+            await asyncio.sleep(self.run_poll_interval_s)
 
     def _objective_met(self, thread_id: str, run_id: str) -> bool:
         """Look for the completion marker in what this run actually said."""

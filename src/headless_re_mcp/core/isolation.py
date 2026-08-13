@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
@@ -97,6 +98,9 @@ class IsolationRunner:
                 text=True,
                 timeout=self.policy.timeout_s,
                 check=False,
+                # Runs once per sample on an unattended box; a console window
+                # per rotation would pile up on the desktop.
+                **no_window_popen_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._failed(

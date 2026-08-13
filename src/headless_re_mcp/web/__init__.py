@@ -1,4 +1,4 @@
-﻿"""Local loopback web console (M13).
+"""Local loopback web console (M13).
 
 Binds ``127.0.0.1`` only, requires a random local token, and calls the same
 ``AnalysisService`` instance used by MCP — no duplicated business logic.

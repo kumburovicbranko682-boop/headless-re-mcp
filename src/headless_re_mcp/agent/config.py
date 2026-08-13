@@ -1,4 +1,4 @@
-﻿"""Server-only provider profiles and safe Zerofall import."""
+"""Server-only provider profiles and safe Zerofall import."""
 
 from __future__ import annotations
 

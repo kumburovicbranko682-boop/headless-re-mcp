@@ -1,4 +1,4 @@
-﻿"""Compatibility import for the protocol-independent tool catalog."""
+"""Compatibility import for the protocol-independent tool catalog."""
 
 from headless_re_mcp.tools.catalog import (
     COMMAND_CATALOG,

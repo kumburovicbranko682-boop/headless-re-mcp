@@ -281,14 +281,16 @@ async def test_the_watchdog_is_swept_from_the_scheduler_loop(tmp_path: Path) -> 
     scheduler.watchdog = FakeWatchdog()
     scheduler.watchdog_interval_s = 0.0
 
-    scheduler._maybe_sweep()
+    await scheduler._maybe_sweep()
     assert sweeps == [], "an interval of zero disables the sweep"
 
-    scheduler.watchdog_interval_s = 0.01
-    scheduler._maybe_sweep()
+    # Comfortably longer than a thread-pool dispatch, so this measures the
+    # cadence rather than how long it took to hand the sweep to a worker.
+    scheduler.watchdog_interval_s = 30.0
+    await scheduler._maybe_sweep()
     assert len(sweeps) == 1
 
-    scheduler._maybe_sweep()
+    await scheduler._maybe_sweep()
     assert len(sweeps) == 1, "the sweep must respect its own slower cadence"
 
 
@@ -304,6 +306,81 @@ async def test_a_watchdog_that_raises_does_not_stop_the_scheduler(tmp_path: Path
     thread = store.create_thread()
     mission = store.create_mission(thread.id, "still works")
 
-    scheduler._maybe_sweep()
+    await scheduler._maybe_sweep()
     assert await scheduler.tick() is True
     assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_slow_watchdog_sweep_does_not_freeze_the_event_loop(tmp_path: Path) -> None:
+    """The sweep is synchronous and can reconnect a backend, which takes seconds.
+
+    It shares an event loop with the web server, so running it inline stopped
+    HTTP, SSE and every other mission for its whole duration. Measured before
+    the fix: a 20ms await took 1000ms behind a one-second sweep.
+    """
+    import time as _time
+
+    class SlowWatchdog:
+        def __init__(self) -> None:
+            self.sweeps = 0
+
+        def sweep(self) -> dict[str, Any]:
+            self.sweeps += 1
+            _time.sleep(0.5)
+            return {"checked": 1}
+
+    scheduler, store, _ = _scheduler(tmp_path, [])
+    watchdog = SlowWatchdog()
+    scheduler.watchdog = watchdog
+    scheduler.watchdog_interval_s = 0.01
+
+    async def probe() -> float:
+        started = _time.perf_counter()
+        await asyncio.sleep(0.02)
+        return _time.perf_counter() - started
+
+    task = asyncio.create_task(probe())
+    await asyncio.sleep(0)
+    await scheduler._maybe_sweep()
+    delay = await task
+
+    assert watchdog.sweeps == 1, "the sweep must still run"
+    assert delay < 0.4, f"the loop was blocked for {delay:.2f}s during the sweep"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_never_finishes_does_not_park_the_scheduler(
+    tmp_path: Path,
+) -> None:
+    """A run stuck off the terminal states must not starve every other mission.
+
+    The orchestrator bounds its own runs, so this only happens when that failed
+    -- a task that died without recording a status. An unbounded wait here left
+    the scheduler parked on it forever while the process stayed up and /readyz
+    kept answering 200, which is the failure nobody is watching for.
+    """
+    store = AgentStore(tmp_path / "stuck.db")
+    started: list[str] = []
+
+    async def start_but_never_finish(thread_id: str, **kwargs: Any) -> JsonObject:
+        run = store.create_run(thread_id, provider_profile="default", model=None, deadline_seconds=60)
+        store.transition(run.id, RunStatus.STREAMING)
+        started.append(run.id)
+        return run.dump()
+
+    scheduler = MissionScheduler(store, start_but_never_finish, interval_s=0.01)
+    scheduler.run_wait_timeout_s = 0.2
+    scheduler.run_poll_interval_s = 0.01
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "never finishes", max_runs=3)
+
+    await asyncio.wait_for(scheduler.tick(), timeout=10)
+
+    assert len(started) == 1
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.FAILED
+    assert "interrupted" in str(final.error)
+    # And the queue keeps moving: a second mission is still reachable.
+    other = store.create_mission(thread.id, "next one")
+    assert store.claim_next_mission().id == other.id

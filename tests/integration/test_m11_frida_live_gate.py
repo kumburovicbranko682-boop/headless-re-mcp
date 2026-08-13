@@ -1,4 +1,4 @@
-﻿"""M11 Frida live gate: attach/modules/exports against a standalone process."""
+"""M11 Frida live gate: attach/modules/exports against a standalone process."""
 
 from __future__ import annotations
 

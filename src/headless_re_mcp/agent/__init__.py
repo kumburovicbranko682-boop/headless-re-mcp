@@ -1,4 +1,4 @@
-﻿"""Persistent provider-driven Agent runtime."""
+"""Persistent provider-driven Agent runtime."""
 
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile, normalize_base_url
 from headless_re_mcp.agent.models import AgentMessage, AgentRun, AgentThread, RunEvent, RunStatus

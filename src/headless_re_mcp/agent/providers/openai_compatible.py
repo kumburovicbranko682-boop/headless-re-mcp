@@ -1,4 +1,4 @@
-﻿"""OpenAI-compatible streaming chat-completions provider."""
+"""OpenAI-compatible streaming chat-completions provider."""
 
 from __future__ import annotations
 
