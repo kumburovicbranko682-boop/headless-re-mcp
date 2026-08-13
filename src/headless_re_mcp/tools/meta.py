@@ -79,30 +79,58 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
+        """List registered artifacts, newest first, with id, kind, size and path.
+
+        Omit session_id for every artifact this instance knows about. Paged; the
+        reply carries total and has_more.
+        """
         return _dump(analysis.artifacts_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="artifacts.describe")
     def artifacts_describe(artifact_id: str) -> dict[str, Any]:
+        """Metadata for one artifact: kind, size, sha256, origin and path."""
         return _dump(analysis.artifacts_describe(artifact_id))
 
     @tools.tool(name="artifacts.read")
     def artifacts_read(
         artifact_id: str, offset: int = 0, limit: Annotated[int, Field(ge=1, le=262144)] = 4096
     ) -> dict[str, Any]:
+        """Read a byte range of one artifact, including text spilled out of a reply.
+
+        A decompilation or disassembly too large to return inline is registered
+        as an artifact and answered with artifact_id; this is how the rest of it
+        is retrieved.
+        """
         return _dump(analysis.artifacts_read(artifact_id, offset=offset, limit=limit))
 
     @tools.tool(name="artifacts.gc")
     def artifacts_gc(max_total_bytes: int = 512 * 1024 * 1024) -> dict[str, Any]:
+        """Delete registered artifacts, oldest first, until the tree fits the budget.
+
+        This destroys files. Collection also runs on its own after registration
+        and session close, so calling it by hand is for reclaiming space now,
+        not for routine upkeep. The newest artifact and any file another handle
+        still holds are kept.
+        """
         return _dump(analysis.artifacts_gc(max_total_bytes=max_total_bytes))
 
     @tools.tool(name="timeline.list")
     def timeline_list(
         session_id: str, offset: int = 0, limit: Annotated[int, Field(ge=1, le=256)] = 100
     ) -> dict[str, Any]:
+        """Read one session's event log: what was attempted, in order, and how it ended."""
         return _dump(analysis.timeline_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="sessions.unclean")
     def sessions_unclean() -> dict[str, Any]:
+        """Every session that has not been closed cleanly, which includes live ones.
+
+        A session is marked clean only by session.close, so one that is open and
+        working right now appears here exactly like one abandoned by a process
+        that died. This is not a list of sessions that are safe to clean up.
+        Cross-check session.list, which covers only this process, and
+        session.health before acting on anything here.
+        """
         return _dump(analysis.sessions_unclean())
 
     @tools.tool(name="audit.list")
@@ -111,6 +139,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
+        """Read the audit trail of state-changing calls: what ran, with what, and the outcome."""
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="session.health")

@@ -1,9 +1,61 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+# These five live in tools/frida.py, which another change is holding
+# uncommitted. Remove a name from here as soon as it gains a docstring; the
+# test says so when one does.
+_TOOLS_STILL_UNDESCRIBED = {
+    "frida.attach",
+    "frida.modules",
+    "frida.exports",
+    "frida.memory.read",
+    "frida.hook.template",
+}
+
+
+def test_every_tool_tells_the_model_what_it_does() -> None:
+    """A tool with no docstring reaches the model as its own name and nothing else.
+
+    That is not a documentation gap, it is a correctness one for a caller with
+    nobody to ask. Measured over the live stdio transport: 33 of 263 tools
+    arrived with no description, and the names of several actively mislead --
+    sessions.unclean lists every open session including the ones in use, and
+    artifacts.gc deletes files.
+    """
+    undescribed: list[str] = []
+    for path in sorted((ROOT / "src" / "headless_re_mcp" / "tools").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            name = _tool_name(node)
+            if name is not None and ast.get_docstring(node) is None:
+                undescribed.append(name)
+
+    missing = sorted(set(undescribed) - _TOOLS_STILL_UNDESCRIBED)
+    assert not missing, f"these tools reach the model as a bare name: {missing}"
+    fixed = sorted(_TOOLS_STILL_UNDESCRIBED - set(undescribed))
+    assert not fixed, f"these now have docstrings; drop them from the exception list: {fixed}"
+
+
+def _tool_name(node: ast.FunctionDef) -> str | None:
+    """The name a @tools.tool(name=...) decorator publishes, if there is one."""
+    for decorator in node.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        target = decorator.func
+        if not (isinstance(target, ast.Attribute) and target.attr == "tool"):
+            continue
+        for keyword in decorator.keywords:
+            if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                return str(keyword.value.value)
+    return None
 
 
 def test_public_root_and_script_entries_are_deliberately_small() -> None:
