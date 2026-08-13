@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import deque
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -268,6 +269,58 @@ def test_structured_authentication_error_is_preserved() -> None:
     assert error.code == "authentication_failed"
     assert error.details == {"field": "token"}
     assert error.retryable is False
+
+
+class BudgetTransport(ScriptedTransport):
+    """Records the timeout each I/O was granted, and can burn wall time."""
+
+    def __init__(self, *, write_cost: float = 0.0) -> None:
+        super().__init__()
+        self.write_cost = write_cost
+        self.grants: list[float] = []
+
+    def write_all(self, data: bytes, *, timeout: float) -> None:
+        self.grants.append(timeout)
+        if self.write_cost:
+            time.sleep(self.write_cost)
+        super().write_all(data, timeout=timeout)
+
+    def read_exact(self, size: int, *, timeout: float) -> bytes:
+        self.grants.append(timeout)
+        return super().read_exact(size, timeout=timeout)
+
+
+def test_one_call_spends_its_timeout_once_not_once_per_io() -> None:
+    """The write, the length read and the body read each got the full budget.
+
+    Three independent deadlines mean a caller asking for ten seconds can wait
+    thirty, so every bound in the tool catalog was worth three times what it
+    said. The IDA worker already runs one deadline across its whole exchange.
+    """
+    transport = BudgetTransport(write_cost=0.10)
+    client = _client(transport)
+
+    assert client._request("debug.state", {}, timeout=2.0) == {"request_id": "1"}
+
+    assert len(transport.grants) == 3, "write, length read and body read"
+    assert transport.grants[0] == pytest.approx(2.0)
+    assert transport.grants[1] < 1.95, "the read must inherit what the write left"
+    assert transport.grants[2] <= transport.grants[1], "the budget only shrinks"
+
+
+def test_a_call_cannot_outlive_the_timeout_it_was_given() -> None:
+    """Spending the budget on the write leaves nothing to wait for a reply."""
+    transport = BudgetTransport(write_cost=0.20)
+    client = _client(transport)
+
+    started = time.monotonic()
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client._request("debug.state", {}, timeout=0.05)
+    elapsed = time.monotonic() - started
+
+    assert exc_info.value.code == "rpc_transport_error"
+    assert transport.closed, "a channel abandoned mid-exchange must not be reused"
+    assert elapsed < 1.0, f"the call ran {elapsed:.2f}s past a 0.05s budget"
 
 
 def test_transport_timeout_closes_the_failed_channel() -> None:

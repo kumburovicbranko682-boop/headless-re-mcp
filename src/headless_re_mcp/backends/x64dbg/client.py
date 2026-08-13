@@ -1117,12 +1117,25 @@ class XdbgClient:
         if not encoded or len(encoded) > _MAX_FRAME_BYTES:
             raise XdbgRpcError("request_too_large", "RPC request exceeds the frame limit")
         frame = len(encoded).to_bytes(4, "little") + encoded
+        # One deadline for the whole exchange. Given to each I/O separately, the
+        # write, the length read and the body read each got the full timeout, so
+        # a caller asking for ten seconds could wait thirty and every bound in
+        # the tool catalog was worth three times what it said. The IDA worker
+        # already runs a single deadline across its exchange.
+        deadline = time.monotonic() + timeout
+
+        def remaining() -> float:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"x64dbg RPC call exceeded {timeout:g}s")
+            return left
+
         try:
-            transport.write_all(frame, timeout=timeout)
-            response_size = int.from_bytes(transport.read_exact(4, timeout=timeout), "little")
+            transport.write_all(frame, timeout=remaining())
+            response_size = int.from_bytes(transport.read_exact(4, timeout=remaining()), "little")
             if response_size <= 0 or response_size > _MAX_FRAME_BYTES:
                 raise XdbgRpcError("rpc_protocol_error", "RPC response frame length is invalid")
-            response_raw = transport.read_exact(response_size, timeout=timeout)
+            response_raw = transport.read_exact(response_size, timeout=remaining())
         except (OSError, TimeoutError, BrokenPipeError) as exc:
             transport.close()
             self._transport = None
