@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ipaddress
+import os
+from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.config import Settings
@@ -43,6 +45,42 @@ def create_app(
     register_agent_routes(app, service, token=token, settings=cfg)
     register_spa_fallback(app, token=token)
     return app
+
+
+def _claim_artifact_root(root: Path) -> int | None:
+    """Hold this artifact root for one console. None when another already has it.
+
+    A second console on the same root is not additive. Creating the app declares
+    every run the first one has in flight dead and requeues its missions, and
+    then both schedulers claim from the same database. Measured: a run that was
+    streaming became interrupted with service_restarted while the first instance
+    was still executing it, and the default auto-port made a second start
+    succeed rather than collide.
+
+    An operating-system lock rather than a lease, because the supervisor
+    restarts this within a second of killing it and a lease would leave the
+    replacement waiting for its own predecessor to expire. The kernel releases
+    this the moment the holder dies, however it dies.
+    """
+    try:
+        (root / "meta").mkdir(parents=True, exist_ok=True)
+        handle = os.open(root / "meta" / "console.lock", os.O_CREAT | os.O_RDWR)
+    except OSError:
+        # Cannot make the lock. That is not a reason to refuse to serve.
+        return -1
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl  # type: ignore[import-not-found,unused-ignore]
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined,unused-ignore]
+    except OSError:
+        os.close(handle)
+        return None
+    return handle
 
 
 def run_web(
@@ -87,6 +125,16 @@ def run_web(
             f"{int(preferred) + max(1, port_span)}，请关闭占用进程或指定 --port"
         )
         return 3
+
+    claim = _claim_artifact_root(settings.artifact_root)
+    if claim is None:
+        print(
+            "另一个控制台已在使用同一制品目录："
+            f"{settings.artifact_root}\n"
+            "第二个实例会把前一个正在执行的 run 标记为中断并重新排队它的任务，"
+            "两个调度器随后会抢同一个数据库。请先停止它，或改用其它 artifact_root。"
+        )
+        return 4
 
     configure_telemetry_logging()
     token, token_path = ensure_web_token(settings)
