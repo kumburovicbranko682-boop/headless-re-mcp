@@ -532,9 +532,25 @@ def _iter_table_rows(meta: _MetaCtx, table: int) -> Iterable[tuple[int, int]]:
         return
     offset = _table_start(meta, table)
     row_size = _table_row_size(meta, table)
+    rows = min(rows, _rows_the_stream_can_hold(meta, offset, row_size))
     for rid in range(1, rows + 1):
         yield rid, offset
         offset += row_size
+
+
+def _rows_the_stream_can_hold(meta: _MetaCtx, offset: int, row_size: int) -> int:
+    """How many rows are actually there, whatever the header claims.
+
+    The row count is a number out of the assembly, and the callers of this
+    materialise the whole table into a list before paging it. A TypeDef table
+    declaring 0x7fffffff rows therefore ran for more than twenty-five seconds
+    and took 1.2 GB of heap with it, from a 60 KB file and a request for twenty
+    items. The rows cannot extend past the #~ stream that holds them, so that
+    is the bound: derived from the file rather than picked.
+    """
+    if row_size <= 0 or offset >= len(meta.tables):
+        return 0
+    return (len(meta.tables) - offset) // row_size
 
 
 def _iter_typedefs(meta: _MetaCtx) -> Iterable[JsonObject]:
