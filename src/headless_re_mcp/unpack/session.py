@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -442,15 +443,29 @@ def fail_unpack_session(
     )
 
 
-def write_timeline_jsonl(state: UnpackSessionState, path: Path) -> None:
-    """Append-only JSONL timeline; never truncates prior diagnostic history."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Rewrite full timeline atomically so readers always see a consistent file.
-    partial = path.with_suffix(path.suffix + ".partial")
-    with partial.open("w", encoding="utf-8") as handle:
-        for item in state.timeline:
-            handle.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
-    partial.replace(path)
+def write_timeline_jsonl(state: UnpackSessionState, path: Path) -> str | None:
+    """Mirror the timeline as JSONL for readers. Reports failure, never raises.
+
+    Every event here is already inside ``state.to_dict()``, so this file is a
+    convenience copy and losing it costs nothing durable. It is written first,
+    though, which meant a full volume failed here and the state snapshot that
+    follows never ran -- the one write that makes an unpack survive a restart,
+    skipped because a redundant one could not be made. The caller saw the whole
+    step fail after the dump it was recording had already succeeded.
+    """
+    partial = path.with_suffix(f"{path.suffix}.{uuid4().hex}.partial")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Rewritten whole so readers always see a consistent file.
+        with partial.open("w", encoding="utf-8") as handle:
+            for item in state.timeline:
+                handle.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+        partial.replace(path)
+    except OSError as exc:
+        with suppress(OSError):
+            partial.unlink()
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
 def persist_state_snapshot(state: UnpackSessionState, path: Path) -> None:

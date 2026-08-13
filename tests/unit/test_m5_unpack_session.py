@@ -17,8 +17,37 @@ from headless_re_mcp.unpack.session import (
     cancel_unpack_session,
     check_timeout,
     create_unpack_session,
+    persist_state_snapshot,
     transition,
+    write_timeline_jsonl,
 )
+
+
+def test_an_unwritable_timeline_copy_does_not_block_the_state_snapshot(
+    tmp_path: Path,
+) -> None:
+    """The snapshot is what survives a restart; the JSONL is a convenience copy.
+
+    Both are written from one step, the copy first, so a full volume failed
+    there and the snapshot never ran -- the only durable record of the unpack,
+    skipped because a redundant one could not be made. The step then reported
+    failure for a dump that had already succeeded, and the in-memory state had
+    advanced past what was on disk.
+    """
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    state = create_unpack_session("abc123", route="upx", timeout_seconds=60)
+
+    failure = write_timeline_jsonl(state, blocked / "timeline.jsonl")
+
+    assert failure is not None, "an unwritable copy must be reported, not raised"
+
+    snapshot = tmp_path / "session" / "state.json"
+    persist_state_snapshot(state, snapshot)
+
+    saved = json.loads(snapshot.read_text(encoding="utf-8"))
+    assert saved["timeline"], "the snapshot carries the timeline the copy could not"
+    assert saved["session_id"] == "abc123"
 
 
 def _write_pe(path: Path) -> None:
