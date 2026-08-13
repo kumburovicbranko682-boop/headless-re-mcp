@@ -12,6 +12,7 @@ drifts fails as an incompatible override rather than at runtime.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from contextlib import suppress
 from pathlib import Path
@@ -408,6 +409,23 @@ class DynamicInspectMixin:
                 raise ValueError("invalid session id for artifact path")
             directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
             directory.mkdir(parents=True, exist_ok=True)
+            # Checked before writing, the way trace.start does. Nothing prunes
+            # the artifact root, so a long-running deployment reaches a full
+            # volume as a matter of course -- and without this the dump fails
+            # partway through as an OSError, which reaches the caller as an
+            # internal_error naming neither the disk nor the artifact root.
+            wanted = size if size is not None else MAX_MODULE_DUMP_BYTES
+            free_bytes = shutil.disk_usage(directory).free
+            if free_bytes < wanted:
+                raise XdbgRpcError(
+                    "insufficient_disk_space",
+                    "not enough free space for the requested dump",
+                    details={
+                        "available_disk_bytes": free_bytes,
+                        "required_bytes": wanted,
+                        "artifact_root": str(self.settings.artifact_root),
+                    },
+                )
             output_path = directory / f"dumped-module-{base:x}-{uuid4().hex}.bin"
             params: JsonObject = {
                 "base": base,

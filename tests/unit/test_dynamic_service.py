@@ -2123,3 +2123,38 @@ def test_analyze_function_dynamic_rejects_out_of_range_timeout(tmp_path: Path) -
 
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
+
+
+def test_a_dump_onto_a_full_volume_says_the_disk_is_full(tmp_path: Path) -> None:
+    """Nothing prunes the artifact root, so a full volume is a matter of time.
+
+    Without the check the write fails partway through as an OSError and reaches
+    the caller as internal_error, naming neither the disk nor the directory that
+    filled -- so the agent retries a dump that cannot succeed, and the operator
+    reads an incident that points at the code. trace.start already refuses this
+    way; dumps are the other thing that writes a large file.
+    """
+    import shutil
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from headless_re_mcp.config import Settings
+
+    usage_type = shutil.disk_usage(".").__class__
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        with patch(
+            "headless_re_mcp.core.service_dynamic_inspect.shutil.disk_usage",
+            return_value=usage_type(total=100, used=100, free=1024),
+        ):
+            result = service.modules_dump("s1", 0x140000000, size=8 * 1024 * 1024)
+    finally:
+        service.close_all()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "insufficient_disk_space"
+    assert result.error.details["available_disk_bytes"] == 1024
+    assert result.error.details["required_bytes"] == 8 * 1024 * 1024
+    assert "artifact_root" in result.error.details
