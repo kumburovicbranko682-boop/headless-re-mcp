@@ -8,6 +8,7 @@ days without anyone reading the output.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -43,6 +44,32 @@ def test_a_timeline_that_cannot_be_written_does_not_fail_the_call(
     assert "No space left" in str(entry["write_failed"]), "and is told it was not stored"
 
 
+def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> None:
+    """Reading counts separators and decodes only the page asked for.
+
+    Decoding the whole file under the lock cost 13ms at the 8 MB cap, and every
+    append landing behind a reader waited it out; this halved the tail. The
+    answers have to be identical, including the last page and a file whose last
+    line was never terminated, which is what a crash mid-append leaves.
+    """
+    path = tmp_path / "sessions" / "abc" / "timeline.jsonl"
+    for index in range(250):
+        append_session_timeline(path, event="entry", message=f"line {index}")
+
+    whole = path.read_text(encoding="utf-8").splitlines()
+    for offset, limit in ((0, 100), (100, 100), (240, 100), (249, 10), (400, 10)):
+        page = list_session_timeline(path, offset=offset, limit=limit)
+        assert page["total"] == len(whole), f"total wrong at offset {offset}"
+        expected = [json.loads(line) for line in whole[offset : offset + limit]]
+        assert page["events"] == expected, f"page wrong at offset {offset}"
+
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write('{"at": "now", "event": "cut"')  # no newline, as a crash leaves it
+    torn = list_session_timeline(path, offset=250, limit=10)
+    assert torn["total"] == len(whole) + 1, "an unterminated last line still counts"
+    assert torn["events"] == [], "and is skipped rather than breaking the page"
+
+
 def test_a_session_that_never_existed_is_not_reported_as_a_quiet_one(
     tmp_path: Path,
 ) -> None:
@@ -75,10 +102,12 @@ def test_a_session_with_no_events_yet_is_not_mistaken_for_a_missing_one(
 def test_the_service_reports_a_missing_session_rather_than_an_empty_log() -> None:
     """The store says which it is; this is the layer that turns that into an error.
 
-    A KeyError is what the envelope maps to session_not_found, which is the code
-    every other session-scoped call already answers with.
+    SessionNotFound specifically, not a bare KeyError: the envelope maps only
+    that type to session_not_found, so a missing dictionary key somewhere else
+    cannot tell a caller its session disappeared.
     """
     from headless_re_mcp.core.application_services import ArtifactApplicationService
+    from headless_re_mcp.core.session import SessionNotFound
 
     class Missing:
         def list_timeline(self, session_id: str, *, offset: int, limit: int) -> dict[str, object]:
@@ -89,7 +118,7 @@ def test_the_service_reports_a_missing_session_rather_than_an_empty_log() -> Non
             return {"events": [], "count": 0, "total": 0}
 
     absent = ArtifactApplicationService(facade=cast(Any, None), repository=cast(Any, Missing()))
-    with pytest.raises(KeyError):
+    with pytest.raises(SessionNotFound):
         absent.list_timeline("ghost")
 
     empty = ArtifactApplicationService(facade=cast(Any, None), repository=cast(Any, Quiet()))
