@@ -185,7 +185,15 @@ class MissionScheduler:
             # Only before the first run of a mission: that is the sample
             # boundary. A failure here is fatal to the mission by design, since
             # continuing would analyse a new sample on a dirty machine.
-            outcome = self.isolation.rotate(reason=f"mission:{mission.id}")
+            #
+            # Off the loop for the same reason the watchdog sweep is: this runs
+            # the operator's command, and its timeout defaults to ten minutes
+            # because a VM rollback takes that long. Inline, the loop the web
+            # server shares stops for the whole rollback, and a supervisor
+            # polling the health check restarts the process in the middle of it.
+            outcome = await asyncio.to_thread(
+                self.isolation.rotate, reason=f"mission:{mission.id}"
+            )
             if not outcome.get("ok", True):
                 self.store.set_mission_status(
                     mission.id,

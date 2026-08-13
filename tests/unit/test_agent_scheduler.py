@@ -272,6 +272,47 @@ async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_the_isolation_step_does_not_freeze_the_event_loop(tmp_path: Path) -> None:
+    """The rotation runs an operator command whose timeout defaults to 600s.
+
+    A VM rollback is why that default is ten minutes. Called inline it stops the
+    loop the web server shares for the whole rollback: no HTTP, no /healthz, no
+    SSE, no other mission. A supervisor polling the health check reads that as a
+    dead process and restarts it in the middle of the rollback.
+    """
+    import time as _time
+
+    class SlowIsolation:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            self.calls += 1
+            _time.sleep(0.5)
+            return {"ok": True, "performed": True, "reason": reason}
+
+    scheduler, store, runner = _scheduler(tmp_path, [f"{MISSION_COMPLETE_MARKER} done"])
+    isolation = SlowIsolation()
+    scheduler.isolation = isolation
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "rotate before the first run")
+
+    async def probe() -> float:
+        started = _time.perf_counter()
+        await asyncio.sleep(0.02)
+        return _time.perf_counter() - started
+
+    task = asyncio.create_task(probe())
+    await asyncio.sleep(0)
+    await scheduler.tick()
+    delay = await task
+
+    assert isolation.calls == 1, "the rotation must still happen"
+    assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
+    assert delay < 0.4, f"the loop was blocked for {delay:.2f}s during the rotation"
+
+
+@pytest.mark.asyncio
 async def test_the_watchdog_is_swept_from_the_scheduler_loop(tmp_path: Path) -> None:
     """One periodic tick, not two: a single place that can fall behind."""
     sweeps: list[int] = []
