@@ -8,6 +8,7 @@ import pytest
 
 from headless_re_mcp.agent.models import (
     MISSION_COMPLETE_MARKER,
+    RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
     MissionStatus,
     RunStatus,
@@ -570,3 +571,42 @@ async def test_a_run_that_actually_broke_still_ends_the_mission(tmp_path: Path) 
     await scheduler.tick()
 
     assert store.get_mission(mission.id).status is MissionStatus.FAILED
+
+@pytest.mark.asyncio
+async def test_a_run_that_hit_its_deadline_also_continues_the_mission(
+    tmp_path: Path,
+) -> None:
+    """The deadline is the bound a real analysis meets first.
+
+    Same shape as the tool-round bound and more likely to fire: ten minutes is
+    not long for a debugger session, and a mission budgeted for eight runs was
+    dying on the first timeout with seven unspent.
+    """
+    store = AgentStore(tmp_path / "deadline.db")
+    store.recover_after_restart()
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "a long analysis", max_runs=3)
+
+    async def times_out(thread_id: str, **kwargs: Any) -> JsonObject:
+        run = store.create_run(
+            thread_id, provider_profile="p", model=None, deadline_seconds=60
+        )
+        store.transition(run.id, RunStatus.STREAMING)
+        store.transition(run.id, RunStatus.FAILED, error=RUN_DEADLINE_EXCEEDED)
+        return run.dump()
+
+    scheduler = MissionScheduler(store, times_out, interval_s=0.01)
+
+    await scheduler.tick()
+    assert store.get_mission(mission.id).status is MissionStatus.PENDING
+
+    for _ in range(6):
+        if store.get_mission(mission.id).status is not MissionStatus.PENDING:
+            break
+        await scheduler.tick()
+
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.EXHAUSTED
+    assert final.runs_used == 3
+    assert "own bound" in str(final.error), "the record should say which bound ended it"
+    assert RUN_DEADLINE_EXCEEDED in str(final.error)

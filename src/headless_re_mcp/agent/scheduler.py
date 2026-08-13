@@ -21,7 +21,7 @@ from typing import Any
 
 from headless_re_mcp.agent.models import (
     MISSION_COMPLETE_MARKER,
-    RUN_ROUNDS_EXHAUSTED,
+    RUN_BUDGET_ENDINGS,
     TERMINAL_RUN_STATUSES,
     AgentMission,
     MissionStatus,
@@ -219,12 +219,12 @@ class MissionScheduler:
         if current is not None and current.status is MissionStatus.CANCELLED:
             return
 
-        # A run that used up its tool rounds has spent its budget, not broken.
-        # Treating it as a failure contradicted the whole point of a mission:
-        # an objective large enough to need several runs died on the first one,
-        # with the rest of its run budget unspent, filed as failed. That is the
-        # objective this mechanism exists for.
-        if status is RunStatus.COMPLETED or self._run_spent_its_rounds(run_id):
+        # A run that spent its tool rounds or its deadline has used a bound, not
+        # broken. Treating that as a failure contradicted the whole point of a
+        # mission: an objective large enough to need several runs died on the
+        # first one, with the rest of its budget unspent, filed as failed. That
+        # is the objective this mechanism exists for.
+        if status is RunStatus.COMPLETED or self._run_spent_its_budget(run_id):
             if self._objective_met(mission.thread_id, run_id):
                 self.store.set_mission_status(mission.id, MissionStatus.COMPLETED)
                 return
@@ -280,10 +280,18 @@ class MissionScheduler:
                 return RunStatus.INTERRUPTED
             await asyncio.sleep(self.run_poll_interval_s)
 
-    def _run_spent_its_rounds(self, run_id: str) -> bool:
-        """Did this run end by using up its tool rounds rather than by breaking?"""
+    def _run_spent_its_budget(self, run_id: str) -> bool:
+        """Did this run end by spending a bound rather than by breaking?
+
+        Both bounds -- the tool rounds and the run deadline -- are the shape of
+        a bounded run that still has work left. The deadline is the one a real
+        analysis meets first.
+        """
         run = self.store.get_run(run_id)
-        return run is not None and RUN_ROUNDS_EXHAUSTED in (run.error or "")
+        if run is None:
+            return False
+        error = run.error or ""
+        return any(ending in error for ending in RUN_BUDGET_ENDINGS)
 
     def _exhausted_reason(self, mission: AgentMission, run_id: str) -> str:
         """Say which kind of exhaustion this was.
@@ -304,6 +312,13 @@ class MissionScheduler:
                 f"{base}; the final reply contains {MISSION_COMPLETE_MARKER} but does "
                 "not begin with it, so completion was not recognised"
             )
+        run = self.store.get_run(run_id)
+        error = (run.error or "") if run is not None else ""
+        for ending in RUN_BUDGET_ENDINGS:
+            if ending in error:
+                # A run that hit its own bound says the objective is too large
+                # for the shape of the runs, not that it cannot be done.
+                return f"{base}; the last run ended on its own bound ({ending})"
         return base
 
     def _final_reply(self, thread_id: str, run_id: str) -> str | None:

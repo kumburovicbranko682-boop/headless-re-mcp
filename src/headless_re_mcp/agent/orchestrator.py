@@ -16,6 +16,7 @@ from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import (
+    RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
     RunStatus,
@@ -140,7 +141,7 @@ class AgentOrchestrator:
         try:
             await asyncio.wait_for(self._run_loop(run_id), timeout=self.run_deadline)
         except TimeoutError:
-            await self._finish_failure(run_id, "run deadline exceeded", event="run.failed")
+            await self._finish_failure(run_id, RUN_DEADLINE_EXCEEDED, event="run.failed")
         except asyncio.CancelledError:
             await self._finish_cancel(run_id)
             raise
