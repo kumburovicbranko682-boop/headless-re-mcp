@@ -18,6 +18,55 @@ class WindbgError(RuntimeError):
         self.details = details
 
 
+# cdb prints the whole session, and the analytical answer is in it. A listing
+# that stopped at the cap is indistinguishable from a listing that ended, so
+# the caller is told which of the two it is holding.
+_MAX_OUTPUT = 500_000
+_MAX_STDERR = 50_000
+_MAX_ATTACH_OUTPUT = 8_000
+
+
+def _bounded(raw: bytes, limit: int) -> tuple[str, dict[str, object]]:
+    """Decode and cap ``raw``, plus the fields that say whether it was cut."""
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) <= limit:
+        return text, {}
+    return text[:limit], {
+        "truncated": True,
+        "output_chars": len(text),
+        "returned_chars": limit,
+    }
+
+
+def _summarised(text: str, limit: int) -> dict[str, object]:
+    """The ``output`` field for a payload that carries nothing else to cut."""
+    if len(text) <= limit:
+        return {"output": text}
+    return {
+        "output": text[:limit],
+        "truncated": True,
+        "output_chars": len(text),
+        "returned_chars": limit,
+    }
+
+
+def _carried(data: JsonObject) -> dict[str, object]:
+    """Lift a truncation notice out of the raw payload a wrapper nests.
+
+    Every wrapper here renames ``output`` to something the caller reads --
+    threads, modules, disasm -- and files the rest under ``raw``. A caller
+    reading the renamed field has no reason to open ``raw``, so the notice has
+    to travel with it.
+    """
+    if not data.get("truncated"):
+        return {}
+    return {
+        "truncated": True,
+        "output_chars": data.get("output_chars"),
+        "returned_chars": data.get("returned_chars"),
+    }
+
+
 def _is_store_package(path: Path) -> bool:
     """Microsoft Store package paths stat fine but CreateProcess denies them."""
     return "windowsapps" in str(path).casefold()
@@ -66,11 +115,11 @@ class WindbgClient:
 
     def threads(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["~*"], timeout=timeout)
-        return {"dump": str(dump), "threads": data.get("output", ""), "raw": data}
+        return {"dump": str(dump), "threads": data.get("output", ""), "raw": data, **_carried(data)}
 
     def modules(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["lm"], timeout=timeout)
-        return {"dump": str(dump), "modules": data.get("output", ""), "raw": data}
+        return {"dump": str(dump), "modules": data.get("output", ""), "raw": data, **_carried(data)}
 
     def disasm(
         self,
@@ -99,6 +148,7 @@ class WindbgClient:
             "length": length,
             "disasm": data.get("output", ""),
             "raw": data,
+            **_carried(data),
         }
 
     def attach(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
@@ -114,17 +164,17 @@ class WindbgClient:
             "attached": True,
             "mode": "noninvasive",
             "note": "cdb -pv probe; detached via q",
-            "output": data.get("output", "")[:8000],
+            **_summarised(str(data.get("output", "")), _MAX_ATTACH_OUTPUT),
             "raw": data,
         }
 
     def live_threads(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["~*"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "threads": data.get("output", ""), "raw": data}
+        return {"pid": pid, "threads": data.get("output", ""), "raw": data, **_carried(data)}
 
     def live_modules(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["lm"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "modules": data.get("output", ""), "raw": data}
+        return {"pid": pid, "modules": data.get("output", ""), "raw": data, **_carried(data)}
 
     def live_disasm(
         self,
@@ -153,6 +203,7 @@ class WindbgClient:
             "length": length,
             "disasm": data.get("output", ""),
             "raw": data,
+            **_carried(data),
         }
 
     def _run_process(
@@ -197,8 +248,8 @@ class WindbgClient:
                 f"cdb could not be launched: {exc.strerror or exc}",
                 cdb=str(cdb),
             ) from exc
-        out = completed.stdout.decode("utf-8", errors="replace")[:500_000]
-        err = completed.stderr.decode("utf-8", errors="replace")[:50_000]
+        out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
+        err, _ = _bounded(completed.stderr, _MAX_STDERR)
         if completed.returncode not in {0, 1} and not out:
             raise WindbgError(
                 "backend_error",
@@ -212,6 +263,7 @@ class WindbgClient:
             "output": out,
             "stderr": err,
             "exit_code": completed.returncode,
+            **cut,
         }
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
@@ -240,9 +292,15 @@ class WindbgClient:
                 f"cdb could not be launched: {exc.strerror or exc}",
                 cdb=str(cdb),
             ) from exc
-        out = completed.stdout.decode("utf-8", errors="replace")[:500_000]
-        err = completed.stderr.decode("utf-8", errors="replace")[:50_000]
-        return {"dump": str(dump), "output": out, "stderr": err, "exit_code": completed.returncode}
+        out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
+        err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        return {
+            "dump": str(dump),
+            "output": out,
+            "stderr": err,
+            "exit_code": completed.returncode,
+            **cut,
+        }
 
 
 def _discover_cdb() -> Path | None:
