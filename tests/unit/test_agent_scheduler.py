@@ -318,6 +318,73 @@ async def test_the_loop_survives_an_incident_log_that_cannot_be_written(
 
 
 @pytest.mark.asyncio
+async def test_a_queue_running_without_isolation_says_so_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rotate() separates "rotated" from "nothing to rotate with" on purpose.
+
+    The scheduler dropped that, so a queue taking one sample after another ran
+    each on whatever the last one left behind with nothing saying so. The
+    debugger executes the sample, which is what makes it matter. Said once,
+    because it describes the deployment rather than any one mission.
+    """
+    from headless_re_mcp.agent import scheduler as scheduler_module
+
+    alerts: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        scheduler_module,
+        "record_alert",
+        lambda kind, **kwargs: alerts.append((kind, kwargs)),
+    )
+
+    class NotConfigured:
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            return {"ok": True, "performed": False, "reason": "no isolation command configured"}
+
+    scheduler, store, _ = _scheduler(
+        tmp_path,
+        [f"{MISSION_COMPLETE_MARKER} a", f"{MISSION_COMPLETE_MARKER} b"],
+    )
+    scheduler.isolation = NotConfigured()
+    for _ in range(2):
+        store.create_mission(store.create_thread().id, "sample")
+
+    await scheduler.tick()
+    await scheduler.tick()
+
+    kinds = [kind for kind, _ in alerts]
+    assert kinds == ["samples_not_isolated"], f"once, not per mission: {kinds}"
+    assert "left behind" in str(alerts[0][1]["fields"]["consequence"])
+
+
+@pytest.mark.asyncio
+async def test_a_rotation_that_happened_is_not_reported_as_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The notice has to mean something, so a real rotation stays quiet."""
+    from headless_re_mcp.agent import scheduler as scheduler_module
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        scheduler_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    class Rotates:
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            return {"ok": True, "performed": True, "elapsed_s": 1.0}
+
+    scheduler, store, _ = _scheduler(tmp_path, [f"{MISSION_COMPLETE_MARKER} done"])
+    scheduler.isolation = Rotates()
+    store.create_mission(store.create_thread().id, "sample")
+
+    await scheduler.tick()
+
+    assert alerts == []
+
+
+@pytest.mark.asyncio
 async def test_the_isolation_step_does_not_freeze_the_event_loop(tmp_path: Path) -> None:
     """The rotation runs an operator command whose timeout defaults to 600s.
 

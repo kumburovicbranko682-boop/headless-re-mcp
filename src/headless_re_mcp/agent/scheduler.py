@@ -69,6 +69,7 @@ class MissionScheduler:
     # the orchestrator's own 3600s ceiling so it only fires when that failed.
     run_wait_timeout_s: float = 3900.0
     run_poll_interval_s: float = 0.05
+    _warned_unrotated: bool = field(default=False, init=False)
     _task: asyncio.Task[None] | None = field(default=None, init=False)
     _stop: asyncio.Event | None = field(default=None, init=False)
     _last_sweep: float = field(default=0.0, init=False)
@@ -201,6 +202,7 @@ class MissionScheduler:
                     error=f"isolation step failed: {outcome.get('detail')}",
                 )
                 return
+            self._note_if_nothing_was_rotated(outcome)
 
         attempt = mission.runs_used + 1
         self.store.add_message(
@@ -255,6 +257,29 @@ class MissionScheduler:
             mission.id,
             MissionStatus.FAILED,
             error=f"run {run_id} ended as {status.value}",
+        )
+
+    def _note_if_nothing_was_rotated(self, outcome: JsonObject) -> None:
+        """Say once that samples are following each other on the same machine.
+
+        rotate() distinguishes "rotated" from "nothing configured to rotate with"
+        precisely so the difference can be seen, and this dropped it: a queue
+        that takes one sample after another was running each on whatever the
+        last one left behind, and nothing at the mission level said so. The
+        debugger executes the sample, which is what makes that matter.
+
+        Once per process, because the answer is a property of the deployment's
+        configuration rather than of any one mission.
+        """
+        if outcome.get("performed", True) or self._warned_unrotated:
+            return
+        self._warned_unrotated = True
+        record_alert(
+            "samples_not_isolated",
+            fields={
+                "detail": str(outcome.get("reason") or "no isolation step ran"),
+                "consequence": "each sample runs on what the previous one left behind",
+            },
         )
 
     async def _await_run(self, run_id: str) -> RunStatus:
