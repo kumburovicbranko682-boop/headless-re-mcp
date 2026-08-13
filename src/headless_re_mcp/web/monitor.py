@@ -27,6 +27,27 @@ def _safe_error(result: Any) -> JsonObject | None:
     }
 
 
+def _timeline_tail(service: AnalysisService, session_id: str, limit: int) -> Any:
+    """The newest `limit` timeline entries.
+
+    timeline.list pages from the oldest entry, which is right for a caller
+    walking the history and wrong for a monitor: asking for offset 0 every frame
+    showed the first 48 things the session ever did and never moved, so a live
+    view stopped being live as soon as a session got busy.
+
+    Two reads rather than one, and only once a session is past the window: the
+    total comes back with the first page, and a short session needs no second.
+    """
+    head = service.timeline_list(session_id, offset=0, limit=limit)
+    data = _safe_data(head)
+    if not isinstance(data, dict):
+        return head
+    total = data.get("total")
+    if not isinstance(total, int) or total <= limit:
+        return head
+    return service.timeline_list(session_id, offset=total - limit, limit=limit)
+
+
 def build_monitor_snapshot(
     service: AnalysisService,
     session_id: str,
@@ -50,7 +71,7 @@ def build_monitor_snapshot(
     dynamic = service.dynamic_state(session_id)
     workflow = service.workflow_status(session_id)
     unpack = service.unpack_status(session_id)
-    timeline = service.timeline_list(session_id, offset=0, limit=timeline_limit)
+    timeline = _timeline_tail(service, session_id, timeline_limit)
     artifacts = service.artifacts_list(session_id=session_id, offset=0, limit=12)
 
     events_payload: JsonObject | None = None

@@ -326,3 +326,51 @@ def test_run_web_rejects_non_loopback(tmp_path: Path, monkeypatch: pytest.Monkey
     assert code == 2
     _ = settings
     _ = monkeypatch
+
+
+def test_the_monitor_timeline_follows_the_session_instead_of_its_first_frames(
+    tmp_path: Path,
+) -> None:
+    """A live view has to show the live end.
+
+    timeline.list pages from the oldest entry, which suits a caller walking the
+    history. The monitor asked for offset 0 on every frame, so once a session
+    had done more than `timeline_limit` things it showed the first 48 of them
+    and never moved again -- at 750ms per frame, for the rest of the session.
+    An operator or an agent watching that panel to decide what is happening is
+    reading the start of the run as if it were the present.
+    """
+    from headless_re_mcp.core.store.timeline import append_session_timeline, list_session_timeline
+    from headless_re_mcp.web.monitor import _timeline_tail
+
+    path = tmp_path / "timeline.jsonl"
+
+    class Result:
+        def __init__(self, data: dict[str, object]) -> None:
+            self.ok = True
+            self.data = data
+
+    class Service:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def timeline_list(self, session_id: str, offset: int = 0, limit: int = 100) -> Result:
+            self.reads += 1
+            return Result(list_session_timeline(path, offset=offset, limit=limit))
+
+    for step in range(1, 11):
+        append_session_timeline(path, event="tool.call", message=f"step {step}")
+    short = Service()
+    frame = _timeline_tail(short, "s", 48).data
+    assert [e["message"] for e in frame["events"]][-1] == "step 10"
+    assert short.reads == 1, "a session inside the window needs only one read"
+
+    for step in range(11, 301):
+        append_session_timeline(path, event="tool.call", message=f"step {step}")
+    long_running = Service()
+    frame = _timeline_tail(long_running, "s", 48).data
+    shown = [e["message"] for e in frame["events"]]
+    assert frame["total"] == 300
+    assert len(shown) == 48
+    assert shown[-1] == "step 300", "the newest entry must be in the frame"
+    assert shown[0] == "step 253"
