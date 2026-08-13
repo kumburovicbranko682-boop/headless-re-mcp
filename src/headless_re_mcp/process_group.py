@@ -1,7 +1,7 @@
 """Tie spawned children to the lifetime of this process, on Windows.
 
-A child outlives its parent here. The supervisor terminates its own child on the
-way out, but nothing runs when the supervisor is force-killed -- TerminateProcess
+A child outlives its parent here. Owners terminate their own children on the
+way out, but nothing runs when the owner is force-killed -- TerminateProcess
 delivers no signal -- and stopping a scheduled task is exactly that. Measured
 against a real supervise run: killing the supervisor left the web server up,
 holding the port the next start would need and the debuggers it had open.
@@ -9,7 +9,8 @@ holding the port the next start would need and the debuggers it had open.
 A job object with KILL_ON_JOB_CLOSE closes that: the handle dies with the
 process however it dies, and the kernel takes the children with it. Everything
 here is best effort, because failing to build the safety net is not a reason to
-refuse to run.
+refuse to run -- but it is said once, because a net that is quietly missing is
+worse than one that is loudly absent.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from ctypes import wintypes
 from threading import Lock
 from typing import Any
 
+from headless_re_mcp.telemetry import record_alert
+
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _PROCESS_SET_QUOTA = 0x0100
@@ -28,6 +31,7 @@ _PROCESS_TERMINATE = 0x0001
 _lock = Lock()
 _job: int | None = None
 _unavailable = False
+_reported = False
 
 
 class _IoCounters(ctypes.Structure):
@@ -104,26 +108,51 @@ def _ensure_job() -> int | None:
             return None
 
 
+def _report_once(detail: str) -> None:
+    """Say once that spawned processes will now outlive this one.
+
+    Once, because the reason is a property of the machine rather than of any
+    single child: whatever refuses the first refuses all of them.
+    """
+    global _reported
+    with _lock:
+        if _reported:
+            return
+        _reported = True
+    record_alert(
+        "process_group_unavailable",
+        fields={
+            "detail": detail,
+            "consequence": "spawned processes will survive if this one is killed",
+        },
+    )
+
+
 def assign_to_process_group(pid: int) -> bool:
     """Make ``pid`` die with this process. False when that could not be arranged.
 
-    Already being in another job is the common refusal -- a container or a CI
-    runner may have put us in one that forbids nesting -- and it is not a
-    failure worth reporting past the caller.
+    Already being in another job is the common refusal: a container or a CI
+    runner may have put us in one that forbids nesting.
     """
     if os.name != "nt" or pid <= 0:
         return False
     job = _ensure_job()
     if job is None:
+        _report_once("the process job could not be created")
         return False
     try:
         kernel32 = _kernel32()
         handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
         if not handle:
+            _report_once(f"cannot open pid {pid} to group it")
             return False
         try:
-            return bool(kernel32.AssignProcessToJobObject(job, handle))
+            if kernel32.AssignProcessToJobObject(job, handle):
+                return True
         finally:
             kernel32.CloseHandle(handle)
-    except (OSError, AttributeError, ValueError):
+    except (OSError, AttributeError, ValueError) as exc:
+        _report_once(f"{type(exc).__name__}: {exc}")
         return False
+    _report_once(f"pid {pid} was refused by the job, probably already in one")
+    return False

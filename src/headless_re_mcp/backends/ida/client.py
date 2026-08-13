@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.subprocess_rpc import (
 )
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.windows import describe_process_windows
+from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
 
@@ -82,6 +83,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             env=env,
             **popen_kw,
         )
+        # An idalib worker holds the database in memory and is measured in
+        # gigabytes. Nothing closes it when this process is killed rather than
+        # asked to stop, so without this a hard restart leaves one behind for
+        # every session that was open.
+        assign_to_process_group(self._process.pid)
         self._messages: queue.Queue[JsonObject | None] = queue.Queue()
         self._stdout_log: deque[str] = deque(maxlen=100)
         self._stderr_log: deque[str] = deque(maxlen=100)

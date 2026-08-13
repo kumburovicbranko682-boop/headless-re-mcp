@@ -27,6 +27,7 @@ from headless_re_mcp.core.hidden_desktop import DesktopProcess, HiddenDesktop
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.core.session import detect_pe_architecture
 from headless_re_mcp.core.windows import describe_process_windows
+from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
 
@@ -414,6 +415,9 @@ class XdbgClient:
                 env=child_environment,
                 **popen_kw,
             )
+        # x64dbg owns the debuggee, so an ungrouped one left behind by a hard
+        # kill is a sample still executing with nothing attached to it.
+        assign_to_process_group(int(self._process.pid))
         assert self._process.stdout is not None
         assert self._process.stderr is not None
         self._stdout_thread = Thread(

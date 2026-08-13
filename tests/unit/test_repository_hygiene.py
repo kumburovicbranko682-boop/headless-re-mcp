@@ -189,6 +189,32 @@ def test_the_console_suppression_guard_can_actually_see_a_violation() -> None:
     assert any(how == "helper" for _, _, how in sites)
     assert any(how == "creationflags" for _, _, how in sites)
 
+def test_every_long_lived_backend_ties_its_worker_to_this_process() -> None:
+    """A worker that outlives the service is a leak nothing later can reach.
+
+    Both of these hold a debugger for the life of a session: idalib keeps the
+    database in memory and is measured in gigabytes, and x64dbg owns the
+    debuggee. A hard kill of the service -- which is what stopping a scheduled
+    task does, and what the supervisor's own job object now does to it -- runs
+    no cleanup, so an ungrouped worker survives with nothing attached to it.
+    """
+    import ast
+
+    owners = (
+        ROOT / "src" / "headless_re_mcp" / "backends" / "ida" / "client.py",
+        ROOT / "src" / "headless_re_mcp" / "backends" / "x64dbg" / "client.py",
+    )
+    for path in owners:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        grouped = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "assign_to_process_group"
+            for node in ast.walk(tree)
+        )
+        assert grouped, f"{path.relative_to(ROOT)} spawns a worker without grouping it"
+
+
 def test_no_python_source_is_written_in_the_wrong_encoding() -> None:
     """A BOM is invisible in an editor and breaks tools that read plain UTF-8.
 
