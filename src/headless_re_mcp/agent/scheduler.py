@@ -212,7 +212,7 @@ class MissionScheduler:
                 self.store.set_mission_status(
                     mission.id,
                     MissionStatus.EXHAUSTED,
-                    error=f"objective not met within {mission.max_runs} runs",
+                    error=self._exhausted_reason(mission, run_id),
                 )
                 return
             # More work to do and budget to do it with: back to the queue so the
@@ -260,10 +260,35 @@ class MissionScheduler:
                 return RunStatus.INTERRUPTED
             await asyncio.sleep(self.run_poll_interval_s)
 
-    def _objective_met(self, thread_id: str, run_id: str) -> bool:
-        """Look for the completion marker in what this run actually said."""
+    def _exhausted_reason(self, mission: AgentMission, run_id: str) -> str:
+        """Say which kind of exhaustion this was.
+
+        Completion is recognised only when the marker opens the final reply,
+        which is what the contract asks for and what keeps a model musing about
+        finishing from ending the mission. The cost of that strictness lands
+        here: a model that did the work but wrote the marker further into its
+        reply looks exactly like a model that never finished, and the mission is
+        filed as "objective not met" after paying for every run in its budget.
+        Those two need different responses from whoever reads this later, so
+        they get different text.
+        """
+        base = f"objective not met within {mission.max_runs} runs"
+        final = self._final_reply(mission.thread_id, run_id)
+        if final is not None and MISSION_COMPLETE_MARKER in final:
+            return (
+                f"{base}; the final reply contains {MISSION_COMPLETE_MARKER} but does "
+                "not begin with it, so completion was not recognised"
+            )
+        return base
+
+    def _final_reply(self, thread_id: str, run_id: str) -> str | None:
         for message in reversed(self.store.list_messages(thread_id)):
             if message.run_id != run_id or message.role != "assistant":
                 continue
-            return message.content.lstrip().startswith(MISSION_COMPLETE_MARKER)
-        return False
+            return message.content
+        return None
+
+    def _objective_met(self, thread_id: str, run_id: str) -> bool:
+        """Look for the completion marker in what this run actually said."""
+        final = self._final_reply(thread_id, run_id)
+        return final is not None and final.lstrip().startswith(MISSION_COMPLETE_MARKER)

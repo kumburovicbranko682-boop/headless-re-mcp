@@ -412,3 +412,43 @@ async def test_a_mission_still_completes_on_a_thread_past_the_message_cap(
         f"objective was met but the mission ended {final.status.value}: {final.error}"
     )
     assert len(runner.started) == 1, "it must not have retried a completed objective"
+
+@pytest.mark.asyncio
+async def test_an_exhausted_mission_says_whether_the_model_claimed_completion(
+    tmp_path: Path,
+) -> None:
+    """Two different failures were being filed under the same sentence.
+
+    Completion is recognised only when the marker opens the final reply. A model
+    that did the work but wrote the marker further into its reply is therefore
+    indistinguishable, in the mission record, from one that never finished --
+    after paying for every run in the budget. Whoever reads that record later
+    has to fix a prompt in one case and an objective in the other.
+    """
+    marker_buried = f"I checked everything. {MISSION_COMPLETE_MARKER}"
+    scheduler, store, _ = _scheduler(tmp_path, [marker_buried, marker_buried])
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "find the check", max_runs=2)
+
+    await scheduler.tick()
+    await scheduler.tick()
+
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.EXHAUSTED
+    assert MISSION_COMPLETE_MARKER in str(final.error)
+    assert "does not begin with it" in str(final.error)
+
+
+@pytest.mark.asyncio
+async def test_a_mission_that_really_ran_out_says_only_that(tmp_path: Path) -> None:
+    """The extra sentence must not appear when it would be wrong."""
+    scheduler, store, _ = _scheduler(tmp_path, ["still working", "still working"])
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "unfinished", max_runs=2)
+
+    await scheduler.tick()
+    await scheduler.tick()
+
+    final = store.get_mission(mission.id)
+    assert final.status is MissionStatus.EXHAUSTED
+    assert str(final.error) == "objective not met within 2 runs"
