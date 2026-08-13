@@ -294,6 +294,58 @@ def test_persistent_log_replays_after_consumer_lag(tmp_path: Path) -> None:
     log.close()
 
 
+def test_the_log_stops_holding_every_event_it_ever_saw(tmp_path: Path) -> None:
+    """Measured at roughly 400 bytes an event, 200k of them cost 79 MB of heap.
+
+    A dynamic session gives none of that back while it runs, so a debuggee
+    producing ten events a second adds about 340 MB a day, and reopening the
+    session read the entire table back before it would answer anything. SQLite
+    already holds all of it durably, so the map only has to be a recent window
+    and a read that falls behind it can come off disk.
+    """
+    from headless_re_mcp.core import event_log as module
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEvent
+
+    def _event(index: int) -> DebugEvent:
+        return DebugEvent(
+            sequence=index,
+            timestamp_unix_ms=1_700_000_000_000 + index,
+            source="x64dbg.plugin_callback",
+            kind="debug.dll_loaded",
+            data={"module": "kernel32.dll"},
+        )
+
+    window = module.MEMORY_WINDOW_EVENTS
+    path = tmp_path / "events.sqlite3"
+    log = PersistentDebugEventLog(path)
+    log.append_events([_event(i) for i in range(1, window * 2 + 1)])
+
+    assert len(log._memory) <= window, "the window is the whole point"
+
+    replayed = log.read_after(0, limit=10)
+    assert [event.sequence for event in replayed.batch.events] == list(range(1, 11)), (
+        "a consumer that lagged past the window must still be served, from disk"
+    )
+    assert replayed.batch.dropped == 0
+    assert replayed.batch.dropped_total == 0, "nothing was lost, only moved"
+    assert replayed.batch.oldest_sequence == 1
+    assert replayed.unrecovered_gap is False
+    log.close()
+
+    reopened = PersistentDebugEventLog(path)
+    assert len(reopened._memory) <= window, "reopening must not pull the table into RAM"
+    assert reopened.latest_sequence == window * 2
+    tail = reopened.read_after(window * 2 - 3, limit=10)
+    assert [event.sequence for event in tail.batch.events] == [
+        window * 2 - 2,
+        window * 2 - 1,
+        window * 2,
+    ]
+    assert reopened.read_after(0, limit=2).batch.events[0].sequence == 1
+    reopened.close()
+
+
 def test_persistent_log_reports_unrecovered_gap(tmp_path: Path) -> None:
     from headless_re_mcp.core.event_log import PersistentDebugEventLog
     from headless_re_mcp.core.events import DebugEvent

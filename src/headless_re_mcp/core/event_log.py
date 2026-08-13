@@ -23,6 +23,13 @@ from headless_re_mcp.core.events import (
 
 JsonObject = dict[str, Any]
 
+# How many events stay in memory. The rest live in SQLite and are read back when
+# a consumer asks for them. Measured at roughly 400 bytes each, keeping all of
+# them cost 79 MB of heap per 200k events and a session gave none of it back
+# while it ran -- about 340 MB a day at ten events a second. Sixty-four times
+# the native ring, so ordinary lag is still served without touching disk.
+MEMORY_WINDOW_EVENTS = 65_536
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS debug_events (
   sequence INTEGER PRIMARY KEY NOT NULL,
@@ -55,6 +62,9 @@ class PersistentDebugEventLog:
         self._memory: dict[int, DebugEvent] = {}
         self._latest = 0
         self._gap_through = 0  # highest sequence known missing (inclusive), 0 = none
+        self._oldest = 0  # lowest sequence held anywhere, 0 = none
+        self._stored = 0  # how many sequences are held, in memory or on disk
+        self._evicted_through = 0  # at or below this, look on disk rather than in memory
         self._path = path
         self._conn: sqlite3.Connection | None = None
         if path is not None:
@@ -89,13 +99,19 @@ class PersistentDebugEventLog:
         with self._lock:
             rows: list[tuple[int, int, str, str, str]] = []
             for event in events:
-                if event.sequence in self._memory:
+                # At or below the eviction mark the event is on disk, not gone,
+                # so re-appending it would double-count what is already held.
+                if event.sequence in self._memory or event.sequence <= self._evicted_through:
                     continue
                 if self._latest and event.sequence > self._latest + 1:
                     # Contiguity hole relative to what we already stored.
                     self._gap_through = max(self._gap_through, event.sequence - 1)
                 self._memory[event.sequence] = event
                 self._latest = max(self._latest, event.sequence)
+                self._oldest = (
+                    event.sequence if not self._oldest else min(self._oldest, event.sequence)
+                )
+                self._stored += 1
                 rows.append(
                     (
                         event.sequence,
@@ -123,6 +139,57 @@ class PersistentDebugEventLog:
                     (self._gap_through,),
                 )
                 self._conn.commit()
+                self._evict_to_window()
+
+    def _evict_to_window(self) -> None:
+        """Drop the oldest events from memory once they are safely on disk.
+
+        Only with a database behind them: without one this map is the only copy,
+        and dropping from it would lose events rather than move them. Insertion
+        order tracks sequence for the drain that fills this, so the front of the
+        map is the oldest without having to sort 65k keys on every batch.
+        """
+        if self._conn is None:
+            return
+        while len(self._memory) > MEMORY_WINDOW_EVENTS:
+            sequence = next(iter(self._memory))
+            del self._memory[sequence]
+            self._evicted_through = max(self._evicted_through, sequence)
+
+    def _row_to_event(self, row: tuple[Any, ...]) -> DebugEvent:
+        data = json.loads(row[4])
+        return DebugEvent(
+            sequence=int(row[0]),
+            timestamp_unix_ms=int(row[1]),
+            source=str(row[2]),
+            kind=str(row[3]),
+            data=data if isinstance(data, dict) else {},
+        )
+
+    def _lookup(self, sequence: int) -> DebugEvent | None:
+        """One event by sequence, from the window or from the database."""
+        event = self._memory.get(sequence)
+        if event is not None or self._conn is None:
+            return event
+        row = self._conn.execute(
+            "SELECT sequence, timestamp_unix_ms, source, kind, data_json "
+            "FROM debug_events WHERE sequence=?",
+            (sequence,),
+        ).fetchone()
+        return None if row is None else self._row_to_event(row)
+
+    def _next_present(self, sequence: int) -> int | None:
+        """The lowest sequence above ``sequence`` that is held anywhere."""
+        found = min((key for key in self._memory if key > sequence), default=None)
+        if self._conn is not None:
+            row = self._conn.execute(
+                "SELECT MIN(sequence) FROM debug_events WHERE sequence > ?",
+                (sequence,),
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                on_disk = int(row[0])
+                found = on_disk if found is None else min(found, on_disk)
+        return found
 
     def read_after(self, cursor: int, *, limit: int) -> EventLogRead:
         if type(cursor) is not int or cursor < 0:
@@ -158,13 +225,10 @@ class PersistentDebugEventLog:
             selected: list[DebugEvent] = []
             seq = want_start
             while seq <= latest and len(selected) < limit:
-                event = self._memory.get(seq)
+                event = self._lookup(seq)
                 if event is None:
                     # Soft hole: treat as unrecovered gap until next present event.
-                    nxt = min(
-                        (key for key in self._memory if key > seq),
-                        default=None,
-                    )
+                    nxt = self._next_present(seq)
                     if nxt is None:
                         break
                     dropped += nxt - seq
@@ -176,15 +240,16 @@ class PersistentDebugEventLog:
 
             events = tuple(selected)
             next_cursor = events[-1].sequence if events else cursor + dropped
-            oldest = min(self._memory) if self._memory else 0
             batch = DebugEventBatch(
                 events=events,
                 cursor=cursor,
                 next_cursor=next_cursor,
-                oldest_sequence=oldest,
+                oldest_sequence=self._oldest,
                 latest_sequence=latest,
                 dropped=dropped,
-                dropped_total=max(0, latest - len(self._memory)),
+                # Counted against everything held rather than everything in
+                # memory, or moving an event to disk would read as losing it.
+                dropped_total=max(0, latest - self._stored),
                 has_more=next_cursor < latest,
                 capacity=DEBUG_EVENT_CAPACITY,
             )
@@ -196,21 +261,32 @@ class PersistentDebugEventLog:
             )
 
     def _load_from_db(self) -> None:
+        """Take the bounds from the table and only the newest events from it.
+
+        Reading every row back was how a reopened session paid for its whole
+        history before it would answer anything: 2.4 seconds and 79 MB for a
+        table of 200k. The rows are still there, and a read that reaches past
+        the window fetches what it needs.
+        """
         assert self._conn is not None
-        for row in self._conn.execute(
+        bounds = self._conn.execute(
+            "SELECT MIN(sequence), MAX(sequence), COUNT(*) FROM debug_events"
+        ).fetchone()
+        if bounds is not None and bounds[1] is not None:
+            self._oldest = int(bounds[0])
+            self._latest = int(bounds[1])
+            self._stored = int(bounds[2])
+        newest = self._conn.execute(
             "SELECT sequence, timestamp_unix_ms, source, kind, data_json FROM debug_events "
-            "ORDER BY sequence"
-        ):
-            data = json.loads(row[4])
-            event = DebugEvent(
-                sequence=int(row[0]),
-                timestamp_unix_ms=int(row[1]),
-                source=str(row[2]),
-                kind=str(row[3]),
-                data=data if isinstance(data, dict) else {},
-            )
+            "ORDER BY sequence DESC LIMIT ?",
+            (MEMORY_WINDOW_EVENTS,),
+        ).fetchall()
+        for row in reversed(newest):
+            event = self._row_to_event(row)
             self._memory[event.sequence] = event
-            self._latest = max(self._latest, event.sequence)
+        if self._memory:
+            # Everything below what was loaded is on disk, not missing.
+            self._evicted_through = min(self._memory) - 1
         gap = self._conn.execute(
             "SELECT value FROM debug_event_meta WHERE key='gap_through'"
         ).fetchone()
