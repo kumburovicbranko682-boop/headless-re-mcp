@@ -66,7 +66,22 @@ class OpenAICompatibleProvider:
             ) as client,
             client.stream("POST", url, headers=self._headers(), json=payload) as response,
         ):
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                # The body is where a provider says which limit was hit and for
+                # how long. Streaming means it is unread, so the exception says
+                # only "429" -- and in an unattended deployment that record is
+                # all anyone gets. Re-raised as the same type so the retry
+                # classifier still reads the status code off it.
+                detail = (await response.aread()).decode("utf-8", "replace").strip()
+                if not detail:
+                    raise
+                raise httpx.HTTPStatusError(
+                    f"{exc}: {detail[:500]}",
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -75,7 +90,16 @@ class OpenAICompatibleProvider:
                     break
                 if not data:
                     continue
-                chunk = json.loads(data)
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    # Every field below is type-checked before use; the line
+                    # being JSON at all was the one thing assumed. Named here so
+                    # the failure reads as the provider's, the way an invalid
+                    # tool-argument fragment already does.
+                    raise ValueError(
+                        f"provider emitted a stream chunk that is not JSON: {data[:200]}"
+                    ) from exc
                 choices = chunk.get("choices") if isinstance(chunk, dict) else None
                 if not isinstance(choices, list) or not choices:
                     continue

@@ -8,6 +8,7 @@ import pytest
 
 from headless_re_mcp.agent.config import ProviderProfile
 from headless_re_mcp.agent.providers.openai_compatible import OpenAICompatibleProvider
+from headless_re_mcp.agent.providers.retrying import is_retryable
 
 
 @pytest.mark.asyncio
@@ -112,3 +113,51 @@ async def test_openai_compatible_streams_text_and_fragmented_multiple_calls(
     assert isinstance(sent, dict)
     assert sent["thinking"] == {"type": "enabled"}
     assert sent["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_request_carries_what_the_provider_said(tmp_path: Path) -> None:
+    """A 429 without its body is not a diagnosis.
+
+    The body is where a provider says which limit was hit and for how long.
+    Streaming leaves it unread, so the failure recorded against the run said
+    only "429" -- and nobody is watching an unattended deployment at the moment
+    the quota runs out, so that record is the whole account of it.
+    """
+
+    def rate_limited(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": {"message": "Rate limit reached: 30000 tokens per min, retry in 12s"}},
+        )
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(rate_limited),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+    message = str(caught.value)
+    assert "429" in message
+    assert "retry in 12s" in message, "the provider's own explanation must survive"
+    assert is_retryable(caught.value), "enriching the message must not break retry classification"
+
+
+@pytest.mark.asyncio
+async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path) -> None:
+    """Every field in a chunk is type-checked; the chunk being JSON was assumed."""
+
+    def malformed(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="data: {not json at all\n\ndata: [DONE]\n\n")
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(malformed),
+    )
+
+    with pytest.raises(ValueError, match="not JSON"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
