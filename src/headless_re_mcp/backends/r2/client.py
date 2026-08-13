@@ -112,6 +112,7 @@ class R2Client:
             )
         except subprocess.TimeoutExpired as exc:
             raise R2Error("timeout", "r2 timed out", timeout=timeout) from exc
+        produced = len(completed.stdout)
         out = completed.stdout[:_MAX_OUTPUT]
         err = completed.stderr[:_MAX_OUTPUT]
         if completed.returncode != 0:
@@ -121,8 +122,17 @@ class R2Client:
                 exit_code=completed.returncode,
                 stderr=err.decode("utf-8", errors="replace")[:2000],
             )
-        text = out.decode("utf-8", errors="replace")
-        payload = {"raw": text[:_MAX_OUTPUT], "commands": commands}
+        payload: JsonObject = {
+            "raw": out.decode("utf-8", errors="replace"),
+            "commands": commands,
+        }
+        if produced > _MAX_OUTPUT:
+            # Cut silently, a listing that stopped at the buffer looks like a
+            # listing that ended, and this is the analysis text a caller reads
+            # to decide where a function finishes.
+            payload["truncated"] = True
+            payload["output_bytes"] = produced
+            payload["returned_bytes"] = len(out)
         return enrich_r2_payload(payload, binary=binary)
 
 

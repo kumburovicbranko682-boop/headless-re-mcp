@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     enrich_r2_payload,
@@ -38,6 +43,59 @@ def _minimal_pe(tmp_path: Path, *, x64: bool = True) -> Path:
     data[optional_off + 56 : optional_off + 60] = (0x10000).to_bytes(4, "little")
     path.write_bytes(bytes(data))
     return path
+
+
+def _stub_executable(tmp_path: Path) -> Path:
+    """A file that exists, so the client considers r2 available without one."""
+    path = tmp_path / "r2"
+    path.write_bytes(b"")
+    return path
+
+
+def test_output_cut_at_the_buffer_says_it_was_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listing that stopped at the cap looks like a listing that ended.
+
+    ``raw`` is the analysis text a caller reads to decide where a function
+    finishes, and it was trimmed at a megabyte with nothing to say so. The
+    sibling backends in this package all flag their own truncation.
+    """
+    binary = _minimal_pe(tmp_path)
+    monkeypatch.setattr(r2_client, "_MAX_OUTPUT", 64)
+
+    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"A" * 500, stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.run(binary, ["aa"])
+
+    assert payload["truncated"] is True, "a cut listing must not read as a complete one"
+    assert payload["output_bytes"] == 500
+    assert payload["returned_bytes"] == 64
+    assert len(str(payload["raw"])) == 64
+
+
+def test_output_that_fits_is_not_labelled_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag has to mean something, so it stays off when nothing was cut."""
+    binary = _minimal_pe(tmp_path)
+
+    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.run(binary, ["aa"])
+
+    assert "truncated" not in payload
+    assert payload["raw"] == "[]"
 
 
 def test_parse_r2_json_trailing_array() -> None:
