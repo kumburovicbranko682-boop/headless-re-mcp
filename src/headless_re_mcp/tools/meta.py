@@ -97,9 +97,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Read a byte range of one artifact, including text spilled out of a reply.
 
-        A decompilation or disassembly too large to return inline is registered
-        as an artifact and answered with artifact_id; this is how the rest of it
-        is retrieved.
+        Answers with data holding the hex string, encoding naming that form
+        (always hex), plus artifact_id, offset, limit and size. A decompilation
+        or disassembly too large to return inline is registered as an artifact
+        and answered with artifact_id; this is how the rest of it is retrieved.
         """
         return _dump(analysis.artifacts_read(artifact_id, offset=offset, limit=limit))
 

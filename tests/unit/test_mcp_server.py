@@ -525,3 +525,24 @@ async def test_report_generate_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_artifacts_read_description_names_live_fields() -> None:
+    """The catalog did not say the bytes come back as a hex string.
+
+    Measured keys are artifact_id, data, encoding, offset, limit and size.
+    encoding is hex. A caller that treats data as UTF-8 text misreads every
+    dump and every spilled decompilation.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "artifacts.read")
+        text = tool.description or ""
+        for name in ("data", "encoding", "hex", "offset", "size"):
+            assert name in text, name
+    finally:
+        analysis.close_all()
