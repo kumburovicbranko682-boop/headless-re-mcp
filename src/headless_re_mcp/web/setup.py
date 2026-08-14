@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.config import (
     Settings,
     default_config_path,
@@ -76,7 +77,7 @@ def setup_status(settings: Settings) -> JsonObject:
     }
 
 
-def activate_idalib(ida_home: Path) -> JsonObject:
+def activate_idalib(ida_home: Path, *, timeout: float = 120.0) -> JsonObject:
     script = ida_home / "idalib" / "python" / "py-activate-idalib.py"
     if not script.is_file():
         return {
@@ -87,27 +88,37 @@ def activate_idalib(ida_home: Path) -> JsonObject:
         }
     command = [sys.executable, str(script), "--ida-install-dir", str(ida_home)]
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            creationflags=_no_window_flags(),
-            check=False,
+        # The activation script is a launcher. subprocess.run kills it on
+        # timeout and then drains with no deadline of its own, so a child
+        # that keeps the pipes open hangs the wizard — and the installer
+        # that called it — for the rest of the process's life.
+        completed = run_bounded(
+            command, timeout=timeout, creationflags=_no_window_flags()
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except TimedOut as exc:
+        return {
+            "ok": False,
+            "code": "timeout",
+            "message": f"idalib activation timed out after {exc.timeout:g}s",
+            "timeout": exc.timeout,
+            "killed_pids": exc.killed,
+            "script": str(script),
+        }
+    except OSError as exc:
         return {
             "ok": False,
             "code": "activation_failed",
             "message": str(exc),
             "script": str(script),
         }
+    stdout = completed.stdout.decode("utf-8", errors="replace")
+    stderr = completed.stderr.decode("utf-8", errors="replace")
     return {
         "ok": completed.returncode == 0,
         "code": "activated" if completed.returncode == 0 else "activation_exit_nonzero",
         "exit_code": completed.returncode,
-        "stdout": (completed.stdout or "")[-4000:],
-        "stderr": (completed.stderr or "")[-4000:],
+        "stdout": stdout[-4000:],
+        "stderr": stderr[-4000:],
         "script": str(script),
         "python": sys.executable,
     }
