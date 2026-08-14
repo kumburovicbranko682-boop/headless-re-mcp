@@ -414,7 +414,12 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         )
 
     def static_cfg(session_id: str, address: int) -> dict[str, Any]:
-        """Return function-local CFG nodes and edges."""
+        """Return function-local CFG nodes and edges.
+
+        Answers with nodes (id, start, end, type) and edges (src, dst), plus
+        address, function_end, node_count, edge_count and note. There is no
+        cfg field.
+        """
         return _dump(analysis.static_cfg(session_id, address=address))
 
     def static_globals(

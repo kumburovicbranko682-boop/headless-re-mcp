@@ -408,3 +408,30 @@ def test_static_basic_blocks_description_names_items_not_blocks() -> None:
     assert '"pred_ids"' in chunk
     assert '"blocks"' not in chunk
 
+
+def test_static_cfg_description_names_nodes_and_edges_not_cfg() -> None:
+    """The live catalog omitted the graph fields.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    cfg.data['node_count']. The worker returns nodes and edges, not a cfg
+    field. A caller looking for cfg after a successful call reads it as
+    IDA finding no graph.
+    """
+    described = " ".join(_docstring("static_cfg").split())
+    assert "Answers with nodes" in described
+    assert "edges" in described
+    assert "no cfg field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _cfg")
+    chunk = worker[start : worker.index("def _names", start)]
+    assert '"nodes": nodes' in chunk
+    assert '"edges": edges' in chunk
+    assert '"cfg"' not in chunk
+
