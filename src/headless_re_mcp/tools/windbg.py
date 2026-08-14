@@ -68,7 +68,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble length instructions at address inside a crash dump.
 
-        Answers with disasm holding that text, plus dump, address and length.
+        Answers with disasm holding that text, plus dump, address and length,
+        and truncated, output_chars and returned_chars when the session was
+        cut at the 500_000-character buffer. There is no output field.
         """
         return _dump(analysis.windbg_disasm(dump_path, address, length=length, timeout=timeout))
 
