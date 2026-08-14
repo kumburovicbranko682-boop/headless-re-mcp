@@ -25,6 +25,7 @@ from headless_re_mcp.core.events import (
 )
 from headless_re_mcp.core.hidden_desktop import DesktopProcess, HiddenDesktop
 from headless_re_mcp.core.models import Architecture
+from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.session import detect_pe_architecture
 from headless_re_mcp.core.windows import describe_process_windows
 from headless_re_mcp.process_group import assign_to_process_group
@@ -1226,13 +1227,10 @@ class XdbgClient:
             pass
 
     def _terminate_process(self) -> None:
-        if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=5)
+        # terminate()/kill() on the headless exe leaves its children running.
+        # Same leak as the IDA worker: a launcher was dead after this method
+        # while the sleeper it started was still alive.
+        terminate_process_tree(self._process, wait_s=5.0)
 
     def _finish_threads(self) -> None:
         self._monitor_stop.set()
