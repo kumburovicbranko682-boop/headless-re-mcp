@@ -21,12 +21,20 @@ def build_workspace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="workspace.mode.get")
     def workspace_mode_get() -> dict[str, Any]:
-        """Return the active work direction (full/pe/android/web) and options."""
+        """Return the active work direction.
+
+        Answers with profile (full/pe/android/web), label, available, and
+        hidden_prefixes. There is no mode or options field.
+        """
         return _dump(analysis.workspace_mode_get())
 
     @tools.tool(name="workspace.mode.set")
     def workspace_mode_set(profile: str) -> dict[str, Any]:
-        """Set the startup work direction; persists and applies on next connection."""
+        """Set the startup work direction; persists and applies on next connection.
+
+        Same payload as workspace.mode.get: Answers with profile, label,
+        available, and hidden_prefixes.
+        """
         return _dump(analysis.workspace_mode_set(profile))
 
     return tools.bindings
