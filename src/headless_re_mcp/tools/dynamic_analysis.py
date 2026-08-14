@@ -260,7 +260,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="imports.read")
     def imports_read(
         session_id: str,
-        iat_va: int,
+        iat_va: Annotated[int, Field(ge=0)],
         size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)],
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
