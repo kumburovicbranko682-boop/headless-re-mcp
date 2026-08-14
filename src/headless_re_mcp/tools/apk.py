@@ -61,7 +61,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List internal (non-external) DEX classes with pagination."""
+        """List internal (non-external) DEX classes with pagination.
+
+        Answers with classes, count, total, offset, and has_more so a page
+        that filled the limit is not read as the whole list.
+        """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="apk.methods")

@@ -115,3 +115,50 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     doc = _tool_docstring("apk.manifest")
     assert "manifest_xml" in doc
     assert "truncated" in doc
+
+class _FakeClass:
+    def __init__(self, name: str, *, external: bool = False) -> None:
+        self.name = name
+        self._external = external
+
+    def is_external(self) -> bool:
+        return self._external
+
+
+class _FakeClassParsed:
+    def __init__(self, classes: list[_FakeClass]) -> None:
+        self.analysis = self
+        self._classes = classes
+
+    def get_classes(self) -> list[_FakeClass]:
+        return self._classes
+
+
+def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said pagination and never named the payload.
+
+    Measured: 25 classes, limit 10 -> count 10, total 25, has_more True,
+    field is classes not class_list or items. Looking for those after a
+    successful call reads as no classes, and a full page with no has_more
+    reads as the whole DEX.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeClassParsed(
+            [_FakeClass(f"L{index};") for index in range(25)]
+        ),
+    )
+    payload = client.classes(tmp_path / "app.apk", offset=0, limit=10)
+    assert "class_list" not in payload
+    assert "items" not in payload
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert len(payload["classes"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("apk.classes")
+    assert "Answers with classes" in doc
+    assert "has_more" in doc
