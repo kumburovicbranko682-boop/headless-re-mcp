@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 
 JsonObject = dict[str, Any]
@@ -151,13 +152,24 @@ def run_doctor_summary() -> JsonObject:
     }
 
 
-def pip_install_editable(repo_root: Path, extras: str = ".[dev,ida,pe,web]") -> int:
+def pip_install_editable(
+    repo_root: Path,
+    extras: str = ".[dev,ida,pe,web]",
+    *,
+    timeout: float = 900.0,
+) -> int:
     cmd = [sys.executable, "-m", "pip", "install", "-e", extras]
-    # Inherited stdout still reaches an existing console, so pip's progress is
-    # not lost; this only stops a fresh window when the parent is the GUI.
-    completed = subprocess.run(
-        cmd, cwd=str(repo_root), check=False, **no_window_popen_kwargs()
-    )
+    flags = int(no_window_popen_kwargs().get("creationflags") or 0)
+    try:
+        completed = run_bounded(
+            cmd,
+            timeout=timeout,
+            creationflags=flags,
+            cwd=str(repo_root),
+        )
+    except TimedOut:
+        # Same convention as GNU timeout: the install did not finish.
+        return 124
     return int(completed.returncode)
 
 
