@@ -1004,7 +1004,12 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
     ) -> dict[str, Any]:
-        """Run configured de4dot into an artifact path; never overwrite the input."""
+        """Run configured de4dot into an artifact path; never overwrite the input.
+
+        Answers with de4dot, before, after, input_unchanged, stats, and
+        claims_universal_unpack false. There is no output field and no ok
+        field inside data.
+        """
         return _dump(analysis.dotnet_deobfuscate(session_id, timeout=timeout))
 
     def dotnet_reactor_unpack(

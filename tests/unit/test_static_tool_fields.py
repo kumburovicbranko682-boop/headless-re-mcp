@@ -1349,3 +1349,35 @@ def test_dotnet_inspect_description_names_is_dotnet() -> None:
     assert '"claims_universal_unpack": False' in returned
     assert '"report"' not in returned
 
+
+def test_dotnet_deobfuscate_description_names_before_after() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns de4dot, before, after, input_unchanged, stats and
+    claims_universal_unpack, and no output field. A caller looking for
+    output after a successful call cannot tell where de4dot wrote.
+    """
+    described = " ".join(_docstring("dotnet_deobfuscate").split())
+    assert "Answers with de4dot" in described
+    assert "before" in described
+    assert "after" in described
+    assert "input_unchanged" in described
+    assert "claims_universal_unpack false" in described
+    assert "no output field" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_dotnet.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def dotnet_deobfuscate")
+    chunk = source[start : source.index("def dotnet_reactor_unpack", start)]
+    returned = chunk.split("return _success")[-1]
+    assert '"de4dot": result.to_dict()' in returned
+    assert '"before": inspect.to_dict()' in returned
+    assert '"after": after.to_dict()' in returned
+    assert '"input_unchanged":' in returned
+    assert '"claims_universal_unpack": False' in returned
+    assert '"output"' not in returned
+
