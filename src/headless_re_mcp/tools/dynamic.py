@@ -300,6 +300,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.breakpoint.remove")
     def dynamic_breakpoint_remove(session_id: str, address: int) -> dict[str, Any]:
-        """Remove a software breakpoint from an address in a paused debuggee."""
+        """Remove a software breakpoint from an address in a paused debuggee.
+
+        Answers with address and set (false). There is no removed, ok or
+        cleared field. Looking for removed after success treats a live
+        delete as still armed.
+        """
         return _dump(analysis.dynamic_breakpoint_remove(session_id, address))
     return tools.bindings
