@@ -617,3 +617,34 @@ def test_condition_set_description_names_expression_not_ok() -> None:
     assert "Answers with expression" in described
     assert "no ok field" in described
     assert "no condition field" in described
+
+def test_threads_context_read_description_names_registers_not_context() -> None:
+    """The catalog said allowlisted registers and never named the payload.
+
+    Measured against ReadThreadContext: it reuses ReadRegisters (registers
+    holding rax..r15 / eax..eip) and adds tid plus restored_tid. There is no
+    context, gpr or thread field. Looking for context after a successful read
+    retries the switch and looks like the prior TID was not restored.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    regs = native[
+        native.index("Outcome ReadRegisters") : native.index("bool IsWritableRegister")
+    ]
+    assert 'JsonSet(result.get(), "registers"' in regs
+    start = native.index("Outcome ReadThreadContext")
+    chunk = native[start : native.index("Outcome WriteThreadContext", start)]
+    assert "ReadRegisters()" in chunk
+    assert 'JsonSet(registers.value.get(), "tid"' in chunk
+    assert 'JsonSet(registers.value.get(), "restored_tid"' in chunk
+    assert '"context"' not in chunk
+    assert '"gpr"' not in chunk
+    described = _tool_docstring("threads.context.read")
+    assert "Answers with registers" in described
+    assert "tid" in described
+    assert "restored_tid" in described
+    assert "no context field" in described

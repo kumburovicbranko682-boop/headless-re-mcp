@@ -101,7 +101,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         tid: Annotated[int, Field(ge=1)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Read allowlisted registers for one thread, restoring the prior TID."""
+        """Read allowlisted registers for one thread, restoring the prior TID.
+
+        Answers with registers (rax..r15 / eax..eip, eflags, dr0-dr7), plus
+        tid and restored_tid. There is no context field, no gpr field and no
+        thread field.
+        """
         return _dump(analysis.threads_context_read(session_id, tid, timeout=timeout))
 
     @tools.tool(name="threads.context.write")
