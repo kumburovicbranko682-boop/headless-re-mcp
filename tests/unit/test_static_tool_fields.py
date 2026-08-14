@@ -674,3 +674,29 @@ def test_static_name_set_description_names_previous_name() -> None:
     assert '"name": after' in chunk
     assert '"renamed"' not in chunk
 
+
+def test_static_comment_set_description_names_previous_comment() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns address, comment, previous_comment, repeatable
+    and ok, and no text field. A caller looking for text after a successful
+    write cannot tell what was overwritten.
+    """
+    described = " ".join(_docstring("static_comment_set").split())
+    assert "Answers with address" in described
+    assert "previous_comment" in described
+    assert "no text field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _comment_set")
+    chunk = worker[start : worker.index("def _type_apply", start)]
+    assert '"previous_comment": before' in chunk
+    assert '"comment": after' in chunk
+    assert '"text"' not in chunk
+

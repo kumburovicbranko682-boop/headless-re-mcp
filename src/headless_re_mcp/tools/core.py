@@ -594,7 +594,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         comment: str,
         repeatable: bool = False,
     ) -> dict[str, Any]:
-        """Set a regular or repeatable comment at an address."""
+        """Set a regular or repeatable comment at an address.
+
+        Answers with address, comment, previous_comment, repeatable and ok.
+        There is no text field.
+        """
         return _dump(
             analysis.static_comment_set(
                 session_id,
