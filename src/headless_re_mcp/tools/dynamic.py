@@ -189,7 +189,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.memory.read")
     def dynamic_memory_read(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         size: Annotated[int, Field(ge=1, le=2 * 1024 * 1024)],
     ) -> dict[str, Any]:
         """Read up to 2 MiB from a paused debuggee as hexadecimal bytes.
