@@ -269,3 +269,33 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+
+
+class _SpawnDevice:
+    def spawn(self, argv: list[str]) -> int:
+        return 4242
+
+    def resume(self, pid: int) -> None:
+        return None
+
+
+def test_frida_spawn_names_pid_not_process_id() -> None:
+    """The catalog said spawn and never named the pid field.
+
+    Measured: package com.example.app -> pid 4242, package, device usb.
+    There is no process_id or spawned field. Looking for process_id after a
+    successful spawn reads as a launch that returned no process.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _SpawnDevice()  # type: ignore[method-assign]
+    payload = client.spawn("usb", "com.example.app")
+    assert "process_id" not in payload
+    assert "spawned" not in payload
+    assert payload["pid"] == 4242
+    assert payload["package"] == "com.example.app"
+    assert payload["device"] == "usb"
+    doc = _tool_docstring("frida.spawn")
+    assert "Answers with pid" in doc
+    assert "There is no process_id" in doc
