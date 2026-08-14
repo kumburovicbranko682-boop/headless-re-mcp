@@ -432,8 +432,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_virtual_desktop_snapshot(session_id: str) -> dict[str, Any]:
         """Passive PID-bounded snapshot of the session's hidden Win32 desktop.
 
-        Lists debuggee-owned windows without switching the input desktop; requires
-        the x64dbg worker started under HEADLESS_RE_HIDDEN_DESKTOP.
+        Answers with windows, window_count, available, mode, name,
+        input_desktop, capture_mode, debuggee_pid and allowed_pids. There is
+        no items field and no tree field. Requires the x64dbg worker started
+        under HEADLESS_RE_HIDDEN_DESKTOP; does not switch the input desktop.
         """
         return _dump(analysis.virtual_desktop_snapshot(session_id))
 
