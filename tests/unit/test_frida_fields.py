@@ -318,3 +318,31 @@ def test_frida_device_connect_names_connected_and_device() -> None:
     doc = _tool_docstring("frida.device.connect")
     assert "Answers with connected" in doc
     assert "There is no top-level device_id" in doc
+
+def test_frida_server_ensure_description_names_running_not_ok() -> None:
+    """The catalog said start frida-server and never named the success field.
+
+    Measured against AdbBackend.ensure_frida_server: every return carries
+    running, pushed and port, plus note when the process is not visible.
+    There is no ok, started or server field. Envelope success with running
+    false means the process is not visible. Looking for started after a
+    successful call when the server was already up (running true, pushed
+    false) reads as a failed start, so the agent pushes and launches again.
+    """
+    from headless_re_mcp.backends.adb.client import AdbBackend
+
+    source = Path(AdbBackend.ensure_frida_server.__code__.co_filename).read_text(
+        encoding="utf-8"
+    )
+    start = source.index("def ensure_frida_server")
+    chunk = source[start : source.index("\n    def forward(", start)]
+    returned = chunk[chunk.index("if visible:") :]
+    assert '"running"' in returned
+    assert '"pushed"' in returned
+    assert '"port"' in returned
+    assert '"ok"' not in returned
+    assert '"started"' not in returned
+    described = _tool_docstring("frida.server.ensure")
+    assert "Answers with running" in described
+    assert "pushed" in described
+    assert "no ok field" in described

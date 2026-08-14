@@ -110,7 +110,12 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         server_binary: str = "",
         port: Annotated[int, Field(ge=1, le=65535)] = 27042,
     ) -> dict[str, Any]:
-        """Push and start frida-server on a rooted device/emulator via adb (best-effort)."""
+        """Push and start frida-server on a rooted device/emulator via adb (best-effort).
+
+        Answers with running, pushed and port, plus note when the process is
+        not visible. There is no ok field, no started field and no server field.
+        Envelope success with running false means the process is not visible.
+        """
         return _dump(
             analysis.frida_server_ensure(session_id, serial, server_binary=server_binary, port=port)
         )
