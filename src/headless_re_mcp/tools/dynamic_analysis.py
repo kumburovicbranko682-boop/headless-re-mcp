@@ -334,7 +334,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         bp_type: Annotated[str, Field(pattern="^(a|r|w|x|access|read|write|execute|rwx)$")] = "a",
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Set a memory breakpoint with structured type enum only."""
+        """Set a memory breakpoint with structured type enum only.
+
+        Answers with set, address and type. There is no ok or memory field.
+        """
         return _dump(
             analysis.breakpoints_memory_set(session_id, address, bp_type=bp_type, timeout=timeout)
         )
