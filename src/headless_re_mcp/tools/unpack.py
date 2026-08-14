@@ -281,7 +281,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         save_headers: bool = True,
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """Dump module by runtime size and preserve PE headers for later rebuild."""
+        """Dump module by runtime size and preserve PE headers for later rebuild.
+
+        Answers with output_path from the dump, claims_universal_unpack false,
+        and headers when save_headers is true. There is no dump field.
+        """
         return _dump(
             analysis.unpack_dump_module(
                 session_id,

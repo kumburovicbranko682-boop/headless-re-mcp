@@ -248,3 +248,27 @@ def test_unpack_artifacts_names_artifacts_not_items() -> None:
     assert '"artifacts": [item.to_dict() for item in state.artifacts]' in chunk
     assert '"items"' not in chunk
 
+def test_unpack_dump_module_names_output_path() -> None:
+    """The live catalog omitted output_path and the unpack-claim flag.
+
+    tests/unit/test_m4_unpack_service.py already reads dumped.data['output_path'].
+    The service copies the dump payload, sets claims_universal_unpack false, and
+    has no dump field. A caller looking for dump after a successful write reads
+    the file as missing.
+    """
+    described = " ".join(_tool_docstring("unpack.dump_module").split())
+    assert "Answers with output_path" in described
+    assert "no dump field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_dump_module")
+    chunk = source[start : source.index("def unpack_stub_coupling", start)]
+    assert 'payload["claims_universal_unpack"] = False' in chunk
+    assert 'output_path = str(payload.get("output_path"' in chunk
+
