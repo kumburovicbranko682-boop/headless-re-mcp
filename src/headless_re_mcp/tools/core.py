@@ -663,7 +663,12 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         session_id: str,
         commands: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Run up to 32 static worker commands in one round-trip."""
+        """Run up to 32 static worker commands in one round-trip.
+
+        Answers with results, each carrying index, command, ok and either
+        data or error, plus count and max_items. There is no commands field
+        and no items field.
+        """
         return _dump(analysis.static_batch(session_id, commands=commands))
 
     specs: list[BoundTool] = []

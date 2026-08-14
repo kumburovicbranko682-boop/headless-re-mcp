@@ -826,3 +826,36 @@ def test_static_bytes_patch_description_names_before_hex() -> None:
     ]
     assert 'payload["patch_artifact"]' in record
 
+
+def test_static_batch_description_names_results() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns results, each with index, command, ok and either
+    data or error, plus count and max_items. There is no commands field and
+    no items field. tests/unit/test_static_write_service.py already reads
+    count. A caller looking for commands or items after a successful batch
+    reads it as IDA running none.
+    """
+    described = " ".join(_docstring("static_batch").split())
+    assert "Answers with results" in described
+    assert "count" in described
+    assert "max_items" in described
+    assert "no commands field" in described
+    assert "no items field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _batch")
+    chunk = worker[start : worker.index("def _dispatch", start)]
+    returned = chunk.split("return")[-1]
+    assert '"results": results' in returned
+    assert '"count":' in returned
+    assert '"max_items":' in returned
+    assert '"commands"' not in returned
+    assert '"items"' not in returned
+
