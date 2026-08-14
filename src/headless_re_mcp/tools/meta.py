@@ -249,8 +249,8 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="knowledge.record")
     def knowledge_record(
         session_id: str,
-        kind: str,
-        key: str,
+        kind: Annotated[str, Field(min_length=1, max_length=64)],
+        key: Annotated[str, Field(min_length=1, max_length=256)],
         value: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record one durable analysis fact, idempotent per kind and key.
