@@ -318,3 +318,41 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
         described = ast.get_docstring(node) or ""
     assert "Answers with items" in described
     assert "no functions field" in described
+
+
+def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catalog named format/arch/bits/endianness/entry; none of those exist.
+
+    Measured an ``i`` listing: parsed is false, the text is in raw, and
+    architecture is the PE header (x64) rather than r2's arch line. Looking
+    for bits after a successful call reads as radare2 returning no identity.
+    """
+    import ast
+
+    from headless_re_mcp.tools.r2 import build_r2_tools
+
+    binary = _minimal_pe(tmp_path)
+    text = b"arch     x86\nbits     64\nos       windows\nendian   little\n"
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=text, stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).run(binary, ["i"])
+
+    assert payload["raw"] == text.decode()
+    assert payload["parsed"] is False
+    for missing in ("format", "arch", "bits", "endianness", "entry"):
+        assert missing not in payload, missing
+
+    source = Path(build_r2_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    described = ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "r2_info":
+            described = ast.get_docstring(node) or ""
+    assert "Answers with raw" in described
+    assert "no format, arch, bits" in described

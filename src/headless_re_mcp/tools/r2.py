@@ -22,10 +22,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_info(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Binary identity as radare2 sees it: format, arch, bits, endianness, entry.
+        """Binary identity as radare2 prints it.
 
-        A second opinion on a file IDA may have loaded differently. Requires
-        radare2 on PATH or HEADLESS_RE_R2.
+        Runs ``i`` (not JSON). Answers with raw holding that text. There are
+        no format, arch, bits, endianness or entry fields; architecture and
+        image_base come from the PE header, not from this listing.
         """
         return _dump(analysis.r2_info(session_id, timeout=timeout))
 
