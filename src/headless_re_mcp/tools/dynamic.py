@@ -76,7 +76,8 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch the session binary and wait for its initial debugger pause.
 
-        When pass_system_breakpoint is true, resume once after the first pause
+        Answers with state, submitted and pass_system_breakpoint. When
+        pass_system_breakpoint is true, resume once after the first pause
         (typical system/entry breakpoint) so unpack workflows can continue.
         """
         return _dump(

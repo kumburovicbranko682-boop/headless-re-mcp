@@ -806,3 +806,24 @@ async def test_dynamic_wait_description_names_live_fields() -> None:
         assert "submitted" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_launch_description_names_live_fields() -> None:
+    """The catalog did not name state or submitted on a successful launch.
+
+    Measured keys are state, submitted and pass_system_breakpoint. A caller
+    looking for pid or paused after launch reads a started debuggee as if
+    nothing happened.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.launch")
+        text = tool.description or ""
+        for name in ("state", "submitted", "pass_system_breakpoint"):
+            assert name in text, name
+    finally:
+        analysis.close_all()
