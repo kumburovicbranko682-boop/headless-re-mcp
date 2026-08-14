@@ -613,3 +613,24 @@ async def test_artifacts_describe_description_names_the_nested_object() -> None:
         assert "not top-level" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_artifacts_gc_description_names_live_fields() -> None:
+    """The catalog did not name what a collection pass actually returns.
+
+    Measured keys are removed, count, skipped, skipped_count and
+    bytes_remaining_estimate. A caller looking for deleted or freed_bytes
+    cannot tell whether anything was collected.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "artifacts.gc")
+        text = tool.description or ""
+        for name in ("removed", "skipped", "skipped_count", "bytes_remaining_estimate"):
+            assert name in text, name
+    finally:
+        analysis.close_all()

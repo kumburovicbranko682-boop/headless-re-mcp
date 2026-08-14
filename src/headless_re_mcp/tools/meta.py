@@ -115,10 +115,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def artifacts_gc(max_total_bytes: int = 512 * 1024 * 1024) -> dict[str, Any]:
         """Delete registered artifacts, oldest first, until the tree fits the budget.
 
-        This destroys files. Collection also runs on its own after registration
-        and session close, so calling it by hand is for reclaiming space now,
-        not for routine upkeep. The newest artifact and any file another handle
-        still holds are kept.
+        Answers with removed, count, skipped, skipped_count and
+        bytes_remaining_estimate. This destroys files. Collection also runs on
+        its own after registration and session close, so calling it by hand is
+        for reclaiming space now, not for routine upkeep. The newest artifact
+        and any file another handle still holds are kept.
         """
         return _dump(analysis.artifacts_gc(max_total_bytes=max_total_bytes))
 
