@@ -260,7 +260,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
     ) -> dict[str, Any]:
-        """Invoke a whitelisted Win32 action (click/set_text/command)."""
+        """Invoke a whitelisted Win32 action (click/set_text/command).
+
+        Answers with hwnd, action and backend, plus parent_hwnd, message and
+        control_id on the command path. There is no invoked field.
+        """
         return _dump(
             analysis.ui_invoke(
                 session_id,
