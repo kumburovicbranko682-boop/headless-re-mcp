@@ -79,6 +79,8 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Nothing stays hooked: persisted is false and note says so. A device
         session uses its last authorized pid; a PE session uses the debuggee.
+        Answers with pid, template, loaded, device, persisted and note.
+        There is no hooked, handle or session field.
         """
         return _dump(analysis.frida_hook_template(session_id, template=template))
 
