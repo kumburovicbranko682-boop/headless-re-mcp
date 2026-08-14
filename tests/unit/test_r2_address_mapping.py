@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 from pathlib import Path
@@ -153,3 +154,64 @@ def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     assert enriched["address"]["rva"] == 0x1000
     assert enriched["address_va"] == 0x140001000
     assert enriched["items"][0]["address"]["module"] == binary.name
+
+
+def test_r2_open_only_asks_for_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catalog called this an analysis pass. It is not.
+
+    Measured: the argv script is ``i`` then ``q``. ``aa`` is what functions
+    and disasm run later, each against a fresh process, so giving open a
+    longer timeout does not buy analysis for anyone else.
+    """
+    recorded: list[list[str]] = []
+
+    def capture(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        recorded.append(list(argv))
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"format pe", stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", capture)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.open(_minimal_pe(tmp_path))
+
+    assert len(recorded) == 1
+    argv = recorded[0]
+    script = argv[argv.index("-c") + 1]
+    commands = [line for line in script.splitlines() if line and line != "q"]
+    assert commands == ["i"], commands
+    assert "aa" not in script
+    assert "one-shot" in payload["note"]
+    assert "reopen" in payload["note"]
+
+
+def test_r2_open_description_does_not_claim_an_analysis_pass() -> None:
+    """A caller that believes open analysed the file will skip r2.functions.
+
+    The live description said it runs an analysis pass and the other r2 tools
+    read what this produced. The process it starts only prints identity and
+    exits.
+    """
+    source = Path(r2_client.__file__).resolve().parents[2] / "tools" / "r2.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    described = ""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == "r2.open"
+                ):
+                    described = ast.get_docstring(node) or ""
+    assert described, "r2.open must describe itself"
+    lowered = described.casefold()
+    assert "one-shot" in lowered
+    assert "reopen" in lowered
+    assert "run its own analysis pass" not in lowered
+    assert "read what this produced" not in lowered
