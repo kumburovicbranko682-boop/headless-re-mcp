@@ -571,6 +571,20 @@ class AgentStore:
         text = objective.strip()
         if not text:
             raise ValueError("mission objective must not be empty")
+        if provider_profile is not None:
+            profile_limit = max(8, int(self.run_profile_max_chars))
+            if len(provider_profile) > profile_limit:
+                raise ValueError(
+                    f"provider profile is {len(provider_profile)} characters, "
+                    f"over the {profile_limit} character limit"
+                )
+        if model is not None:
+            model_limit = max(8, int(self.run_model_max_chars))
+            if len(model) > model_limit:
+                raise ValueError(
+                    f"run model is {len(model)} characters, "
+                    f"over the {model_limit} character limit"
+                )
         mission_id = uuid.uuid4().hex
         now = utc_now()
         bounded = max(1, min(int(max_runs), 128))

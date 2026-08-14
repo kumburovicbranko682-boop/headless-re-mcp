@@ -618,3 +618,26 @@ def test_oversized_run_profile_and_model_are_refused_not_stored(tmp_path: Path) 
     assert store.get_run(run.id) is not None
     with store._reading() as con:
         assert con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
+def test_oversized_mission_profile_and_model_are_refused_not_stored(tmp_path: Path) -> None:
+    """create_run already refuses 128-character identity strings; missions did not.
+
+    Measured: 100,000 character provider_profile and model values made the
+    database 262 KB. Truncating a profile id would select a different
+    provider, so the write must fail and leave no row.
+    """
+    store = AgentStore(tmp_path / "mission-id.db")
+    store.run_profile_max_chars = 32
+    store.run_model_max_chars = 32
+    thread = store.create_thread()
+
+    with pytest.raises(ValueError, match="provider profile"):
+        store.create_mission(thread.id, "look", provider_profile="p" * 80)
+    with pytest.raises(ValueError, match="run model"):
+        store.create_mission(thread.id, "look", model="m" * 80)
+
+    mission = store.create_mission(thread.id, "look", provider_profile="ok", model="gpt-4.1-mini")
+    assert store.get_mission(mission.id) is not None
+    with store._reading() as con:
+        assert con.execute("SELECT COUNT(*) FROM missions").fetchone()[0] == 1
