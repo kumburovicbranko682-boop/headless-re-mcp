@@ -131,8 +131,11 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Built-in PE detect plus optional DIE and optional Exeinfo PE second opinion.
 
-        ``use_exeinfope`` defaults to false. When true, requires ``HEADLESS_RE_EXEINFOPE``;
-        results are listed beside DIE/builtin and never merged into one authoritative verdict.
+        Answers with report (findings, sources, warnings inside it), die_enabled,
+        exeinfope_enabled, and claims_universal_unpack. Findings are not a
+        top-level field. use_exeinfope defaults to false and needs
+        HEADLESS_RE_EXEINFOPE; those results sit beside DIE/builtin and are
+        never merged into one verdict.
         """
         return _dump(
             analysis.detect_scan(
@@ -152,7 +155,11 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         use_exeinfope: bool = False,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Return evidence for one finding from a fresh bounded detection scan."""
+        """Return evidence for one finding from a fresh bounded detection scan.
+
+        Answers with finding, sha256 and path. finding_not_found if that id
+        is not in the scan.
+        """
         return _dump(
             analysis.detect_explain(
                 session_id,
@@ -171,7 +178,11 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         use_exeinfope: bool = False,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Return non-authoritative packer/protector/obfuscator candidates."""
+        """Return non-authoritative packer/protector/obfuscator candidates.
+
+        Answers with candidates, conclusion (candidates or none_detected),
+        report_sha256, and claims_universal_unpack false.
+        """
         return _dump(
             analysis.packer_classify(
                 session_id,
@@ -188,7 +199,12 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         use_die: bool = True,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Suggest a non-authoritative unpack route (UPX/.NET/generic/none) without executing it."""
+        """Suggest a non-authoritative unpack route without executing it.
+
+        Answers with recommendation, candidates, pe_vm_like, force_route, and
+        authoritative false. The route is inside recommendation, not a top-level
+        route field.
+        """
         return _dump(
             analysis.unpack_recommend(
                 session_id,
