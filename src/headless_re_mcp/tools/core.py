@@ -759,7 +759,12 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Cancel active navigation and leave the debuggee stably paused when possible."""
+        """Cancel active navigation and leave the debuggee stably paused when possible.
+
+        Same payload as workflow.status: Answers with workflow holding id,
+        status, operation_count, failure and state. There is no cancelled
+        field.
+        """
         return _dump(analysis.workflow_cancel(session_id, timeout=timeout))
 
     def workflow_events_consume(

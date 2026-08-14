@@ -1008,3 +1008,26 @@ def test_workflow_reset_description_names_nested_workflow() -> None:
     assert '"workflow": reset.to_dict()' in chunk
     assert '"reset"' not in chunk.split("return")[-1]
 
+
+def test_workflow_cancel_description_names_nested_workflow() -> None:
+    """The live catalog omitted the payload field.
+
+    The service returns the cancelled runtime under workflow, and no
+    cancelled field. A caller looking for cancelled after a successful
+    call cannot tell that navigation stopped.
+    """
+    described = " ".join(_docstring("workflow_cancel").split())
+    assert "Answers with workflow" in described
+    assert "no cancelled field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_cancel")
+    chunk = service[start : service.index("def workflow_events_consume", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    assert '"cancelled"' not in chunk.split("return {")[-1]
+
