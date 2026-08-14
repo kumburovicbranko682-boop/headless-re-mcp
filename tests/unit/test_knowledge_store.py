@@ -102,3 +102,32 @@ def test_a_finding_too_large_to_store_is_refused_not_silently_cut(repository: An
     listing = repository.list_knowledge("s1")
     assert listing["total"] == 0
     assert [item for item in listing["entries"] if item["key"] == "big"] == []
+
+
+def test_a_session_does_not_keep_every_finding_it_ever_recorded(repository: Any) -> None:
+    """knowledge.query is paged; the table itself kept every unique key.
+
+    800 small facts were 201 KB and still climbing, and each value may be
+    8000 characters. A long-lived session that records one key per function
+    never finishes, so the file grew with facts nobody pages in one reply.
+    """
+    if hasattr(repository, "store"):
+        repository.store.retained_knowledge_per_session = 3
+    else:
+        repository.retained_knowledge_per_session = 3
+
+    repository.record_knowledge(session_id="other", kind="function", key="keep", value={})
+    for index in range(6):
+        repository.record_knowledge(
+            session_id="s1",
+            kind="function",
+            key=f"{index:04d}",
+            value={"index": index},
+        )
+
+    listing = repository.list_knowledge("s1")
+    assert listing["total"] == 3
+    assert [entry["key"] for entry in listing["entries"]] == ["0003", "0004", "0005"]
+    other = repository.list_knowledge("other")
+    assert other["total"] == 1
+    assert other["entries"][0]["key"] == "keep"

@@ -12,7 +12,10 @@ from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, Session
 from headless_re_mcp.core.store import SessionStore
-from headless_re_mcp.core.store.sqlite_store import encode_knowledge_value
+from headless_re_mcp.core.store.sqlite_store import (
+    KNOWLEDGE_RETAINED_PER_SESSION,
+    encode_knowledge_value,
+)
 from headless_re_mcp.core.store.timeline import (
     append_session_timeline,
     list_session_timeline,
@@ -376,6 +379,7 @@ class InMemoryAnalysisRepository:
         self.artifact_root = artifact_root.expanduser().resolve()
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self.retained_knowledge_per_session = KNOWLEDGE_RETAINED_PER_SESSION
         self._sessions: dict[str, JsonObject] = {}
         self._backends: dict[tuple[str, str], JsonObject] = {}
         self._artifacts: dict[str, JsonObject] = {}
@@ -672,6 +676,26 @@ class InMemoryAnalysisRepository:
                 "created_at": created_at,
                 "updated_at": now,
             }
+            keep = max(1, int(self.retained_knowledge_per_session))
+            owned = [
+                item
+                for item in self._knowledge.values()
+                if str(item["session_id"]) == session_id
+            ]
+            if len(owned) > keep:
+                owned.sort(
+                    key=lambda item: (
+                        str(item["updated_at"]),
+                        str(item["kind"]),
+                        str(item["key"]),
+                    ),
+                    reverse=True,
+                )
+                for item in owned[keep:]:
+                    self._knowledge.pop(
+                        (str(item["session_id"]), str(item["kind"]), str(item["key"])),
+                        None,
+                    )
         return {
             "session_id": session_id,
             "kind": kind,

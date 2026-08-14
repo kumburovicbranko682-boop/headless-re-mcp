@@ -71,6 +71,12 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id, kind);
 # run per insert, so the bound is approximate by design.
 AUDIT_RETAINED_ROWS = 50_000
 
+# Knowledge is upserted per (kind, key), so a session that records every
+# function as a new key never stops. 800 small facts were 201 KB and still
+# climbing; each value may be 8000 characters. Query is already paged; the
+# table itself was not.
+KNOWLEDGE_RETAINED_PER_SESSION = 10_000
+
 # A knowledge value is stored as JSON text. The bound used to be applied by
 # slicing the serialised form, which stops it being JSON: the write answered
 # successfully and the next read returned a string fragment. Refuse instead.
@@ -97,6 +103,7 @@ class SessionStore:
         self._lock = RLock()
         self.audit_retained_rows = AUDIT_RETAINED_ROWS
         self.audit_trim_interval = AUDIT_TRIM_INTERVAL
+        self.retained_knowledge_per_session = KNOWLEDGE_RETAINED_PER_SESSION
         self._audit_writes = 0
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
@@ -455,6 +462,14 @@ class SessionStore:
                 " ON CONFLICT(session_id,kind,key) DO UPDATE SET"
                 " value=excluded.value, updated_at=excluded.updated_at",
                 (session_id, kind, key, payload, created_at, now),
+            )
+            keep = max(1, int(self.retained_knowledge_per_session))
+            conn.execute(
+                "DELETE FROM knowledge WHERE rowid IN ("
+                "  SELECT rowid FROM knowledge WHERE session_id=?"
+                "  ORDER BY updated_at DESC, kind DESC, key DESC LIMIT -1 OFFSET ?"
+                ")",
+                (session_id, keep),
             )
             conn.commit()
         return {
