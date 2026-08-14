@@ -96,7 +96,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble count instructions at address, as radare2 decodes them.
 
-        Answers with items holding those instructions, plus address and count.
+        Answers with items holding those instructions, plus address
+        (va/rva/module), address_va (the integer that was asked) and count.
+        There is no integer address field.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
