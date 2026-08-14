@@ -440,3 +440,25 @@ async def test_batch_analyze_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_record_description_names_live_fields() -> None:
+    """The catalog did not say the write reply omits the value.
+
+    Measured keys are session_id, kind, key, created_at, updated_at, replaced.
+    There is no value field. A caller that looks for the fact it just stored
+    reads a successful write as if nothing was recorded.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "knowledge.record")
+        text = tool.description or ""
+        for name in ("replaced", "created_at", "updated_at", "session_id"):
+            assert name in text, name
+        assert "not echoed" in text
+    finally:
+        analysis.close_all()

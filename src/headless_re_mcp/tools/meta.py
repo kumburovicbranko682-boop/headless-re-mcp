@@ -219,8 +219,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Record one durable analysis fact, idempotent per kind and key.
 
-        Use kinds such as function, breakpoint, struct or api so later queries and
-        the generated report can group what the analysis actually learned.
+        Answers with session_id, kind, key, created_at, updated_at and
+        replaced (true when this pair already existed). The stored value is not echoed;
+        read it back with knowledge.query. Use kinds such as function, breakpoint,
+        struct or api so later queries and the generated report can group what
+        the analysis actually learned.
         """
         return _dump(analysis.knowledge_record(session_id, kind, key, value))
 
