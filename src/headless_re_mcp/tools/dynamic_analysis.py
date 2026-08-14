@@ -284,7 +284,13 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         selector: ModuleSelector,
     ) -> dict[str, Any]:
-        """Resolve one loaded module and verify its PE identity and rebase metadata."""
+        """Resolve one loaded module and verify its PE identity and rebase metadata.
+
+        Answers with module (name, path, sha256, architecture), preferred
+        (base, size, name, path), runtime (base, size, name, path), plus
+        rebase_delta and match_basis. There is no top-level base, path or
+        sha256 field.
+        """
         return _dump(analysis.module_resolve(session_id, selector))
 
     @tools.tool(name="breakpoints.hardware.set")
