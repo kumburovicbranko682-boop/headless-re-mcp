@@ -452,7 +452,12 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List local type-library ordinals."""
+        """List local type-library ordinals.
+
+        Answers with items, each carrying ordinal, name, kind and optional
+        size, plus note, offset, limit, returned and total. There is no
+        types field.
+        """
         return _dump(analysis.static_types(session_id, offset=offset, limit=limit))
 
     def static_structs(
