@@ -490,3 +490,29 @@ def test_patches_apply_description_names_applied_not_ok() -> None:
     assert "Answers with applied" in described
     assert "no ok field" in described
     assert "no patch field" in described
+
+def test_patches_restore_description_names_restored_not_ok() -> None:
+    """The catalog said restore a patch and never named the success field.
+
+    Measured against RestorePatch: success is restored true, plus address.
+    There is no ok or patch field. Looking for ok after a successful restore
+    reads as the original bytes not returning, so the agent retries PatchRestore
+    on a VA that is already clean.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome RestorePatch")
+    chunk = native[start : native.index("struct TraceQuotaState", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "restored"' in returned
+    assert 'JsonSet(result.get(), "address"' in returned
+    assert '"ok"' not in returned
+    assert '"patch"' not in returned
+    described = _tool_docstring("patches.restore")
+    assert "Answers with restored" in described
+    assert "no ok field" in described
+    assert "no patch field" in described

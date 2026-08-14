@@ -385,6 +385,9 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Restore one recorded patch."""
+        """Restore one recorded patch.
+
+        Answers with restored and address. There is no ok field and no patch field.
+        """
         return _dump(analysis.patches_restore(session_id, address, timeout=timeout))
     return tools.bindings
