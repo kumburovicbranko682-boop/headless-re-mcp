@@ -373,7 +373,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         data: Annotated[str, Field(min_length=2, max_length=512)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Apply a bounded hex patch through MemPatch."""
+        """Apply a bounded hex patch through MemPatch.
+
+        Answers with applied, address and size. There is no ok field and no patch field.
+        """
         return _dump(analysis.patches_apply(session_id, address, data, timeout=timeout))
 
     @tools.tool(name="patches.restore")

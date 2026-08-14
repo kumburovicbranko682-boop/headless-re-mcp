@@ -463,3 +463,30 @@ def test_patches_list_description_names_patches_not_items() -> None:
     assert "Answers with patches" in described
     assert "no items" in described
     assert "no patch field" in described
+
+def test_patches_apply_description_names_applied_not_ok() -> None:
+    """The catalog said MemPatch and never named the success field.
+
+    Measured against ApplyPatch: success is applied true, plus address and
+    size. There is no ok or patch field. Looking for ok after a successful
+    apply reads as the bytes not landing, so the agent retries and double
+    patches the same VA.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ApplyPatch")
+    chunk = native[start : native.index("Outcome RestorePatch", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "applied"' in returned
+    assert 'JsonSet(result.get(), "address"' in returned
+    assert 'JsonSet(result.get(), "size"' in returned
+    assert '"ok"' not in returned
+    assert '"patch"' not in returned
+    described = _tool_docstring("patches.apply")
+    assert "Answers with applied" in described
+    assert "no ok field" in described
+    assert "no patch field" in described
