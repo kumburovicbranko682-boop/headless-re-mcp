@@ -400,7 +400,13 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_same_image_children: bool = False,
         accept_ui_goal: bool = True,
     ) -> dict[str, Any]:
-        """Drive UI until a workflow breakpoint intent hits (or UI goal)."""
+        """Drive UI until a workflow breakpoint intent hits (or UI goal).
+
+        Same payload as ui.drive_to_event: Answers with ui_goal, steps,
+        matched_event, events_seen, stopped and stop_reason. There is no
+        hit field, no matched field at the top level and no event field.
+        A UI-goal finish can leave matched_event null.
+        """
         return _dump(
             analysis.ui_drive_to_breakpoint(
                 session_id,
