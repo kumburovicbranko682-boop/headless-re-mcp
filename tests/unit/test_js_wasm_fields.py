@@ -55,6 +55,35 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
+    """The catalog named wat and never named the length field.
+
+    Measured: 80-byte wasm2wat stdout -> wat length 80, bytes 80, no size
+    key. Looking for size after a successful conversion reads as a reply
+    with no length.
+    """
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)" * 10
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module)
+
+    assert "size" not in payload
+    assert payload["bytes"] == len(body)
+    assert payload["wat"] == body
+    doc = _tool_docstring("wasm.wat")
+    assert "bytes" in doc
+    assert "Answers with wat" in doc
+
+
 def test_js_deobfuscate_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named code and never named the length field.
 
@@ -119,6 +148,7 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "output_dir" in _tool_docstring("js.unpack_bundle")
     assert "has_more" in _tool_docstring("js.unpack_bundle")
     assert "Answers with wat" in _tool_docstring("wasm.wat")
+    assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
 
 

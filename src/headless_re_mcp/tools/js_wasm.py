@@ -60,7 +60,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
-        Answers with wat, plus truncated when the text was cut at the buffer.
+        Answers with wat and bytes, plus truncated when the text was cut at
+        the buffer.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
