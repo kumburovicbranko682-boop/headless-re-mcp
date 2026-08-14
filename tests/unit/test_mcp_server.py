@@ -786,3 +786,23 @@ async def test_dynamic_open_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_wait_description_names_live_fields() -> None:
+    """The catalog did not name state or submitted on a successful wait.
+
+    Measured keys are state and submitted. A caller looking for reached or
+    current reads a wait that finished as if it returned nothing.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.wait")
+        text = tool.description or ""
+        assert "Answers with state" in text
+        assert "submitted" in text
+    finally:
+        analysis.close_all()
