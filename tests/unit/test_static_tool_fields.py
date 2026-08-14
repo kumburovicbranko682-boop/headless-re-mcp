@@ -299,3 +299,31 @@ def test_static_xrefs_to_description_names_frm_not_from() -> None:
     assert '"from"' not in chunk
     assert '"xrefs"' not in chunk
 
+
+def test_static_xrefs_from_description_names_frm_not_from() -> None:
+    """The live catalog omitted the list field and named the source wrong.
+
+    Same payload as xrefs_to: items with frm, not from, and no xrefs field.
+    Looking for from after a successful list reads as IDA finding no xref
+    sources.
+    """
+    described = " ".join(_docstring("static_xrefs_from").split())
+    assert "Answers with items" in described
+    assert "frm" in described
+    assert "no from field" in described
+    assert "no xrefs field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _xrefs_from")
+    chunk = worker[start : worker.index("def _callers", start)]
+    assert '"frm": int(xref.frm)' in chunk
+    assert '"to": int(xref.to)' in chunk
+    assert '"from"' not in chunk
+    assert '"xrefs"' not in chunk
+
