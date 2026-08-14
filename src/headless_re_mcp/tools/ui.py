@@ -235,7 +235,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
         backend: str = "win32",
     ) -> dict[str, Any]:
-        """Send key via WM_* or SendInput (PID-bounded; SendInput rechecks FG PID)."""
+        """Send key via WM_* or SendInput (PID-bounded; SendInput rechecks FG PID).
+
+        Answers with hwnd, action, backend and either text or vk, plus
+        foreground_pid on SendInput. There is no sent field.
+        """
         return _dump(
             analysis.ui_key(
                 session_id,
