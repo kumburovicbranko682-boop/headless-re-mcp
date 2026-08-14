@@ -41,7 +41,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         url: str,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Navigate the session's browser to a new URL."""
+        """Navigate the session's browser to a new URL.
+
+        Answers with url and title. There is no navigated, ok or page field.
+        """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
     @tools.tool(name="web.close")
