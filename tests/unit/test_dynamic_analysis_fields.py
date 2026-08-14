@@ -437,3 +437,29 @@ def test_imports_read_description_names_entries_not_imports() -> None:
     assert "Answers with entries" in described
     assert "resolved_count" in described
     assert "no imports field" in described
+
+def test_patches_list_description_names_patches_not_items() -> None:
+    """The catalog said memory patches and never named the list field.
+
+    Measured against ListPatches: the page is patches, plus count. There is
+    no items or patch field. Looking for items after a successful list reads
+    as MemPatch finding none, so the agent retries or restores bytes it never
+    recorded.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ListPatches")
+    chunk = native[start : native.index("Outcome ApplyPatch", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "patches"' in returned
+    assert 'JsonSet(result.get(), "count"' in returned
+    assert '"items"' not in returned
+    assert '"patch"' not in returned
+    described = _tool_docstring("patches.list")
+    assert "Answers with patches" in described
+    assert "no items" in described
+    assert "no patch field" in described

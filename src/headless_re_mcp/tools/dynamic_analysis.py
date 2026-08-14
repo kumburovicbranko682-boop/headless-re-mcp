@@ -360,7 +360,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """List recorded memory patches."""
+        """List recorded memory patches.
+
+        Answers with patches, plus count. There is no items field and no patch field.
+        """
         return _dump(analysis.patches_list(session_id, timeout=timeout))
 
     @tools.tool(name="patches.apply")
