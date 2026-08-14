@@ -327,3 +327,30 @@ def test_static_xrefs_from_description_names_frm_not_from() -> None:
     assert '"from"' not in chunk
     assert '"xrefs"' not in chunk
 
+
+def test_static_callers_description_names_items_not_callers() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items with ea, name, site and type_name, plus a
+    note that this is call-type xrefs only, and no callers field. A caller
+    looking for callers after a successful list reads it as IDA finding
+    none.
+    """
+    described = " ".join(_docstring("static_callers").split())
+    assert "Answers with items" in described
+    assert "no callers field" in described
+    assert "site" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _callers")
+    chunk = worker[start : worker.index("def _callees", start)]
+    assert '"site": int(xref.frm)' in chunk
+    assert "call-type xrefs only" in chunk
+    assert '"callers"' not in chunk
+

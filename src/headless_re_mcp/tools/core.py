@@ -356,7 +356,12 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List call-type callers of the function containing address (weak model)."""
+        """List call-type callers of the function containing address (weak model).
+
+        Answers with items, each carrying ea, name, site and type_name, plus
+        address, note, offset, limit, returned and total. There is no
+        callers field.
+        """
         return _dump(
             analysis.static_callers(
                 session_id,
