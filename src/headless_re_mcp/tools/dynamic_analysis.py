@@ -169,7 +169,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         expression: Annotated[str, Field(min_length=1, max_length=512)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Resolve a structured expression/symbol to an address."""
+        """Resolve a structured expression/symbol to an address.
+
+        Answers with value, expression and resolved. There is no address field.
+        Optional symbol, symbol_address, symbol_type and ordinal when x64dbg
+        had a name for that VA.
+        """
         return _dump(analysis.symbols_resolve(session_id, expression, timeout=timeout))
 
     @tools.tool(name="modules.dump")

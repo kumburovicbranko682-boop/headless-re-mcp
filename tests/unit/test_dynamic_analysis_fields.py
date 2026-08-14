@@ -305,3 +305,31 @@ def test_imports_scan_schema_matches_native_search_size_cap() -> None:
     )
     assert integer_size["minimum"] == 1
     assert integer_size["maximum"] == cap
+
+def _resolve_symbol_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ResolveSymbol")
+    return native[start : native.index("bool ParseHardwareType", start)]
+
+
+def test_symbols_resolve_description_names_value_not_address() -> None:
+    """The catalog said address and never named the payload field.
+
+    Measured against ResolveSymbol: the VA is value, plus expression and
+    resolved. There is no address field. Looking for address after a
+    successful resolve reads as the symbol not resolving.
+    """
+    chunk = _resolve_symbol_cpp()
+    assert 'JsonSet(result.get(), "value"' in chunk
+    assert 'JsonSet(result.get(), "resolved"' in chunk
+    returned = chunk[chunk.index("auto result = JsonObject()") :]
+    assert '"address"' not in returned
+    described = _tool_docstring("symbols.resolve")
+    assert "Answers with value" in described
+    assert "resolved" in described
+    assert "no address field" in described
