@@ -103,3 +103,39 @@ def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     doc = _tool_docstring("proxy.flows")
     assert "has_more" in doc
     assert "dropped" in doc
+
+
+def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypatch: Any) -> None:
+    """The catalog said headers and body, never where a spill actually lands.
+
+    Measured: 200001-byte body -> no top-level body or headers, response.size
+    200001, response.body_path set, response.body absent. Looking for body
+    after a successful large fetch reads as a missing capture.
+    """
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", headers={"accept": "text/plain"}
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain"},
+        raw_content=b"x" * 200_001,
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert "body" not in payload
+    assert "headers" not in payload
+    assert "body" not in payload["response"]
+    assert payload["response"]["size"] == 200_001
+    assert payload["response"]["body_path"].endswith("flow-f1.bin")
+    doc = _tool_docstring("proxy.flow.get")
+    assert "body_path" in doc
+    assert "response" in doc
