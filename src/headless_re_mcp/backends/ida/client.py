@@ -17,6 +17,7 @@ from headless_re_mcp.backends.common.subprocess_rpc import (
     no_window_popen_kwargs,
 )
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.windows import describe_process_windows
 from headless_re_mcp.process_group import assign_to_process_group
 
@@ -207,13 +208,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def terminate(self) -> None:
         self._closed = True
-        if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=5)
+        # terminate()/kill() on the worker leaves idalib children running.
+        # Measured: a launcher that started a sleeper was dead after
+        # terminate() while the child was still alive, holding a core and the
+        # database for the rest of the process life.
+        terminate_process_tree(self._process, wait_s=5.0)
 
     def _read_stdout(self, stream: TextIO) -> None:
         try:
