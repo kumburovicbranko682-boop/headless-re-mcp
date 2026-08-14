@@ -429,3 +429,56 @@ def test_finished_threads_are_trimmed_and_live_ones_are_not(tmp_path: Path) -> N
         "only the newest finished threads survive"
     )
     assert len(remaining) == 5
+
+
+def test_a_live_thread_does_not_keep_every_run_it_ever_finished(tmp_path: Path) -> None:
+    """Finished-thread trim never collects a thread that still has a mission.
+
+    Measured: 400 completed runs on one still-pending mission were 278 KB of
+    empty rows and still climbing. Each run may also hold 5000 events. A
+    caller looking up a run id from last week is not why the file grows.
+    """
+    store = AgentStore(tmp_path / "runs.db")
+    store.retained_terminal_runs_per_thread = 5
+    other = store.create_thread(title="other")
+    keep = store.create_run(other.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.transition(keep.id, RunStatus.STREAMING)
+    store.transition(keep.id, RunStatus.COMPLETED)
+
+    thread = store.create_thread(title="live")
+    store.create_mission(thread.id, "still going")
+    finished: list[str] = []
+    for _ in range(12):
+        run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+        store.transition(run.id, RunStatus.STREAMING)
+        store.transition(run.id, RunStatus.COMPLETED)
+        finished.append(run.id)
+    inflight = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.transition(inflight.id, RunStatus.STREAMING)
+
+    with store._reading() as con:
+        live_ids = [
+            str(row["id"])
+            for row in con.execute(
+                "SELECT id FROM runs WHERE thread_id=? ORDER BY created_at, id",
+                (thread.id,),
+            )
+        ]
+        other_ids = [
+            str(row["id"])
+            for row in con.execute(
+                "SELECT id FROM runs WHERE thread_id=?",
+                (other.id,),
+            )
+        ]
+        live_events = con.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id IN "
+            "(SELECT id FROM runs WHERE thread_id=?)",
+            (thread.id,),
+        ).fetchone()[0]
+
+    assert live_ids == finished[-5:] + [inflight.id]
+    assert other_ids == [keep.id]
+    assert store.get_run(finished[0]) is None
+    assert store.get_run(inflight.id) is not None
+    assert live_events == 6

@@ -70,6 +70,11 @@ _EVENT_DATA_MAX_BYTES = 65_536
 # different instruction, so refuse rather than cut.
 _TOOL_ARGUMENT_MAX_BYTES = 4_194_304
 
+# Finished-thread trim never touches a live thread. 400 completed runs on one
+# still-pending mission were 278 KB of empty rows (and every run may still
+# hold 5000 events). The prefix nobody looks up by id only grows the file.
+_RETAINED_TERMINAL_RUNS_PER_THREAD = 128
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -85,6 +90,7 @@ class AgentStore:
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
+        self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -283,6 +289,7 @@ class AgentStore:
         with self.transaction() as con:
             con.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)", (run_id, thread_id, RunStatus.QUEUED.value, provider_profile, model, 0, None, now, now, deadline))
             self._append_event_tx(con, run_id, "run.started", {"status": RunStatus.QUEUED.value})
+            self._trim_terminal_runs(con, thread_id)
         run = self.get_run(run_id)
         assert run is not None
         return run
@@ -310,9 +317,29 @@ class AgentStore:
             now = utc_now()
             stored_error = error[:1000] if error else None
             con.execute("UPDATE runs SET status=?,error=?,updated_at=? WHERE id=?", (target.value, stored_error, now, run_id))
+            if target in TERMINAL_RUN_STATUSES:
+                self._trim_terminal_runs(con, str(row["thread_id"]))
         run = self.get_run(run_id)
         assert run is not None
         return run
+
+    def _trim_terminal_runs(self, con: sqlite3.Connection, thread_id: str) -> None:
+        """Drop the oldest finished runs on a live thread; in-flight runs stay.
+
+        Finished-thread collection never sees a thread that still has a mission,
+        so every completed run on that thread used to stay forever.
+        """
+        keep = max(1, int(self.retained_terminal_runs_per_thread))
+        done = tuple(status.value for status in TERMINAL_RUN_STATUSES)
+        placeholders = ",".join("?" * len(done))
+        con.execute(
+            "DELETE FROM runs WHERE id IN ("
+            "  SELECT id FROM runs WHERE thread_id=? AND status IN ("
+            f"    {placeholders}"
+            "  ) ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+            ")",
+            (thread_id, *done, keep),
+        )
 
     def append_event(self, run_id: str, event_type: str, data: JsonObject) -> RunEvent:
         with self.transaction() as con:
