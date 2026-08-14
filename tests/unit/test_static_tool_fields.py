@@ -435,3 +435,30 @@ def test_static_cfg_description_names_nodes_and_edges_not_cfg() -> None:
     assert '"edges": edges' in chunk
     assert '"cfg"' not in chunk
 
+
+def test_static_globals_description_names_items_not_globals() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items with ea, name, is_data, is_code and size,
+    plus a note that this is named addresses outside functions, and no
+    globals field. A caller looking for globals after a successful list
+    reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_globals").split())
+    assert "Answers with items" in described
+    assert "no globals field" in described
+    assert "is_data" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _globals")
+    chunk = worker[start : worker.index("def _iter_numbered_types", start)]
+    assert '"is_data"' in chunk
+    assert "named addresses outside functions" in chunk
+    assert '"globals"' not in chunk
+
