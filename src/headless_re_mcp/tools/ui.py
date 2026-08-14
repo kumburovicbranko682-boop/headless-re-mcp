@@ -406,7 +406,7 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_drive_to_breakpoint(
         session_id: str,
         intent_id: str,
-        steps: list[dict[str, Any]] | None = None,
+        steps: Annotated[list[dict[str, Any]], Field(max_length=32)] | None = None,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
         event_budget: Annotated[int, Field(ge=1, le=100_000)] = 1024,
         allow_child_pids: list[int] | None = None,
