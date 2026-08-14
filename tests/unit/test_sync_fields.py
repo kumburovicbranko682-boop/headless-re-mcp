@@ -77,3 +77,23 @@ def test_sync_static_to_runtime_puts_the_va_under_runtime_not_runtime_address() 
     assert "Answers with" in described_back
     assert "static.address" in described_back
     assert "no runtime_address" in described_back
+
+def test_sync_module_preferred_to_runtime_nests_address() -> None:
+    """The live catalog omitted the nested address fields.
+
+    tests/unit/test_dynamic_service.py already reads
+    to_runtime.data['runtime']['address'] and
+    to_preferred.data['preferred']['address']. There is no runtime_address
+    field. A caller looking for runtime_address after a successful module
+    sync reads the rebase as failed.
+    """
+    described = " ".join(_tool_docstring("sync.module_preferred_to_runtime").split())
+    assert "Answers with runtime.address" in described
+    assert "preferred.address" in described
+    assert "no runtime_address field" in described
+    described_back = " ".join(
+        _tool_docstring("sync.module_runtime_to_preferred").split()
+    )
+    assert "preferred.address" in described_back
+    assert "no runtime_address field" in described_back
+

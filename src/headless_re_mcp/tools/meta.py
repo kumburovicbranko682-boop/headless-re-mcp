@@ -44,7 +44,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         selector: ModuleSelector,
         address: int,
     ) -> dict[str, Any]:
-        """Map an explicitly selected PE preferred VA to its current runtime VA."""
+        """Map an explicitly selected PE preferred VA to its current runtime VA.
+
+        Answers with runtime.address and preferred.address, plus rva,
+        rebase_delta, module, source, target and match_basis. There is no
+        runtime_address field.
+        """
         return _dump(analysis.sync_module_preferred_to_runtime(session_id, selector, address))
 
     @tools.tool(name="sync.module_runtime_to_preferred")
@@ -53,7 +58,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         selector: ModuleSelector,
         address: int,
     ) -> dict[str, Any]:
-        """Map an explicitly selected runtime VA back to its PE preferred VA."""
+        """Map an explicitly selected runtime VA back to its PE preferred VA.
+
+        Same payload as sync.module_preferred_to_runtime: Answers with
+        preferred.address and runtime.address, plus rva, rebase_delta, module,
+        source, target and match_basis. There is no runtime_address field.
+        """
         return _dump(analysis.sync_module_runtime_to_preferred(session_id, selector, address))
 
     @tools.tool(name="sync.resolve_runtime_address")
