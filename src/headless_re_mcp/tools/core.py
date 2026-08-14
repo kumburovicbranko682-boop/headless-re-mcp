@@ -119,7 +119,12 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.static_decompile(session_id, address=address))
 
     def static_metadata(session_id: str) -> dict[str, Any]:
-        """Return idalib database metadata (image base, hashes, counts, capabilities)."""
+        """Return idalib database metadata (image base, hashes, counts, capabilities).
+
+        Answers with input_path, image_base, start_ip, bitness, processor,
+        function_count, string_count, hashes, capabilities and note. There is
+        no metadata field.
+        """
         return _dump(analysis.static_metadata(session_id))
 
     specs: list[BoundTool] = []

@@ -859,3 +859,34 @@ def test_static_batch_description_names_results() -> None:
     assert '"commands"' not in returned
     assert '"items"' not in returned
 
+
+def test_static_metadata_description_names_image_base() -> None:
+    """The live catalog omitted the payload fields.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    meta.data['image_base'] and meta.data['capabilities']. The worker
+    returns those keys at the top of the payload, and no metadata field. A
+    caller looking for metadata after a successful call reads it as IDA
+    returning nothing.
+    """
+    described = " ".join(_docstring("static_metadata").split())
+    assert "Answers with input_path" in described
+    assert "image_base" in described
+    assert "function_count" in described
+    assert "no metadata field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _metadata")
+    chunk = worker[start : worker.index("def _segments", start)]
+    returned = chunk.split("return")[-1]
+    assert '"image_base": image_base' in returned
+    assert '"function_count":' in returned
+    assert '"capabilities":' in returned
+    assert '"metadata":' not in returned
+
