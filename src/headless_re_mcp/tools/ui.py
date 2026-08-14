@@ -283,7 +283,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
     ) -> dict[str, Any]:
-        """Wait until a PID-bounded window matches the given selectors."""
+        """Wait until a PID-bounded window matches the given selectors.
+
+        Answers with matched, window (hwnd nested there), waited_ms and
+        backend. There is no hwnd field at the top level and no found field.
+        """
         return _dump(
             analysis.ui_wait(
                 session_id,
