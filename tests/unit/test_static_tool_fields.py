@@ -215,3 +215,31 @@ def test_static_imports_description_names_items_not_imports() -> None:
     assert '"ordinal": int(ordinal)' in chunk
     assert '"imports"' not in chunk
 
+
+def test_static_exports_description_names_items_not_exports() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items with index, ordinal, ea and name, and no
+    exports field. tests/unit/test_service.py's fake worker uses the same
+    items page. A caller looking for exports after a successful list reads
+    it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_exports").split())
+    assert "Answers with items" in described
+    assert "no exports field" in described
+    assert "ordinal" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _exports")
+    chunk = worker[start : worker.index("def _entrypoints", start)]
+    assert "return _page_items(items, offset, limit)" in chunk
+    assert '"index": int(index)' in chunk
+    assert '"ordinal": int(ordinal)' in chunk
+    assert '"exports"' not in chunk
+
