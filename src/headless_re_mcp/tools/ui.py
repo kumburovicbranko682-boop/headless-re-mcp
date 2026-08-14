@@ -66,7 +66,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         max_depth: Annotated[int, Field(ge=0, le=8)] = 3,
         max_nodes: Annotated[int, Field(ge=1, le=256)] = 256,
         root_hwnd: int | None = None,
-        backend: str = "win32",
+        backend: Annotated[
+            str,
+            Field(pattern="^(win32|uia|uiautomation)$"),
+        ] = "win32",
     ) -> dict[str, Any]:
         """Window/control tree for the debuggee PID (win32 or uia).
 
