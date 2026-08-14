@@ -299,6 +299,27 @@ def _finish_one(store: AgentStore, title: str) -> str:
     return thread.id
 
 
+def test_a_run_error_is_clipped_like_a_mission_error(tmp_path: Path) -> None:
+    """Mission errors already stop at 1000 characters; run errors did not.
+
+    A 2 MiB failure string made the database 2.16 MB. The run still ends;
+    only the stored text is cut.
+    """
+    store = AgentStore(tmp_path / "run-error.db")
+    thread = store.create_thread()
+    fat = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.transition(fat.id, RunStatus.STREAMING)
+    store.transition(fat.id, RunStatus.FAILED, error="x" * 8192)
+    got = store.get_run(fat.id)
+    assert got is not None
+    assert got.status is RunStatus.FAILED
+    assert got.error == "x" * 1000
+
+    thin = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.transition(thin.id, RunStatus.FAILED, error="short")
+    assert store.get_run(thin.id).error == "short"
+
+
 def test_oversized_tool_call_arguments_are_refused_not_stored(tmp_path: Path) -> None:
     """The orchestrator already refuses 256 KiB; the store itself did not.
 

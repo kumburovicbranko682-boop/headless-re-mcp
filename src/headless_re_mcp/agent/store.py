@@ -308,7 +308,8 @@ class AgentStore:
             if target != current and target not in RUN_TRANSITIONS[current]:
                 raise ValueError(f"illegal run transition: {current.value}->{target.value}")
             now = utc_now()
-            con.execute("UPDATE runs SET status=?,error=?,updated_at=? WHERE id=?", (target.value, error, now, run_id))
+            stored_error = error[:1000] if error else None
+            con.execute("UPDATE runs SET status=?,error=?,updated_at=? WHERE id=?", (target.value, stored_error, now, run_id))
         run = self.get_run(run_id)
         assert run is not None
         return run
