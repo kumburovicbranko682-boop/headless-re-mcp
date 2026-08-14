@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -11,6 +12,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.windows import describe_process_windows
 
 # Interval between analyzer-window enumerations while the gate worker runs.
@@ -87,19 +89,30 @@ def run_idalib_gate(
     monitor.start()
 
     timed_out = False
+    killed: list[int] = []
+    stdout, stderr = "", ""
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # process.kill() stops the gate worker and nothing else. Measured: a
+        # launcher that started a sleeper returned in 0.81s after a 0.8s
+        # timeout while the child was still running, holding CPU for the rest
+        # of the process life.
         timed_out = True
-        process.kill()
-        stdout, stderr = process.communicate(timeout=10)
+        killed = terminate_process_tree(process)
+        with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+            drained = process.communicate(timeout=5)
+            stdout, stderr = drained
     finally:
         monitor_stop.set()
         monitor.join(timeout=2)
         observed.update(describe_process_windows(process.pid))
 
     if timed_out:
-        payload = {"error": f"idalib gate timed out after {timeout} seconds"}
+        payload = {
+            "error": f"idalib gate timed out after {timeout} seconds",
+            "killed_pids": killed,
+        }
         return HeadlessGateResult(
             False,
             "ida",
