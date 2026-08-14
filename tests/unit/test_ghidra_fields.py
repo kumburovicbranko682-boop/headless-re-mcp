@@ -46,7 +46,8 @@ def test_ghidra_analyze_puts_the_log_in_stdout_excerpt_not_functions() -> None:
     assert '"functions"' not in returned
     assert '"analysis"' not in returned
     described = _tool_docstring("ghidra.analyze")
-    assert "Answers with stdout_excerpt" in described
+    assert "Answers with project_dir" in described
+    assert "stdout_excerpt" in described
     assert "project_dir" in described
     assert "no functions field" in described
     assert "no analysis field" in described
