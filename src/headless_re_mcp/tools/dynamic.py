@@ -152,7 +152,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.step_over")
     def dynamic_step_over(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
-        """Execute one step over and wait for the next pause or process exit."""
+        """Execute one step over and wait for the next pause or process exit.
+
+        Answers with state and submitted, the same shape as dynamic.wait.
+        """
         return _dump(analysis.dynamic_step_over(session_id, timeout=timeout))
 
     @tools.tool(name="dynamic.registers.read")
