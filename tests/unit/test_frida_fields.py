@@ -245,3 +245,27 @@ def test_frida_java_classes_puts_the_list_in_classes_and_says_when_it_stopped() 
     doc = _tool_docstring("frida.java.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
+
+def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() -> None:
+    """The catalog never named the payload.
+
+    Measured: 11 methods requested for a page of 10 -> count 10, has_more
+    True, field is methods. Looking for method_list after a successful call
+    reads as no methods, and a full page with no has_more reads as every
+    declared method.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _JavaDevice()  # type: ignore[method-assign]
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert "method_list" not in payload
+    assert payload["class_name"] == "Foo"
+    assert payload["count"] == 10
+    assert len(payload["methods"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("frida.java.methods")
+    assert "Answers with methods" in doc
+    assert "has_more" in doc
