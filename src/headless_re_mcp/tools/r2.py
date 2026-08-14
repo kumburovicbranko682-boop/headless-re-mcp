@@ -75,8 +75,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Imported symbols with the library each resolves to.
 
-        Answers with items, each carrying name, lib, plt and address, plus
-        count. Read items_truncated, items_total and items_limit when the
+        Answers with items, each carrying name, lib, plt and address
+        (va/rva/module), plus count. There is no integer address field.
+        Read items_truncated, items_total and items_limit when the
         list filled the cap (4096). There is no imports, truncated or
         has_more field.
         """
