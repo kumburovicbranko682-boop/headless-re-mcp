@@ -91,7 +91,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(session_id: str) -> dict[str, Any]:
-        """List WebAssembly modules loaded by the page."""
+        """List WebAssembly modules loaded by the page.
+
+        Answers with scripts (scriptId, url, language), plus count. There is
+        no modules field.
+        """
         return _dump(analysis.web_wasm_list(session_id))
 
     @tools.tool(name="web.dom.snapshot")

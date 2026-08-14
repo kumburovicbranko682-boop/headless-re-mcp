@@ -46,6 +46,15 @@ class _FakeHandle:
             }
             for index in range(count)
         }
+        self.scripts = {
+            str(index): {
+                "scriptId": str(index),
+                "url": f"https://example/{index}",
+                "language": "WebAssembly" if index % 2 else "JavaScript",
+            }
+            for index in range(count)
+        }
+        self.scripts_dropped = 0
 
 
 def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
@@ -97,3 +106,25 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "Answers with requests" in doc
     assert "resourceType" in doc
     assert "total" in doc
+
+
+def test_web_wasm_list_puts_modules_in_scripts_not_modules(
+    monkeypatch: Any,
+) -> None:
+    """The catalog said modules and never named the payload.
+
+    Measured: 10 parsed scripts, 5 of them WebAssembly -> count 5, field is
+    scripts not modules or wasm. Looking for modules after a successful call
+    reads as the page loading none.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _FakeHandle(10))
+    payload = backend.scripts("s", wasm_only=True)
+    assert "modules" not in payload
+    assert "wasm" not in payload
+    assert payload["count"] == 5
+    assert len(payload["scripts"]) == 5
+    assert all(row["language"] == "WebAssembly" for row in payload["scripts"])
+    doc = _tool_docstring("web.wasm.list")
+    assert "Answers with scripts" in doc
+    assert "no modules field" in doc
