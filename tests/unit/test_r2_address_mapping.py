@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import ast
 import json
-import subprocess
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import headless_re_mcp.backends.r2.client as r2_client
+from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     enrich_r2_payload,
@@ -66,10 +68,10 @@ def test_output_cut_at_the_buffer_says_it_was_cut(
     binary = _minimal_pe(tmp_path)
     monkeypatch.setattr(r2_client, "_MAX_OUTPUT", 64)
 
-    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"A" * 500, stderr=b"")
+    def huge(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"A" * 500, stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    monkeypatch.setattr(r2_client, "run_bounded", huge)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
@@ -87,10 +89,10 @@ def test_output_that_fits_is_not_labelled_truncated(
     """The flag has to mean something, so it stays off when nothing was cut."""
     binary = _minimal_pe(tmp_path)
 
-    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"[]", stderr=b"")
+    def small(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"[]", stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    monkeypatch.setattr(r2_client, "run_bounded", small)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
@@ -168,11 +170,11 @@ def test_r2_open_only_asks_for_identity(
     """
     recorded: list[list[str]] = []
 
-    def capture(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        recorded.append(list(argv))
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"format pe", stderr=b"")
+    def capture(cmd: list[str], **kwargs: Any) -> Completed:
+        recorded.append(list(cmd))
+        return Completed(returncode=0, stdout=b"format pe", stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", capture)
+    monkeypatch.setattr(r2_client, "run_bounded", capture)
     client = r2_client.R2Client(_stub_executable(tmp_path))
     payload = client.open(_minimal_pe(tmp_path))
 
@@ -215,3 +217,65 @@ def test_r2_open_description_does_not_claim_an_analysis_pass() -> None:
     assert "reopen" in lowered
     assert "run its own analysis pass" not in lowered
     assert "read what this produced" not in lowered
+
+
+def _pid_alive(pid: int) -> bool:
+    import ctypes
+
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def test_r2_timeout_kills_the_process_the_launcher_started(
+    tmp_path: Path,
+) -> None:
+    """subprocess.run returned the timeout while the child kept the core.
+
+    Measured on this machine: r2.cmd that starts a sleeper and holds the pipes
+    did not return 8s after a 0.8s deadline, and the sleeper was still alive.
+    r2 on PATH is often a script. CREATE_NO_WINDOW is already set so this
+    does not pop a console.
+    """
+    if os.name != "nt":
+        pytest.skip("descendant kill here is Win32 (skip != pass)")
+
+    binary = _minimal_pe(tmp_path)
+    stub = tmp_path / "r2_stub.py"
+    stub.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "print(child.pid, flush=True)\n"
+        "while True: time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "r2.cmd"
+    wrapper.write_text(f'@echo off\r\n"{sys.executable}" "{stub}"\r\n', encoding="utf-8")
+    client = r2_client.R2Client(wrapper)
+
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(r2_client.R2Error) as caught:
+        client.run(binary, ["i"], timeout=0.8)
+    elapsed = time.monotonic() - started
+
+    assert caught.value.code == "timeout"
+    assert elapsed < 10.0, f"deadline 0.8s, caller waited {elapsed:.1f}s"
+    killed = list(caught.value.details.get("killed_pids") or [])
+    assert len(killed) >= 2, f"launcher and child, got {killed}"
+    for pid in killed:
+        assert _pid_alive(int(pid)) is False

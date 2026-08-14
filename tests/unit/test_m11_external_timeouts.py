@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut
+from headless_re_mcp.backends.common.bounded_run import Completed, TimedOut
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 
@@ -19,10 +18,14 @@ def test_r2_timeout_maps_to_timeout(tmp_path: Path) -> None:
     stub = tmp_path / "r2.exe"
     stub.write_bytes(b"")
     client = R2Client(executable=stub)
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="r2", timeout=1)):
+    with patch(
+        "headless_re_mcp.backends.r2.client.run_bounded",
+        side_effect=TimedOut(1.0, [4321]),
+    ):
         with pytest.raises(R2Error) as exc:
             client.run(binary, ["i"], timeout=1.0)
     assert exc.value.code == "timeout"
+    assert exc.value.details["killed_pids"] == [4321]
 
 
 def test_r2_nonzero_exit_maps_to_backend_error(tmp_path: Path) -> None:
@@ -31,9 +34,10 @@ def test_r2_nonzero_exit_maps_to_backend_error(tmp_path: Path) -> None:
     stub = tmp_path / "r2.exe"
     stub.write_bytes(b"")
     client = R2Client(executable=stub)
-    fake = subprocess.CompletedProcess(args=["r2"], returncode=2, stdout=b"", stderr=b"boom")
-    with patch("subprocess.run", return_value=fake), pytest.raises(R2Error) as exc:
-        client.run(binary, ["i"], timeout=1.0)
+    fake = Completed(returncode=2, stdout=b"", stderr=b"boom")
+    with patch("headless_re_mcp.backends.r2.client.run_bounded", return_value=fake):
+        with pytest.raises(R2Error) as exc:
+            client.run(binary, ["i"], timeout=1.0)
     assert exc.value.code == "backend_error"
 
 

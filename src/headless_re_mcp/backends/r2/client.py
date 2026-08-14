@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 
 JsonObject = dict[str, Any]
@@ -103,15 +104,22 @@ class R2Client:
         script = "\n".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
+            # r2 on PATH is often a launcher script, and subprocess.run kills
+            # only that process then drains with no deadline. Measured: a stub
+            # that started a child and held the pipes did not return 8s after a
+            # 0.8s timeout, and the child was still running.
+            completed = run_bounded(
                 [str(self.executable), "-q0", "-c", script, str(binary)],
-                capture_output=True,
                 timeout=timeout,
-                check=False,
                 creationflags=creationflags,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise R2Error("timeout", "r2 timed out", timeout=timeout) from exc
+        except TimedOut as exc:
+            raise R2Error(
+                "timeout",
+                "r2 timed out",
+                timeout=timeout,
+                killed_pids=exc.killed,
+            ) from exc
         produced = len(completed.stdout)
         out = completed.stdout[:_MAX_OUTPUT]
         err = completed.stderr[:_MAX_OUTPUT]
