@@ -1,0 +1,62 @@
+"""memory.regions must name the field the x64dbg adapter actually returns."""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
+
+
+def _tool_docstring(name: str) -> str:
+    source = Path(build_dynamic_analysis_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
+
+
+def _list_memory_regions_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ListMemoryRegions")
+    return native[start : native.index("Outcome QueryMemoryProtect", start)]
+
+
+def test_memory_regions_description_names_regions_not_items() -> None:
+    """The catalog said pagination and never named the list field.
+
+    Measured against ListMemoryRegions: the page is regions, with count, total,
+    offset, limit and has_more. There is no items or memory field.
+    tests/unit/test_dynamic_service.py already drives a fake worker that puts
+    the page in regions. Looking for items after a successful list reads as
+    VirtualQuery finding none.
+    """
+    chunk = _list_memory_regions_cpp()
+    assert 'JsonSet(result.get(), "regions"' in chunk
+    assert 'JsonSet(result.get(), "count"' in chunk
+    assert 'JsonSet(result.get(), "total"' in chunk
+    assert 'JsonSet(result.get(), "has_more"' in chunk
+    returned = chunk[chunk.index("auto result = JsonObject()") :]
+    assert '"items"' not in returned
+    assert '"memory"' not in returned
+    described = _tool_docstring("memory.regions")
+    assert "Answers with regions" in described
+    assert "has_more" in described
+    assert "no items" in described
+    assert "no memory field" in described

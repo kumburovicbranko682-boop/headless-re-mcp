@@ -26,7 +26,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         limit: int | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """List paused-only VirtualQuery-style memory regions with pagination."""
+        """List paused-only VirtualQuery-style memory regions with pagination.
+
+        Answers with regions, plus count, total, offset, limit and has_more so a
+        page that filled the limit is not read as the whole map. There is no items
+        field and no memory field.
+        """
         return _dump(
             analysis.memory_regions(
                 session_id,
