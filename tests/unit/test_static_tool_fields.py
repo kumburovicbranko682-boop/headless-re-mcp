@@ -781,3 +781,48 @@ def test_static_function_delete_description_names_deleted() -> None:
     assert '"end": end' in chunk
     assert '"function":' not in chunk
 
+
+def test_static_bytes_patch_description_names_before_hex() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns address, size, before_hex, after_hex and ok, and
+    no bytes or hex field. The service then names the record file
+    patch_artifact. A caller looking for bytes or hex after a successful
+    patch cannot tell what changed.
+    """
+    described = " ".join(_docstring("static_bytes_patch").split())
+    assert "Answers with address" in described
+    assert "before_hex" in described
+    assert "after_hex" in described
+    assert "patch_artifact" in described
+    assert "no bytes field" in described
+    assert "no hex field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _bytes_patch")
+    chunk = worker[start : worker.index("_BATCH_MAX_ITEMS", start)]
+    returned = chunk.split("return")[-1]
+    assert '"before_hex":' in returned
+    assert '"after_hex":' in returned
+    assert '"bytes"' not in returned
+    assert '"hex":' not in returned
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_static.py"
+    ).read_text(encoding="utf-8")
+    record = service[
+        service.index("def _record_static_patch") : service.index(
+            "def _maybe_spill_static_text"
+        )
+    ]
+    assert 'payload["patch_artifact"]' in record
+

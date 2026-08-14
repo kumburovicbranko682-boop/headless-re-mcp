@@ -644,7 +644,12 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         hex: str | None = None,
         base64: str | None = None,
     ) -> dict[str, Any]:
-        """Patch database bytes (hex or base64); records a patch artifact."""
+        """Patch database bytes (hex or base64); records a patch artifact.
+
+        Answers with address, size, before_hex, after_hex and ok, plus
+        patch_artifact when the record file was written. There is no bytes
+        field and no hex field.
+        """
         return _dump(
             analysis.static_bytes_patch(
                 session_id,
