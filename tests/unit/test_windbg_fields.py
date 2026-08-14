@@ -191,3 +191,42 @@ def test_windbg_threads_names_the_cut_sizes(tmp_path: Path, monkeypatch: Any) ->
     doc = " ".join(_tool_docstring("windbg.threads").split())
     assert "output_chars" in doc
     assert "returned_chars" in doc
+
+def test_windbg_open_dump_names_the_cut_sizes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said output and truncated and never named the rest.
+
+    Measured: 500-char cdb stdout, cap 64 -> dump set, output 64 chars,
+    truncated True, output_chars 500, returned_chars 64, plus stderr and
+    exit_code. Looking at truncated alone cannot tell a short session from
+    a sliced one, and looking for dump after success reads as no file.
+    """
+    import subprocess
+
+    import headless_re_mcp.backends.windbg.client as windbg_module
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(windbg_module, "_MAX_OUTPUT", 64)
+
+    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"A" * 500, stderr=b""
+        )
+
+    monkeypatch.setattr(windbg_module, "run_bounded", huge)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    payload = WindbgClient(cdb).open_dump(dump, ["~*"])
+    assert payload["truncated"] is True
+    assert payload["output_chars"] == 500
+    assert payload["returned_chars"] == 64
+    assert payload["dump"].endswith("crash.dmp")
+    assert "exit_code" in payload
+    doc = " ".join(_tool_docstring("windbg.open_dump").split())
+    assert "output_chars" in doc
+    assert "returned_chars" in doc
+    assert "dump" in doc
+    assert "exit_code" in doc
