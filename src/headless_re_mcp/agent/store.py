@@ -101,6 +101,11 @@ _RETAINED_TERMINAL_MISSIONS_PER_THREAD = 128
 _RUN_PROFILE_MAX_CHARS = 128
 _RUN_MODEL_MAX_CHARS = 128
 
+# create_thread already clips title at 200 characters; session_id was stored
+# verbatim. A 100,000 character id made the database 163 KB. Truncating it
+# would point at a different session, so refuse.
+_THREAD_SESSION_ID_MAX_CHARS = 128
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -123,6 +128,7 @@ class AgentStore:
         self.retained_terminal_missions_per_thread = _RETAINED_TERMINAL_MISSIONS_PER_THREAD
         self.run_profile_max_chars = _RUN_PROFILE_MAX_CHARS
         self.run_model_max_chars = _RUN_MODEL_MAX_CHARS
+        self.thread_session_id_max_chars = _THREAD_SESSION_ID_MAX_CHARS
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -253,6 +259,13 @@ class AgentStore:
                 con.close()
 
     def create_thread(self, *, title: str = "New analysis", session_id: str | None = None) -> AgentThread:
+        if session_id is not None:
+            sid_limit = max(8, int(self.thread_session_id_max_chars))
+            if len(session_id) > sid_limit:
+                raise ValueError(
+                    f"thread session_id is {len(session_id)} characters, "
+                    f"over the {sid_limit} character limit"
+                )
         thread_id = uuid.uuid4().hex
         now = utc_now()
         with self.transaction() as con:

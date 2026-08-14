@@ -641,3 +641,23 @@ def test_oversized_mission_profile_and_model_are_refused_not_stored(tmp_path: Pa
     assert store.get_mission(mission.id) is not None
     with store._reading() as con:
         assert con.execute("SELECT COUNT(*) FROM missions").fetchone()[0] == 1
+
+
+def test_oversized_thread_session_ids_are_refused_not_stored(tmp_path: Path) -> None:
+    """Thread titles already clip at 200 characters; session_id did not.
+
+    Measured: a 100,000 character session_id made the database 163 KB.
+    Truncating it would point at a different session, so the write must fail
+    and leave no row.
+    """
+    store = AgentStore(tmp_path / "thread-sid.db")
+    store.thread_session_id_max_chars = 32
+
+    with pytest.raises(ValueError, match="session_id"):
+        store.create_thread(session_id="s" * 80)
+
+    with store._reading() as con:
+        assert con.execute("SELECT COUNT(*) FROM threads").fetchone()[0] == 0
+    thread = store.create_thread(session_id="abc123")
+    assert store.get_thread(thread.id) is not None
+    assert store.get_thread(thread.id).session_id == "abc123"
