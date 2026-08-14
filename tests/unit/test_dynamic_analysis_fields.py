@@ -389,3 +389,27 @@ def test_modules_dump_description_names_output_path_not_dump() -> None:
     assert "sha256" in described
     assert "artifact_kind" in described
     assert "no dump field" in described
+
+def test_imports_scan_description_names_candidates_not_iat() -> None:
+    """The catalog said IAT candidates and never named the list field.
+
+    Measured against ScanImports: the page is candidates, plus candidate_count
+    and blind_selection false. There is no iat field. Looking for iat after a
+    successful scan reads as no import table found.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ScanImports")
+    chunk = native[start : native.index("Outcome ReadImports", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "candidates"' in returned
+    assert 'JsonSet(result.get(), "blind_selection"' in returned
+    assert '"iat"' not in returned
+    described = _tool_docstring("imports.scan")
+    assert "Answers with candidates" in described
+    assert "blind_selection" in described
+    assert "no iat field" in described

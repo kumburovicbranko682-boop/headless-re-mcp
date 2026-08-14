@@ -222,7 +222,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         mode: str = "all",
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """Scan IAT candidates (consecutive/sparse/call_site/all); never blind-selects."""
+        """Scan IAT candidates (consecutive/sparse/call_site/all); never blind-selects.
+
+        Answers with candidates, candidate_count, mode and blind_selection
+        (always false). There is no iat field.
+        """
         return _dump(
             analysis.imports_scan(
                 session_id,
