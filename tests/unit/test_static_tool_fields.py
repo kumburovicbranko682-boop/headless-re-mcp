@@ -243,3 +243,31 @@ def test_static_exports_description_names_items_not_exports() -> None:
     assert '"ordinal": int(ordinal)' in chunk
     assert '"exports"' not in chunk
 
+
+def test_static_entrypoints_description_names_items_not_entrypoints() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items with ea, name, kind and ordinal, and no
+    entrypoints field. tests/unit/test_service.py's fake worker uses the
+    same items page. A caller looking for entrypoints after a successful
+    list reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_entrypoints").split())
+    assert "Answers with items" in described
+    assert "no entrypoints field" in described
+    assert "kind" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _entrypoints")
+    chunk = worker[start : worker.index("def _disassemble", start)]
+    assert "return _page_items(unique, offset, limit)" in chunk
+    assert '"kind": "start_ip"' in chunk
+    assert '"kind": "entry"' in chunk
+    assert '"entrypoints"' not in chunk
+
