@@ -103,7 +103,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
     ) -> dict[str, Any]:
-        """Optional Scylla IAT/dump helper into a session artifact; never overwrite input."""
+        """Optional Scylla IAT/dump helper into a session artifact; never overwrite input.
+
+        Answers with scylla, output_path, input_unchanged, and
+        claims_universal_unpack false.
+        """
         return _dump(analysis.unpack_scylla_rebuild(session_id, timeout=timeout))
 
     @tools.tool(name="unpack.auto")

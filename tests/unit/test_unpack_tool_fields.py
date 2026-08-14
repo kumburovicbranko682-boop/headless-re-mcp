@@ -113,3 +113,24 @@ def test_unpack_xvlkc_unpack_names_output_path() -> None:
     assert '"xvlkc": result.to_dict()' in source
     assert '"output_path": str(result.output_path)' in source
 
+def test_unpack_scylla_rebuild_names_output_path() -> None:
+    """The live catalog omitted output_path and the unpack-claim flag.
+
+    tests/unit/test_m7_external_adapters.py already reads result.data['output_path'],
+    data['input_unchanged'] and data['claims_universal_unpack'] on the Scylla
+    path. A caller that treats a successful IAT rebuild as a universal unpack
+    never sees the false flag.
+    """
+    described = " ".join(_tool_docstring("unpack.scylla.rebuild").split())
+    assert "Answers with scylla" in described
+    assert "output_path" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    assert '"scylla": result.to_dict()' in source
+
