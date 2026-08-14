@@ -7,6 +7,9 @@ import subprocess
 import sys
 from typing import Any
 
+# PySide6 is the optional `native` extra; mypy skips it so Qt types are Any
+# on the quality job. unused-ignore keeps the subclass lines valid if a
+# local run actually has the stubs.
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
@@ -115,7 +118,7 @@ QCheckBox::indicator:checked {
 """
 
 
-class PathRow(QWidget):
+class PathRow(QWidget):  # type: ignore[misc, unused-ignore]
     def __init__(self, label: str, *, directory: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.directory = directory
@@ -141,13 +144,13 @@ class PathRow(QWidget):
             self.edit.setText(path)
 
     def text(self) -> str:
-        return self.edit.text().strip()
+        return str(self.edit.text()).strip()
 
     def set_text(self, value: str) -> None:
         self.edit.setText(value)
 
 
-class NativeLauncherWindow(QMainWindow):
+class NativeLauncherWindow(QMainWindow):  # type: ignore[misc, unused-ignore]
     def __init__(self) -> None:
         super().__init__()
         from headless_re_mcp.native_app.bootstrap import discover_defaults, ensure_repo_on_path

@@ -268,6 +268,19 @@ until 1.0 the tool surface may still change between minor versions.
   拒绝并写进 run 事件，而不是再开一条。计数跟着线程走、不跟着调用方走：后端一旦真正回来，
   计数就降，新调用可以继续。
 
+### 修复（质量门禁）
+
+- **合并 Android/Web 之后 `main` 的 mypy strict 门禁是红的。** 质量 job 安装
+  `.[test,dev,web]`，不含 `native` extra 的 PySide6，也不含 Windows OCR 用的
+  `winsdk`。两者未登记进与 `frida`/`playwright` 同一份 `ignore_missing_imports`
+  列表，于是 12 个 `import-not-found` / `misc` / `unused-ignore` 在单元测试之前
+  就把 3.11 和 3.12 都挡住了。现在按可选依赖处理，stub 缺席时的 `type: ignore`
+  带上 `unused-ignore`，有 stub 的本机运行也不会因此变红。
+- **五个 Frida 工具到达模型时只剩自己的名字。** `frida.attach` / `modules` /
+  `exports` / `memory.read` / `hook.template` 没有 docstring，MCP 描述回退成
+  工具名；其中 `hook.template` 尤其误导——它是探针式注入，detach 后不常驻。
+  现在补上描述，并撤掉 hygiene 测试里那份「另一个改动还没提交」的例外清单。
+
 ## [0.2.1] - 2026-08-12
 
 0.2.0 的安装包无法使用，这个版本修掉它，并带上一轮代码审计发现的自愈缺陷。

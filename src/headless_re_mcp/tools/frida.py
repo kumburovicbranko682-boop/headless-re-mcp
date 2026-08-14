@@ -21,12 +21,14 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.attach")
     def frida_attach(session_id: str) -> dict[str, Any]:
+        """Probe-attach Frida to the session debuggee pid, then detach immediately."""
         return _dump(analysis.frida_attach(session_id))
 
     @tools.tool(name="frida.modules")
     def frida_modules(
         session_id: str, limit: Annotated[int, Field(ge=1, le=256)] = 64
     ) -> dict[str, Any]:
+        """List modules in the session debuggee via a short-lived Frida attach."""
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
     @tools.tool(name="frida.exports")
@@ -35,16 +37,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
+        """List exports of one named module via a short-lived Frida attach."""
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
+        """Read a bounded byte range from the debuggee via a short-lived Frida attach."""
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
     @tools.tool(name="frida.hook.template")
     def frida_hook_template(session_id: str, template: str = "noop") -> dict[str, Any]:
+        """Load one allowlisted Frida template as a probe; nothing stays hooked.
+
+        Caller-supplied scripts are refused. The session detaches before return,
+        so the template does not remain resident in the target.
+        """
         return _dump(analysis.frida_hook_template(session_id, template=template))
 
     @tools.tool(name="frida.devices")

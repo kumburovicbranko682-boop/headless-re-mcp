@@ -179,6 +179,14 @@ module = [
   "mitmproxy.*",
   "playwright",
   "playwright.*",
+  # Optional extras / Windows SDKs the quality job does not install.
+  # CI uses .[test,dev,web]; PySide6 is the `native` extra and winsdk is
+  # probed at runtime for ui.ocr. Without these entries a merge that only
+  # touches first-party code still fails mypy on hosted runners.
+  "PySide6",
+  "PySide6.*",
+  "winsdk",
+  "winsdk.*",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
