@@ -257,7 +257,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_invoke(
         session_id: str,
         hwnd: int,
-        action: str = "click",
+        action: Annotated[
+            str,
+            Field(pattern="^(click|bm_click|set_text|wm_settext|command|wm_command|close|wm_close)$"),
+        ] = "click",
         text: Annotated[str, Field(max_length=4096)] | None = None,
         control_id: int | None = None,
         allow_child_pids: list[int] | None = None,
