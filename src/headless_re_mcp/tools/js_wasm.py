@@ -38,8 +38,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return a readable, unminified form of a JavaScript file via webcrack.
 
-        Same payload as js.deobfuscate: Answers with code, plus truncated when
-        the text was cut at the buffer.
+        Same payload as js.deobfuscate: Answers with code and bytes, plus
+        truncated when the text was cut at the buffer.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
