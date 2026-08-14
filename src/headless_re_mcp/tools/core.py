@@ -876,7 +876,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         intent_id: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disable an intent and remove its currently acknowledged binding."""
+        """Disable an intent and remove its currently acknowledged binding.
+
+        Answers with workflow and intent_id. There is no disabled field
+        and no breakpoint field.
+        """
         return _dump(
             analysis.workflow_breakpoint_disable(
                 session_id,
