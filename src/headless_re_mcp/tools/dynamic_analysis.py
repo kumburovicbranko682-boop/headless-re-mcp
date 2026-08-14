@@ -61,7 +61,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         rights: str | None = None,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Query memory protection or optionally set allowlisted page rights."""
+        """Query memory protection or optionally set allowlisted page rights.
+
+        A query (no rights) answers with protect_name and protect, same as
+        memory.protect.query. A set answers with set, rights, rights_now and
+        address. There is no ok, protection or region field.
+        """
         return _dump(
             analysis.memory_protection(session_id, address, rights=rights, timeout=timeout)
         )
@@ -298,7 +303,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Remove a hardware breakpoint."""
+        """Remove a hardware breakpoint.
+
+        Answers with address and removed. There is no set field -- unlike
+        dynamic.breakpoint.remove, which echoes set false. Looking for set
+        after success treats a live DeleteHardwareBreakpoint as still armed.
+        """
         return _dump(analysis.breakpoints_hardware_remove(session_id, address, timeout=timeout))
 
     @tools.tool(name="breakpoints.hardware.list")
