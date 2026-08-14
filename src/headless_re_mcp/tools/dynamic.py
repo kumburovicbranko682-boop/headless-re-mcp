@@ -27,7 +27,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.state")
     def dynamic_state(session_id: str) -> dict[str, Any]:
-        """Return idle/running/paused state plus debuggee_pid vs debugger_pid."""
+        """Return idle/running/paused state plus debuggee_pid vs debugger_pid.
+
+        Answers with state, running, debugging, process_id, thread_id,
+        debuggee_pid, debugger_pid and pid_note. process_id is 0 when idle;
+        debuggee_pid is the target and is null until something is launched.
+        """
         return _dump(analysis.dynamic_state(session_id))
 
     @tools.tool(name="dynamic.events")

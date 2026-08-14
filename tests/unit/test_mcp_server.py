@@ -743,3 +743,25 @@ async def test_capabilities_describe_description_names_the_nested_object() -> No
         assert "not_found" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_state_description_names_both_pid_fields() -> None:
+    """The catalog named debuggee_pid and not process_id, which is 0 when idle.
+
+    Measured keys are state, running, debugging, process_id, thread_id,
+    debuggee_pid, debugger_pid and pid_note. A caller that treats process_id
+    as the target attaches to pid 0.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.state")
+        text = tool.description or ""
+        assert "process_id" in text
+        assert "debuggee_pid" in text
+        assert "pid_note" in text
+    finally:
+        analysis.close_all()
