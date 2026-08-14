@@ -207,7 +207,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
         backend: str = "win32",
     ) -> dict[str, Any]:
-        """Set window text via WM_SETTEXT or UIA ValuePattern (PID-bounded)."""
+        """Set window text via WM_SETTEXT or UIA ValuePattern (PID-bounded).
+
+        Answers with hwnd, action, text and backend, plus debuggee_pid and
+        debugger_pid. There is no set field.
+        """
         return _dump(
             analysis.ui_text_set(
                 session_id,
