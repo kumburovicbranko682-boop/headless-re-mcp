@@ -333,7 +333,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_base: int,
         search_start: int | None = None,
         search_size: int | None = None,
-        max_candidates: int = 8,
+        max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
         mode: str = "all",
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
