@@ -280,6 +280,10 @@ until 1.0 the tool surface may still change between minor versions.
   `exports` / `memory.read` / `hook.template` 没有 docstring，MCP 描述回退成
   工具名；其中 `hook.template` 尤其误导——它是探针式注入，detach 后不常驻。
   现在补上描述，并撤掉 hygiene 测试里那份「另一个改动还没提交」的例外清单。
+- **缺 native fixture 时整个单元套件无法收集。** `test_pe_hostile_input.py` 在
+  `parametrize` 里于收集期读 `console_fixture.exe`，而 `pytestmark skipif`
+  要更晚才生效。托管质量 job 没有 native 构建步骤，mypy 一过就会在收集期
+  `FileNotFoundError` 中断。现在缺文件时给出占位参数，再由 skipif 跳过。
 
 ## [0.2.1] - 2026-08-12
 

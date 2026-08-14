@@ -35,6 +35,15 @@ pytestmark = pytest.mark.skipif(not FIXTURE.is_file(), reason="fixture binary is
 
 
 def _cases() -> list[tuple[str, bytes]]:
+    """Mutations of the built fixture, or a dummy row if it is not there.
+
+    Parametrize evaluates this during collection, before pytestmark skipif
+    can skip the module. Reading the file here would turn a missing fixture
+    into a collection error, and the hosted quality job has no native build
+    step. The dummy keeps collection alive; skipif then skips it.
+    """
+    if not FIXTURE.is_file():
+        return [("fixture-not-built", b"")]
     raw = FIXTURE.read_bytes()
     e_lfanew, coff = _offsets()
     optional_size = struct.unpack_from("<H", raw, coff + 16)[0]
@@ -59,7 +68,10 @@ def _cases() -> list[tuple[str, bytes]]:
     ]
 
 
-@pytest.mark.parametrize(("label", "blob"), _cases(), ids=[case[0] for case in _cases()])
+_CASES = _cases()
+
+
+@pytest.mark.parametrize(("label", "blob"), _CASES, ids=[case[0] for case in _CASES])
 def test_a_crafted_image_is_refused_quickly_and_by_name(
     label: str,
     blob: bytes,
