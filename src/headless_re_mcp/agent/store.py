@@ -90,6 +90,11 @@ _TOOL_CALL_ID_MAX_CHARS = 128
 # hold 5000 events). The prefix nobody looks up by id only grows the file.
 _RETAINED_TERMINAL_RUNS_PER_THREAD = 128
 
+# The same live thread can finish many missions without ever becoming
+# eligible for finished-thread trim. 400 completed missions on one
+# still-pending objective were 192 KB and still climbing.
+_RETAINED_TERMINAL_MISSIONS_PER_THREAD = 128
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -109,6 +114,7 @@ class AgentStore:
         self.tool_name_max_chars = _TOOL_NAME_MAX_CHARS
         self.tool_call_id_max_chars = _TOOL_CALL_ID_MAX_CHARS
         self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
+        self.retained_terminal_missions_per_thread = _RETAINED_TERMINAL_MISSIONS_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -555,6 +561,7 @@ class AgentStore:
                     provider_profile, model, bounded, 0, None, None, now, now,
                 ),
             )
+            self._trim_terminal_missions(con, thread_id)
         mission = self.get_mission(mission_id)
         assert mission is not None
         return mission
@@ -612,7 +619,7 @@ class AgentStore:
         error: str | None = None,
     ) -> AgentMission:
         with self.transaction() as con:
-            row = con.execute("SELECT status FROM missions WHERE id=?", (mission_id,)).fetchone()
+            row = con.execute("SELECT status, thread_id FROM missions WHERE id=?", (mission_id,)).fetchone()
             if row is None:
                 raise KeyError(mission_id)
             current = MissionStatus(row["status"])
@@ -623,6 +630,7 @@ class AgentStore:
                 (status.value, error[:1000] if error else None, utc_now(), mission_id),
             )
             if status in TERMINAL_MISSION_STATUSES:
+                self._trim_terminal_missions(con, str(row["thread_id"]))
                 self._maybe_trim_finished_threads(con)
         mission = self.get_mission(mission_id)
         assert mission is not None
@@ -661,6 +669,25 @@ class AgentStore:
             " )"
             ")",
             (*mission_done, *run_done, keep),
+        )
+
+    def _trim_terminal_missions(self, con: sqlite3.Connection, thread_id: str) -> None:
+        """Drop the oldest finished missions on a live thread; queued work stays.
+
+        Finished-thread collection never sees a thread that still has a
+        pending or running mission, so every completed mission on that
+        thread used to stay forever.
+        """
+        keep = max(1, int(self.retained_terminal_missions_per_thread))
+        done = tuple(status.value for status in TERMINAL_MISSION_STATUSES)
+        placeholders = ",".join("?" * len(done))
+        con.execute(
+            "DELETE FROM missions WHERE id IN ("
+            "  SELECT id FROM missions WHERE thread_id=? AND status IN ("
+            f"    {placeholders}"
+            "  ) ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+            ")",
+            (thread_id, *done, keep),
         )
 
     def cancel_mission(self, mission_id: str) -> AgentMission:

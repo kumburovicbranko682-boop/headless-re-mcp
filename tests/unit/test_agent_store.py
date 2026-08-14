@@ -552,3 +552,46 @@ def test_a_live_thread_does_not_keep_every_run_it_ever_finished(tmp_path: Path) 
     assert store.get_run(finished[0]) is None
     assert store.get_run(inflight.id) is not None
     assert live_events == 6
+
+
+def test_a_live_thread_does_not_keep_every_mission_it_ever_finished(tmp_path: Path) -> None:
+    """Finished-thread trim never collects a thread that still has a mission.
+
+    Measured: 400 completed missions on one still-pending objective were
+    192 KB and still climbing. A caller looking up a mission id from last
+    week is not why the file grows.
+    """
+    store = AgentStore(tmp_path / "missions.db")
+    store.retained_terminal_missions_per_thread = 5
+    other = store.create_thread(title="other")
+    keep = store.create_mission(other.id, "leave me")
+    store.set_mission_status(keep.id, MissionStatus.COMPLETED)
+
+    thread = store.create_thread(title="live")
+    pending = store.create_mission(thread.id, "still going")
+    finished: list[str] = []
+    for index in range(12):
+        mission = store.create_mission(thread.id, f"done-{index}")
+        store.set_mission_status(mission.id, MissionStatus.COMPLETED)
+        finished.append(mission.id)
+
+    with store._reading() as con:
+        live_ids = [
+            str(row["id"])
+            for row in con.execute(
+                "SELECT id FROM missions WHERE thread_id=? ORDER BY created_at, id",
+                (thread.id,),
+            )
+        ]
+        other_ids = [
+            str(row["id"])
+            for row in con.execute(
+                "SELECT id FROM missions WHERE thread_id=?",
+                (other.id,),
+            )
+        ]
+
+    assert live_ids == [pending.id] + finished[-5:]
+    assert other_ids == [keep.id]
+    assert store.get_mission(finished[0]) is None
+    assert store.get_mission(pending.id) is not None
