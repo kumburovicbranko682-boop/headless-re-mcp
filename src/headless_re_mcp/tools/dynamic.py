@@ -123,7 +123,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         wait_for_pause: bool = False,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Resume the debuggee, optionally waiting for its next pause or exit."""
+        """Resume the debuggee, optionally waiting for its next pause or exit.
+
+        Answers with state, running, debugging, process_id and thread_id.
+        There is no submitted field (unlike wait/launch/stop).
+        """
         return _dump(
             analysis.dynamic_resume(
                 session_id,

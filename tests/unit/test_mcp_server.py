@@ -827,3 +827,25 @@ async def test_dynamic_launch_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_resume_description_names_live_fields() -> None:
+    """Resume does not return submitted the way wait/launch/stop do.
+
+    Measured keys are state, running, debugging, process_id and thread_id.
+    A caller looking for submitted after resume reads a running debuggee as
+    if the call did nothing.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.resume")
+        text = tool.description or ""
+        for name in ("state", "running", "debugging", "process_id", "thread_id"):
+            assert name in text, name
+        assert "no submitted field" in text
+    finally:
+        analysis.close_all()
