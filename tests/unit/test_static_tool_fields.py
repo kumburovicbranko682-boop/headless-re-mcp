@@ -1098,3 +1098,31 @@ def test_workflow_module_track_description_names_module_key() -> None:
     assert '"module"' not in returned
     assert '"tracked"' not in returned
 
+
+def test_workflow_module_untrack_description_names_module_key() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns workflow and module_key, and no untracked or
+    module field. A caller looking for untracked after a successful call
+    cannot tell which key was dropped.
+    """
+    described = " ".join(_docstring("workflow_module_untrack").split())
+    assert "Answers with workflow" in described
+    assert "module_key" in described
+    assert "no untracked field" in described
+    assert "no module field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_module_untrack")
+    chunk = service[start : service.index("def workflow_module_refresh", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    assert '"module_key": key.strip()' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"untracked"' not in returned
+    assert '"module"' not in returned
+

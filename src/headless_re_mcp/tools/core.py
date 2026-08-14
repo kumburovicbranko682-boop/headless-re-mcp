@@ -814,7 +814,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         key: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Stop tracking a module after removing managed native breakpoint bindings."""
+        """Stop tracking a module after removing managed native breakpoint bindings.
+
+        Answers with workflow and module_key. There is no untracked field
+        and no module field.
+        """
         return _dump(
             analysis.workflow_module_untrack(
                 session_id,
