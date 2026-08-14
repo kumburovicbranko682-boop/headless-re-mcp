@@ -182,7 +182,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         key_alias: str = "",
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
     ) -> dict[str, Any]:
-        """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore)."""
+        """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore).
+
+        Answers with apk, size, signed, keystore, and debug_keystore. There
+        is no output, path or signed_apk field.
+        """
         return _dump(
             analysis.apk_sign(
                 session_id,
