@@ -483,3 +483,24 @@ async def test_knowledge_query_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_meta_metrics_description_names_live_fields() -> None:
+    """The catalog did not name the objects the percentiles actually live in.
+
+    Measured keys are tools, recent, sampled_calls, distinct_tools, failures,
+    calls_total, failures_total and capacity. A caller looking for a top-level
+    p95_ms reads an empty metrics reply that in fact held the series in tools.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "meta.metrics")
+        text = tool.description or ""
+        for name in ("tools", "recent", "sampled_calls", "p95_ms", "capacity"):
+            assert name in text, name
+    finally:
+        analysis.close_all()

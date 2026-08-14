@@ -271,8 +271,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Per-tool call counts, failures and latency percentiles for this process.
 
-        Sampled from a bounded ring of recent calls; the same records are emitted
-        as structured JSON log lines under the headless_re_mcp.telemetry logger.
+        Answers with tools (each: tool, calls, failures, calls_total,
+        failures_total, p50_ms, p95_ms, max_ms), plus recent, sampled_calls,
+        distinct_tools, failures, calls_total, failures_total and capacity.
+        Sampled from a bounded ring of recent calls; the same records are
+        emitted as structured JSON log lines under the headless_re_mcp.telemetry
+        logger.
         """
         return _dump(analysis.tool_metrics(limit=limit))
     return tools.bindings
