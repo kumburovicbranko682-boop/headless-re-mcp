@@ -279,3 +279,42 @@ def test_r2_timeout_kills_the_process_the_launcher_started(
     assert len(killed) >= 2, f"launcher and child, got {killed}"
     for pid in killed:
         assert _pid_alive(int(pid)) is False
+
+
+def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
+    """The catalog said functions with address/size/name; the list is items.
+
+    Measured a typical aflj payload: no functions field, two rows under items,
+    each with offset/name/size and address as {va,rva,module}. Looking for
+    functions after a successful call reads as radare2 finding none.
+    """
+    import ast
+
+    from headless_re_mcp.tools.r2 import build_r2_tools
+
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"offset": 0x140001000, "name": "entry0", "size": 32},
+            {"offset": 0x140002000, "name": "f1", "size": 8},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["aa", "aflj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    assert "functions" not in payload
+    assert payload["count"] == 2
+    assert payload["items"][0]["name"] == "entry0"
+    assert payload["items"][0]["address"]["rva"] == 0x1000
+
+    source = Path(build_r2_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    described = ""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "r2_functions":
+            continue
+        described = ast.get_docstring(node) or ""
+    assert "Answers with items" in described
+    assert "no functions field" in described
