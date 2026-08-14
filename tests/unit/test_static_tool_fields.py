@@ -381,3 +381,30 @@ def test_static_callees_description_names_items_not_callees() -> None:
     assert "call-type xrefs from function body" in chunk
     assert '"callees"' not in chunk
 
+
+def test_static_basic_blocks_description_names_items_not_blocks() -> None:
+    """The live catalog omitted the list field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    blocks.data['items']. The worker pages items with id, start, end, size,
+    type, succ_ids and pred_ids, and no blocks field. A caller looking for
+    blocks after a successful list reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_basic_blocks").split())
+    assert "Answers with items" in described
+    assert "no blocks field" in described
+    assert "succ_ids" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _basic_blocks")
+    chunk = worker[start : worker.index("def _cfg", start)]
+    assert '"succ_ids"' in chunk
+    assert '"pred_ids"' in chunk
+    assert '"blocks"' not in chunk
+
