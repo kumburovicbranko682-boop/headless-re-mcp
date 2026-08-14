@@ -49,7 +49,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.close")
     def web_close(session_id: str) -> dict[str, Any]:
-        """Close the session's browser and free its resources."""
+        """Close the session's browser and free its resources.
+
+        Answers with closed. When a browser thread existed, also clean.
+        When nothing was open or open was aborted, note. There is no ok,
+        success or freed field.
+        """
         return _dump(analysis.web_close(session_id))
 
     @tools.tool(name="web.network.list")
