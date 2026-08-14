@@ -1319,3 +1319,33 @@ def test_workflow_navigate_to_breakpoint_description_names_nested_workflow() -> 
     assert "workflow_navigate_to_breakpoint" in tests
     assert 'navigated.data["workflow"]' in tests
 
+
+def test_dotnet_inspect_description_names_is_dotnet() -> None:
+    """The live catalog omitted the payload fields.
+
+    tests/unit/test_dotnet_inspect.py already reads report.is_dotnet and
+    report.verified_clr. The service returns that report as a flat object
+    with claims_universal_unpack false, and no report field. A caller
+    looking for report after a successful call reads a CLR binary as
+    empty.
+    """
+    described = " ".join(_docstring("dotnet_inspect").split())
+    assert "Answers with is_dotnet" in described
+    assert "verified_clr" in described
+    assert "claims_universal_unpack false" in described
+    assert "no report field" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "dotnet"
+        / "clr_inspect.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("class DotnetInspectReport")
+    chunk = source[start : source.index("def inspect_dotnet", start)]
+    returned = chunk.split("def to_dict")[-1]
+    assert '"is_dotnet": self.is_dotnet' in returned
+    assert '"verified_clr": self.verified_clr' in returned
+    assert '"claims_universal_unpack": False' in returned
+    assert '"report"' not in returned
+

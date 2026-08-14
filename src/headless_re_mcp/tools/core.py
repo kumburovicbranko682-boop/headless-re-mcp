@@ -985,7 +985,14 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         require_verified: bool = False,
     ) -> dict[str, Any]:
-        """Inspect CLR headers/metadata; refuse unverified inputs when required."""
+        """Inspect CLR headers/metadata; refuse unverified inputs when required.
+
+        Answers with is_dotnet, kind, verified_clr, path, sha256,
+        architecture, runtime_major, runtime_minor, metadata_version,
+        entry_point_token, flags, flags_decoded, streams, module_name,
+        assembly_name, metadata_stats, note, and claims_universal_unpack
+        false. There is no report field.
+        """
         return _dump(
             analysis.dotnet_inspect(
                 session_id,
