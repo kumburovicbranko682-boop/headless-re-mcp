@@ -74,3 +74,29 @@ def test_windbg_live_modules_names_pid_not_process_id(monkeypatch: Any) -> None:
     assert "Answers with modules" in doc
     assert "pid" in doc
     assert "There is no process_id" in doc
+
+def test_windbg_live_disasm_names_pid_not_process_id(monkeypatch: Any) -> None:
+    """The catalog named disasm and never named the pid field.
+
+    Measured: live_disasm(4242, 0x401000) -> pid 4242, address 0x401000,
+    length 16, disasm holding the cdb text, no process_id or output key.
+    Looking for process_id after a successful disassembly reads as a
+    debuggee that returned no process.
+    """
+    client = WindbgClient(cdb=Path("cdb.exe"))
+    monkeypatch.setattr(
+        client,
+        "_run_process",
+        lambda *args, **kwargs: {"output": "00007ff612340000 90 nop"},
+    )
+    payload = client.live_disasm(4242, 0x401000, allowed_pid=4242, length=16)
+    assert "process_id" not in payload
+    assert "output" not in payload
+    assert payload["pid"] == 4242
+    assert payload["address"] == "0x401000"
+    assert payload["length"] == 16
+    assert "nop" in payload["disasm"]
+    doc = " ".join(_tool_docstring("windbg.live_disasm").split())
+    assert "Answers with disasm" in doc
+    assert "pid" in doc
+    assert "There is no process_id" in doc
