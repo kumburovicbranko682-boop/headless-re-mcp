@@ -43,8 +43,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Thread list of a crash dump, as cdb prints it.
 
-        Answers with threads holding that text, plus dump, and truncated when
-        the session was cut at the buffer.
+        Answers with threads holding that text, plus dump, and truncated,
+        output_chars and returned_chars when the session was cut at the buffer.
         """
         return _dump(analysis.windbg_threads(dump_path, timeout=timeout))
 
