@@ -908,7 +908,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         )
 
     def workflow_breakpoint_list(session_id: str) -> dict[str, Any]:
-        """List managed breakpoint intents and their acknowledged native bindings."""
+        """List managed breakpoint intents and their acknowledged native bindings.
+
+        Answers with workflow_id, status and breakpoints. There is no
+        workflow field and no items field.
+        """
         return _dump(analysis.workflow_breakpoint_list(session_id))
 
     def workflow_navigate_to_event(

@@ -1236,3 +1236,31 @@ def test_workflow_breakpoint_remove_description_names_intent_id() -> None:
     assert '"removed"' not in returned
     assert '"breakpoint"' not in returned
 
+
+def test_workflow_breakpoint_list_description_names_breakpoints() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns workflow_id, status and breakpoints, not a nested
+    workflow object and not items. A caller looking for workflow or items
+    after a successful list reads the intents as missing.
+    """
+    described = " ".join(_docstring("workflow_breakpoint_list").split())
+    assert "Answers with workflow_id" in described
+    assert "breakpoints" in described
+    assert "no workflow field" in described
+    assert "no items field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_breakpoint_list")
+    chunk = service[start : service.index("def workflow_navigate_to_event", start)]
+    assert '"workflow_id": workflow.id' in chunk
+    assert '"breakpoints": state["breakpoints"]' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"workflow"' not in returned
+    assert '"items"' not in returned
+
