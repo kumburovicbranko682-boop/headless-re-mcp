@@ -27,7 +27,14 @@ def build_trace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         max_file_bytes: Annotated[int, Field(ge=1, le=268_435_456)] = 16_777_216,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Start run-trace recording to an absolute path with quotas."""
+        """Start run-trace recording with event/byte/time quotas.
+
+        The path argument is stored as requested_path only; the file is
+        written under the session artifact tree. Answers with artifact_path
+        (same as path), requested_path, recording, and session_owned.
+        Reading requested_path as the file looks at a path the tracer never
+        wrote.
+        """
         return _dump(
             analysis.trace_start(
                 session_id,
@@ -44,7 +51,11 @@ def build_trace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Stop run-trace recording."""
+        """Stop run-trace recording.
+
+        Same payload as trace.start: Answers with artifact_path, requested_path,
+        recording, and session_owned. The caller path is not the file.
+        """
         return _dump(analysis.trace_stop(session_id, timeout=timeout))
 
     @tools.tool(name="trace.status")
@@ -52,6 +63,10 @@ def build_trace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Report run-trace recording status and quotas."""
+        """Report run-trace recording status and quotas.
+
+        Same payload as trace.start: Answers with artifact_path, requested_path,
+        recording, and session_owned. The caller path is not the file.
+        """
         return _dump(analysis.trace_status(session_id, timeout=timeout))
     return tools.bindings
