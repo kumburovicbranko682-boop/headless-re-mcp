@@ -194,7 +194,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         save_artifact: bool = True,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Read paused-only runtime PE headers and optionally keep a header artifact."""
+        """Read paused-only runtime PE headers and optionally keep a header artifact.
+
+        Answers with sections and directories, plus architecture, entry_point_rva,
+        image_base, image_size and optional header_artifact. There is no headers field.
+        """
         return _dump(
             analysis.pe_headers_runtime(
                 session_id,

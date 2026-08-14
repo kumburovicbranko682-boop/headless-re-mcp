@@ -333,3 +333,34 @@ def test_symbols_resolve_description_names_value_not_address() -> None:
     assert "Answers with value" in described
     assert "resolved" in described
     assert "no address field" in described
+
+def _read_pe_headers_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ReadPeHeadersRuntime")
+    return native[start : native.index("struct ModuleRecord", start)]
+
+
+def test_pe_headers_runtime_description_names_sections_not_headers() -> None:
+    """The catalog said PE headers and never named the payload fields.
+
+    Measured against ReadPeHeadersRuntime: sections and directories are
+    top-level, plus architecture, entry_point_rva and optional header_artifact.
+    There is no headers or pe field. Looking for headers after a successful
+    read reads as an empty image.
+    """
+    chunk = _read_pe_headers_cpp()
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "sections"' in returned
+    assert 'JsonSet(result.get(), "directories"' in returned
+    assert 'JsonSet(result.get(), "architecture"' in returned
+    assert '"headers"' not in returned
+    assert '"pe"' not in returned
+    described = _tool_docstring("pe.headers.runtime")
+    assert "Answers with sections" in described
+    assert "directories" in described
+    assert "no headers field" in described
