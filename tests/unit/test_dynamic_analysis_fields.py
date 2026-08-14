@@ -189,3 +189,35 @@ def test_memory_regions_schema_matches_native_region_cap() -> None:
     integer_limit = next(item for item in props["limit"]["anyOf"] if item.get("type") == "integer")
     assert integer_limit["minimum"] == 1
     assert integer_limit["maximum"] == cap
+
+def _max_import_candidates() -> int:
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    marker = "constexpr std::uint64_t MaxImportCandidates = "
+    start = header.index(marker) + len(marker)
+    return int(header[start : header.index(";", start)])
+
+
+def test_imports_scan_schema_matches_native_candidate_cap() -> None:
+    """The catalog accepted an unbounded max_candidates.
+
+    Measured: input schema max_candidates has no maximum. Native ScanImports
+    caps it at MaxImportCandidates (32) and rejects a larger ask. A caller
+    that asks for thousands still occupies a worker until the adapter refuses.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    cap = _max_import_candidates()
+    assert cap == 32
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "imports.scan"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["max_candidates"]["minimum"] == 1
+    assert props["max_candidates"]["maximum"] == cap
