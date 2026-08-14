@@ -129,7 +129,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="artifacts.read")
     def artifacts_read(
-        artifact_id: str, offset: int = 0, limit: Annotated[int, Field(ge=1, le=262144)] = 4096
+        artifact_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=262144)] = 4096,
     ) -> dict[str, Any]:
         """Read a byte range of one artifact, including text spilled out of a reply.
 
