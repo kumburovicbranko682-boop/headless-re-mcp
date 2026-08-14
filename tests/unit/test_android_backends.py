@@ -349,3 +349,30 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+    def test_decode_does_not_call_a_nonzero_exit_a_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken decode that still wrote a manifest was returned as success.
+
+        Measured: apktool exit 1 plus AndroidManifest.xml on disk produced a
+        normal decoded_dir payload with no exit_code. The agent then edits
+        smali in a tree apktool already said was wrong. Build already refuses
+        a nonzero exit; decode did not.
+        """
+        fake_tool = tmp_path / "apktool.bat"
+        fake_tool.write_text("@echo off\n", encoding="utf-8")
+        apk = _apk(tmp_path / "a.apk")
+        out = tmp_path / "decoded"
+        out.mkdir()
+        (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+
+        def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
+            return "", "Could not decode resources", 1
+
+        monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+        client = ApktoolClient(fake_tool, None)
+        with pytest.raises(ApktoolError) as info:
+            client.decode(apk, out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1

@@ -85,7 +85,7 @@ class ApktoolClient:
             args.append("-r")
         _, stderr, code = _run(args, timeout=timeout)
         manifest = out_dir / "AndroidManifest.xml"
-        if code != 0 and not manifest.is_file():
+        if code != 0 or not manifest.is_file():
             raise ApktoolError(
                 "backend_error",
                 "apktool decode failed",
