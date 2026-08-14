@@ -59,5 +59,39 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")
     assert "output_dir" in _tool_docstring("js.unpack_bundle")
+    assert "has_more" in _tool_docstring("js.unpack_bundle")
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+
+
+def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
+    """The catalog named output_dir, file_count and files, and stopped there.
+
+    Measured against the live client: 2003 files on disk, files capped at
+    2000, has_more True. An overnight pass that treated files as the whole
+    bundle missed the rest and had no field to notice.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    for index in range(5):
+        (out / f"m{index}.js").write_text("1", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"", b"")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        patch("headless_re_mcp.backends.jsre.client._MAX_LISTED_FILES", 3),
+    ):
+        payload = mod.JsClient(tool).unpack_bundle(src, out)
+
+    assert payload["file_count"] == 5
+    assert len(payload["files"]) == 3
+    assert payload["has_more"] is True
+    assert "has_more" in _tool_docstring("js.unpack_bundle")

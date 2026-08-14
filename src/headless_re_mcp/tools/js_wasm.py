@@ -48,7 +48,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Unpack a webpack/browserify bundle into module files via webcrack.
 
-        Answers with output_dir, file_count and files.
+        Answers with output_dir, file_count and files, plus has_more when
+        the listed files were cut at the buffer.
         """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
