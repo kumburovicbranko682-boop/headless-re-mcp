@@ -265,3 +265,33 @@ def test_dynamic_breakpoint_remove_schema_matches_native_address_floor() -> None
     )
     props = input_schema_for(handler)["properties"]
     assert props["address"]["minimum"] == 0
+
+
+def test_dynamic_attach_schema_matches_native_pid_bounds() -> None:
+    """The catalog accepted pid 0 and pids past the Windows range.
+
+    Measured: input schema pid has no minimum and no maximum. Native Attach
+    reads pid with a DWORD max cap and refuses zero. A pid of 0 or 2**40 still
+    occupies a worker until the adapter refuses, and the catalog never said the
+    attach would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome Attach(")
+    chunk = native[start : native.index("\nOutcome ", start)]
+    assert 'ReadUnsigned(params, "pid", pid, error, std::numeric_limits<DWORD>::max())' in chunk
+    assert 'InvalidField("pid", "pid must be positive")' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_tools(object())  # type: ignore[arg-type]
+        if binding.name == "dynamic.attach"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["pid"]["minimum"] == 1
+    assert props["pid"]["maximum"] == 0xFFFFFFFF

@@ -93,7 +93,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.attach")
     def dynamic_attach(
         session_id: str,
-        pid: int,
+        pid: Annotated[int, Field(ge=1, le=0xFFFFFFFF)],
         timeout: RunControlTimeout = 30.0,
         pause_after_attach: bool = False,
     ) -> dict[str, Any]:
