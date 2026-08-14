@@ -200,7 +200,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: int,
         data: str,
     ) -> dict[str, Any]:
-        """Write bounded hexadecimal bytes to an authorized paused debuggee."""
+        """Write bounded hexadecimal bytes to an authorized paused debuggee.
+
+        Answers with address and size of the range that was written. There is
+        no written, ok, data or bytes field.
+        """
         return _dump(analysis.dynamic_memory_write(session_id, address, data))
 
     @tools.tool(name="dynamic.modules")
