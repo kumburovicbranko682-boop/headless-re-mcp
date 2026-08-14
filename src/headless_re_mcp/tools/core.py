@@ -944,7 +944,12 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
         event_budget: Annotated[int, Field(ge=1, le=100_000)] = 1024,
     ) -> dict[str, Any]:
-        """Reconcile an intent, resume, and stop at its bounded breakpoint hit event."""
+        """Reconcile an intent, resume, and stop at its bounded breakpoint hit event.
+
+        Same payload as workflow.navigate_to_event: Answers with workflow.
+        The match lives under workflow.state.navigation. There is no
+        breakpoint field.
+        """
         return _dump(
             analysis.workflow_navigate_to_breakpoint(
                 session_id,
