@@ -25,35 +25,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_deobfuscate(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Deobfuscate and unminify a JavaScript file via webcrack (returns code)."""
+        """Deobfuscate and unminify a JavaScript file via webcrack.
+
+        Answers with code, plus truncated when the text was cut at the buffer.
+        """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
     @tools.tool(name="js.beautify")
     def js_beautify(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Return a readable, unminified form of a JavaScript file via webcrack."""
+        """Return a readable, unminified form of a JavaScript file via webcrack.
+
+        Same payload as js.deobfuscate: Answers with code, plus truncated when
+        the text was cut at the buffer.
+        """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
     @tools.tool(name="js.unpack_bundle")
     def js_unpack_bundle(
         path: str, timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0
     ) -> dict[str, Any]:
-        """Unpack a webpack/browserify bundle into module files via webcrack."""
+        """Unpack a webpack/browserify bundle into module files via webcrack.
+
+        Answers with output_dir, file_count and files.
+        """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat."""
+        """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
+
+        Answers with wat, plus truncated when the text was cut at the buffer.
+        """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
     @tools.tool(name="wasm.info")
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Dump sections and details of a .wasm module via wasm-objdump."""
+        """Dump sections and details of a .wasm module via wasm-objdump.
+
+        Answers with objdump holding that text, not a sections list, plus
+        truncated when the text was cut at the buffer.
+        """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
     return tools.bindings
