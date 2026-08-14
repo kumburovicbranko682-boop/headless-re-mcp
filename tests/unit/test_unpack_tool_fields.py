@@ -369,3 +369,26 @@ def test_unpack_score_oep_names_candidates_not_confirmed() -> None:
     assert '"authoritative": False' in chunk
     assert '"confirmed_oep_rva"' not in chunk
 
+def test_unpack_confirm_oep_names_confirmed_oep_rva() -> None:
+    """The live catalog omitted confirmed_oep_rva.
+
+    tests/unit/test_m5_unpack_session.py already reads
+    confirmed.data['confirmed_oep_rva']. There is no oep field. A caller
+    looking for oep after a successful confirm reads the RVA as unset.
+    """
+    described = " ".join(_tool_docstring("unpack.confirm_oep").split())
+    assert "Answers with confirmed_oep_rva" in described
+    assert "no oep field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_confirm_oep")
+    chunk = source[start : start + 8000]
+    assert '"confirmed_oep_rva": oep_rva' in chunk
+    assert '"oep":' not in chunk
+

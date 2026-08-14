@@ -261,7 +261,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         auto_dump: bool = False,
         dump_timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """Record caller-confirmed OEP; set auto_dump to also dump and enter dumped phase."""
+        """Record caller-confirmed OEP; set auto_dump to also dump and enter dumped phase.
+
+        Answers with confirmed_oep_rva, unpack, role confirmed, next, and
+        claims_universal_unpack false. There is no oep field.
+        """
         return _dump(
             analysis.unpack_confirm_oep(
                 session_id,
