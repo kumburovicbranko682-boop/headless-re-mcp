@@ -106,3 +106,52 @@ def test_ghidra_analyze_description_does_not_tell_the_model_to_run_it_first() ->
     assert "imports the binary again" in lowered
     assert "do not read what this produced" in lowered
     assert "run it first" not in lowered
+
+
+def _tool_docstring(name: str) -> str:
+    source = Path(build_ghidra_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
+
+
+def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
+    """The catalog said address/size; a 5000-function export had neither.
+
+    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
+    or size, all 256 had entry and body_size. Looking for address after a
+    successful list reads as Ghidra finding no addresses. Symbols have type,
+    not namespace. Xrefs are getReferencesTo only.
+    """
+    functions = _tool_docstring("ghidra.functions")
+    assert "entry" in functions
+    assert "body_size" in functions
+    assert "has_more" in functions
+    assert "address, size and name" not in functions
+
+    symbols = _tool_docstring("ghidra.symbols")
+    assert "type" in symbols
+    assert "has_more" in symbols
+    assert "with address and namespace" not in symbols
+
+    xrefs = _tool_docstring("ghidra.xrefs")
+    assert "from" in xrefs
+    assert "has_more" in xrefs
+    assert "to and from" not in xrefs
+    assert "Outgoing refs are not listed" in xrefs
+
+    decompile = _tool_docstring("ghidra.decompile")
+    assert "decompiled" in decompile
+    assert "truncated" in decompile
