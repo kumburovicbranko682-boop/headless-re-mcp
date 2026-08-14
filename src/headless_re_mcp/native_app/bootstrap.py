@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,26 @@ def start_web_console() -> subprocess.Popen[Any]:
         cwd=str(ensure_repo_on_path()),
         **no_window_popen_kwargs(),
     )
+
+
+def stop_owned_process(
+    proc: subprocess.Popen[Any] | None, *, wait_s: float = 5.0
+) -> None:
+    """Terminate a GUI-owned child and wait until it is actually gone.
+
+    Measured: terminate() left poll() None immediately. Dropping the handle
+    then starts a second serve on the next click, and overnight two MCP
+    processes fight over IDA.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=wait_s)
 
 
 def _ask(prompt: str, default: str | None = None) -> str:

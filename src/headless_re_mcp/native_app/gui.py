@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.native_app.bootstrap import stop_owned_process
 
 STYLE = """
 QMainWindow, QWidget {
@@ -376,7 +377,7 @@ class NativeLauncherWindow(QMainWindow):
 
     def stop_mcp(self) -> None:
         if self.mcp_proc and self.mcp_proc.poll() is None:
-            self.mcp_proc.terminate()
+            stop_owned_process(self.mcp_proc)
             self._append("已请求停止 MCP serve")
         self.mcp_proc = None
 
@@ -395,8 +396,8 @@ class NativeLauncherWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         self.stop_mcp()
-        if self.web_proc and self.web_proc.poll() is None:
-            self.web_proc.terminate()
+        stop_owned_process(self.web_proc)
+        self.web_proc = None
         super().closeEvent(event)
 
 
