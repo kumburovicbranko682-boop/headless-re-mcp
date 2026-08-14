@@ -173,7 +173,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="sessions.unclean")
     def sessions_unclean(
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """Sessions that have not been closed cleanly, newest first, one page at a time.
