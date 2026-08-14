@@ -184,7 +184,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         size: Annotated[int, Field(ge=1, le=64 * 1024 * 1024)] | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Dump one loaded module into a session artifact path (no raw bytes over MCP)."""
+        """Dump one loaded module into a session artifact path (no raw bytes over MCP).
+
+        Answers with output_path, sha256, artifact_kind, base, size and
+        bytes_written. There is no dump field.
+        """
         return _dump(analysis.modules_dump(session_id, base, size=size, timeout=timeout))
 
     @tools.tool(name="pe.headers.runtime")

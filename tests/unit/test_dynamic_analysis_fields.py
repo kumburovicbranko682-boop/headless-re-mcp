@@ -364,3 +364,28 @@ def test_pe_headers_runtime_description_names_sections_not_headers() -> None:
     assert "Answers with sections" in described
     assert "directories" in described
     assert "no headers field" in described
+
+def test_modules_dump_description_names_output_path_not_dump() -> None:
+    """The catalog said artifact path and never named the payload fields.
+
+    Measured: the service puts the file in output_path and adds sha256 and
+    artifact_kind. There is no dump or bytes field. Looking for dump after a
+    successful dump reads as the module not being written.
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_dynamic_inspect.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def modules_dump")
+    chunk = source[start : source.index("def pe_headers_runtime", start)]
+    assert 'data["output_path"]' in chunk
+    assert 'data["sha256"]' in chunk
+    assert 'data["artifact_kind"] = "module_dump"' in chunk
+    described = _tool_docstring("modules.dump")
+    assert "Answers with output_path" in described
+    assert "sha256" in described
+    assert "artifact_kind" in described
+    assert "no dump field" in described
