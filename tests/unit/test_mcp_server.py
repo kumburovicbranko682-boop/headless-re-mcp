@@ -656,3 +656,25 @@ async def test_session_health_description_names_live_fields() -> None:
         assert "null" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_audit_list_description_names_live_fields() -> None:
+    """The catalog did not name the entries array a successful list returns.
+
+    Measured keys are entries, count, total, offset, limit and has_more.
+    There is no events field. A caller looking for events after a successful
+    list reads the audit as empty.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "audit.list")
+        text = tool.description or ""
+        assert "Answers with entries" in text
+        assert "no events field" in text
+        assert "has_more" in text
+    finally:
+        analysis.close_all()

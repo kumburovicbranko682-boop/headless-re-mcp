@@ -164,9 +164,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Session opens, session closes and UI drives, with arguments and outcome.
 
-        Narrower than it sounds: a static write appears in timeline.list rather
-        than here. Use this to ask which sessions ran and how they ended, and
-        timeline.list to ask what one of them changed.
+        Answers with entries, plus count, total, offset, limit and has_more.
+        There is no events field. Narrower than it sounds: a static write
+        appears in timeline.list rather than here. Use this to ask which
+        sessions ran and how they ended, and timeline.list to ask what one of
+        them changed.
         """
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 
