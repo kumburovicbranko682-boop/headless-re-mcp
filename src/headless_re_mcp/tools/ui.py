@@ -127,7 +127,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
-        backend: str = "win32",
+        backend: Annotated[
+            str,
+            Field(pattern="^(win32|uia|uiautomation|sendinput|input)$"),
+        ] = "win32",
     ) -> dict[str, Any]:
         """Click a control via win32/uia/sendinput (PID-bounded; SendInput rechecks FG PID).
 
