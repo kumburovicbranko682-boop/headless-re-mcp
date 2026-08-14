@@ -591,3 +591,29 @@ def test_condition_get_description_names_expression_not_condition() -> None:
     described = _tool_docstring("breakpoints.condition.get")
     assert "Answers with expression" in described
     assert "no condition field" in described
+
+def test_condition_set_description_names_expression_not_ok() -> None:
+    """The catalog said set a condition and never named the payload.
+
+    Measured against SetBreakpointConditionRpc: success is expression, plus
+    address and type. There is no ok or condition field. Looking for ok after
+    a successful set reads as the condition not landing, so the agent retries
+    DbgCmdExecDirect on a breakpoint that already has it.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome SetBreakpointConditionRpc")
+    chunk = native[start : native.index("Outcome GetBreakpointConditionRpc", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "expression"' in returned
+    assert 'JsonSet(result.get(), "address"' in returned
+    assert '"ok"' not in returned
+    assert '"condition"' not in returned
+    described = _tool_docstring("breakpoints.condition.set")
+    assert "Answers with expression" in described
+    assert "no ok field" in described
+    assert "no condition field" in described

@@ -370,7 +370,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         expression: Annotated[str, Field(min_length=1, max_length=512)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Set a sanitized break condition on an existing breakpoint."""
+        """Set a sanitized break condition on an existing breakpoint.
+
+        Answers with expression, address and type. There is no ok field and no condition field.
+        """
         return _dump(
             analysis.breakpoints_condition_set(session_id, address, expression, timeout=timeout)
         )
