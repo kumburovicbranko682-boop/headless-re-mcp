@@ -22,7 +22,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
     @tools.tool(name="dynamic.open")
     def dynamic_open(session_id: str) -> dict[str, Any]:
-        """Open the matching x86/x64 official x64dbg headless RPC backend."""
+        """Open the matching x86/x64 official x64dbg headless RPC backend.
+
+        Answers with backend, reused and session. reused is true when this
+        session already had the debugger open.
+        """
         return _dump(analysis.open_dynamic(session_id))
 
     @tools.tool(name="dynamic.state")

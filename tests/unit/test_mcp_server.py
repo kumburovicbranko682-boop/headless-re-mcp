@@ -765,3 +765,24 @@ async def test_dynamic_state_description_names_both_pid_fields() -> None:
         assert "pid_note" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_open_description_names_live_fields() -> None:
+    """The catalog did not name backend, reused or the nested session.
+
+    Measured keys are backend, reused and session. A caller looking for a
+    top-level session_id after a successful open cannot tell whether the
+    debugger is already running.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.open")
+        text = tool.description or ""
+        for name in ("backend", "reused", "session"):
+            assert name in text, name
+    finally:
+        analysis.close_all()
