@@ -60,3 +60,35 @@ def test_memory_regions_description_names_regions_not_items() -> None:
     assert "has_more" in described
     assert "no items" in described
     assert "no memory field" in described
+
+def _trace_stack_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome TraceStack")
+    return native[start : native.index("Outcome ReadDisassembly", start)]
+
+
+def test_stack_trace_description_names_frames_not_stack() -> None:
+    """The catalog said call stack and never named the list field.
+
+    Measured against TraceStack: the page is frames, with count, total, limit
+    and has_more. There is no stack or items field. Looking for stack after a
+    successful trace reads as an empty call stack.
+    """
+    chunk = _trace_stack_cpp()
+    assert 'JsonSet(result.get(), "frames"' in chunk
+    assert 'JsonSet(result.get(), "count"' in chunk
+    assert 'JsonSet(result.get(), "total"' in chunk
+    assert 'JsonSet(result.get(), "has_more"' in chunk
+    returned = chunk[chunk.index("auto result = JsonObject()") :]
+    assert '"stack"' not in returned
+    assert '"items"' not in returned
+    described = _tool_docstring("stack.trace")
+    assert "Answers with frames" in described
+    assert "has_more" in described
+    assert "no stack field" in described
+    assert "no items" in described

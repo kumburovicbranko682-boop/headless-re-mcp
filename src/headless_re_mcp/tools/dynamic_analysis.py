@@ -122,7 +122,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         limit: Annotated[int, Field(ge=1, le=256)] = 256,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Return a bounded call stack for the paused debuggee."""
+        """Return a bounded call stack for the paused debuggee.
+
+        Answers with frames, plus count, total, limit and has_more so a page
+        that filled the limit is not read as the whole stack. There is no stack field
+        and no items field.
+        """
         return _dump(analysis.stack_trace(session_id, limit=limit, timeout=timeout))
 
     @tools.tool(name="disassembly.read")
