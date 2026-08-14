@@ -124,3 +124,36 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+
+class _App:
+    def __init__(self, index: int) -> None:
+        self.identifier = f"com.app{index}"
+        self.name = f"App{index}"
+        self.pid = 0
+
+
+class _Device:
+    def enumerate_applications(self) -> list[_App]:
+        return [_App(index) for index in range(25)]
+
+
+def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopped() -> None:
+    """The catalog never named the payload.
+
+    Measured: 25 apps, limit 10 -> count 10, total 25, has_more True, field
+    is applications not apps or packages. Looking for those after a
+    successful call reads as an empty device, and a full page with no
+    has_more reads as every installed app.
+    """
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    payload = client.applications("usb", limit=10)
+    assert "apps" not in payload
+    assert "packages" not in payload
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert len(payload["applications"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("frida.applications")
+    assert "Answers with applications" in doc
+    assert "has_more" in doc
