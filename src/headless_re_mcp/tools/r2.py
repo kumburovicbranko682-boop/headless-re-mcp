@@ -120,7 +120,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying from, to, type, from_address and
         to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). There is no integer address field.
+        that was asked). Read items_truncated, items_total and items_limit
+        when the list filled the cap (4096). There is no integer address,
+        xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
