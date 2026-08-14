@@ -72,3 +72,24 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
     assert "from_address" in described
     assert "address_va" in described
     assert "no integer address" in described.replace("\n", " ")
+
+
+def test_r2_address_schemas_match_the_client_non_negative_check() -> None:
+    """The catalog accepted negative addresses on both r2 address tools.
+
+    Measured: R2Client.disasm and R2Client.xrefs both raise invalid_params for
+    a negative address, but only after the tool resolved a session and spawned
+    radare2 with `aa`. The input schemas carry no minimum, so the analysis pass
+    is paid before the refusal.
+    """
+    from headless_re_mcp.backends.r2.client import R2Client
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    source = Path(R2Client.disasm.__code__.co_filename).read_text(encoding="utf-8")
+    assert source.count('"address must be a non-negative int"') >= 2
+
+    bindings = build_r2_tools(object())  # type: ignore[arg-type]
+    named = {binding.name: binding.handler for binding in bindings}
+    for name in ("r2.disasm", "r2.xrefs"):
+        props = input_schema_for(named[name])["properties"]
+        assert props["address"]["minimum"] == 0, name

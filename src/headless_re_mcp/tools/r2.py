@@ -103,7 +103,7 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         count: Annotated[int, Field(ge=1, le=512)] = 32,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
@@ -118,7 +118,7 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """References to and from address, as radare2 resolved them.
