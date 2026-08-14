@@ -132,7 +132,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.har.export")
     def web_har_export(session_id: str) -> dict[str, Any]:
-        """Export captured network activity to a HAR artifact."""
+        """Export captured network activity to a HAR artifact.
+
+        Answers with path and entry_count, plus artifact_id when the HAR
+        was registered. There is no har, entries or artifact field.
+        """
         return _dump(analysis.web_har_export(session_id))
 
     return tools.bindings
