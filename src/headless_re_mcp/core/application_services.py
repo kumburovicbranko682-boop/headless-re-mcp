@@ -144,7 +144,7 @@ class ArtifactApplicationService:
         """
         page = self.repository.list_timeline(session_id, offset=offset, limit=limit)
         if isinstance(page, dict) and page.get("exists") is False:
-            raise SessionNotFound(f"session not found: {session_id}")
+            raise SessionNotFound.for_id(session_id)
         return page
 
     def list_audit(

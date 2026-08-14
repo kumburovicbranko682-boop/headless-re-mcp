@@ -62,6 +62,21 @@ class SessionNotFound(KeyError):
     subclasses KeyError so every existing ``except KeyError`` still catches it.
     """
 
+    @staticmethod
+    def for_id(session_id: str) -> SessionNotFound:
+        """Name the missing session without echoing an unbounded caller string.
+
+        Real ids are 32 hex characters. Interpolating whatever arrived used to
+        put it in the exception, the error message and the details, so a
+        200,000 character id produced a 400,229 byte envelope.
+        """
+        shown = (
+            session_id
+            if len(session_id) <= 64
+            else f"{session_id[:32]}...({len(session_id)} chars)"
+        )
+        return SessionNotFound(f"session not found: {shown}")
+
 
 class SessionRegistry:
     def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
@@ -118,7 +133,7 @@ class SessionRegistry:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                raise SessionNotFound(f"session not found: {session_id}")
+                raise SessionNotFound.for_id(session_id)
             return session.model_copy(deep=True)
 
     def list(self, states: Iterable[SessionState] | None = None) -> list[Session]:
@@ -188,7 +203,7 @@ class SessionRegistry:
     def _require(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)
         if session is None:
-            raise SessionNotFound(f"session not found: {session_id}")
+            raise SessionNotFound.for_id(session_id)
         return session
 
 

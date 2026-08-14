@@ -12,6 +12,7 @@ from headless_re_mcp.core.models import (
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
+    SessionNotFound,
     SessionRegistry,
     detect_pe_architecture,
 )
@@ -122,3 +123,29 @@ def test_registry_updates_backend_and_metadata(tmp_path: Path) -> None:
     assert updated.metadata["image_base"] == 0x140000000
     detached = registry.detach_backend(session.id, BackendKind.IDA)
     assert BackendKind.IDA not in detached.backends
+
+
+def test_a_missing_session_error_does_not_echo_an_unbounded_id() -> None:
+    """The id is caller-controlled and used to sit in the message and the details.
+
+    Measured: 200,000 characters produced a 400,229 byte envelope, twice the
+    input, because the same string was interpolated into the exception and
+    then copied into details.session_id.
+    """
+    from headless_re_mcp.core.results import _failure
+
+    huge = "A" * 200_000
+    with pytest.raises(SessionNotFound) as caught:
+        SessionRegistry().get(huge)
+    text = str(caught.value)
+    assert huge not in text
+    assert "200000" in text
+    assert len(text) < 100
+
+    result = _failure(caught.value, session_id=huge)
+    dumped = result.model_dump_json()
+    assert result.error is not None
+    assert result.error.code == "session_not_found"
+    assert huge not in dumped
+    assert len(dumped) < 8_000
+    assert "200000" in dumped

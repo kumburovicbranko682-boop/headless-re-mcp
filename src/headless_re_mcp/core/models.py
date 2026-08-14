@@ -219,11 +219,34 @@ class Session(BaseModel):
         return self.locator
 
 
+def _clip_error_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}...({len(value)} chars)"
+
+
 class RpcError(BaseModel):
     code: str
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool = False
+
+    @field_validator("message")
+    @classmethod
+    def bound_message(cls, value: str) -> str:
+        # Caller-controlled text (a session id, a path) used to be copied into
+        # the envelope verbatim. Measured: a 200,000 character session_id made
+        # a 400,229 byte error, twice, because the same string sat in message
+        # and in details.
+        return _clip_error_text(value, 2048)
+
+    @field_validator("details")
+    @classmethod
+    def bound_details(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: _clip_error_text(item, 1024) if isinstance(item, str) else item
+            for key, item in value.items()
+        }
 
 
 T = TypeVar("T")
