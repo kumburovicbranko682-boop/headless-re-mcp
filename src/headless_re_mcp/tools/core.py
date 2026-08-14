@@ -72,7 +72,10 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
 
         A live debugger is issued debug.stop before the worker exits, so the
         debuggee does not keep running. Static workers, web pages and proxy
-        listeners go with it. already_closed is true if it was already gone.
+        listeners go with it.
+
+        Answers with session and already_closed. already_closed is true if
+        it was already gone. There is no closed field.
         """
         return _dump(analysis.close_session(session_id))
 

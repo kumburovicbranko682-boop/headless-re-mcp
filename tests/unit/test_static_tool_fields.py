@@ -918,3 +918,31 @@ def test_static_open_description_names_backend_reused_session() -> None:
     assert '"backend":' in chunk
     assert '"session":' in chunk
 
+
+def test_session_close_description_names_already_closed_not_closed() -> None:
+    """The live catalog omitted the payload fields.
+
+    _close_session returns session and already_closed, true when the
+    session was already gone. There is no closed field. A caller looking
+    for closed after a successful call cannot tell whether anything was
+    torn down.
+    """
+    described = " ".join(_docstring("session_close").split())
+    assert "Answers with session" in described
+    assert "already_closed" in described
+    assert "no closed field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def _close_session")
+    chunk = service[start : service.index("def record_artifact", start)]
+    assert '"already_closed": True' in chunk
+    assert '"already_closed": False' in chunk
+    assert '"session":' in chunk
+    assert '"closed": True' not in chunk
+    assert '"closed": False' not in chunk
+
