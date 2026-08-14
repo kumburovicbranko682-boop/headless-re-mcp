@@ -198,7 +198,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="modules.dump")
     def modules_dump(
         session_id: str,
-        base: int,
+        base: Annotated[int, Field(ge=1)],
         size: Annotated[int, Field(ge=1, le=64 * 1024 * 1024)] | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
