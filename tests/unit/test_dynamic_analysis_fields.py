@@ -516,3 +516,32 @@ def test_patches_restore_description_names_restored_not_ok() -> None:
     assert "Answers with restored" in described
     assert "no ok field" in described
     assert "no patch field" in described
+
+def test_hardware_list_description_names_breakpoints_not_hardware() -> None:
+    """The catalog said hardware breakpoints and never named the list field.
+
+    Measured against ListHardwareBreakpoints: it reuses ListBreakpointsFiltered
+    with key breakpoints, plus count. There is no hardware field. Looking for
+    hardware after a successful list reads as no DR breakpoints, so the agent
+    sets more debug registers.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ListHardwareBreakpoints")
+    chunk = native[start : native.index("bool ParseMemoryBreakpointType", start)]
+    assert 'ListBreakpointsFiltered(bp_hardware, "breakpoints")' in chunk
+    assert '"hardware"' not in chunk
+    filtered = native[
+        native.index("Outcome ListBreakpointsFiltered") : native.index(
+            "Outcome ListBreakpoints()"
+        )
+    ]
+    assert 'JsonSet(result.get(), key' in filtered
+    assert 'JsonSet(result.get(), "count"' in filtered
+    described = _tool_docstring("breakpoints.hardware.list")
+    assert "Answers with breakpoints" in described
+    assert "no hardware field" in described

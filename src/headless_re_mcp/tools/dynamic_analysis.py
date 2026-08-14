@@ -316,7 +316,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """List hardware breakpoints."""
+        """List hardware breakpoints.
+
+        Answers with breakpoints, plus count. There is no hardware field.
+        Same list key as breakpoints.list, filtered to hardware type.
+        """
         return _dump(analysis.breakpoints_hardware_list(session_id, timeout=timeout))
 
     @tools.tool(name="breakpoints.memory.set")
