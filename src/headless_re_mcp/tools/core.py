@@ -420,7 +420,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         address: int,
         size: Annotated[int, Field(ge=1, le=4096)] = 64,
     ) -> dict[str, Any]:
-        """Read a bounded byte range from the IDA database."""
+        """Read a bounded byte range from the IDA database.
+
+        Answers with hex and base64, plus address, size and truncated. There is
+        no bytes field and no data field.
+        """
         return _dump(analysis.static_bytes_read(session_id, address=address, size=size))
 
     def static_search_bytes(

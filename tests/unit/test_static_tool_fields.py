@@ -127,3 +127,29 @@ def test_static_disassemble_description_names_instructions() -> None:
     assert '"items":' not in chunk
     assert '"disassembly":' not in chunk
 
+def test_static_bytes_read_description_names_hex() -> None:
+    """The live catalog omitted the hex payload field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    raw.data['hex']. The worker returns address, size, hex, base64 and
+    truncated, and no bytes or data field. A caller looking for bytes after a
+    successful read reads it as IDA returning nothing.
+    """
+    described = " ".join(_docstring("static_bytes_read").split())
+    assert "Answers with hex" in described
+    assert "no bytes field" in described
+    assert "no data field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _bytes_read")
+    chunk = worker[start : worker.index("def _normalize_bin_pattern", start)]
+    assert '"hex": data.hex()' in chunk
+    assert '"base64"' in chunk
+    assert '"bytes":' not in chunk
+
