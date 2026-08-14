@@ -19,7 +19,10 @@ def _dump(result: Result[JsonObject]) -> dict[str, Any]:
 def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
     @tools.tool(name="sync.static_to_runtime")
-    def sync_static_to_runtime(session_id: str, address: int) -> dict[str, Any]:
+    def sync_static_to_runtime(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+    ) -> dict[str, Any]:
         """Map an IDA address to the matching loaded main-module runtime address.
 
         Answers with runtime.address and static.address, plus rva, rebase_delta,
@@ -29,7 +32,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.sync_static_to_runtime(session_id, address))
 
     @tools.tool(name="sync.runtime_to_static")
-    def sync_runtime_to_static(session_id: str, address: int) -> dict[str, Any]:
+    def sync_runtime_to_static(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+    ) -> dict[str, Any]:
         """Map a loaded main-module runtime address back to its IDA address.
 
         Same payload as sync.static_to_runtime: Answers with static.address and
@@ -42,7 +48,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def sync_module_preferred_to_runtime(
         session_id: str,
         selector: ModuleSelector,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
     ) -> dict[str, Any]:
         """Map an explicitly selected PE preferred VA to its current runtime VA.
 
@@ -56,7 +62,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def sync_module_runtime_to_preferred(
         session_id: str,
         selector: ModuleSelector,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
     ) -> dict[str, Any]:
         """Map an explicitly selected runtime VA back to its PE preferred VA.
 
@@ -69,7 +75,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="sync.resolve_runtime_address")
     def sync_resolve_runtime_address(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         source: str = "static",
     ) -> dict[str, Any]:
         """Resolve a static VA, module RVA, or runtime VA to the live runtime VA.

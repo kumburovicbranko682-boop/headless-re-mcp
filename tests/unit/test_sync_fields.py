@@ -97,3 +97,31 @@ def test_sync_module_preferred_to_runtime_nests_address() -> None:
     assert "preferred.address" in described_back
     assert "no runtime_address field" in described_back
 
+
+def test_sync_schemas_match_the_non_negative_address_the_service_requires() -> None:
+    """The catalog accepted negative addresses on every sync tool.
+
+    Measured: _require_address raises invalid_address for a negative value, so
+    the mapping refuses it after the tool is already dispatched. The input
+    schemas carry no minimum, so a negative address is only caught once a
+    session and both backends have been resolved.
+    """
+    from headless_re_mcp.core.addressing import _require_address
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    guard = Path(_require_address.__code__.co_filename).read_text(encoding="utf-8")
+    start = guard.index("def _require_address")
+    assert "value < 0" in guard[start : start + 400]
+
+    bindings = build_meta_tools(object())  # type: ignore[arg-type]
+    named = {binding.name: binding.handler for binding in bindings}
+    for name in (
+        "sync.static_to_runtime",
+        "sync.runtime_to_static",
+        "sync.module_preferred_to_runtime",
+        "sync.module_runtime_to_preferred",
+        "sync.resolve_runtime_address",
+    ):
+        props = input_schema_for(named[name])["properties"]
+        assert props["address"]["minimum"] == 0, name
+
