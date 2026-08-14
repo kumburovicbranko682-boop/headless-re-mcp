@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.proxy.client import ProxyBackend, _FlowRecorder
+from headless_re_mcp.backends.proxy.client import (
+    _MAX_FLOWS,
+    ProxyBackend,
+    _FlowRecorder,
+)
 from headless_re_mcp.tools.proxy import build_proxy_tools
 
 
@@ -139,3 +143,38 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+
+
+def test_proxy_status_names_flow_count_and_retained_max() -> None:
+    """The catalog said how many flows and never named the count field.
+
+    Measured: 3 retained -> running True, flow_count 3, retained_max 2000,
+    no count or flows key. Looking for count after a successful status
+    reads as a proxy that captured nothing.
+    """
+    recorder = _FlowRecorder(capacity=8)
+    for index in range(3):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(
+        host="127.0.0.1", port=8080, recorder=recorder
+    )
+    payload = backend.status("s")
+    assert "count" not in payload
+    assert "flows" not in payload
+    assert payload["running"] is True
+    assert payload["flow_count"] == 3
+    assert payload["retained_max"] == _MAX_FLOWS
+    idle = backend.status("missing")
+    assert idle == {"running": False}
+    doc = _tool_docstring("proxy.status")
+    assert "flow_count" in doc
+    assert "retained_max" in doc

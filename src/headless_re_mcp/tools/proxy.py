@@ -37,7 +37,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.status")
     def proxy_status(session_id: str) -> dict[str, Any]:
-        """Report whether the proxy is running and how many flows it captured."""
+        """Report whether the proxy is running and how many flows it captured.
+
+        Answers with running, and when running also host, port, flow_count
+        and retained_max. There is no count or flows field. A session with
+        no proxy answers running false and nothing else, which is not an
+        empty capture.
+        """
         return _dump(analysis.proxy_status(session_id))
 
     @tools.tool(name="proxy.flows")
