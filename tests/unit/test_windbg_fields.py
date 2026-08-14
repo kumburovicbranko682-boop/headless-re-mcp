@@ -100,3 +100,30 @@ def test_windbg_live_disasm_names_pid_not_process_id(monkeypatch: Any) -> None:
     assert "Answers with disasm" in doc
     assert "pid" in doc
     assert "There is no process_id" in doc
+
+def test_windbg_attach_names_pid_and_note(monkeypatch: Any) -> None:
+    """The catalog named output/attached/mode and never named pid or note.
+
+    Measured: attach(4242) -> pid 4242, attached True, mode noninvasive,
+    note set, output holding the cdb text, no process_id or version key.
+    Looking for process_id after a successful probe reads as a debuggee
+    that returned no process.
+    """
+    client = WindbgClient(cdb=Path("cdb.exe"))
+    monkeypatch.setattr(
+        client,
+        "_run_process",
+        lambda *args, **kwargs: {"output": "Windows 10 Version 19045"},
+    )
+    payload = client.attach(4242, allowed_pid=4242)
+    assert "process_id" not in payload
+    assert "version" not in payload
+    assert payload["pid"] == 4242
+    assert payload["attached"] is True
+    assert payload["mode"] == "noninvasive"
+    assert payload["note"]
+    assert payload["output"] == "Windows 10 Version 19045"
+    doc = " ".join(_tool_docstring("windbg.attach").split())
+    assert "pid" in doc
+    assert "note" in doc
+    assert "There is no process_id" in doc
