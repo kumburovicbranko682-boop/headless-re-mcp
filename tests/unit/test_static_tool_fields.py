@@ -726,3 +726,32 @@ def test_static_type_apply_description_names_previous_type() -> None:
     assert '"type": after' in chunk
     assert '"applied"' not in chunk
 
+
+def test_static_function_create_description_names_created() -> None:
+    """The live catalog omitted created, so an existing function looks new.
+
+    The IDA worker returns created False with a note when the function
+    already exists, otherwise created True, plus start, end and ok. There
+    is no function field. A caller looking for function after a successful
+    call cannot tell whether anything was created.
+    """
+    described = " ".join(_docstring("static_function_create").split())
+    assert "Answers with address" in described
+    assert "created" in described
+    assert "already existed" in described
+    assert "no function field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _function_create")
+    chunk = worker[start : worker.index("def _function_delete", start)]
+    assert '"created": False' in chunk
+    assert '"created": True' in chunk
+    assert "function already exists" in chunk
+    assert '"function"' not in chunk
+
