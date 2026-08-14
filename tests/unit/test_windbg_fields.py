@@ -127,3 +127,35 @@ def test_windbg_attach_names_pid_and_note(monkeypatch: Any) -> None:
     assert "pid" in doc
     assert "note" in doc
     assert "There is no process_id" in doc
+
+def test_windbg_modules_names_the_cut_sizes(tmp_path: Path, monkeypatch: Any) -> None:
+    """The catalog said truncated and never named how much was cut.
+
+    Measured: 500-char cdb stdout, cap 64 -> truncated True, output_chars
+    500, returned_chars 64. Looking at truncated alone cannot tell a 64-char
+    dump from a 500-char dump that was sliced.
+    """
+    import subprocess
+
+    import headless_re_mcp.backends.windbg.client as windbg_module
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(windbg_module, "_MAX_OUTPUT", 64)
+
+    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"A" * 500, stderr=b""
+        )
+
+    monkeypatch.setattr(windbg_module, "run_bounded", huge)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    payload = WindbgClient(cdb).modules(dump)
+    assert payload["truncated"] is True
+    assert payload["output_chars"] == 500
+    assert payload["returned_chars"] == 64
+    doc = " ".join(_tool_docstring("windbg.modules").split())
+    assert "output_chars" in doc
+    assert "returned_chars" in doc

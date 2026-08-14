@@ -54,8 +54,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Loaded module list of a crash dump, as cdb prints it.
 
-        Answers with modules holding that text, plus dump, and truncated when
-        the session was cut at the buffer.
+        Answers with modules holding that text, plus dump, and truncated,
+        output_chars and returned_chars when the session was cut at the buffer.
         """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
