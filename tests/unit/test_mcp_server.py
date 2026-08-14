@@ -932,3 +932,25 @@ async def test_dynamic_step_over_description_names_live_fields() -> None:
         assert "submitted" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_session_create_description_names_the_nested_object() -> None:
+    """The catalog implied the new id sat at the top of a successful create.
+
+    Measured: the payload is session holding id, target, binary, locator,
+    sha256, architecture, state, created_at, updated_at, backends and
+    metadata. There is no top-level session_id. A caller looking for
+    session_id after create reads a live session as if nothing was opened.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "session.create")
+        text = tool.description or ""
+        assert "Answers with session" in text
+        assert "no top-level session_id" in text
+    finally:
+        analysis.close_all()
