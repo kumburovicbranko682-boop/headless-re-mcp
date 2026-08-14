@@ -87,7 +87,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         method_name: str,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List callers (xrefs-from) of every method named method_name."""
+        """List callers of every method named method_name.
+
+        Answers with callers (class and method), count, and has_more so a
+        page that filled the limit is not read as the whole list.
+        """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
     @tools.tool(name="apk.decompile")
