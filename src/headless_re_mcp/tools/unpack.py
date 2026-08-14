@@ -370,7 +370,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         oep_rva: int | None = None,
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """Rebuild import tables on a dumped PE using a confirmed IAT range."""
+        """Rebuild import tables on a dumped PE using a confirmed IAT range.
+
+        Answers with output_path, input_path, report, rebuild_gate,
+        recoverability, and claims_universal_unpack false. There is no
+        rebuilt field.
+        """
         return _dump(
             analysis.unpack_iat_rebuild(
                 session_id,
