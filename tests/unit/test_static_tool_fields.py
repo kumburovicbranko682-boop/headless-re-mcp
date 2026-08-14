@@ -946,3 +946,41 @@ def test_session_close_description_names_already_closed_not_closed() -> None:
     assert '"closed": True' not in chunk
     assert '"closed": False' not in chunk
 
+
+def test_workflow_status_description_names_nested_workflow() -> None:
+    """The live catalog omitted the payload field.
+
+    tests/unit/test_dynamic_service.py already reads result.data['workflow']
+    and then workflow['state']. The service nests the runtime under
+    workflow, and there is no top-level status or state field. A caller
+    looking for status after a successful call reads a live workflow as
+    missing.
+    """
+    described = " ".join(_docstring("workflow_status").split())
+    assert "Answers with workflow" in described
+    assert "no top-level status field" in described
+    assert "no state field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_status")
+    chunk = service[start : service.index("def workflow_reset", start)]
+    assert '{"workflow": terminal.to_dict()}' in chunk or '"workflow": terminal.to_dict()' in chunk
+    assert '"workflow": workflow.to_dict()' in chunk
+    runtime = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "workflows"
+        / "runtime.py"
+    ).read_text(encoding="utf-8")
+    start = runtime.index("def to_dict(self) -> JsonObject:")
+    chunk = runtime[start : runtime.index("def create_workflow_runtime", start)]
+    assert '"status": self.status.value' in chunk
+    assert '"state":' in chunk
+    assert '"id": self.id' in chunk
+

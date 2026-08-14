@@ -737,7 +737,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     """Register workflow.* tools via add_tool."""
 
     def workflow_status(session_id: str) -> dict[str, Any]:
-        """Return the persistent workflow state attached to the x64dbg runtime."""
+        """Return the persistent workflow state attached to the x64dbg runtime.
+
+        Answers with workflow holding id, status, operation_count, failure
+        and state. There is no top-level status field and no state field.
+        """
         return _dump(analysis.workflow_status(session_id))
 
     def workflow_reset(
