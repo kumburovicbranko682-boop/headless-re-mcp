@@ -299,6 +299,27 @@ def _finish_one(store: AgentStore, title: str) -> str:
     return thread.id
 
 
+def test_a_run_event_too_large_to_store_is_cut_not_written_whole(tmp_path: Path) -> None:
+    """Messages refuse 1 MiB and tool results cut at 256 KiB; events did neither.
+
+    One 2 MiB delta made the database 2.16 MB, and list_events then handed the
+    whole thing to SSE in a single frame.
+    """
+    store = AgentStore(tmp_path / "fat-event.db")
+    store.event_data_max_bytes = 8_192
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.append_event(run.id, "message.delta", {"delta": "x" * (512 * 1024)})
+    store.append_event(run.id, "message.delta", {"delta": "ok"})
+
+    events = [event for event in store.list_events(run.id, after=0, limit=50) if event.type == "message.delta"]
+    fat, thin = events
+    assert fat.data["truncated"] is True
+    assert fat.data["original_bytes"] > 8_192
+    assert thin.data == {"delta": "ok"}
+    assert store.path.stat().st_size < 100_000
+
+
 def test_a_run_does_not_keep_every_streamed_delta(tmp_path: Path) -> None:
     """list_events pages at most 5000; the table itself did not stop writing.
 

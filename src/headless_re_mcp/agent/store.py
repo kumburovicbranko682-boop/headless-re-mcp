@@ -59,6 +59,11 @@ _RETAINED_MESSAGES_PER_THREAD = 2_000
 # page in one reply is only growing the file.
 _RETAINED_EVENTS_PER_RUN = 5_000
 
+# A single event had no size cap. One 2 MiB delta made the database 2.16 MB;
+# the same payload in a message is refused at 1 MiB and a tool result is cut
+# at 256 KiB. SSE then tries to send the whole thing in one frame.
+_EVENT_DATA_MAX_BYTES = 65_536
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -72,6 +77,7 @@ class AgentStore:
         self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
         self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
+        self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -309,7 +315,17 @@ class AgentStore:
         seq = int(row["seq"])
         created = utc_now()
         safe = redact(data)
-        con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, json.dumps(safe, ensure_ascii=False, default=str), created))
+        encoded = json.dumps(safe, ensure_ascii=False, default=str)
+        limit = max(1024, int(self.event_data_max_bytes))
+        if len(encoded.encode("utf-8")) > limit:
+            original = len(encoded.encode("utf-8"))
+            safe = {
+                "truncated": True,
+                "summary": encoded[:4096],
+                "original_bytes": original,
+            }
+            encoded = json.dumps(safe, ensure_ascii=False)
+        con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, encoded, created))
         keep = max(1, int(self.retained_events_per_run))
         con.execute(
             "DELETE FROM run_events WHERE run_id=? AND seq IN ("
