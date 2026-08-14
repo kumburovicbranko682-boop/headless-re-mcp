@@ -254,7 +254,7 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         hwnd: int,
         action: str = "click",
-        text: str | None = None,
+        text: Annotated[str, Field(max_length=4096)] | None = None,
         control_id: int | None = None,
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
