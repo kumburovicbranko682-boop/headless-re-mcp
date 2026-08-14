@@ -90,7 +90,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="artifacts.describe")
     def artifacts_describe(artifact_id: str) -> dict[str, Any]:
-        """Metadata for one artifact: kind, size, sha256, origin and path."""
+        """Metadata for one artifact.
+
+        Answers with artifact holding id, kind, path, size, sha256, source,
+        session_id and created_at. There is no origin field, and those keys
+        are not top-level.
+        """
         return _dump(analysis.artifacts_describe(artifact_id))
 
     @tools.tool(name="artifacts.read")

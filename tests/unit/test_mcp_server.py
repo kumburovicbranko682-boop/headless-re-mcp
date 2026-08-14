@@ -590,3 +590,26 @@ async def test_timeline_list_description_names_live_fields() -> None:
         assert "has_more" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_artifacts_describe_description_names_the_nested_object() -> None:
+    """The catalog listed origin and the columns as if they were top-level.
+
+    Measured: the payload is artifact holding id, kind, path, size, sha256,
+    source, session_id and created_at. There is no origin. A caller looking
+    for kind on the reply reads a successful describe as empty.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "artifacts.describe")
+        text = tool.description or ""
+        assert "Answers with artifact" in text
+        assert "source" in text
+        assert "no origin field" in text
+        assert "not top-level" in text
+    finally:
+        analysis.close_all()
