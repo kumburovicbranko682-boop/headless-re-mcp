@@ -340,6 +340,34 @@ def test_oversized_tool_call_arguments_are_refused_not_stored(tmp_path: Path) ->
     assert store.get_tool_call(run.id, "call-ok")["name"] == "static.functions"
 
 
+def test_oversized_tool_call_effects_are_refused_not_stored(tmp_path: Path) -> None:
+    """Arguments already refuse 4 MiB; effects_json did not.
+
+    Measured: 2000 labels of 1000 characters made the database 2.07 MB. A
+    truncated effects list is a different permission set, so the write must
+    fail and leave no row.
+    """
+    store = AgentStore(tmp_path / "effects.db")
+    store.tool_effects_max_bytes = 256
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+
+    with pytest.raises(ValueError, match="256"):
+        store.propose_tool_call(
+            run.id,
+            "call-fat",
+            "static.functions",
+            {"session_id": "s"},
+            ["x" * 80] * 8,
+        )
+
+    with pytest.raises(KeyError):
+        store.get_tool_call(run.id, "call-fat")
+    store.propose_tool_call(run.id, "call-ok", "static.functions", {"session_id": "s"}, ["read"])
+    assert store.get_tool_call(run.id, "call-ok")["effects"] == ["read"]
+    assert store.path.stat().st_size < 200_000
+
+
 def test_a_run_event_too_large_to_store_is_cut_not_written_whole(tmp_path: Path) -> None:
     """Messages refuse 1 MiB and tool results cut at 256 KiB; events did neither.
 

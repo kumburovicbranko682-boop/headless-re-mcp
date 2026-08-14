@@ -70,6 +70,11 @@ _EVENT_DATA_MAX_BYTES = 65_536
 # different instruction, so refuse rather than cut.
 _TOOL_ARGUMENT_MAX_BYTES = 4_194_304
 
+# effects_json had no size cap. 2000 labels of 1000 characters made the
+# database 2.07 MB. Catalog effects are a handful of short names; a truncated
+# list is a different permission set, so refuse rather than cut.
+_TOOL_EFFECTS_MAX_BYTES = 4_096
+
 # Finished-thread trim never touches a live thread. 400 completed runs on one
 # still-pending mission were 278 KB of empty rows (and every run may still
 # hold 5000 events). The prefix nobody looks up by id only grows the file.
@@ -90,6 +95,7 @@ class AgentStore:
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
+        self.tool_effects_max_bytes = _TOOL_EFFECTS_MAX_BYTES
         self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
@@ -387,8 +393,15 @@ class AgentStore:
             )
         args_hash = canonical_args_sha256(arguments)
         now = utc_now()
+        effects_encoded = json.dumps(effects, ensure_ascii=False)
+        effects_limit = max(64, int(self.tool_effects_max_bytes))
+        if len(effects_encoded.encode("utf-8")) > effects_limit:
+            raise ValueError(
+                f"tool call effects are {len(effects_encoded.encode('utf-8'))} bytes, "
+                f"over the {effects_limit} byte limit"
+            )
         with self.transaction() as con:
-            con.execute("INSERT INTO tool_calls(id,run_id,name,arguments_json,args_sha256,effects_json,status,approved,consumed_at,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)", (tool_call_id, run_id, name, encoded, args_hash, json.dumps(effects), "proposed", now, now))
+            con.execute("INSERT INTO tool_calls(id,run_id,name,arguments_json,args_sha256,effects_json,status,approved,consumed_at,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)", (tool_call_id, run_id, name, encoded, args_hash, effects_encoded, "proposed", now, now))
         return {"id": tool_call_id, "run_id": run_id, "name": name, "arguments": arguments, "args_sha256": args_hash, "effects": effects, "status": "proposed"}
 
     def decide_tool_call(self, run_id: str, tool_call_id: str, args_sha256: str, *, approved: bool) -> JsonObject:
