@@ -230,12 +230,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Re-open backends whose worker process died, without resuming execution.
 
-        Recovery replaces the session rather than repairing it. The reply
-        carries the new session_id alongside previous_session_id and
-        replaced=true, and every later call has to use the new one: the old id
-        answers invalid_request from here on, and asking to recover it again is
-        refused the same way, so a caller that keeps the old id is stuck with no
-        way back.
+        Answers with backends, requested, replaced, session_id, recovered, kept
+        and failed. previous_session_id is present only when replaced is true.
+        A keep (replaced false) reuses session_id; looking for
+        previous_session_id after that treats a live recover as a missing
+        replacement. When replaced is true the old id answers invalid_request
+        from here on, so a caller that keeps it is stuck with no way back.
 
         Defaults to the backends this session already had; pass ida/x64dbg to
         force specific ones. A recovered dynamic backend is attached to nothing,
