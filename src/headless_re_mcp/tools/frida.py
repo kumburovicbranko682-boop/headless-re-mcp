@@ -34,8 +34,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List modules in the session debuggee via a short-lived Frida probe.
 
-        Answers with modules (name, base, size, path), count for this page, and
-        total. Limited to the debuggee pid.
+        Answers with modules (name, base, size, path), count for this page,
+        total, and has_more so a page that filled the limit is not read as
+        the whole list. Limited to the debuggee pid.
         """
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
