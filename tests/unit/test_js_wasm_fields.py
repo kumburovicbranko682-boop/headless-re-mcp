@@ -55,6 +55,36 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_js_deobfuscate_names_bytes_not_size(tmp_path: Path) -> None:
+    """The catalog named code and never named the length field.
+
+    Measured: 100-byte webcrack stdout -> code length 100, bytes 100, no
+    size key. Looking for size after a successful deobfuscation reads as
+    a reply with no length, so a cut cannot be distinguished from a short
+    file.
+    """
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "z" * 100
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src)
+
+    assert "size" not in payload
+    assert payload["bytes"] == 100
+    assert payload["code"] == body
+    doc = _tool_docstring("js.deobfuscate")
+    assert "bytes" in doc
+    assert "Answers with code" in doc
+
+
 def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")

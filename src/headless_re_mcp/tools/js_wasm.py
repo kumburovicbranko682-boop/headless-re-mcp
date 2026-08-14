@@ -27,7 +27,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Deobfuscate and unminify a JavaScript file via webcrack.
 
-        Answers with code, plus truncated when the text was cut at the buffer.
+        Answers with code and bytes, plus truncated when the text was cut at
+        the buffer.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
