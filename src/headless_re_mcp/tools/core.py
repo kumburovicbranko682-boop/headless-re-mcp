@@ -73,7 +73,12 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     """Register high-traffic static.* tools via add_tool."""
 
     def static_open(session_id: str) -> dict[str, Any]:
-        """Open the session binary in an isolated, zero-window IDA idalib worker."""
+        """Open the session binary in an isolated, zero-window IDA idalib worker.
+
+        Answers with backend, reused and session. reused is true when this
+        session already had the IDA worker open. There is no top-level
+        session_id.
+        """
         return _dump(analysis.open_static(session_id))
 
     def static_functions(

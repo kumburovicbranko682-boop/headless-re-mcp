@@ -890,3 +890,31 @@ def test_static_metadata_description_names_image_base() -> None:
     assert '"capabilities":' in returned
     assert '"metadata":' not in returned
 
+
+def test_static_open_description_names_backend_reused_session() -> None:
+    """The live catalog omitted the payload fields.
+
+    tests/integration/test_m8_static_batch1_gate.py already reads
+    opened.data['backend']. _open_backend returns session, backend and
+    reused, and no top-level session_id. A caller looking for session_id
+    after a successful open cannot tell whether IDA was already running.
+    """
+    described = " ".join(_docstring("static_open").split())
+    assert "Answers with backend" in described
+    assert "reused" in described
+    assert "session" in described
+    assert "no top-level session_id" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def _open_backend")
+    chunk = service[start : service.index("def _abandon_open", start)]
+    assert '"reused": True' in chunk
+    assert '"reused": False' in chunk
+    assert '"backend":' in chunk
+    assert '"session":' in chunk
+
