@@ -446,9 +446,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Capture one authorized hidden-desktop window to BMP on demand.
 
-        Never switches the input desktop and flags degraded (blank/uniform) frames
-        instead of silently falling back; selects the top visible window when hwnd
-        is omitted.
+        Answers with format bmp, path, artifact, width, height, degraded,
+        degraded_reason, window, intrusion and debuggee_pid. There is no png
+        field. Never switches the input desktop; selects the top visible
+        window when hwnd is omitted.
         """
         return _dump(analysis.virtual_desktop_capture(session_id, hwnd=hwnd))
     return tools.bindings
