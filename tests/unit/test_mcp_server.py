@@ -634,3 +634,25 @@ async def test_artifacts_gc_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_session_health_description_names_live_fields() -> None:
+    """The catalog did not name backends, count or the three-state healthy flag.
+
+    Measured keys are backends, count and healthy. healthy is null when
+    nothing is open, which is not a clean bill of health. A caller looking
+    for a top-level ok reads an empty health check as if every backend died.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "session.health")
+        text = tool.description or ""
+        for name in ("backends", "count", "healthy"):
+            assert name in text, name
+        assert "null" in text
+    finally:
+        analysis.close_all()
