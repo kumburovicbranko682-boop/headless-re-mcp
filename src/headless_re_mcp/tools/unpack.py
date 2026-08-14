@@ -234,8 +234,10 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Score multi-signal OEP candidates; never treats a single heuristic as confirmed.
 
-        When observations are omitted/empty, attempts auto-collection from the dynamic
-        backend (registers + memory regions). Never auto-confirms OEP.
+        Answers with candidates, candidate_count, authoritative false,
+        claims_universal_unpack false, and unpack. There is no confirmed_oep_rva
+        field. When observations are empty, it may auto-collect from the
+        dynamic backend; it never auto-confirms OEP.
         """
         return _dump(
             analysis.unpack_score_oep(

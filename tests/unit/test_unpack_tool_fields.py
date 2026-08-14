@@ -344,3 +344,28 @@ def test_unpack_iat_rebuild_names_output_path() -> None:
     assert '"output_path": str(out_path)' in chunk
     assert '"claims_universal_unpack": False' in chunk
 
+def test_unpack_score_oep_names_candidates_not_confirmed() -> None:
+    """The live catalog omitted candidates and the authoritative flag.
+
+    tests/unit/test_m5_unpack_session.py already reads scored.data['authoritative']
+    and data['unpack']['phase']. Scoring is not confirmation: there is no
+    confirmed_oep_rva. A caller looking for a confirmed RVA after a successful
+    score treats a guess as OEP.
+    """
+    described = " ".join(_tool_docstring("unpack.score_oep").split())
+    assert "Answers with candidates" in described
+    assert "authoritative false" in described
+    assert "no confirmed_oep_rva field" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_score_oep")
+    chunk = source[start : source.index("def _collect_oep_observations_from_runtime", start)]
+    assert '"candidates": candidates' in chunk
+    assert '"authoritative": False' in chunk
+    assert '"confirmed_oep_rva"' not in chunk
+
