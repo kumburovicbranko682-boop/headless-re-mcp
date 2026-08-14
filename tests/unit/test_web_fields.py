@@ -35,6 +35,17 @@ class _FakeHandle:
     def __init__(self, count: int) -> None:
         self.lock = Lock()
         self.console = deque({"text": str(index)} for index in range(count))
+        self.requests = {
+            str(index): {
+                "requestId": str(index),
+                "url": f"https://example/{index}",
+                "method": "GET",
+                "resourceType": "XHR",
+                "status": 200,
+                "mimeType": "application/json",
+            }
+            for index in range(count)
+        }
 
 
 def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
@@ -57,3 +68,32 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     doc = _tool_docstring("web.console")
     assert "Answers with console" in doc
     assert "has_more" in doc
+
+
+def test_web_network_list_puts_the_page_in_requests_not_type(
+    monkeypatch: Any,
+) -> None:
+    """The catalog said type and never named the list field.
+
+    Measured: 25 held, limit 10 -> count 10, total 25, field is requests
+    not items or network, and each row carries resourceType with no type
+    key. Looking for type or network after a successful call reads as an
+    empty capture, and a full page with no total reads as the whole log.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _FakeHandle(25))
+    payload = backend.network_list("s", offset=0, limit=10)
+    assert "network" not in payload
+    assert "items" not in payload
+    assert "has_more" not in payload
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
+    assert len(payload["requests"]) == 10
+    row = payload["requests"][0]
+    assert "type" not in row
+    assert row["resourceType"] == "XHR"
+    doc = _tool_docstring("web.network.list")
+    assert "Answers with requests" in doc
+    assert "resourceType" in doc
+    assert "total" in doc

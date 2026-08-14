@@ -55,7 +55,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List captured network requests (url, method, status, type)."""
+        """List captured network requests.
+
+        Answers with requests (url, method, status, resourceType), count,
+        total, and offset so a page that filled the limit is not read as
+        the whole capture. There is no type field.
+        """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="web.network.get")
