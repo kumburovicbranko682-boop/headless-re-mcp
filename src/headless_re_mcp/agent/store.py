@@ -39,6 +39,14 @@ def canonical_args_sha256(arguments: JsonObject) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# Finished work has no natural end: every completed mission leaves a thread,
+# its runs, events and messages behind. Measured at 250 tiny missions: 459 KB
+# and still climbing, about 1.8 KB each with almost no tool output. A real
+# analysis is larger, and nothing deleted a thread once its mission ended.
+_RETAINED_FINISHED_THREADS = 2_000
+_FINISHED_TRIM_INTERVAL = 32
+
+
 class AgentStore:
     def __init__(self, path: Path) -> None:
         self.path = path.expanduser().resolve()
@@ -47,6 +55,9 @@ class AgentStore:
         self.journal_mode = "unknown"
         self._enable_wal()
         self._init_schema()
+        self.retained_finished_threads = _RETAINED_FINISHED_THREADS
+        self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
+        self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
         # every non-terminal run and requeues every RUNNING mission -- so merely
@@ -485,9 +496,46 @@ class AgentStore:
                 "UPDATE missions SET status=?,error=?,updated_at=? WHERE id=?",
                 (status.value, error[:1000] if error else None, utc_now(), mission_id),
             )
+            if status in TERMINAL_MISSION_STATUSES:
+                self._maybe_trim_finished_threads(con)
         mission = self.get_mission(mission_id)
         assert mission is not None
         return mission
+
+    def _maybe_trim_finished_threads(self, con: sqlite3.Connection) -> None:
+        self._finished_writes += 1
+        if self._finished_writes < self.finished_trim_interval:
+            return
+        self._finished_writes = 0
+        self._trim_finished_threads(con)
+
+    def _trim_finished_threads(self, con: sqlite3.Connection) -> None:
+        """Drop the oldest finished threads; live work is not eligible.
+
+        A thread is finished when it has at least one mission, every mission
+        has ended, and no run is still in flight. Idle threads with no mission
+        yet are left alone -- those are an inbox, not history. Ordered by the
+        newest mission clock so a just-finished thread is kept even if it was
+        created early.
+        """
+        keep = max(0, int(self.retained_finished_threads))
+        mission_done = tuple(status.value for status in TERMINAL_MISSION_STATUSES)
+        run_done = tuple(status.value for status in TERMINAL_RUN_STATUSES)
+        placeholders_m = ",".join("?" * len(mission_done))
+        placeholders_r = ",".join("?" * len(run_done))
+        con.execute(
+            "DELETE FROM threads WHERE id IN ("
+            " SELECT id FROM ("
+            "  SELECT t.id FROM threads t"
+            "  WHERE EXISTS (SELECT 1 FROM missions m WHERE m.thread_id=t.id)"
+            f"   AND NOT EXISTS (SELECT 1 FROM missions m WHERE m.thread_id=t.id AND m.status NOT IN ({placeholders_m}))"
+            f"   AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.thread_id=t.id AND r.status NOT IN ({placeholders_r}))"
+            "  ORDER BY (SELECT MAX(m.updated_at) FROM missions m WHERE m.thread_id=t.id) DESC, t.id DESC"
+            "  LIMIT -1 OFFSET ?"
+            " )"
+            ")",
+            (*mission_done, *run_done, keep),
+        )
 
     def cancel_mission(self, mission_id: str) -> AgentMission:
         mission = self.get_mission(mission_id)

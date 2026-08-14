@@ -285,3 +285,41 @@ def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         store.create_mission(thread.id, "will not fit on disk")
+
+
+def _finish_one(store: AgentStore, title: str) -> str:
+    thread = store.create_thread(title=title)
+    mission = store.create_mission(thread.id, "look")
+    run = store.create_run(
+        thread.id, provider_profile="p", model="m", deadline_seconds=30
+    )
+    store.transition(run.id, RunStatus.STREAMING)
+    store.transition(run.id, RunStatus.COMPLETED)
+    store.set_mission_status(mission.id, MissionStatus.COMPLETED)
+    return thread.id
+
+
+def test_finished_threads_are_trimmed_and_live_ones_are_not(tmp_path: Path) -> None:
+    """Every completed mission used to leave its thread in the database forever.
+
+    Measured at 250 tiny missions: 459 KB and still climbing, about 1.8 KB each
+    with almost no tool output. A night of unattended runs has no one to empty
+    that table. Live missions and threads that have not started one stay.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    store.retained_finished_threads = 3
+    store.finished_trim_interval = 1
+
+    idle = store.create_thread(title="inbox")
+    live = store.create_thread(title="live")
+    store.create_mission(live.id, "still going")
+
+    finished = [_finish_one(store, f"done-{index}") for index in range(6)]
+
+    remaining = {thread.id for thread in store.list_threads(limit=500)}
+    assert idle.id in remaining, "a thread with no mission is an inbox, not history"
+    assert live.id in remaining, "a pending mission must not be collected"
+    assert remaining & set(finished) == set(finished[-3:]), (
+        "only the newest finished threads survive"
+    )
+    assert len(remaining) == 5
