@@ -66,7 +66,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
     ) -> dict[str, Any]:
-        """Optional XVLKC unpack into a session artifact; never overwrite input."""
+        """Optional XVLKC unpack into a session artifact; never overwrite input.
+
+        Answers with xvlkc, output_path, input_unchanged, and
+        claims_universal_unpack false.
+        """
         return _dump(analysis.unpack_xvlkc_unpack(session_id, timeout=timeout))
 
     @tools.tool(name="unpack.vmp.dump")

@@ -92,3 +92,24 @@ def test_unpack_external_probe_names_per_tool_status() -> None:
     assert '"vmp_dumper": vmp_status' in source
     assert '"scylla": scylla_status' in source
 
+def test_unpack_xvlkc_unpack_names_output_path() -> None:
+    """The live catalog omitted output_path and the unpack-claim flag.
+
+    tests/unit/test_m7_external_adapters.py already reads result.data['output_path']
+    and data['claims_universal_unpack'] on the XVLKC path. A caller that treats a
+    successful XVLKC run as a universal unpack never sees the false flag.
+    """
+    described = " ".join(_tool_docstring("unpack.xvlkc.unpack").split())
+    assert "Answers with xvlkc" in described
+    assert "output_path" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    assert '"xvlkc": result.to_dict()' in source
+    assert '"output_path": str(result.output_path)' in source
+
