@@ -59,7 +59,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         state: str,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Wait with a bound until the debugger reaches idle, running, or paused."""
+        """Wait with a bound until the debugger reaches idle, running, or paused.
+
+        Answers with state and submitted. There is no reached or ok field
+        besides the envelope.
+        """
         return _dump(analysis.dynamic_wait(session_id, state, timeout=timeout))
 
     @tools.tool(name="dynamic.launch")
