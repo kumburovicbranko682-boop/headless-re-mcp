@@ -307,7 +307,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_same_image_children: bool = False,
         client_only: bool = False,
     ) -> dict[str, Any]:
-        """Capture a debuggee-owned hwnd to BMP (PrintWindow/BitBlt, PID-bounded)."""
+        """Capture a debuggee-owned hwnd to BMP (PrintWindow/BitBlt, PID-bounded).
+
+        Answers with format bmp, path, artifact, width, height, artifact_id,
+        hwnd and action. There is no png field.
+        """
         return _dump(
             analysis.ui_screenshot(
                 session_id,
