@@ -1,0 +1,66 @@
+"""web.script.source description must name source and truncated."""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend
+from headless_re_mcp.tools.web import build_web_tools
+
+
+def _tool_docstring(name: str) -> str:
+    source = Path(build_web_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
+
+
+class _Immediate:
+    def call(self, work: Any, timeout: float | None = None) -> Any:
+        return work()
+
+
+class _Cdp:
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, str]:
+        return {"scriptSource": "y" * (_MAX_INLINE_BODY + 40)}
+
+
+def test_web_script_source_names_source_and_says_when_it_was_cut(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said source and never named the payload.
+
+    Measured: truncated True, source 200000 chars (the cap), bytes 200040,
+    source_path set, no code or text field. Looking for those after a
+    successful call reads as a missing script, and a 200000-char string
+    with no truncated flag reads as the whole file.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=_Cdp()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.script_source("s", "42", tmp_path)
+    assert "code" not in payload
+    assert "text" not in payload
+    assert payload["truncated"] is True
+    assert payload["bytes"] == _MAX_INLINE_BODY + 40
+    assert len(payload["source"]) == _MAX_INLINE_BODY
+    assert "source_path" in payload
+    doc = _tool_docstring("web.script.source")
+    assert "source" in doc
+    assert "truncated" in doc
+    assert "source_path" in doc

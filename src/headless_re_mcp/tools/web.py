@@ -90,7 +90,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.script.source")
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
-        """Fetch one script's source (large sources spill to an artifact)."""
+        """Fetch one script's source (large sources spill to an artifact).
+
+        Answers with scriptId, bytes and source, plus truncated and
+        source_path when the text was cut at the buffer. There is no code
+        or text field.
+        """
         return _dump(analysis.web_script_source(session_id, script_id))
 
     @tools.tool(name="web.wasm.list")
