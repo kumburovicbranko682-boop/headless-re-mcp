@@ -134,3 +134,25 @@ def test_unpack_scylla_rebuild_names_output_path() -> None:
     ).read_text(encoding="utf-8")
     assert '"scylla": result.to_dict()' in source
 
+def test_unpack_auto_names_status_not_a_boolean() -> None:
+    """The live catalog omitted the status field.
+
+    tests/unit/test_unpack_auto.py already reads result.data['status']
+    (not_upx / unpacked) and data['claims_universal_unpack']. A caller looking
+    for a boolean unpacked flag after a successful not_upx route reads it as
+    a finished unpack.
+    """
+    described = " ".join(_tool_docstring("unpack.auto").split())
+    assert "Answers with status" in described
+    assert "not a boolean" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    assert 'payload["status"] = "not_upx"' in source
+    assert 'payload["status"] = "unpacked"' in source
+

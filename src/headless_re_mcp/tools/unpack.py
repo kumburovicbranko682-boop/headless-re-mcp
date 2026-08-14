@@ -118,7 +118,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0,
         open_ida: bool = False,
     ) -> dict[str, Any]:
-        """Route detection to official UPX unpack when appropriate; never fake success."""
+        """Route detection to official UPX unpack when appropriate; never fake success.
+
+        Answers with status, unpack, recommendation, and claims_universal_unpack
+        false. status is unpacked, not_upx, awaiting_oep or routed_m6 — not a
+        boolean.
+        """
         return _dump(
             analysis.unpack_auto(
                 session_id,
