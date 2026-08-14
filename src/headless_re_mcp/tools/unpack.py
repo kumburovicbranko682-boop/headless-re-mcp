@@ -38,7 +38,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0,
         open_ida: bool = False,
     ) -> dict[str, Any]:
-        """Decompress with official ``upx -d`` into a session artifact path."""
+        """Decompress with official ``upx -d`` into a session artifact path.
+
+        Answers with upx, output_path, comparison, input_unchanged, die_rescan,
+        reanalyze, and claims_universal_unpack false. There is no top-level
+        stdout field.
+        """
         return _dump(
             analysis.unpack_upx_unpack(
                 session_id,

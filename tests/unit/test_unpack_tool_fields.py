@@ -46,3 +46,25 @@ def test_unpack_upx_test_nests_cli_result_under_upx() -> None:
         / "service_unpack_cli.py"
     ).read_text(encoding="utf-8")
     assert '{"upx": result.to_dict(), "input_unchanged": True}' in source
+
+def test_unpack_upx_unpack_names_output_path_and_refuses_universal() -> None:
+    """The live catalog omitted output_path and the unpack-claim flag.
+
+    tests/unit/test_upx_fixtures.py already reads unpacked.data['die_rescan'],
+    data['claims_universal_unpack'] and data['input_unchanged']. A caller that
+    treats a successful upx -d as a universal unpack never sees the false flag.
+    """
+    described = " ".join(_tool_docstring("unpack.upx.unpack").split())
+    assert "Answers with upx" in described
+    assert "output_path" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    assert '"output_path": str(result.output_path)' in source
+    assert '"claims_universal_unpack": False' in source
+
