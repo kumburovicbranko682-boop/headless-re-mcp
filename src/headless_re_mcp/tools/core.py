@@ -894,7 +894,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         intent_id: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Remove a managed binding first, then delete its breakpoint intent."""
+        """Remove a managed binding first, then delete its breakpoint intent.
+
+        Answers with workflow and intent_id. There is no removed field
+        and no breakpoint field.
+        """
         return _dump(
             analysis.workflow_breakpoint_remove(
                 session_id,

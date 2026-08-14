@@ -1208,3 +1208,31 @@ def test_workflow_breakpoint_disable_description_names_intent_id() -> None:
     assert '"disabled"' not in returned
     assert '"breakpoint"' not in returned
 
+
+def test_workflow_breakpoint_remove_description_names_intent_id() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns workflow and intent_id, and no removed or
+    breakpoint field. A caller looking for removed after a successful
+    call cannot tell which intent was deleted.
+    """
+    described = " ".join(_docstring("workflow_breakpoint_remove").split())
+    assert "Answers with workflow" in described
+    assert "intent_id" in described
+    assert "no removed field" in described
+    assert "no breakpoint field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_breakpoint_remove")
+    chunk = service[start : service.index("def workflow_breakpoint_list", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    assert '"intent_id": intent_id' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"removed"' not in returned
+    assert '"breakpoint"' not in returned
+
