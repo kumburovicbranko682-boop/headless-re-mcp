@@ -7,6 +7,7 @@ import subprocess
 from contextlib import nullcontext
 from typing import Any
 
+from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.windows import describe_process_windows
 
 
@@ -42,10 +43,7 @@ class ManagedSubprocessMixin:
     def terminate_process(self, *, wait_timeout: float = 3.0) -> None:
         lock = getattr(self, "_lock", nullcontext())
         with lock:
-            if self._process.poll() is None:
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=wait_timeout)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                    self._process.wait(timeout=wait_timeout)
+            # terminate()/kill() on the spawned process leaves what it started
+            # running. Measured: launcher dead after this method, sleeper still
+            # alive.
+            terminate_process_tree(self._process, wait_s=wait_timeout)
