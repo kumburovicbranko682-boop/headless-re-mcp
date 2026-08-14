@@ -54,7 +54,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="unpack.external.probe")
     def unpack_external_probe(session_id: str) -> dict[str, Any]:
-        """Probe optional user-configured XVLKC / VMP dumper / Scylla without running them."""
+        """Probe optional user-configured XVLKC / VMP dumper / Scylla without running them.
+
+        Answers with xvlkc, vmp_dumper and scylla (each status, configured,
+        executable), and claims_universal_unpack false.
+        """
         return _dump(analysis.unpack_external_probe(session_id))
 
     @tools.tool(name="unpack.xvlkc.unpack")

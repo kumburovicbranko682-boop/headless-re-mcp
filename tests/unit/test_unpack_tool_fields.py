@@ -68,3 +68,27 @@ def test_unpack_upx_unpack_names_output_path_and_refuses_universal() -> None:
     assert '"output_path": str(result.output_path)' in source
     assert '"claims_universal_unpack": False' in source
 
+def test_unpack_external_probe_names_per_tool_status() -> None:
+    """The live catalog omitted the per-tool status objects.
+
+    tests/unit/test_m7_external_adapters.py already reads probed.data['xvlkc'],
+    data['vmp_dumper'], data['scylla'] and data['claims_universal_unpack'].
+    A caller looking for a top-level ready flag after a successful probe reads
+    missing tools as if the probe returned nothing.
+    """
+    described = " ".join(_tool_docstring("unpack.external.probe").split())
+    assert "Answers with xvlkc" in described
+    assert "vmp_dumper" in described
+    assert "scylla" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    assert '"xvlkc": xvlkc_status' in source
+    assert '"vmp_dumper": vmp_status' in source
+    assert '"scylla": scylla_status' in source
+
