@@ -739,3 +739,34 @@ def test_modules_dump_schema_matches_native_base_floor() -> None:
     )
     props = input_schema_for(handler)["properties"]
     assert props["base"]["minimum"] == 1
+
+
+def test_pe_headers_runtime_schema_matches_native_base_floor() -> None:
+    """The catalog accepted base 0 and negative bases.
+
+    Measured: input schema base has no minimum. Native ReadPeHeaders reads it
+    as unsigned and answers invalid_params for a zero base. Those calls still
+    occupy a worker until the adapter refuses, and the catalog never said the
+    header read would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ReadPeHeaders")
+    chunk = native[start : native.index("\nOutcome ", start + 10)]
+    assert (
+        'ReadUnsigned(params, "base", base, error, std::numeric_limits<duint>::max())' in chunk
+    )
+    assert 'InvalidField("base", "base must be a non-zero module base")' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "pe.headers.runtime"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["base"]["minimum"] == 1

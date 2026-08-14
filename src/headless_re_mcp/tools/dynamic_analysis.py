@@ -212,7 +212,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="pe.headers.runtime")
     def pe_headers_runtime(
         session_id: str,
-        base: int,
+        base: Annotated[int, Field(ge=1)],
         save_artifact: bool = True,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
