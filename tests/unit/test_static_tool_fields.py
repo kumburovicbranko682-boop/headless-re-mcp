@@ -648,3 +648,29 @@ def test_static_search_immediate_description_names_items_not_matches() -> None:
     assert '"operand"' in chunk
     assert '"matches":' not in chunk
 
+
+def test_static_name_set_description_names_previous_name() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns address, name, previous_name and ok, and no
+    renamed field. A caller looking for renamed after a successful write
+    cannot tell what was overwritten.
+    """
+    described = " ".join(_docstring("static_name_set").split())
+    assert "Answers with address" in described
+    assert "previous_name" in described
+    assert "no renamed field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _name_set")
+    chunk = worker[start : worker.index("def _comment_set", start)]
+    assert '"previous_name": before' in chunk
+    assert '"name": after' in chunk
+    assert '"renamed"' not in chunk
+

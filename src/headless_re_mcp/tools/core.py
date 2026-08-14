@@ -577,7 +577,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         address: int,
         name: str,
     ) -> dict[str, Any]:
-        """Set a name at an address inside the current IDA database."""
+        """Set a name at an address inside the current IDA database.
+
+        Answers with address, name, previous_name and ok. There is no
+        renamed field.
+        """
         return _dump(analysis.static_name_set(session_id, address=address, name=name))
 
     def static_comment_set(
