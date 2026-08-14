@@ -100,3 +100,30 @@ def test_static_strings_description_names_items_and_value() -> None:
     assert '"strings":' not in chunk
     assert '"text":' not in chunk
 
+def test_static_disassemble_description_names_instructions() -> None:
+    """The live catalog omitted the instruction-list field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    disasm.data['instructions']. The worker returns instructions with ea,
+    size and text, and no items or disassembly field. A caller looking for
+    items after a successful disassemble reads it as IDA finding none.
+    """
+    described = _docstring("static_disassemble")
+    joined = " ".join(described.split())
+    assert "Answers with instructions" in joined
+    assert "no items field" in joined
+    assert "no disassembly field" in joined
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _disassemble")
+    chunk = worker[start : worker.index("def _xref_type_name", start)]
+    assert '"instructions": instructions' in chunk
+    assert '"items":' not in chunk
+    assert '"disassembly":' not in chunk
+
