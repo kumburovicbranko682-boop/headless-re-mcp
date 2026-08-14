@@ -203,7 +203,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def dynamic_memory_write(
         session_id: str,
         address: int,
-        data: str,
+        data: Annotated[str, Field(min_length=2, max_length=4 * 1024 * 1024)],
     ) -> dict[str, Any]:
         """Write bounded hexadecimal bytes to an authorized paused debuggee.
 
@@ -264,8 +264,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile a function, arm it at runtime, resume, and report the stop.
 
         One call replaces decompile + rebase + breakpoint + resume + registers.
-        address defaults to an IDA (static) coordinate and is rebased internally;
-        execution.stopped_at_breakpoint says whether the stop was this address.
+        address defaults to an IDA (static) coordinate and is rebased internally.
+        Answers with function (static_address, runtime_address, rva,
+        rebase_delta, module), static, breakpoint (address, armed), execution
+        (resumed, instruction_pointer, stopped_at_breakpoint) and registers.
+        There is no top-level rip, decompiled or ok field.
         """
         return _dump(
             analysis.analyze_function_dynamic(
