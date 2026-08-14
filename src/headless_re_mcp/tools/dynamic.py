@@ -176,7 +176,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.registers.write")
     def dynamic_registers_write(
         session_id: str,
-        name: str,
+        name: Annotated[str, Field(min_length=1, max_length=16)],
         value: int,
     ) -> dict[str, Any]:
         """Write one allowlisted architecture register on a paused debuggee.
