@@ -79,10 +79,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
-        """List registered artifacts, newest first, with id, kind, size and path.
+        """List registered artifacts, newest first.
 
-        Omit session_id for every artifact this instance knows about. Paged; the
-        reply carries total and has_more.
+        Answers with artifacts (each: id, kind, size, path, sha256, source,
+        session_id, created_at), plus count, total, offset, limit and has_more.
+        There is no items field. Omit session_id for every artifact this
+        instance knows about.
         """
         return _dump(analysis.artifacts_list(session_id, offset=offset, limit=limit))
 

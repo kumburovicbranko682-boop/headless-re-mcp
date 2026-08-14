@@ -546,3 +546,25 @@ async def test_artifacts_read_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_artifacts_list_description_names_the_array_field() -> None:
+    """The catalog named the columns and not the list they live in.
+
+    Measured keys are artifacts, count, total, offset, limit and has_more.
+    There is no items field. A caller looking for items after a successful
+    list reads the tree as empty.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "artifacts.list")
+        text = tool.description or ""
+        assert "Answers with artifacts" in text
+        assert "no items field" in text
+        assert "has_more" in text
+    finally:
+        analysis.close_all()
