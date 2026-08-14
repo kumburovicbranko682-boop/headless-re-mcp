@@ -74,3 +74,53 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
+
+class _ExportApi:
+    def exports(self, name: str, count: int) -> dict[str, Any]:
+        return {
+            "found": True,
+            "module": name,
+            "base": "0x1",
+            "exports": [
+                {"name": f"e{index}", "address": "0x2", "type": "function"}
+                for index in range(int(count))
+            ],
+        }
+
+
+class _ExportScript:
+    exports_sync = _ExportApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ExportSession:
+    def create_script(self, source: str) -> _ExportScript:
+        return _ExportScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ExportFrida:
+    def attach(self, pid: int) -> _ExportSession:
+        return _ExportSession()
+
+
+def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
+    """The catalog named found, module, base and exports, and stopped there.
+
+    Measured: 11 exports requested for a page of 10 -> count 10, has_more
+    True. An overnight pass that treated exports as the whole table had no
+    field to notice the rest.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida()
+    payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
+    assert payload["count"] == 10
+    assert len(payload["exports"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("frida.exports")
+    assert "has_more" in doc
