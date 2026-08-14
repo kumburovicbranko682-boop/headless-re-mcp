@@ -47,7 +47,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         address: int,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Query the memory region containing one address on a paused debuggee."""
+        """Query the memory region containing one address on a paused debuggee.
+
+        Answers with protect_name and protect, plus base, size, state, type,
+        info and address. There is no protection, region or rights field.
+        """
         return _dump(analysis.memory_protect_query(session_id, address, timeout=timeout))
 
     @tools.tool(name="memory.protection")
