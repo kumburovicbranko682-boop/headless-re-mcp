@@ -172,25 +172,43 @@ class SqliteAnalysisRepository:
         session: Session | None,
         result: Result[JsonObject],
     ) -> None:
+        if session is None:
+            # Closing something the registry does not hold must not create it.
+            # Measured: session.close on a never-seen id wrote sessions/<id>/
+            # timeline.jsonl and a failed sqlite row, after which timeline.list
+            # answered ok (one "close failed" event) and sessions.unclean
+            # offered the ghost as leftover work. Closing an evicted real
+            # session then blanked its binary and marked it unclean.
+            existing = self.store.get_session(session_id)
+            if existing is None or not result.ok:
+                return
+            with self.transaction():
+                self.store.upsert_session(
+                    session_id=session_id,
+                    binary=str(existing.get("binary") or ""),
+                    sha256=str(existing.get("sha256") or ""),
+                    architecture=str(existing.get("architecture") or ""),
+                    state="closed",
+                    closed_cleanly=True,
+                )
+                self.append_timeline(session_id, "session.closed", "session closed", ok=True)
+                self.append_audit(
+                    session_id=session_id,
+                    action="session.close",
+                    params_summary={},
+                    ok=True,
+                    result_summary={"ok": True},
+                )
+            return
         with self.transaction():
-            if session is None:
-                self.store.upsert_session(
-                    session_id=session_id,
-                    binary="",
-                    sha256="",
-                    architecture="",
-                    state="closed" if result.ok else "failed",
-                    closed_cleanly=bool(result.ok),
-                )
-            else:
-                self.store.upsert_session(
-                    session_id=session_id,
-                    binary=str(session.locator or session.binary or ""),
-                    sha256=session.sha256 or "",
-                    architecture=session.architecture.value if session.architecture else "",
-                    state=session.state.value,
-                    closed_cleanly=bool(result.ok),
-                )
+            self.store.upsert_session(
+                session_id=session_id,
+                binary=str(session.locator or session.binary or ""),
+                sha256=session.sha256 or "",
+                architecture=session.architecture.value if session.architecture else "",
+                state=session.state.value,
+                closed_cleanly=bool(result.ok),
+            )
             self.append_timeline(
                 session_id,
                 "session.closed",
@@ -404,30 +422,34 @@ class InMemoryAnalysisRepository:
         result: Result[JsonObject],
     ) -> None:
         now = datetime.now(UTC).isoformat()
+        if session is None:
+            existing = self._sessions.get(session_id)
+            if existing is None or not result.ok:
+                return
+            with self.transaction():
+                self._sessions[session_id] = {
+                    **existing,
+                    "state": "closed",
+                    "updated_at": now,
+                    "closed_cleanly": 1,
+                }
+                self.append_timeline(session_id, "session.closed", "session closed", ok=True)
+                self.append_audit(
+                    session_id=session_id,
+                    action="session.close",
+                    params_summary={},
+                    ok=True,
+                    result_summary={"ok": True},
+                )
+            return
         with self.transaction():
             existing = self._sessions.get(session_id, {})
             self._sessions[session_id] = {
                 "id": session_id,
-                "binary": (
-                    str(session.locator or session.binary or "")
-                    if session is not None
-                    else str(existing.get("binary", ""))
-                ),
-                "sha256": (
-                    (session.sha256 or "")
-                    if session is not None
-                    else str(existing.get("sha256", ""))
-                ),
-                "architecture": (
-                    (session.architecture.value if session.architecture else "")
-                    if session is not None
-                    else str(existing.get("architecture", ""))
-                ),
-                "state": (
-                    session.state.value
-                    if session is not None
-                    else ("closed" if result.ok else "failed")
-                ),
+                "binary": str(session.locator or session.binary or ""),
+                "sha256": session.sha256 or "",
+                "architecture": session.architecture.value if session.architecture else "",
+                "state": session.state.value,
                 "created_at": str(existing.get("created_at") or now),
                 "updated_at": now,
                 "closed_cleanly": 1 if result.ok else 0,

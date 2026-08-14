@@ -200,6 +200,12 @@ class SessionStore:
                     )
             conn.commit()
 
+    def get_session(self, session_id: str) -> JsonObject | None:
+        """The stored row, or None if this id was never created."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            return dict(row) if row is not None else None
+
     def mark_unclean_open_sessions(self) -> int:
         """On startup, ensure previously open sessions stay marked unclean."""
         with self._lock, self._connect() as conn:

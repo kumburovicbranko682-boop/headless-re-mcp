@@ -216,3 +216,77 @@ def test_appends_that_trim_at_the_same_time_do_not_fail_each_other(
     assert listed["total"] > 0, "the log must still be readable"
     strays = [item.name for item in path.parent.iterdir() if item.name != path.name]
     assert strays == [], f"trimming left scratch files behind: {strays}"
+
+
+def test_closing_a_session_that_is_not_there_does_not_invent_one(tmp_path: Path) -> None:
+    """session.close on an unknown id used to create the session it could not find.
+
+    Measured: the close wrote sessions/<id>/timeline.jsonl and a failed sqlite
+    row, timeline.list then answered ok with one "close failed" event, and
+    sessions.unclean offered the ghost as leftover work. Closing an evicted
+    real session afterwards blanked its binary and marked it unclean.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.models import Result, RpcError
+    from headless_re_mcp.core.repository import SqliteAnalysisRepository
+    from headless_re_mcp.core.service import AnalysisService
+
+    repository = SqliteAnalysisRepository(tmp_path / "repo")
+    ghost = "deadbeefdeadbeefdeadbeefdeadbeef"
+    repository.note_session_closed(
+        ghost,
+        None,
+        Result(ok=False, error=RpcError(code="session_not_found", message="session not found")),
+    )
+
+    page = repository.list_timeline(ghost)
+    assert page.get("exists") is False
+    assert repository.list_unclean_sessions() == ([], 0)
+    assert repository.store.get_session(ghost) is None
+    assert not (tmp_path / "repo" / "sessions" / ghost).exists()
+
+    pe = tmp_path / "f.exe"
+    image = bytearray(0x200)
+    image[:2] = b"MZ"
+    image[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    image[0x80:0x84] = b"PE\0\0"
+    image[0x84:0x86] = (0x8664).to_bytes(2, "little")
+    pe.write_bytes(image)
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        missing = "cafebabecafebabecafebabecafebabe"
+        closed = service.close_session(missing)
+        assert closed.ok is False
+        assert closed.error is not None
+        assert closed.error.code == "session_not_found"
+        listed = service.timeline_list(missing)
+        assert listed.ok is False
+        assert listed.error is not None
+        assert listed.error.code == "session_not_found"
+        unclean = service.sessions_unclean()
+        assert unclean.data is not None
+        assert unclean.data["total"] == 0
+        assert not (tmp_path / "artifacts" / "sessions" / missing).exists()
+
+        created = service.create_session(str(pe))
+        assert created.data is not None
+        session_id = str(created.data["session"]["id"])
+        row_before = service.repository.store.get_session(session_id)
+        assert row_before is not None
+        assert service.close_session(session_id).ok
+        service.registry.remove_closed(session_id)
+        again = service.close_session(session_id)
+        assert again.ok is False
+        assert again.error is not None
+        assert again.error.code == "session_not_found"
+        row_after = service.repository.store.get_session(session_id)
+        assert row_after is not None
+        assert row_after["binary"] == row_before["binary"]
+        assert row_after["closed_cleanly"] == 1
+        assert row_after["state"] == "closed"
+    finally:
+        service.close_all()
