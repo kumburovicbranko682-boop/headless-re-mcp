@@ -277,7 +277,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def unpack_dump_module(
         session_id: str,
         base: int,
-        size: int | None = None,
+        size: Annotated[int, Field(ge=1, le=64 * 1024 * 1024)] | None = None,
         save_headers: bool = True,
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
@@ -391,7 +391,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         iat_size: int | None = None,
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """Remap a runtime dump to file layout and optionally rebuild imports."""
+        """Remap a runtime dump to file layout and optionally rebuild imports.
+
+        Answers with output_path, input_path, sha256, report, pe_verify, and
+        claims_universal_unpack false. There is no rebuilt field.
+        """
         return _dump(
             analysis.unpack_pe_rebuild(
                 session_id,

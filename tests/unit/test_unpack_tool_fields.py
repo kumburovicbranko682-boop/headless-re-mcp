@@ -272,3 +272,27 @@ def test_unpack_dump_module_names_output_path() -> None:
     assert 'payload["claims_universal_unpack"] = False' in chunk
     assert 'output_path = str(payload.get("output_path"' in chunk
 
+def test_unpack_pe_rebuild_names_output_path() -> None:
+    """The live catalog omitted output_path and the unpack-claim flag.
+
+    tests/unit/test_m4_unpack_service.py already reads rebuilt.data['output_path']
+    and data['claims_universal_unpack']. There is no rebuilt field. A caller
+    looking for rebuilt after a successful remap reads the file as missing.
+    """
+    described = " ".join(_tool_docstring("unpack.pe.rebuild").split())
+    assert "Answers with output_path" in described
+    assert "no rebuilt field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_pe_rebuild")
+    chunk = source[start : source.index("def unpack_verify", start)]
+    assert '"output_path": str(out_path)' in chunk
+    assert '"claims_universal_unpack": False' in chunk
+    assert '"rebuilt"' not in chunk
+
