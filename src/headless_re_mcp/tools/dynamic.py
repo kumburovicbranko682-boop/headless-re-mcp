@@ -174,7 +174,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         name: str,
         value: int,
     ) -> dict[str, Any]:
-        """Write one allowlisted architecture register on a paused debuggee."""
+        """Write one allowlisted architecture register on a paused debuggee.
+
+        Answers with name and value of the register that was written. There
+        is no written, ok or registers field.
+        """
         return _dump(analysis.dynamic_register_write(session_id, name, value))
 
     @tools.tool(name="dynamic.memory.read")
