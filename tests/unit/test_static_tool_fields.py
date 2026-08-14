@@ -271,3 +271,31 @@ def test_static_entrypoints_description_names_items_not_entrypoints() -> None:
     assert '"kind": "entry"' in chunk
     assert '"entrypoints"' not in chunk
 
+
+def test_static_xrefs_to_description_names_frm_not_from() -> None:
+    """The live catalog omitted the list field and named the source wrong.
+
+    The IDA worker pages items with frm, to, type, type_name and iscode,
+    and no from or xrefs field. A caller looking for from after a
+    successful list reads it as IDA finding no xref sources.
+    """
+    described = " ".join(_docstring("static_xrefs_to").split())
+    assert "Answers with items" in described
+    assert "frm" in described
+    assert "no from field" in described
+    assert "no xrefs field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _xrefs_to")
+    chunk = worker[start : worker.index("def _xrefs_from", start)]
+    assert '"frm": int(xref.frm)' in chunk
+    assert '"to": int(xref.to)' in chunk
+    assert '"from"' not in chunk
+    assert '"xrefs"' not in chunk
+
