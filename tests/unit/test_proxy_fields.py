@@ -69,3 +69,37 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     assert "Answers with flows" in doc
     assert "content_type" in doc
     assert "total" in doc
+
+
+def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
+    """The catalog named the page and never said when the ring had already lost rows.
+
+    Measured: capacity 5, 12 responses, limit 3 -> count 3, total 5, has_more
+    True, dropped 7. Looking at a full page with no has_more reads as the
+    whole capture; looking with no dropped reads as nothing evicted.
+    """
+    recorder = _FlowRecorder(capacity=5)
+    for index in range(12):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    payload = backend.flows("s", offset=0, limit=3)
+    assert payload["count"] == 3
+    assert payload["total"] == 5
+    assert payload["has_more"] is True
+    assert payload["dropped"] == 7
+    assert len(payload["flows"]) == 3
+    doc = _tool_docstring("proxy.flows")
+    assert "has_more" in doc
+    assert "dropped" in doc
