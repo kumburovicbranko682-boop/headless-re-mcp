@@ -441,3 +441,27 @@ def test_unpack_iat_validate_names_confirmed_boolean() -> None:
     assert '"claims_universal_unpack": False' in chunk
     assert '"valid"' not in chunk
 
+def test_unpack_stub_coupling_nests_stats() -> None:
+    """The live catalog omitted the stub_coupling object.
+
+    The service nests dump stats under stub_coupling and sets
+    claims_universal_unpack false. There is no counts field. A caller looking
+    for counts after a successful hint reads the dump as unanalyzed.
+    """
+    described = " ".join(_tool_docstring("unpack.stub_coupling").split())
+    assert "Answers with stub_coupling" in described
+    assert "no counts field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_stub_coupling")
+    chunk = source[start : source.index("def unpack_iat_scan", start)]
+    assert '"stub_coupling": coupling' in chunk
+    assert '"claims_universal_unpack": False' in chunk
+    assert '"counts"' not in chunk
+

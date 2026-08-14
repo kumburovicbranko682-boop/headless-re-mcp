@@ -310,7 +310,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         iat_size: int | None = None,
         module_base: int | None = None,
     ) -> dict[str, Any]:
-        """Count E8→VMP stub calls vs FF15/FF25 API sites on a dump (fail-closed hint)."""
+        """Count E8→VMP stub calls vs FF15/FF25 API sites on a dump (fail-closed hint).
+
+        Answers with stub_coupling, rebuild_gate_hint, pause_quality, and
+        claims_universal_unpack false. There is no counts field.
+        """
         return _dump(
             analysis.unpack_stub_coupling(
                 session_id,
