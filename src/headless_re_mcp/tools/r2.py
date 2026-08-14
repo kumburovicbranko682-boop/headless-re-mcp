@@ -36,10 +36,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """One-shot check that radare2 can open the session binary.
 
-        Runs identity only (``i``) and exits. Subsequent r2 tools reopen the
-        file in a new process; r2.functions is what runs the analysis pass.
-        A longer timeout here does not buy analysis for anyone else. Requires
-        radare2 on PATH or HEADLESS_RE_R2.
+        Runs identity only (``i``) and exits. Answers with opened, binary,
+        info (the ``i`` text, not a raw field), and note. Subsequent r2
+        tools reopen the file in a new process; r2.functions is what runs
+        the analysis pass. A longer timeout here does not buy analysis for
+        anyone else. Requires radare2 on PATH or HEADLESS_RE_R2.
         """
         return _dump(analysis.r2_open(session_id, timeout=timeout))
 
