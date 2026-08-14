@@ -118,8 +118,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble length instructions at address in this session's live debuggee.
 
-        Answers with disasm holding that text, plus pid, address and length.
-        There is no process_id or output field.
+        Answers with disasm holding that text, plus pid, address and length,
+        and truncated, output_chars and returned_chars when the session was
+        cut at the 500_000-character buffer. There is no process_id or
+        output field.
         """
         return _dump(
             analysis.windbg_live_disasm(session_id, address, length=length, timeout=timeout)
