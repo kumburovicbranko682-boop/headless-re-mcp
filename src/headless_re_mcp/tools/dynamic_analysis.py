@@ -117,7 +117,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         value: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Write one allowlisted register on a thread, restoring the prior TID."""
+        """Write one allowlisted register on a thread, restoring the prior TID.
+
+        Answers with name and value, plus tid and restored_tid. There is
+        no written, ok, registers or context field.
+        """
         return _dump(analysis.threads_context_write(session_id, tid, name, value, timeout=timeout))
 
     @tools.tool(name="stack.read")
