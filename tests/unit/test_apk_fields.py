@@ -162,3 +162,51 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     doc = _tool_docstring("apk.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
+
+class _FakeApkMethod:
+    def __init__(self, index: int) -> None:
+        self.name = f"m{index}"
+        self.descriptor = "()V"
+        self.access = "public"
+
+
+class _FakeMethodClass:
+    def __init__(self, count: int) -> None:
+        self.name = "Lcom/example/Foo;"
+        self._methods = [_FakeApkMethod(index) for index in range(count)]
+
+    def get_methods(self) -> list[_FakeApkMethod]:
+        return self._methods
+
+
+class _FakeMethodParsed:
+    def __init__(self, count: int) -> None:
+        self.analysis = self
+        self._classes = [_FakeMethodClass(count)]
+
+    def get_classes(self) -> list[_FakeMethodClass]:
+        return self._classes
+
+
+def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said paginated and never named the payload.
+
+    Measured: 25 methods, limit 10 -> count 10, total 25, has_more True,
+    field is methods not method_list or items. Looking for those after a
+    successful call reads as no methods, and a full page with no has_more
+    reads as the whole class.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(25))
+    payload = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=0, limit=10)
+    assert "method_list" not in payload
+    assert "items" not in payload
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert len(payload["methods"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("apk.methods")
+    assert "Answers with methods" in doc
+    assert "has_more" in doc

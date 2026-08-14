@@ -23,7 +23,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.open")
     def apk_open(session_id: str) -> dict[str, Any]:
-        """Parse an APK session's identity: package, version, SDK, ABIs."""
+        """Parse an APK session's identity.
+
+        Answers with package, version_name, version_code, min_sdk, target_sdk,
+        native_abis, main_activity, permission_count and opened. There is no
+        version, sdk or abis field.
+        """
         return _dump(analysis.apk_open(session_id))
 
     @tools.tool(name="apk.manifest")
@@ -75,7 +80,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List methods of a class (dotted or Lsmali/form; paginated)."""
+        """List methods of a class (dotted or Lsmali/form; paginated).
+
+        Answers with methods (name, descriptor, access), class_name, count,
+        total, offset, and has_more so a page that filled the limit is not
+        read as the whole class.
+        """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
