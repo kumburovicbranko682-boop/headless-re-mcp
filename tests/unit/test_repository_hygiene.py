@@ -7,18 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-# These five live in tools/frida.py, which another change is holding
-# uncommitted. Remove a name from here as soon as it gains a docstring; the
-# test says so when one does.
-_TOOLS_STILL_UNDESCRIBED = {
-    "frida.attach",
-    "frida.modules",
-    "frida.exports",
-    "frida.memory.read",
-    "frida.hook.template",
-}
-
-
 def test_every_tool_tells_the_model_what_it_does() -> None:
     """A tool with no docstring reaches the model as its own name and nothing else.
 
@@ -26,7 +14,7 @@ def test_every_tool_tells_the_model_what_it_does() -> None:
     nobody to ask. Measured over the live stdio transport: 33 of 263 tools
     arrived with no description, and the names of several actively mislead --
     sessions.unclean lists every open session including the ones in use, and
-    artifacts.gc deletes files.
+    frida.attach detaches before the reply is read.
     """
     undescribed: list[str] = []
     for path in sorted((ROOT / "src" / "headless_re_mcp" / "tools").glob("*.py")):
@@ -38,10 +26,7 @@ def test_every_tool_tells_the_model_what_it_does() -> None:
             if name is not None and ast.get_docstring(node) is None:
                 undescribed.append(name)
 
-    missing = sorted(set(undescribed) - _TOOLS_STILL_UNDESCRIBED)
-    assert not missing, f"these tools reach the model as a bare name: {missing}"
-    fixed = sorted(_TOOLS_STILL_UNDESCRIBED - set(undescribed))
-    assert not fixed, f"these now have docstrings; drop them from the exception list: {fixed}"
+    assert not undescribed, f"these tools reach the model as a bare name: {undescribed}"
 
 
 def _tool_name(node: ast.FunctionDef) -> str | None:
