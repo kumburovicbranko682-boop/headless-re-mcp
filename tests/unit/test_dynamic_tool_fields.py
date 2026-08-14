@@ -102,3 +102,43 @@ def test_dynamic_memory_read_schema_matches_native_size_cap() -> None:
     props = input_schema_for(handler)["properties"]
     assert props["size"]["minimum"] == 1
     assert props["size"]["maximum"] == cap
+
+
+def test_dynamic_memory_write_schema_matches_native_data_cap() -> None:
+    """The catalog accepted unbounded hex data.
+
+    Measured: input schema data has no maximum. Native WriteMemory reads data
+    with a MaxMemoryBytes*2 hex cap and rejects empty or oversize decoded
+    bytes. A caller that sends megabytes of junk still occupies a worker until
+    the adapter refuses, and the catalog never said the write would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    marker = "constexpr std::uint64_t MaxMemoryBytes = "
+    start = header.index(marker) + len(marker)
+    expr = header[start : header.index(";", start)]
+    assert "2U * 1024U * 1024U" in expr
+    cap = 2 * 1024 * 1024
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome WriteMemory")
+    chunk = native[start : native.index("Outcome QueryMemoryProtect", start)]
+    assert 'ReadString(params, "data", encoded, error, true, MaxMemoryBytes * 2)' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_tools(object())  # type: ignore[arg-type]
+        if binding.name == "dynamic.memory.write"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["data"]["minLength"] == 2
+    assert props["data"]["maxLength"] == cap * 2

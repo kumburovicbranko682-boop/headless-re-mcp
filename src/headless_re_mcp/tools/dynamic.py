@@ -264,11 +264,8 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile a function, arm it at runtime, resume, and report the stop.
 
         One call replaces decompile + rebase + breakpoint + resume + registers.
-        address defaults to an IDA (static) coordinate and is rebased internally.
-        Answers with function (static_address, runtime_address, rva,
-        rebase_delta, module), static, breakpoint (address, armed), execution
-        (resumed, instruction_pointer, stopped_at_breakpoint) and registers.
-        There is no top-level rip, decompiled or ok field.
+        address defaults to an IDA (static) coordinate and is rebased internally;
+        execution.stopped_at_breakpoint says whether the stop was this address.
         """
         return _dump(
             analysis.analyze_function_dynamic(
