@@ -44,7 +44,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="memory.protect.query")
     def memory_protect_query(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Query the memory region containing one address on a paused debuggee.

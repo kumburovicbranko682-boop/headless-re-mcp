@@ -799,3 +799,34 @@ def test_imports_read_schema_matches_native_iat_va_floor() -> None:
     )
     props = input_schema_for(handler)["properties"]
     assert props["iat_va"]["minimum"] == 0
+
+
+def test_memory_protect_query_schema_matches_native_address_floor() -> None:
+    """The catalog accepted a negative address on the query.
+
+    Measured: input schema address has no minimum, while the sibling
+    memory.protection already floors it at 0. Native QueryMemoryProtect reads
+    address as unsigned. A negative address still occupies a worker until the
+    adapter refuses, and the catalog never said the query would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome QueryMemoryProtect")
+    chunk = native[start : native.index("\nbool IsAbsoluteWindowsPath", start)]
+    assert (
+        'ReadUnsigned(params, "address", address, error, std::numeric_limits<duint>::max())'
+        in chunk
+    )
+    bindings = build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+    query = next(binding.handler for binding in bindings if binding.name == "memory.protect.query")
+    protection = next(
+        binding.handler for binding in bindings if binding.name == "memory.protection"
+    )
+    assert input_schema_for(protection)["properties"]["address"]["minimum"] == 0
+    assert input_schema_for(query)["properties"]["address"]["minimum"] == 0
