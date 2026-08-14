@@ -87,7 +87,12 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_device_connect(
         session_id: str, device_id: str = "usb", endpoint: str = ""
     ) -> dict[str, Any]:
-        """Bind a Frida device to the session (device_id usb/local/<id>, or endpoint host:port)."""
+        """Bind a Frida device to the session (device_id usb/local/<id>, or endpoint host:port).
+
+        Answers with connected and device. There is no top-level device_id or
+        ok field. device holds the bound device info; looking for device_id
+        after a successful connect reads as a bind that returned no device.
+        """
         return _dump(
             analysis.frida_device_connect(session_id, device_id=device_id, endpoint=endpoint)
         )

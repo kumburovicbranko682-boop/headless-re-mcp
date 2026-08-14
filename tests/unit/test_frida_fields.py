@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -299,3 +300,21 @@ def test_frida_spawn_names_pid_not_process_id() -> None:
     doc = _tool_docstring("frida.spawn")
     assert "Answers with pid" in doc
     assert "There is no process_id" in doc
+
+
+def test_frida_device_connect_names_connected_and_device() -> None:
+    """The catalog said bind a device and never named the payload.
+
+    Measured against the service return: connected True and device holding
+    the device info. There is no top-level device_id or ok field. Looking
+    for device_id after a successful connect reads as a bind that returned
+    no device.
+    """
+    from headless_re_mcp.core.service_frida import FridaDeviceMixin
+
+    source = inspect.getsource(FridaDeviceMixin.frida_device_connect)
+    assert '{"connected": True, "device": info}' in source
+    assert '"ok"' not in source
+    doc = _tool_docstring("frida.device.connect")
+    assert "Answers with connected" in doc
+    assert "There is no top-level device_id" in doc
