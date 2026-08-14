@@ -105,7 +105,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="artifacts.list")
     def artifacts_list(
         session_id: str | None = None,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
         """List registered artifacts, newest first.
