@@ -83,7 +83,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List internal (non-external) DEX classes with pagination.
@@ -97,7 +97,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_methods(
         session_id: str,
         class_name: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List methods of a class (dotted or Lsmali/form; paginated).
@@ -113,7 +113,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
