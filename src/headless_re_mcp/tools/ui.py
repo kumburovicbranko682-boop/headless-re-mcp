@@ -235,7 +235,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
-        backend: str = "win32",
+        backend: Annotated[
+            str,
+            Field(pattern="^(win32|sendinput|input)$"),
+        ] = "win32",
     ) -> dict[str, Any]:
         """Send key via WM_* or SendInput (PID-bounded; SendInput rechecks FG PID).
 
