@@ -48,7 +48,12 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.get_session(session_id))
 
     def session_list() -> dict[str, Any]:
-        """List all sessions known to this MCP server process."""
+        """List all sessions known to this MCP server process.
+
+        Answers with sessions and count. There is no items or session_ids
+        field. Each entry is the same nested session object session.create
+        returns, so the id is session.id, not a top-level session_id.
+        """
         return _dump(analysis.list_sessions())
 
     def session_close(session_id: str) -> dict[str, Any]:

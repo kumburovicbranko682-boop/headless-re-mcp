@@ -954,3 +954,25 @@ async def test_session_create_description_names_the_nested_object() -> None:
         assert "no top-level session_id" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_session_list_description_names_live_fields() -> None:
+    """The catalog did not name the array a successful list actually returns.
+
+    Measured keys are sessions and count. There is no items or session_ids
+    field. A caller looking for session_id at the top of the reply reads a
+    process that has sessions as if it had none.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "session.list")
+        text = tool.description or ""
+        assert "Answers with sessions" in text
+        assert "count" in text
+        assert "no items" in text
+    finally:
+        analysis.close_all()
