@@ -24,9 +24,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Binary identity as radare2 prints it.
 
-        Runs ``i`` (not JSON). Answers with raw holding that text. There are
-        no format, arch, bits, endianness or entry fields; architecture and
-        image_base come from the PE header, not from this listing.
+        Runs ``i`` (not JSON). Answers with raw holding that text, plus
+        truncated, output_bytes and returned_bytes when the text was cut at
+        the 1_000_000-byte buffer. There are no format, arch, bits,
+        endianness or entry fields; architecture and image_base come from
+        the PE header, not from this listing.
         """
         return _dump(analysis.r2_info(session_id, timeout=timeout))
 
@@ -89,8 +91,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Exported symbols with their addresses.
 
-        Answers with items, each carrying name, vaddr and address, plus
-        count. Read items_truncated, items_total and items_limit when the
+        Answers with items, each carrying name, vaddr and address
+        (va/rva/module), plus count. There is no integer address field.
+        Read items_truncated, items_total and items_limit when the
         list filled the cap (4096). There is no exports, truncated or
         has_more field.
         """
