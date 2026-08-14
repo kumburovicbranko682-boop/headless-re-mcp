@@ -175,7 +175,9 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_window_close(
         session_id: str,
         hwnd: int,
-        method: str = "nc_close",
+        method: Annotated[
+            str, Field(pattern="^(nc_close|syscommand|wm_close|close)$")
+        ] = "nc_close",
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
