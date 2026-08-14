@@ -176,7 +176,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def modules_dump(
         session_id: str,
         base: int,
-        size: int | None = None,
+        size: Annotated[int, Field(ge=1, le=64 * 1024 * 1024)] | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Dump one loaded module into a session artifact path (no raw bytes over MCP)."""

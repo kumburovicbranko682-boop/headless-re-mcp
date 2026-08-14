@@ -221,3 +221,30 @@ def test_imports_scan_schema_matches_native_candidate_cap() -> None:
     props = input_schema_for(handler)["properties"]
     assert props["max_candidates"]["minimum"] == 1
     assert props["max_candidates"]["maximum"] == cap
+
+def test_modules_dump_schema_matches_native_dump_cap() -> None:
+    """The catalog accepted an unbounded dump size.
+
+    Measured: input schema size has no maximum. Native MaxDumpBytes and the
+    service dump_too_large path are 64 MiB. A caller that asks for a 2 GiB
+    dump still occupies a worker until the service refuses.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    assert "MaxDumpBytes = 64U * 1024U * 1024U" in header
+    cap = 64 * 1024 * 1024
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "modules.dump"
+    )
+    props = input_schema_for(handler)["properties"]
+    integer_size = next(item for item in props["size"]["anyOf"] if item.get("type") == "integer")
+    assert integer_size["minimum"] == 1
+    assert integer_size["maximum"] == cap
