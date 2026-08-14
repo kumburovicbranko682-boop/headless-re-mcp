@@ -539,3 +539,71 @@ def test_reading_across_the_memory_window_loses_nothing(
 
     assert seen == list(range(1, total + 1)), "a paged walk must see every event exactly once"
     assert from_disk > 0, "and must actually have crossed out of the window"
+
+
+def _sqlite_bytes(path: Path) -> int:
+    return sum(
+        child.stat().st_size
+        for child in path.parent.glob(path.name + "*")
+        if child.is_file()
+    )
+
+
+def test_the_sqlite_log_does_not_keep_every_event_a_session_ever_saw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Memory already had a window. Disk did not.
+
+    Measured on this machine: 160_000 events left memory at 65_536 and the
+    closed database at 34.6 MB, about 216 bytes each, still climbing -- 186 MB
+    a day at ten events a second. The file is not an artifact, so overnight
+    debug is a disk leak the quota cannot see. Trimming must say so: a read
+    from the start reports dropped, and the newest events are still there.
+    """
+    import headless_re_mcp.core.event_log as event_log
+    from headless_re_mcp.core.events import DebugEvent
+
+    monkeypatch.setattr(event_log, "DISK_RETAINED_EVENTS", 64)
+    monkeypatch.setattr(event_log, "MEMORY_WINDOW_EVENTS", 32)
+
+    def _event(index: int) -> DebugEvent:
+        return DebugEvent(
+            sequence=index,
+            timestamp_unix_ms=1_700_000_000_000 + index,
+            source="x64dbg.plugin_callback",
+            kind="debug.paused",
+            data={"module": "kernel32.dll", "note": "x" * 120},
+        )
+
+    cap = event_log.DISK_RETAINED_EVENTS
+    path = tmp_path / "events.db"
+    log = event_log.PersistentDebugEventLog(path)
+    total = cap * 4
+    log.append_events([_event(i) for i in range(1, total + 1)])
+
+    assert log._stored == cap, f"disk retained {log._stored} events, cap is {cap}"
+    assert len(log._memory) <= event_log.MEMORY_WINDOW_EVENTS
+
+    served = log.read_after(0, limit=10)
+    assert served.batch.dropped_total == total - cap
+    assert served.batch.dropped == total - cap
+    assert served.batch.oldest_sequence == total - cap + 1
+    assert [event.sequence for event in served.batch.events] == list(
+        range(total - cap + 1, total - cap + 11)
+    )
+    assert served.unrecovered_gap is True, "trimmed history must not look contiguous from cursor 0"
+
+    tail = log.read_after(total - 5, limit=10)
+    assert [event.sequence for event in tail.batch.events] == list(range(total - 4, total + 1))
+    assert tail.batch.dropped == 0
+
+    at_cap = _sqlite_bytes(path)
+    more = cap * 4
+    log.append_events([_event(i) for i in range(total + 1, total + more + 1)])
+    assert log._stored == cap, "a second night of events must not grow the row count"
+    after_more = _sqlite_bytes(path)
+    log.close()
+    assert after_more < at_cap * 2, (
+        f"another {more} events must not double the file: {at_cap}B then {after_more}B"
+    )

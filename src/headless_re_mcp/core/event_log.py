@@ -30,6 +30,13 @@ JsonObject = dict[str, Any]
 # the native ring, so ordinary lag is still served without touching disk.
 MEMORY_WINDOW_EVENTS = 65_536
 
+# Disk is not the memory window. Measured on this machine: 160_000 events left
+# memory at 65_536 and the closed database at 34.6 MB, about 216 bytes each,
+# still climbing -- 186 MB a day at ten events a second. The file is not an
+# artifact, so the quota never sees it. Four times the window keeps a lagged
+# consumer in replay without keeping a night of debug on disk.
+DISK_RETAINED_EVENTS = 262_144
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS debug_events (
   sequence INTEGER PRIMARY KEY NOT NULL,
@@ -70,6 +77,10 @@ class PersistentDebugEventLog:
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+            # Must be set before the first table exists; ignored on a file that
+            # was created without it. Incremental vacuum is how a DELETE becomes
+            # bytes back rather than a high-water mark that never falls.
+            self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
@@ -140,6 +151,7 @@ class PersistentDebugEventLog:
                 )
                 self._conn.commit()
                 self._evict_to_window()
+                self._trim_disk()
 
     def _evict_to_window(self) -> None:
         """Drop the oldest events from memory once they are safely on disk.
@@ -155,6 +167,43 @@ class PersistentDebugEventLog:
             sequence = next(iter(self._memory))
             del self._memory[sequence]
             self._evicted_through = max(self._evicted_through, sequence)
+
+    def _trim_disk(self) -> None:
+        """Drop the oldest on-disk events once the retained count is exceeded.
+
+        Memory already had a window. Disk did not: every sequence was inserted
+        and none were deleted, so a long dynamic session grew the database for
+        as long as it ran. A read that starts before what remains reports the
+        loss through ``dropped`` / ``dropped_total``, the same way a native
+        ring overwrite does -- inventing the trimmed events would be worse.
+        """
+        if self._conn is None or self._stored <= DISK_RETAINED_EVENTS:
+            return
+        cutoff = self._conn.execute(
+            "SELECT sequence FROM debug_events ORDER BY sequence DESC LIMIT 1 OFFSET ?",
+            (DISK_RETAINED_EVENTS - 1,),
+        ).fetchone()
+        if cutoff is None:
+            return
+        keep_from = int(cutoff[0])
+        self._conn.execute("DELETE FROM debug_events WHERE sequence < ?", (keep_from,))
+        bounds = self._conn.execute(
+            "SELECT MIN(sequence), COUNT(*) FROM debug_events"
+        ).fetchone()
+        if bounds is None or bounds[0] is None:
+            self._oldest = 0
+            self._stored = 0
+        else:
+            self._oldest = int(bounds[0])
+            self._stored = int(bounds[1])
+        while self._memory and next(iter(self._memory)) < self._oldest:
+            del self._memory[next(iter(self._memory))]
+        if self._oldest:
+            self._evicted_through = max(self._evicted_through, self._oldest - 1)
+        self._conn.commit()
+        self._conn.execute("PRAGMA incremental_vacuum")
+        # Reclaim WAL pages so the bound is bytes on disk, not just row count.
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def _row_to_event(self, row: tuple[Any, ...]) -> DebugEvent:
         data = json.loads(row[4])
