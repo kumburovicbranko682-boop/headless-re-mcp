@@ -755,3 +755,29 @@ def test_static_function_create_description_names_created() -> None:
     assert "function already exists" in chunk
     assert '"function"' not in chunk
 
+
+def test_static_function_delete_description_names_deleted() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns address, end, deleted and ok, and no function
+    field. A caller looking for function after a successful delete cannot
+    tell which range was removed.
+    """
+    described = " ".join(_docstring("static_function_delete").split())
+    assert "Answers with address" in described
+    assert "deleted" in described
+    assert "no function field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _function_delete")
+    chunk = worker[start : worker.index("def _bytes_patch", start)]
+    assert '"deleted": True' in chunk
+    assert '"end": end' in chunk
+    assert '"function":' not in chunk
+

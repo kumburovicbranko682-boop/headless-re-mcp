@@ -631,7 +631,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         return _dump(analysis.static_function_create(session_id, address=address))
 
     def static_function_delete(session_id: str, address: int) -> dict[str, Any]:
-        """Delete the function containing an address."""
+        """Delete the function containing an address.
+
+        Answers with address, end, deleted and ok. There is no function
+        field.
+        """
         return _dump(analysis.static_function_delete(session_id, address=address))
 
     def static_bytes_patch(
