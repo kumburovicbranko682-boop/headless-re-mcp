@@ -202,7 +202,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.memory.write")
     def dynamic_memory_write(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         data: Annotated[str, Field(min_length=2, max_length=4 * 1024 * 1024)],
     ) -> dict[str, Any]:
         """Write bounded hexadecimal bytes to an authorized paused debuggee.

@@ -171,3 +171,33 @@ def test_dynamic_memory_read_schema_matches_native_address_floor() -> None:
     )
     props = input_schema_for(handler)["properties"]
     assert props["address"]["minimum"] == 0
+
+
+def test_dynamic_memory_write_schema_matches_native_address_floor() -> None:
+    """The catalog accepted a negative write address.
+
+    Measured: input schema address has no minimum. Native WriteMemory reads
+    address as unsigned. A negative address still occupies a worker until the
+    adapter refuses, and the catalog never said the write would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome WriteMemory")
+    chunk = native[start : native.index("Outcome QueryMemoryProtect", start)]
+    assert (
+        'ReadUnsigned(params, "address", address, error, std::numeric_limits<duint>::max())'
+        in chunk
+    )
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_tools(object())  # type: ignore[arg-type]
+        if binding.name == "dynamic.memory.write"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["address"]["minimum"] == 0
