@@ -50,7 +50,12 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.create_session(binary, target))
 
     def session_get(session_id: str) -> dict[str, Any]:
-        """Return one session, including target, state, architecture, and backends."""
+        """Return one session, including target, state, architecture, and backends.
+
+        Same payload as session.create: Answers with session holding id, target,
+        binary, locator, sha256, architecture, state, created_at, updated_at,
+        backends and metadata. There is no top-level session_id.
+        """
         return _dump(analysis.get_session(session_id))
 
     def session_list() -> dict[str, Any]:
