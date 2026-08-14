@@ -124,3 +124,32 @@ def test_disassembly_read_description_names_instructions_not_disasm() -> None:
     assert "no disasm field" in described
     assert "no items" in described
     assert "no text field" in described
+
+def _current_thread_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("JsonPtr ThreadObject")
+    return native[start : native.index("bool SwitchThread", start)]
+
+
+def test_threads_current_description_names_tid_not_thread() -> None:
+    """The catalog said current thread and never named the payload fields.
+
+    Measured against CurrentThread: success is a ThreadObject at the top level
+    (tid, entry, teb, cip, name, suspend_count, current). There is no thread
+    field. Looking for thread after a successful read reads as no current TID.
+    """
+    chunk = _current_thread_cpp()
+    assert 'JsonSet(value.get(), "tid"' in chunk
+    assert 'JsonSet(value.get(), "entry"' in chunk
+    assert 'JsonSet(value.get(), "cip"' in chunk
+    assert "ThreadObject(list.list[list.CurrentThread], true)" in chunk
+    success = chunk[chunk.index("Outcome CurrentThread") :]
+    assert '"thread"' not in success
+    described = _tool_docstring("threads.current")
+    assert "Answers with tid" in described
+    assert "no thread field" in described

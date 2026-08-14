@@ -79,7 +79,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Return the current debuggee thread."""
+        """Return the current debuggee thread.
+
+        Answers with tid, entry, teb, cip, name and suspend_count at the top
+        level, plus current. There is no thread field.
+        """
         return _dump(analysis.threads_current(session_id, timeout=timeout))
 
     @tools.tool(name="threads.context.read")
