@@ -235,7 +235,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.breakpoint.set")
     def dynamic_breakpoint_set(
         session_id: str,
-        address: int,
+        address: Annotated[int, Field(ge=0)],
         address_space: Annotated[str, Field(pattern="^(runtime|static|rva)$")] = "runtime",
     ) -> dict[str, Any]:
         """Set a software breakpoint at an address in a paused debuggee.
