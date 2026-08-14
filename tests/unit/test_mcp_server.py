@@ -849,3 +849,23 @@ async def test_dynamic_resume_description_names_live_fields() -> None:
         assert "no submitted field" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_stop_description_names_live_fields() -> None:
+    """The catalog did not name state or submitted on a successful stop.
+
+    Measured keys are state and submitted, the same shape as wait. A caller
+    looking for stopped or pid reads a finished stop as if nothing came back.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.stop")
+        text = tool.description or ""
+        assert "Answers with state" in text
+        assert "submitted" in text
+    finally:
+        analysis.close_all()

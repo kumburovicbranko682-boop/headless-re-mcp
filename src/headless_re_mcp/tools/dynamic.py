@@ -109,7 +109,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.stop")
     def dynamic_stop(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
-        """Stop the active debuggee and wait until the backend is idle."""
+        """Stop the active debuggee and wait until the backend is idle.
+
+        Answers with state and submitted, the same shape as dynamic.wait.
+        """
         return _dump(analysis.dynamic_stop(session_id, timeout=timeout))
 
     @tools.tool(name="dynamic.pause")
