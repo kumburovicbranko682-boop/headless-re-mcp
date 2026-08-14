@@ -64,6 +64,12 @@ _RETAINED_EVENTS_PER_RUN = 5_000
 # at 256 KiB. SSE then tries to send the whole thing in one frame.
 _EVENT_DATA_MAX_BYTES = 65_536
 
+# propose_tool_call had no size cap. 2 MiB of arguments made the database
+# 2.16 MB. The orchestrator refuses the same call at 256 KiB (hard ceiling
+# 4 MiB) but the store is reachable on its own, and a truncated argument is a
+# different instruction, so refuse rather than cut.
+_TOOL_ARGUMENT_MAX_BYTES = 4_194_304
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -78,6 +84,7 @@ class AgentStore:
         self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
+        self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -342,11 +349,18 @@ class AgentStore:
         return [RunEvent(str(row["run_id"]), int(row["seq"]), str(row["type"]), json.loads(row["data_json"]), str(row["created_at"])) for row in rows]
 
     def propose_tool_call(self, run_id: str, tool_call_id: str, name: str, arguments: JsonObject, effects: list[str]) -> JsonObject:
+        safe_arguments = redact(arguments)
+        encoded = json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True)
+        limit = max(1024, int(self.tool_argument_max_bytes))
+        if len(encoded.encode("utf-8")) > limit:
+            raise ValueError(
+                f"tool call arguments are {len(encoded.encode('utf-8'))} bytes, "
+                f"over the {limit} byte limit"
+            )
         args_hash = canonical_args_sha256(arguments)
         now = utc_now()
         with self.transaction() as con:
-            safe_arguments = redact(arguments)
-            con.execute("INSERT INTO tool_calls(id,run_id,name,arguments_json,args_sha256,effects_json,status,approved,consumed_at,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)", (tool_call_id, run_id, name, json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True), args_hash, json.dumps(effects), "proposed", now, now))
+            con.execute("INSERT INTO tool_calls(id,run_id,name,arguments_json,args_sha256,effects_json,status,approved,consumed_at,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)", (tool_call_id, run_id, name, encoded, args_hash, json.dumps(effects), "proposed", now, now))
         return {"id": tool_call_id, "run_id": run_id, "name": name, "arguments": arguments, "args_sha256": args_hash, "effects": effects, "status": "proposed"}
 
     def decide_tool_call(self, run_id: str, tool_call_id: str, args_sha256: str, *, approved: bool) -> JsonObject:

@@ -299,6 +299,26 @@ def _finish_one(store: AgentStore, title: str) -> str:
     return thread.id
 
 
+def test_oversized_tool_call_arguments_are_refused_not_stored(tmp_path: Path) -> None:
+    """The orchestrator already refuses 256 KiB; the store itself did not.
+
+    2 MiB of arguments made the database 2.16 MB. A truncated argument is a
+    different instruction, so the write must fail and leave no row.
+    """
+    store = AgentStore(tmp_path / "args.db")
+    store.tool_argument_max_bytes = 2048
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+
+    with pytest.raises(ValueError, match="2048"):
+        store.propose_tool_call(run.id, "call-fat", "static.functions", {"blob": "x" * 8192}, ["read"])
+
+    with pytest.raises(KeyError):
+        store.get_tool_call(run.id, "call-fat")
+    store.propose_tool_call(run.id, "call-ok", "static.functions", {"session_id": "s"}, ["read"])
+    assert store.get_tool_call(run.id, "call-ok")["name"] == "static.functions"
+
+
 def test_a_run_event_too_large_to_store_is_cut_not_written_whole(tmp_path: Path) -> None:
     """Messages refuse 1 MiB and tool results cut at 256 KiB; events did neither.
 
