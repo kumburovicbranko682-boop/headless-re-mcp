@@ -203,3 +203,24 @@ def test_unpack_status_nests_state_under_unpack() -> None:
     assert '{"unpack": state.to_dict(), "claims_universal_unpack": False}' in chunk
     assert '"timeline"' not in chunk
 
+def test_unpack_start_nests_state_under_unpack() -> None:
+    """The live catalog omitted the unpack object.
+
+    tests/unit/test_m5_unpack_session.py already reads started.data['unpack']['phase']
+    and deadline_at. The service returns unpack plus claims_universal_unpack, and
+    has no top-level session field. A caller looking for session after a
+    successful start reads the run as not having begun.
+    """
+    described = " ".join(_tool_docstring("unpack.start").split())
+    assert "Answers with unpack" in described
+    assert "no session field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    assert '"unpack": state.to_dict()' in source
+

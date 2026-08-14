@@ -170,8 +170,10 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Start unpack orchestration (UPX executes; dynamic routes wait for OEP confirm).
 
-        Active sessions are not overwritten unless replace=True.
-        Optional force_route overrides detection (e.g. bounded_dynamic when DIE misses VMP).
+        Answers with unpack (phase, route, deadline_at) and
+        claims_universal_unpack false. Active sessions are not overwritten
+        unless replace=True. Optional force_route overrides detection.
+        There is no session field at the top level.
         """
         return _dump(
             analysis.unpack_start(
