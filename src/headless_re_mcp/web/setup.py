@@ -128,8 +128,14 @@ def configure_ida(
     activation = activate_idalib(home) if activate else None
     probe_settings = replace(Settings.load(config_path=saved_path), ida_home=home)
     probe = probe_ida(probe_settings)
+    # The path is saved either way. ok used to stay True after a failed
+    # activation, and the installer treats ok as "IDA is usable", so a
+    # supervised overnight start proceeded with every static.open failing.
+    activated = (not activate) or (
+        isinstance(activation, dict) and activation.get("ok") is True
+    )
     return {
-        "ok": True,
+        "ok": bool(activated),
         "saved": True,
         "config_path": str(saved_path),
         "ida_home": str(home),
