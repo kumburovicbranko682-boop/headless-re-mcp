@@ -165,7 +165,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         decoded_dir: str = "",
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 600.0,
     ) -> dict[str, Any]:
-        """Rebuild an APK from an apktool tree (defaults to this session's decode)."""
+        """Rebuild an APK from an apktool tree (defaults to this session's decode).
+
+        Answers with apk, size, signed (false until apk.sign), and note.
+        There is no output, path or repacked field. A successful rebuild is
+        still unsigned.
+        """
         return _dump(analysis.apk_repack(session_id, decoded_dir=decoded_dir, timeout=timeout))
 
     @tools.tool(name="apk.sign")
