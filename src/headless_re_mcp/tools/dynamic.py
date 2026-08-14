@@ -309,7 +309,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         )
 
     @tools.tool(name="dynamic.breakpoint.remove")
-    def dynamic_breakpoint_remove(session_id: str, address: int) -> dict[str, Any]:
+    def dynamic_breakpoint_remove(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+    ) -> dict[str, Any]:
         """Remove a software breakpoint from an address in a paused debuggee.
 
         Answers with address and set (false). There is no removed, ok or
