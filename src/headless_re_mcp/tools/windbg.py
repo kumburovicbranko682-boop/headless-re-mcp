@@ -83,7 +83,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Reads the process without taking control, so x64dbg keeps it.
         Answers with output holding the cdb session text (vertarget/version),
         not separate version or platform fields, plus pid, attached, mode and
-        note. There is no process_id field.
+        note, and truncated, output_chars and returned_chars when the text
+        was cut at the 8_000-character buffer. There is no process_id field.
         """
         return _dump(analysis.windbg_attach(session_id, timeout=timeout))
 
