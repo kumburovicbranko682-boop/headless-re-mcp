@@ -774,7 +774,13 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         ),
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 10.0,
     ) -> dict[str, Any]:
-        """Consume the next shared event batch and apply workflow reconciliation."""
+        """Consume the next shared event batch and apply workflow reconciliation.
+
+        Same payload as dynamic.events: Answers with events, each carrying
+        sequence, timestamp_unix_ms, source, kind and data, plus count,
+        cursor, next_cursor, dropped, dropped_total, has_more and capacity.
+        There is no workflow field and no items field.
+        """
         return _dump(
             analysis.workflow_events_consume(
                 session_id,

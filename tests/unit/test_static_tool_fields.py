@@ -1031,3 +1031,41 @@ def test_workflow_cancel_description_names_nested_workflow() -> None:
     assert '"workflow": updated.to_dict()' in chunk
     assert '"cancelled"' not in chunk.split("return {")[-1]
 
+
+def test_workflow_events_consume_description_names_events_not_workflow() -> None:
+    """The live catalog omitted the payload fields.
+
+    workflow.events.consume is dynamic.events plus reconciliation.
+    tests/unit/test_dynamic_service.py already reads first.data['events'].
+    There is no workflow field. A caller looking for workflow after a
+    successful consume reads the batch as empty.
+    """
+    described = " ".join(_docstring("workflow_events_consume").split())
+    assert "Answers with events" in described
+    assert "Same payload as dynamic.events" in described
+    assert "no workflow field" in described
+    assert "no items field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_events_consume")
+    chunk = service[start : service.index("def workflow_module_track", start)]
+    assert "return self.dynamic_events(" in chunk
+    events = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "events.py"
+    ).read_text(encoding="utf-8")
+    batch = events.split("class DebugEventBatch")[1]
+    returned = batch[batch.index("def to_dict") : batch.index("class DebugEventCursor")]
+    assert '"events":' in returned
+    assert '"has_more":' in returned
+    assert '"workflow"' not in returned
+    assert '"items"' not in returned
+
