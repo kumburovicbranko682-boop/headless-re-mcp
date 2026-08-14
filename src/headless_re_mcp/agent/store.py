@@ -75,6 +75,11 @@ _TOOL_ARGUMENT_MAX_BYTES = 4_194_304
 # list is a different permission set, so refuse rather than cut.
 _TOOL_EFFECTS_MAX_BYTES = 4_096
 
+# Tool names are catalog identifiers such as dynamic.resume. A 100,000
+# character name was stored as-is and grew the database by about 100 KB in
+# one call. Truncating it would point at a different tool, so refuse.
+_TOOL_NAME_MAX_CHARS = 128
+
 # Finished-thread trim never touches a live thread. 400 completed runs on one
 # still-pending mission were 278 KB of empty rows (and every run may still
 # hold 5000 events). The prefix nobody looks up by id only grows the file.
@@ -96,6 +101,7 @@ class AgentStore:
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
         self.tool_effects_max_bytes = _TOOL_EFFECTS_MAX_BYTES
+        self.tool_name_max_chars = _TOOL_NAME_MAX_CHARS
         self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
@@ -383,6 +389,12 @@ class AgentStore:
         return [RunEvent(str(row["run_id"]), int(row["seq"]), str(row["type"]), json.loads(row["data_json"]), str(row["created_at"])) for row in rows]
 
     def propose_tool_call(self, run_id: str, tool_call_id: str, name: str, arguments: JsonObject, effects: list[str]) -> JsonObject:
+        name_limit = max(8, int(self.tool_name_max_chars))
+        if len(name) > name_limit:
+            raise ValueError(
+                f"tool call name is {len(name)} characters, "
+                f"over the {name_limit} character limit"
+            )
         safe_arguments = redact(arguments)
         encoded = json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True)
         limit = max(1024, int(self.tool_argument_max_bytes))

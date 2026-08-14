@@ -368,6 +368,27 @@ def test_oversized_tool_call_effects_are_refused_not_stored(tmp_path: Path) -> N
     assert store.path.stat().st_size < 200_000
 
 
+def test_oversized_tool_call_names_are_refused_not_stored(tmp_path: Path) -> None:
+    """Arguments and effects already refuse oversized payloads; the name did not.
+
+    Measured: a 100,000 character name was stored and grew the database by
+    about 100 KB in one call. Truncating it would point at a different tool,
+    so the write must fail and leave no row.
+    """
+    store = AgentStore(tmp_path / "name.db")
+    store.tool_name_max_chars = 32
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+
+    with pytest.raises(ValueError, match="32"):
+        store.propose_tool_call(run.id, "call-fat", "n" * 80, {"session_id": "s"}, ["read"])
+
+    with pytest.raises(KeyError):
+        store.get_tool_call(run.id, "call-fat")
+    store.propose_tool_call(run.id, "call-ok", "static.functions", {"session_id": "s"}, ["read"])
+    assert store.get_tool_call(run.id, "call-ok")["name"] == "static.functions"
+
+
 def test_a_run_event_too_large_to_store_is_cut_not_written_whole(tmp_path: Path) -> None:
     """Messages refuse 1 MiB and tool results cut at 256 KiB; events did neither.
 
