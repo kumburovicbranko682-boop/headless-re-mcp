@@ -131,7 +131,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.artifacts_read(artifact_id, offset=offset, limit=limit))
 
     @tools.tool(name="artifacts.gc")
-    def artifacts_gc(max_total_bytes: int = 512 * 1024 * 1024) -> dict[str, Any]:
+    def artifacts_gc(
+        max_total_bytes: Annotated[int, Field(ge=1)] = 512 * 1024 * 1024,
+    ) -> dict[str, Any]:
         """Delete registered artifacts, oldest first, until the tree fits the budget.
 
         Answers with removed, count, skipped, skipped_count and
