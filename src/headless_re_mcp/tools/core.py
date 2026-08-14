@@ -21,7 +21,13 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
     """Register doctor + session.* tools (table-driven entry point for further migration)."""
 
     def doctor() -> dict[str, Any]:
-        """Probe configured reverse-engineering backends and local build tools."""
+        """Probe configured reverse-engineering backends and local build tools.
+
+        Answers with ready and probes. Each probe carries name, status,
+        summary, details and remediation. There is no ok, tools or backends
+        field. ready is false when a required probe is not READY, not when
+        the process is down.
+        """
         return _dump(analysis.doctor())
 
     def session_create(

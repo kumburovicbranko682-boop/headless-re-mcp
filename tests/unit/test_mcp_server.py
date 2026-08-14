@@ -976,3 +976,26 @@ async def test_session_list_description_names_live_fields() -> None:
         assert "no items" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_doctor_description_names_live_fields() -> None:
+    """The catalog did not name ready or the probes array.
+
+    Measured keys are ready and probes; each probe carries name, status,
+    summary, details and remediation. There is no ok, tools or backends
+    field. A caller looking for ok after doctor reads a working host as if
+    the probe never ran.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "doctor")
+        text = tool.description or ""
+        assert "Answers with ready" in text
+        assert "probes" in text
+        assert "no ok" in text
+    finally:
+        analysis.close_all()
