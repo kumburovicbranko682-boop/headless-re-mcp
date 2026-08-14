@@ -80,6 +80,11 @@ _TOOL_EFFECTS_MAX_BYTES = 4_096
 # one call. Truncating it would point at a different tool, so refuse.
 _TOOL_NAME_MAX_CHARS = 128
 
+# The provider-supplied tool_call_id is the row key. A 100,000 character
+# id was stored and made the database 266 KB. Truncating it would be a
+# different call, so refuse.
+_TOOL_CALL_ID_MAX_CHARS = 128
+
 # Finished-thread trim never touches a live thread. 400 completed runs on one
 # still-pending mission were 278 KB of empty rows (and every run may still
 # hold 5000 events). The prefix nobody looks up by id only grows the file.
@@ -102,6 +107,7 @@ class AgentStore:
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
         self.tool_effects_max_bytes = _TOOL_EFFECTS_MAX_BYTES
         self.tool_name_max_chars = _TOOL_NAME_MAX_CHARS
+        self.tool_call_id_max_chars = _TOOL_CALL_ID_MAX_CHARS
         self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
@@ -389,6 +395,12 @@ class AgentStore:
         return [RunEvent(str(row["run_id"]), int(row["seq"]), str(row["type"]), json.loads(row["data_json"]), str(row["created_at"])) for row in rows]
 
     def propose_tool_call(self, run_id: str, tool_call_id: str, name: str, arguments: JsonObject, effects: list[str]) -> JsonObject:
+        id_limit = max(8, int(self.tool_call_id_max_chars))
+        if len(tool_call_id) > id_limit:
+            raise ValueError(
+                f"tool call id is {len(tool_call_id)} characters, "
+                f"over the {id_limit} character limit"
+            )
         name_limit = max(8, int(self.tool_name_max_chars))
         if len(name) > name_limit:
             raise ValueError(
