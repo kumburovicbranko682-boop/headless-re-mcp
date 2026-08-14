@@ -65,7 +65,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
-        """Fetch one request's response body (large bodies spill to an artifact)."""
+        """Fetch one request's response body (large bodies spill to an artifact).
+
+        Answers with body, base64_encoded, plus body_truncated and body_path
+        when the text was cut at the buffer. The cut flag is body_truncated,
+        not truncated.
+        """
         return _dump(analysis.web_network_get(session_id, request_id))
 
     @tools.tool(name="web.console")
