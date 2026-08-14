@@ -188,7 +188,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="unpack.status")
     def unpack_status(session_id: str) -> dict[str, Any]:
-        """Return the current unpack orchestration state and timeline summary."""
+        """Return the current unpack orchestration state and timeline summary.
+
+        Answers with unpack (phase, route, timeline, deadline_at) and
+        claims_universal_unpack false. There is no status or timeline field at
+        the top level.
+        """
         return _dump(analysis.unpack_status(session_id))
 
     @tools.tool(name="unpack.cancel")

@@ -180,3 +180,26 @@ def test_unpack_plan_names_plan_not_routes() -> None:
     assert '"plan": plan' in chunk
     assert '"routes"' not in chunk
 
+def test_unpack_status_nests_state_under_unpack() -> None:
+    """The live catalog omitted the unpack object.
+
+    unpack_status returns unpack (state.to_dict) and claims_universal_unpack.
+    There is no top-level status or timeline field. A caller looking for
+    timeline after a successful status call reads an active session as idle.
+    """
+    described = " ".join(_tool_docstring("unpack.status").split())
+    assert "Answers with unpack" in described
+    assert "no status or timeline field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_status")
+    chunk = source[start : source.index("def unpack_cancel", start)]
+    assert '{"unpack": state.to_dict(), "claims_universal_unpack": False}' in chunk
+    assert '"timeline"' not in chunk
+
