@@ -274,3 +274,34 @@ def test_imports_read_schema_matches_native_scan_cap() -> None:
     props = input_schema_for(handler)["properties"]
     assert props["size"]["minimum"] == 1
     assert props["size"]["maximum"] == cap
+
+
+def test_imports_scan_schema_matches_native_search_size_cap() -> None:
+    """The catalog accepted an unbounded IAT search window.
+
+    Measured: input schema search_size has no maximum. Native ScanImports
+    rejects anything above MaxImportScanBytes (16 MiB) as out of range. A
+    caller that asks to scan 2 GiB still occupies a worker until the adapter
+    refuses.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    assert "MaxImportScanBytes = 16U * 1024U * 1024U" in header
+    cap = 16 * 1024 * 1024
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "imports.scan"
+    )
+    props = input_schema_for(handler)["properties"]
+    integer_size = next(
+        item for item in props["search_size"]["anyOf"] if item.get("type") == "integer"
+    )
+    assert integer_size["minimum"] == 1
+    assert integer_size["maximum"] == cap
