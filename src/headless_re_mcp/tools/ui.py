@@ -153,7 +153,12 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
     ) -> dict[str, Any]:
-        """Background client-area click via PostMessage (no foreground steal, no injection)."""
+        """Background client-area click via PostMessage (no foreground steal, no injection).
+
+        Answers with hwnd, action, x, y, backend, foreground_required and
+        injection_required, plus debuggee_pid and debugger_pid. There is no
+        clicked field.
+        """
         return _dump(
             analysis.ui_click_at(
                 session_id,
