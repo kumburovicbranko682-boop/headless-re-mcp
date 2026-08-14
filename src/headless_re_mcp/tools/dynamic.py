@@ -238,6 +238,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Pass address_space=static for an IDA address or rva for a module offset;
         both are rebased through the live module base, so ASLR never reaches the
         caller. The default keeps treating address as an already-runtime VA.
+        Answers with address and set (true). There is no ok or removed field.
         """
         return _dump(
             analysis.dynamic_breakpoint_set(
