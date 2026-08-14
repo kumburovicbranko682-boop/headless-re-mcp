@@ -890,3 +890,24 @@ async def test_dynamic_pause_description_names_live_fields() -> None:
         assert "submitted" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_step_into_description_names_live_fields() -> None:
+    """The catalog did not name state or submitted on a successful step.
+
+    Measured keys are state and submitted, the same shape as wait. A caller
+    looking for rip after step_into reads a finished step as if nothing
+    came back.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "dynamic.step_into")
+        text = tool.description or ""
+        assert "Answers with state" in text
+        assert "submitted" in text
+    finally:
+        analysis.close_all()
