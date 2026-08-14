@@ -208,7 +208,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
         no_imports: bool = False,
     ) -> dict[str, Any]:
-        """Decompile the whole APK to a Java source tree via jadx."""
+        """Decompile the whole APK to a Java source tree via jadx.
+
+        Answers with output_dir, sources_dir, java_file_count and java_files,
+        plus has_more when the listed files were cut at the buffer. There is
+        no files or sources field.
+        """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
         )

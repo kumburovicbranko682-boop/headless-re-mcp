@@ -241,3 +241,33 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
     doc = _tool_docstring("apk.decompile")
     assert "source" in doc
     assert "truncated" in doc
+
+def test_apk_export_sources_says_when_the_java_list_was_cut(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said a Java source tree and never named the payload.
+
+    Measured: 5 java files, list capped at 3, has_more True, field is
+    java_files not files or sources. Looking for those after a successful
+    call reads as a missing tree, and a full page with no has_more reads
+    as every class.
+    """
+    from headless_re_mcp.backends.jadx import client as mod
+
+    out = tmp_path / "out"
+    sources = out / "sources"
+    sources.mkdir(parents=True)
+    for index in range(5):
+        (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 3)
+    client = mod.JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "_run", lambda *args, **kwargs: ("", "", 0))
+    payload = client.export_sources(tmp_path / "app.apk", out)
+    assert "files" not in payload
+    assert "sources" not in payload
+    assert payload["java_file_count"] == 5
+    assert len(payload["java_files"]) == 3
+    assert payload["has_more"] is True
+    doc = _tool_docstring("apk.export_sources")
+    assert "java_files" in doc
+    assert "has_more" in doc
