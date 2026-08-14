@@ -36,7 +36,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=MAX_DEBUG_EVENT_BATCH)] = (DEFAULT_DEBUG_EVENT_BATCH),
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 10.0,
     ) -> dict[str, Any]:
-        """Read the next bounded debugger callback batch for this session."""
+        """Read the next bounded debugger callback batch for this session.
+
+        Answers with events, each carrying sequence, timestamp_unix_ms, source,
+        kind and data, plus count, cursor, next_cursor, dropped, dropped_total,
+        has_more and capacity. There is no items field.
+        """
         return _dump(analysis.dynamic_events(session_id, limit=limit, timeout=timeout))
 
     @tools.tool(name="dynamic.wait")
