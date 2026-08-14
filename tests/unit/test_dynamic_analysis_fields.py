@@ -676,3 +676,35 @@ def test_threads_context_write_schema_matches_native_register_name_cap() -> None
     props = input_schema_for(handler)["properties"]
     assert props["name"]["minLength"] == 1
     assert props["name"]["maxLength"] == 16
+
+
+def test_imports_scan_schema_matches_native_module_base_floor() -> None:
+    """The catalog accepted module_base 0 and negative bases.
+
+    Measured: input schema module_base has no minimum. Native ScanImports reads
+    it as unsigned and answers invalid_params for a zero base. Those calls still
+    occupy a worker until the adapter refuses, and the catalog never said the
+    scan would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ScanImports")
+    chunk = native[start : native.index("Outcome ReadImports", start)]
+    assert (
+        'ReadUnsigned(params, "module_base", moduleBase, error,'
+        " std::numeric_limits<duint>::max())" in chunk
+    )
+    assert 'InvalidField("module_base", "module_base must be a non-zero module base")' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "imports.scan"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["module_base"]["minimum"] == 1

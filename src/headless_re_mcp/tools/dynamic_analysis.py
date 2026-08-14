@@ -233,7 +233,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="imports.scan")
     def imports_scan(
         session_id: str,
-        module_base: int,
+        module_base: Annotated[int, Field(ge=1)],
         search_start: int | None = None,
         search_size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)] | None = None,
         max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
