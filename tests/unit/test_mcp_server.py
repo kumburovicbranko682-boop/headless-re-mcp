@@ -355,3 +355,40 @@ async def test_every_timeout_parameter_declares_an_upper_bound() -> None:
             ):
                 unbounded.append(f"{tool.name}.{parameter}")
     assert unbounded == []
+
+
+def test_a_nested_stdio_request_gets_an_error_named_after_it() -> None:
+    """pydantic gives up around 200 levels; json.loads does not.
+
+    The SDK put that ValidationError on the read stream. The server logged
+    Internal Server Error and never wrote a JSON-RPC response, so a tools/call
+    nested 200 deep produced no reply at all.
+    """
+    import json
+
+    from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
+
+    nested = '{"a":' * 200 + "1" + "}" * 200
+    line = (
+        '{"jsonrpc":"2.0","id":7,"method":"tools/call",'
+        '"params":{"name":"session.get","arguments":' + nested + "}}"
+    )
+    reply = error_message_for_unreadable_line(line)
+    assert reply is not None, "a request with an id has to get an error, not silence"
+    dumped = json.loads(reply.model_dump_json())
+    assert dumped["id"] == 7
+    assert dumped["error"]["code"] == -32600
+    assert "nested too deeply" in dumped["error"]["message"]
+
+
+def test_a_valid_stdio_line_is_not_turned_into_an_error() -> None:
+    from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
+
+    line = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+    assert error_message_for_unreadable_line(line) is None
+
+
+def test_garbage_without_an_id_stays_silent() -> None:
+    from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
+
+    assert error_message_for_unreadable_line("{not-json") is None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from headless_re_mcp.core.commands import COMMAND_CATALOG
@@ -67,6 +68,17 @@ def run_stdio(service: AnalysisService | None = None) -> None:
     configure_telemetry_logging()
     analysis = service or AnalysisService()
     try:
-        create_server(analysis).run(transport="stdio")
+        anyio.run(_run_stdio, create_server(analysis))
     finally:
         analysis.close_all()
+
+
+async def _run_stdio(server: FastMCP[None]) -> None:
+    from headless_re_mcp.mcp.stdio_errors import stdio_server_with_parse_replies
+
+    async with stdio_server_with_parse_replies() as (read_stream, write_stream):
+        await server._mcp_server.run(
+            read_stream,
+            write_stream,
+            server._mcp_server.create_initialization_options(),
+        )
