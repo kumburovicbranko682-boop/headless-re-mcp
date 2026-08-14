@@ -795,7 +795,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         selector: ModuleSelector,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Track one explicit loaded module and its current rebased identity."""
+        """Track one explicit loaded module and its current rebased identity.
+
+        Answers with workflow and module_key. There is no module field and
+        no tracked field.
+        """
         return _dump(
             analysis.workflow_module_track(
                 session_id,

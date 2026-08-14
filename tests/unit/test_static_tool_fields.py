@@ -1069,3 +1069,32 @@ def test_workflow_events_consume_description_names_events_not_workflow() -> None
     assert '"workflow"' not in returned
     assert '"items"' not in returned
 
+
+def test_workflow_module_track_description_names_module_key() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns workflow and module_key, and no module or tracked
+    field. tests/unit/test_dynamic_service.py already drives track but only
+    asserts ok. A caller looking for module after a successful call cannot
+    tell which key was recorded.
+    """
+    described = " ".join(_docstring("workflow_module_track").split())
+    assert "Answers with workflow" in described
+    assert "module_key" in described
+    assert "no module field" in described
+    assert "no tracked field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_module_track")
+    chunk = service[start : service.index("def workflow_module_untrack", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    assert '"module_key": key.strip()' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"module"' not in returned
+    assert '"tracked"' not in returned
+
