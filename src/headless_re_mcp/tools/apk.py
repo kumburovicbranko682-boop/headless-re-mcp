@@ -62,7 +62,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.components")
     def apk_components(session_id: str) -> dict[str, Any]:
-        """List activities, services, receivers, and providers."""
+        """List activities, services, receivers, and providers.
+
+        Answers with activities, services, receivers, providers,
+        main_activity, and has_more so a list that filled the cap is not
+        read as every component. There is no components field.
+        """
         return _dump(analysis.apk_components(session_id))
 
     @tools.tool(name="apk.native_libs")
