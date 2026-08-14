@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
@@ -270,6 +271,13 @@ class Supervisor:
                 return "unhealthy"
 
     def _terminate(self, child: Any) -> None:
+        if isinstance(child, subprocess.Popen):
+            # terminate()/kill() stops the serve process and nothing else.
+            # Measured: launcher dead after 0.002s, sleeper still alive, so an
+            # overnight unhealthy restart fought over IDA and the debuggee the
+            # old child started.
+            terminate_process_tree(child, wait_s=15.0)
+            return
         with_terminate = getattr(child, "terminate", None)
         if callable(with_terminate):
             with_terminate()
