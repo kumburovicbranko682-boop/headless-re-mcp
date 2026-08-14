@@ -25,7 +25,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0,
     ) -> dict[str, Any]:
-        """Run official ``upx -t`` on the session binary without modifying the input."""
+        """Run official ``upx -t`` on the session binary without modifying the input.
+
+        Answers with upx (the CLI result, including ok, stdout, stderr and
+        returncode) and input_unchanged. There is no top-level stdout field.
+        """
         return _dump(analysis.unpack_upx_test(session_id, timeout=timeout))
 
     @tools.tool(name="unpack.upx.unpack")
