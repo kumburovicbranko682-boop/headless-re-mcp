@@ -357,7 +357,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Remove a memory breakpoint."""
+        """Remove a memory breakpoint.
+
+        Answers with address and removed. There is no set field -- unlike
+        dynamic.breakpoint.remove, which echoes set false. Looking for set
+        after success treats a live DeleteMemoryBPX as still armed.
+        """
         return _dump(analysis.breakpoints_memory_remove(session_id, address, timeout=timeout))
 
     @tools.tool(name="breakpoints.memory.list")
