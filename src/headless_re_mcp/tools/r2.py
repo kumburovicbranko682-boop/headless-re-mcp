@@ -65,9 +65,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Strings radare2 recovered.
 
         Answers with items, each carrying string, section, type, vaddr and
-        address, plus count. Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no strings, truncated
-        or has_more field.
+        address (va/rva/module), plus count. There is no integer address
+        field. Read items_truncated, items_total and items_limit when the
+        list filled the cap (4096). There is no strings, truncated or
+        has_more field.
         """
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
