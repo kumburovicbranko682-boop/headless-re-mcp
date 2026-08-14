@@ -48,7 +48,12 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.list_sessions())
 
     def session_close(session_id: str) -> dict[str, Any]:
-        """Close a session and terminate its isolated backend worker."""
+        """Close the session and tear down everything it started.
+
+        A live debugger is issued debug.stop before the worker exits, so the
+        debuggee does not keep running. Static workers, web pages and proxy
+        listeners go with it. already_closed is true if it was already gone.
+        """
         return _dump(analysis.close_session(session_id))
 
     specs = [
