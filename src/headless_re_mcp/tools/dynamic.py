@@ -160,7 +160,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.registers.read")
     def dynamic_registers_read(session_id: str) -> dict[str, Any]:
-        """Read the bounded general-purpose register set from a paused debuggee."""
+        """Read the bounded general-purpose register set from a paused debuggee.
+
+        Answers with registers holding rax..r15, rip, eflags and dr0-dr7 on
+        x64 (eax..eip on x86). There is no top-level rip, gpr or context
+        field.
+        """
         return _dump(analysis.dynamic_registers_read(session_id))
 
     @tools.tool(name="dynamic.registers.write")
