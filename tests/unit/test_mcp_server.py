@@ -699,3 +699,25 @@ async def test_sessions_unclean_description_names_the_array_field() -> None:
         assert "total" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_capabilities_search_description_names_live_fields() -> None:
+    """The catalog did not name the list a successful search returns.
+
+    Measured keys are capabilities and count. Each item has id, backend,
+    status, status_probe, summary and tools. A caller looking for items
+    reads an empty catalog that in fact listed every backend.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "capabilities.search")
+        text = tool.description or ""
+        assert "Answers with capabilities" in text
+        assert "no items field" in text
+        assert "status_probe" in text
+    finally:
+        analysis.close_all()

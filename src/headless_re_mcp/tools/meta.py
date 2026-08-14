@@ -65,7 +65,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         backend: str | None = None,
         status: str | None = None,
     ) -> dict[str, Any]:
-        """Search discovered backend capabilities and readiness."""
+        """Search discovered backend capabilities and readiness.
+
+        Answers with capabilities (each: id, backend, status, status_probe,
+        summary, tools) and count. There is no items field.
+        """
         return _dump(analysis.capabilities_search(backend=backend, status=status))
 
     @tools.tool(name="capabilities.describe")
