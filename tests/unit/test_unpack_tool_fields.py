@@ -392,3 +392,28 @@ def test_unpack_confirm_oep_names_confirmed_oep_rva() -> None:
     assert '"confirmed_oep_rva": oep_rva' in chunk
     assert '"oep":' not in chunk
 
+def test_unpack_iat_scan_names_candidates_not_items() -> None:
+    """The live catalog omitted the candidates array.
+
+    tests/unit/test_m4_unpack_service.py already reads scanned.data['candidates'][0].
+    The scan sets confirmed false and claims_universal_unpack false, and has no
+    items field. A caller looking for items after a successful scan reads IAT
+    as missing.
+    """
+    described = " ".join(_tool_docstring("unpack.iat.scan").split())
+    assert "Answers with candidates" in described
+    assert "no items field" in described
+    assert "confirmed false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_iat_scan")
+    chunk = source[start : source.index("def unpack_iat_validate", start)]
+    assert 'data["candidates"] = ranked["candidates"]' in chunk
+    assert 'data["confirmed"] = False' in chunk
+    assert '"items"' not in chunk
+

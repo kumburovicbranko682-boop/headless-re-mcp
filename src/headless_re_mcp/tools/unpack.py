@@ -331,7 +331,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         mode: str = "all",
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """List IAT candidates; caller must confirm before rebuild."""
+        """List IAT candidates; caller must confirm before rebuild.
+
+        Answers with candidates, candidate_count, confirmed false, and
+        claims_universal_unpack false. There is no items field.
+        """
         return _dump(
             analysis.unpack_iat_scan(
                 session_id,
