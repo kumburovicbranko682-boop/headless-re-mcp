@@ -568,3 +568,25 @@ async def test_artifacts_list_description_names_the_array_field() -> None:
         assert "has_more" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_timeline_list_description_names_live_fields() -> None:
+    """The catalog did not name the events array a successful list returns.
+
+    Measured keys are events, count, total, offset, limit, has_more and path.
+    A missing session is session_not_found, not an empty list. A caller
+    looking for a top-level timeline field reads a live session as idle.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "timeline.list")
+        text = tool.description or ""
+        assert "Answers with events" in text
+        assert "session_not_found" in text
+        assert "has_more" in text
+    finally:
+        analysis.close_all()

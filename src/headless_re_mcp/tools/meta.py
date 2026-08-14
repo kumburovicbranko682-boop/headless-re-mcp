@@ -123,9 +123,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """What a session did that left a mark: opened, closed, wrote, drove a UI.
 
-        Not a log of every call. Reads are absent, so a session that analysed
-        for an hour without changing anything shows only its open and close.
-        Each write carries the undo record written alongside it.
+        Answers with events, plus count, total, offset, limit, has_more and
+        path. There is no timeline field. Not a log of every call: reads are
+        absent, so a session that analysed for an hour without changing
+        anything shows only its open and close. Each write carries the undo
+        record written alongside it. A session that was never created answers
+        session_not_found, not an empty events list.
         """
         return _dump(analysis.timeline_list(session_id, offset=offset, limit=limit))
 
