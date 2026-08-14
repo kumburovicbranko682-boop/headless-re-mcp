@@ -65,7 +65,10 @@ class GhidraClient:
         return {
             "project_dir": str(project_dir),
             "stdout_excerpt": stdout[-8000:],
-            "note": "headless import/analyze completed; use ghidra.functions/decompile/symbols/xrefs for exports",
+            "note": (
+                "headless import/analyze completed and the project was deleted; "
+                "ghidra.functions/decompile/symbols/xrefs each import the binary again"
+            ),
         }
 
     def functions(
