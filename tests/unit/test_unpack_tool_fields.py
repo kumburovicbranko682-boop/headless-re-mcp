@@ -465,3 +465,37 @@ def test_unpack_stub_coupling_nests_stats() -> None:
     assert '"claims_universal_unpack": False' in chunk
     assert '"counts"' not in chunk
 
+
+def test_unpack_vmp_dump_description_names_dump_ok() -> None:
+    """The live catalog omitted the payload fields.
+
+    tests/unit/test_m7_external_adapters.py already reads data['dump_ok'].
+    The service returns vmp_dumper, output_path, dump_ok, imports_rebuilt,
+    vm_restored, pid, module_name, input_unchanged and
+    claims_universal_unpack, and no ok field inside data. Envelope success
+    with dump_ok false means the dump file was not produced.
+    """
+    described = " ".join(_tool_docstring("unpack.vmp.dump").split())
+    assert "Answers with vmp_dumper" in described
+    assert "dump_ok" in described
+    assert "output_path" in described
+    assert "claims_universal_unpack false" in described
+    assert "dump_ok false" in described
+    assert "no dump field" in described
+    assert "no ok field inside data" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack_cli.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_vmp_dump")
+    chunk = source[start : source.index("def unpack_scylla_rebuild", start)]
+    returned = chunk.split("return _success")[-1]
+    assert '"vmp_dumper": result.to_dict()' in returned
+    assert '"dump_ok": result.dump_ok' in returned
+    assert '"output_path":' in returned
+    assert '"claims_universal_unpack": False' in returned
+    assert '"ok"' not in returned
+

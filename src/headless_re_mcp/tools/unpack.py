@@ -87,7 +87,8 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Requires HEADLESS_RE_VMP_DUMPER and an active debuggee PID. Answers with
         vmp_dumper, output_path, dump_ok, imports_rebuilt, vm_restored, pid,
         module_name, input_unchanged, and claims_universal_unpack false.
-        There is no dump field.
+        Envelope success with dump_ok false means the dump file was not
+        produced. There is no dump field and no ok field inside data.
         """
         return _dump(
             analysis.unpack_vmp_dump(
