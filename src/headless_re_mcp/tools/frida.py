@@ -76,7 +76,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.devices")
     def frida_devices() -> dict[str, Any]:
-        """Enumerate Frida devices (local, USB, remote)."""
+        """Enumerate Frida devices (local, USB, remote).
+
+        Answers with devices (id, name, type) and count. There is no items
+        field.
+        """
         return _dump(analysis.frida_devices())
 
     @tools.tool(name="frida.device.connect")
@@ -124,7 +128,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
-        """Enumerate loaded Java classes on the authorized device pid (ART only)."""
+        """Enumerate loaded Java classes on the authorized device pid (ART only).
+
+        Answers with classes, count, and has_more so a page that filled the
+        limit is not read as every loaded class.
+        """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
         )

@@ -125,6 +125,43 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
 
+
+class _Dev:
+    def __init__(self, ident: str, name: str, kind: str) -> None:
+        self.id = ident
+        self.name = name
+        self.type = kind
+
+
+class _DeviceFrida:
+    def enumerate_devices(self) -> list[_Dev]:
+        return [
+            _Dev("local", "Local System", "local"),
+            _Dev("usb", "Pixel", "usb"),
+        ]
+
+
+def test_frida_devices_puts_the_list_in_devices_not_items() -> None:
+    """The catalog never named the list field.
+
+    Measured: two devices -> count 2, field is devices not items or
+    enumerations. Looking for items after a successful call reads as Frida
+    seeing none.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _DeviceFrida()
+    payload = client.enumerate_devices()
+    assert "items" not in payload
+    assert "enumerations" not in payload
+    assert payload["count"] == 2
+    assert len(payload["devices"]) == 2
+    assert payload["devices"][0]["id"] == "local"
+    assert payload["devices"][0]["type"] == "local"
+    doc = _tool_docstring("frida.devices")
+    assert "Answers with devices" in doc
+    assert "count" in doc
+
 class _App:
     def __init__(self, index: int) -> None:
         self.identifier = f"com.app{index}"
@@ -156,4 +193,55 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.applications")
     assert "Answers with applications" in doc
+    assert "has_more" in doc
+
+class _JavaApi:
+    def classes(self, name_filter: str, count: int) -> list[str]:
+        return [f"c{index}" for index in range(int(count))]
+
+    def methods(self, class_name: str, count: int) -> list[str]:
+        return [f"m{index}" for index in range(int(count))]
+
+
+class _JavaScript:
+    exports_sync = _JavaApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _JavaSession:
+    def create_script(self, source: str) -> _JavaScript:
+        return _JavaScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _JavaDevice:
+    def attach(self, pid: int) -> _JavaSession:
+        return _JavaSession()
+
+
+def test_frida_java_classes_puts_the_list_in_classes_and_says_when_it_stopped() -> None:
+    """The catalog never named the payload.
+
+    Measured: 11 classes requested for a page of 10 -> count 10, has_more
+    True, field is classes. Looking for class_list after a successful call
+    reads as no classes, and a full page with no has_more reads as every
+    loaded class.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _JavaDevice()  # type: ignore[method-assign]
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="classes", limit=10
+    )
+    assert "class_list" not in payload
+    assert payload["count"] == 10
+    assert len(payload["classes"]) == 10
+    assert payload["has_more"] is True
+    doc = _tool_docstring("frida.java.classes")
+    assert "Answers with classes" in doc
     assert "has_more" in doc
