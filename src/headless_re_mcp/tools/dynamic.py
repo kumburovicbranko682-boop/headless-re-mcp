@@ -264,8 +264,11 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile a function, arm it at runtime, resume, and report the stop.
 
         One call replaces decompile + rebase + breakpoint + resume + registers.
-        address defaults to an IDA (static) coordinate and is rebased internally;
-        execution.stopped_at_breakpoint says whether the stop was this address.
+        address defaults to an IDA (static) coordinate and is rebased internally.
+        Answers with function (static_address, runtime_address, rva,
+        rebase_delta, module), static, breakpoint (address, armed), execution
+        (resumed, instruction_pointer, stopped_at_breakpoint) and registers.
+        There is no top-level rip, decompiled or ok field.
         """
         return _dump(
             analysis.analyze_function_dynamic(
@@ -289,9 +292,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Break on an API and capture its integer arguments on each hit.
 
         Give either expression (for example kernel32.CreateFileW) or a runtime
-        address. x64 arguments come from RCX/RDX/R8/R9 and x86 arguments are read
-        from the stack above the return address. The breakpoint is removed when
-        the trace ends.
+        address. Answers with hits (instruction_pointer and arguments), hit_count,
+        truncated, stopped_elsewhere, convention, architecture, target and
+        max_hits. There is no top-level arguments, rip or ok field. The
+        breakpoint is removed when the trace ends.
         """
         return _dump(
             analysis.trace_api_arguments(
