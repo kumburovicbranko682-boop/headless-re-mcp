@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import ApkClient
+from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -79,3 +79,39 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+
+
+class _ManifestBody:
+    def get_xml(self) -> bytes:
+        return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)
+
+
+class _FakeApk:
+    def get_android_manifest_axml(self) -> _ManifestBody:
+        return _ManifestBody()
+
+    def get_package(self) -> str:
+        return "com.example.app"
+
+
+def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said AndroidManifest.xml and never named the payload.
+
+    Measured: truncated True, manifest_xml 200000 chars (the cap), no
+    manifest or xml field. Looking for those after a successful call reads
+    as a missing manifest, and a 200000-char string with no truncated flag
+    reads as the whole file.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
+    payload = client.manifest(tmp_path / "app.apk")
+    assert "manifest" not in payload
+    assert "xml" not in payload
+    assert payload["truncated"] is True
+    assert payload["package"] == "com.example.app"
+    assert len(payload["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    doc = _tool_docstring("apk.manifest")
+    assert "manifest_xml" in doc
+    assert "truncated" in doc
