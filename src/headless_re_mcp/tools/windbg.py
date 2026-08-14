@@ -30,8 +30,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         For post-mortem work on a .dmp, not on a live debuggee. commands
         defaults to a general triage set. Kernel dumps need kernel=true and are
         refused unless HEADLESS_RE_WINDBG_ALLOW_KERNEL is set. The reply carries
-        output holding the session text, and truncated when it was cut at the
-        buffer.
+        dump, output, stderr and exit_code, plus truncated, output_chars and
+        returned_chars when the session was cut at the buffer.
         """
         return _dump(
             analysis.windbg_open_dump(dump_path, commands=commands, timeout=timeout, kernel=kernel)
@@ -93,8 +93,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Thread list of this session's live debuggee, read non-invasively.
 
-        Answers with threads holding the cdb text, plus pid. There is no
-        process_id or output field.
+        Answers with threads holding the cdb text, plus pid, and truncated,
+        output_chars and returned_chars when the session was cut at the
+        500_000-character buffer. There is no process_id or output field.
         """
         return _dump(analysis.windbg_live_threads(session_id, timeout=timeout))
 
