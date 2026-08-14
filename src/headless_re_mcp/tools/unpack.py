@@ -231,7 +231,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_base: int,
         module_size: int,
         observations: list[dict[str, Any]] | None = None,
-        max_candidates: int = 8,
+        max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
         imports_resolved_hint: bool = False,
     ) -> dict[str, Any]:
         """Score multi-signal OEP candidates; never treats a single heuristic as confirmed.
