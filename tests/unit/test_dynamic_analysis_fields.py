@@ -153,3 +153,39 @@ def test_threads_current_description_names_tid_not_thread() -> None:
     described = _tool_docstring("threads.current")
     assert "Answers with tid" in described
     assert "no thread field" in described
+
+def _max_region_count() -> int:
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    marker = "constexpr std::uint64_t MaxRegionCount = "
+    start = header.index(marker) + len(marker)
+    return int(header[start : header.index(";", start)])
+
+
+def test_memory_regions_schema_matches_native_region_cap() -> None:
+    """The catalog accepted any offset and an unbounded limit.
+
+    Measured: input schema offset has no minimum and limit has no maximum.
+    Native ListMemoryRegions caps both at MaxRegionCount (8192) and rejects
+    a larger limit. A caller that asks for 10**9 regions still occupies a
+    worker until the adapter refuses, and a negative offset is only caught
+    after the tool is already dispatched.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    cap = _max_region_count()
+    assert cap == 8192
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "memory.regions"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["offset"]["minimum"] == 0
+    integer_limit = next(item for item in props["limit"]["anyOf"] if item.get("type") == "integer")
+    assert integer_limit["minimum"] == 1
+    assert integer_limit["maximum"] == cap

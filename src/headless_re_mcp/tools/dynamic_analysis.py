@@ -22,8 +22,8 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="memory.regions")
     def memory_regions(
         session_id: str,
-        offset: int = 0,
-        limit: int | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=8192)] | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """List paused-only VirtualQuery-style memory regions with pagination.
