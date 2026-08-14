@@ -145,9 +145,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Sessions that have not been closed cleanly, newest first, one page at a time.
 
-        A session is marked clean only by session.close, so one that is open and
-        working right now appears here exactly like one abandoned by a process
-        that died. This is not a list of sessions that are safe to clean up.
+        Answers with sessions, plus count, total, offset and has_more. A session
+        is marked clean only by session.close, so one that is open and working
+        right now appears here exactly like one abandoned by a process that
+        died. This is not a list of sessions that are safe to clean up.
         Cross-check session.list, which covers only this process, and
         session.health before acting on anything here.
 

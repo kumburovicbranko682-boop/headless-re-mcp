@@ -678,3 +678,24 @@ async def test_audit_list_description_names_live_fields() -> None:
         assert "has_more" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_sessions_unclean_description_names_the_array_field() -> None:
+    """The catalog named total and has_more but not the list they page.
+
+    Measured keys are sessions, count, total, offset and has_more. A caller
+    looking for items after a successful list reads leftover work as none.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "sessions.unclean")
+        text = tool.description or ""
+        assert "Answers with sessions" in text
+        assert "has_more" in text
+        assert "total" in text
+    finally:
+        analysis.close_all()
