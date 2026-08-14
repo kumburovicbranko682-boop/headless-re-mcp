@@ -349,7 +349,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         hwnd: int,
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
-        backend: str = "auto",
+        backend: Annotated[
+            str,
+            Field(pattern="^(auto|windows|windows_ocr|winrt|tesseract)$"),
+        ] = "auto",
         language: str = "en-US",
         client_only: bool = False,
     ) -> dict[str, Any]:
