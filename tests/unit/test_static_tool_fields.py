@@ -543,3 +543,29 @@ def test_static_structs_description_names_items_not_structs() -> None:
     assert '{"struct", "union"}' in chunk
     assert '"structs"' not in chunk
 
+
+def test_static_enums_description_names_items_not_enums() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items whose kind is enum, each carrying ordinal,
+    name, kind and optional size, and no enums field. A caller looking
+    for enums after a successful list reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_enums").split())
+    assert "Answers with items" in described
+    assert "no enums field" in described
+    assert "ordinal" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _enums")
+    chunk = worker[start : worker.index("def _bytes_read", start)]
+    assert "return _page_items(items, offset, limit)" in chunk
+    assert 'item.get("kind") == "enum"' in chunk
+    assert '"enums"' not in chunk
+
