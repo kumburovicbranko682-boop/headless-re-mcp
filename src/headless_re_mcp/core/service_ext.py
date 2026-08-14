@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import UTC, datetime
 from math import isfinite
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
@@ -19,7 +21,8 @@ from headless_re_mcp.core.capabilities_catalog import describe_capability, list_
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import SessionRegistry, file_sha256
+from headless_re_mcp.core.store.sqlite_store import KNOWLEDGE_VALUE_MAX_CHARS
 from headless_re_mcp.core.ui_drive import drive_deadline, normalize_drive_steps, run_drive_step
 from headless_re_mcp.core.windows import (
     UiPidBoundaryError,
@@ -80,6 +83,50 @@ def _ensure_repository(service: Any) -> AnalysisRepository:
     return repository
 
 
+def _record_artifact(service: Any, **fields: Any) -> JsonObject:
+    """Register through the service so the retention checkpoint runs too."""
+    recorder = getattr(service, "record_artifact", None)
+    if callable(recorder):
+        return cast(JsonObject, recorder(**fields))
+    return _ensure_repository(service).register_artifact(**fields)
+
+
+def _register_capture(
+    service: Any,
+    session_id: str,
+    path: Path,
+    *,
+    kind: str,
+    source: str,
+    payload: JsonObject,
+) -> JsonObject:
+    """Register a file a capture wrote, and return its id alongside the payload.
+
+    A bare path is a dead end in both directions: nothing on the tool surface
+    opens one, so an agent cannot read back the screenshot or HAR it just asked
+    for, and retention only collects what the repository knows about, so an
+    unattended capture grows the artifact root with files nothing can reclaim.
+
+    Registering must not fail the capture -- the file exists either way -- so a
+    failure travels in the payload rather than as an exception.
+    """
+    if not path.is_file():
+        return payload
+    try:
+        artifact = _record_artifact(
+            service,
+            session_id=session_id,
+            kind=kind,
+            path=path,
+            sha256=file_sha256(path),
+            source=source,
+            size=path.stat().st_size,
+        )
+    except BaseException as exc:  # noqa: BLE001 - reported, never raised
+        return {**payload, "artifact_error": str(exc)}
+    return {**payload, "artifact_id": artifact["id"]}
+
+
 def _timeline_append(
     service: Any,
     session_id: str,
@@ -99,8 +146,34 @@ def _record_backend(service: Any, session_id: str, kind: str, **fields: object) 
     _ensure_repository(service).record_backend(session_id, kind, **fields)
 
 
+def _note_failed(action: str, exc: BaseException, result: Result[JsonObject]) -> None:
+    """Say the bookkeeping failed, without making that the outcome.
+
+    These run after the work they describe. An artifact root that disappeared
+    under the service -- a disk cleanup, a scanner quarantine, a volume that
+    came back unmounted -- makes the store unopenable, and the exception used to
+    leave close_session, so a session that really had closed answered with a
+    traceback instead of an envelope and stayed CLOSING for good.
+
+    Swallowing it outright would be the opposite mistake: the session really did
+    open or close, but nothing recorded it, and an unattended caller would keep
+    working against an audit trail that quietly stopped. So it lands in ``meta``,
+    where it neither changes the result nor goes unseen.
+    """
+    from headless_re_mcp.error_boundary import record_exception
+
+    with suppress(BaseException):
+        record_exception(exc, context=f"bookkeeping:{action}")
+    with suppress(BaseException):
+        result.meta["persisted"] = False
+        result.meta["persist_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+
 def note_session_created(service: Any, binary: str, result: Result[JsonObject]) -> None:
-    _ensure_repository(service).note_session_created(binary, result)
+    try:
+        _ensure_repository(service).note_session_created(binary, result)
+    except BaseException as exc:  # noqa: BLE001 - reported in meta, never raised
+        _note_failed("session.created", exc, result)
 
 
 def note_session_closed(service: Any, session_id: str, result: Result[JsonObject]) -> None:
@@ -108,7 +181,10 @@ def note_session_closed(service: Any, session_id: str, result: Result[JsonObject
         session = service.registry.get(session_id)
     except (KeyError, RuntimeError):
         session = None
-    _ensure_repository(service).note_session_closed(session_id, session, result)
+    try:
+        _ensure_repository(service).note_session_closed(session_id, session, result)
+    except BaseException as exc:  # noqa: BLE001 - reported in meta, never raised
+        _note_failed("session.closed", exc, result)
 
 
 class UiDriveMixin:
@@ -215,7 +291,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             session = self.registry.get(session_id)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.open(session.binary, timeout=timeout)
+            data = client.open(session.require_binary(), timeout=timeout)
             _record_backend(self, session_id, "radare2", endpoint="pipe")
             _timeline_append(self, session_id, "r2.open", "r2 binary open validated")
             return _success(data, session_id=session_id, backend="radare2")
@@ -246,7 +322,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             session = self.registry.get(session_id)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.disasm(session.binary, address, count=count, timeout=timeout)
+            data = client.disasm(session.require_binary(), address, count=count, timeout=timeout)
             _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
@@ -259,7 +335,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             session = self.registry.get(session_id)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.xrefs(session.binary, address, timeout=timeout)
+            data = client.xrefs(session.require_binary(), address, timeout=timeout)
             _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
@@ -272,7 +348,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             session = self.registry.get(session_id)
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
             project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
-            data = client.analyze_binary(session.binary, project, timeout=timeout)
+            data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
             _record_backend(self, session_id, "ghidra", endpoint=str(project))
             _timeline_append(self, session_id, "ghidra.analyze", "ghidra analyze finished")
             return _success(data, session_id=session_id, backend="ghidra")
@@ -364,10 +440,25 @@ class ExtAnalysisMixin(UiDriveMixin):
 
     def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:
         try:
-            pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.hook_template(pid, template, allowed_pid=pid)
-            _timeline_append(self, session_id, "frida.hook", "frida hook template loaded", template=template)
+            # A device-connected session (APK/web) hooks its authorised device
+            # pid; a PE session keeps the local single-pid behaviour unchanged.
+            auth = self.registry.get(session_id).metadata.get("frida_authorized")
+            if isinstance(auth, dict) and auth.get("pids"):
+                pid = int(auth["pids"][-1])
+                data = client.hook_template_device(
+                    auth.get("device_id"), pid, template, allowed_pids=auth.get("pids", [])
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.hook_template(pid, template, allowed_pid=pid)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.hook",
+                "frida hook template injected as a probe (not resident)",
+                template=template,
+            )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
@@ -490,25 +581,45 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    # The store is not infallible, and these read paths used to assume it was.
+    # A metadata database that has been corrupted, quarantined or unmounted made
+    # them raise straight through the tool boundary, which is the one thing every
+    # tool is supposed never to do -- and it happens exactly when a caller is
+    # trying to find out what went wrong.
+
     def artifacts_list(
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
-        return _success(
-            self.services.artifacts.list_artifacts(
-                session_id,
-                offset=offset,
-                limit=limit,
+        try:
+            return _success(
+                self.services.artifacts.list_artifacts(
+                    session_id,
+                    offset=offset,
+                    limit=limit,
+                )
             )
-        )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def artifacts_describe(self, artifact_id: str) -> Result[JsonObject]:
-        item = self.services.artifacts.describe_artifact(artifact_id)
+        try:
+            item = self.services.artifacts.describe_artifact(artifact_id)
+        except BaseException as exc:
+            return _failure(exc)
         if item is None:
             return Result(ok=False, error=RpcError(code="not_found", message="artifact not found"))
         return _success({"artifact": item})
 
     def artifacts_read(
         self, artifact_id: str, offset: int = 0, limit: int = 4096
+    ) -> Result[JsonObject]:
+        try:
+            return self._artifacts_read(artifact_id, offset=offset, limit=limit)
+        except BaseException as exc:
+            return _failure(exc)
+
+    def _artifacts_read(
+        self, artifact_id: str, *, offset: int, limit: int
     ) -> Result[JsonObject]:
         item = _ensure_repository(self).describe_artifact(artifact_id)
         if item is None:
@@ -524,7 +635,14 @@ class ExtAnalysisMixin(UiDriveMixin):
             return Result(ok=False, error=RpcError(code="not_found", message="artifact file missing"))
         limit = max(1, min(int(limit), 256 * 1024))
         offset = max(0, int(offset))
-        data = path.read_bytes()[offset : offset + limit]
+        # Seek rather than read-then-slice. Artifacts here are process dumps and
+        # traces: measured on a 200 MB one, twenty paginated 256 KiB reads spiked
+        # to 243 MB of RSS against a 42 MB baseline and touched 4 GB to serve
+        # 5 MB, because every page re-read the whole file. A 2 GB dump would
+        # simply not fit.
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read(limit)
         return _success(
             {
                 "artifact_id": artifact_id,
@@ -537,35 +655,58 @@ class ExtAnalysisMixin(UiDriveMixin):
         )
 
     def artifacts_gc(self, max_total_bytes: int = 512 * 1024 * 1024) -> Result[JsonObject]:
-        return _success(
-            self.services.artifacts.gc_artifacts(max_total_bytes=max_total_bytes)
-        )
+        try:
+            return _success(
+                self.services.artifacts.gc_artifacts(max_total_bytes=max_total_bytes)
+            )
+        except BaseException as exc:
+            return _failure(exc)
 
     def timeline_list(
         self, session_id: str, offset: int = 0, limit: int = 100
     ) -> Result[JsonObject]:
-        return _success(
-            self.services.artifacts.list_timeline(
-                session_id,
-                offset=offset,
-                limit=limit,
+        try:
+            return _success(
+                self.services.artifacts.list_timeline(
+                    session_id,
+                    offset=offset,
+                    limit=limit,
+                )
             )
-        )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
-    def sessions_unclean(self) -> Result[JsonObject]:
-        items = _ensure_repository(self).list_unclean_sessions()
-        return _success({"sessions": items, "count": len(items)})
+    def sessions_unclean(self, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        try:
+            items, total = _ensure_repository(self).list_unclean_sessions(
+                offset=offset, limit=limit
+            )
+        except BaseException as exc:
+            return _failure(exc)
+        start = max(0, int(offset))
+        return _success(
+            {
+                "sessions": items,
+                "count": len(items),
+                "total": total,
+                "offset": start,
+                "has_more": start + len(items) < total,
+            }
+        )
 
     def audit_list(
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
-        return _success(
-            self.services.artifacts.list_audit(
-                session_id,
-                offset=offset,
-                limit=limit,
+        try:
+            return _success(
+                self.services.artifacts.list_audit(
+                    session_id,
+                    offset=offset,
+                    limit=limit,
+                )
             )
-        )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def batch_analyze(
         self,
@@ -651,6 +792,17 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise ValueError("kind must be a non-empty string of at most 64 chars")
             if not normalized_key or len(normalized_key) > 256:
                 raise ValueError("key must be a non-empty string of at most 256 chars")
+            # Checked here rather than left to the store's cut. The value is
+            # kept as JSON text, so a cut one stops being JSON and reads back as
+            # a string fragment: the call answered ok, and the finding an agent
+            # relies on for its next decision quietly became something else.
+            encoded = len(json.dumps(dict(value or {}), ensure_ascii=False))
+            if encoded > KNOWLEDGE_VALUE_MAX_CHARS:
+                raise ValueError(
+                    f"value serialises to {encoded} chars, over the "
+                    f"{KNOWLEDGE_VALUE_MAX_CHARS} a finding may hold; record the bulk as an "
+                    "artifact and keep the reference here"
+                )
             self.registry.get(session_id)
             entry = self.services.artifacts.record_knowledge(
                 session_id=session_id,
@@ -712,9 +864,12 @@ class ExtAnalysisMixin(UiDriveMixin):
             markdown = render_markdown_report(
                 session={
                     "id": session_id,
-                    "binary": str(session.binary),
-                    "sha256": session.sha256,
-                    "architecture": session.architecture.value,
+                    "binary": str(session.require_binary()),
+                    "sha256": session.sha256 or "",
+                    "target": session.target.value,
+                    "architecture": (
+                        session.architecture.value if session.architecture else ""
+                    ),
                     "state": session.state.value,
                     "backends": sorted(backend.value for backend in session.backends),
                 },
@@ -730,15 +885,20 @@ class ExtAnalysisMixin(UiDriveMixin):
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
             path = directory / f"report-{stamp}.md"
             path.write_text(markdown, encoding="utf-8")
-            return _success(
-                {
+            payload = _register_capture(
+                self,
+                session_id,
+                path,
+                kind="report_markdown",
+                source="report.generate",
+                payload={
                     "path": str(path),
                     "bytes": path.stat().st_size,
                     "findings": int(knowledge.get("total") or 0),
                     "markdown": markdown,
                 },
-                session_id=session_id,
             )
+            return _success(payload, session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -778,7 +938,7 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
         session = service.registry.get(session_id)
         exe = getattr(service.settings, "r2", None)
         client = R2Client(Path(exe) if exe else None)
-        data = client.run(session.binary, commands, timeout=timeout)
+        data = client.run(session.require_binary(), commands, timeout=timeout)
         _record_backend(service, session_id, "radare2", endpoint="pipe")
         _timeline_append(service, session_id, "r2.request", "r2 whitelist command", commands=commands)
         return _success(data, session_id=session_id, backend="radare2")
@@ -802,33 +962,34 @@ def _ghidra_export(
         client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
-            data = client.functions(session.binary, project, limit=limit, timeout=timeout)
+            data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "symbols":
-            data = client.symbols(session.binary, project, limit=limit, timeout=timeout)
+            data = client.symbols(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "xrefs":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.xrefs")
-            data = client.xrefs(session.binary, project, address, limit=limit, timeout=timeout)
+            data = client.xrefs(session.require_binary(), project, address, limit=limit, timeout=timeout)
         elif mode == "decompile":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.decompile")
-            data = client.decompile(session.binary, project, address, timeout=timeout)
+            data = client.decompile(session.require_binary(), project, address, timeout=timeout)
         else:
             raise GhidraError("invalid_params", "unknown ghidra export mode", mode=mode)
         _record_backend(service, session_id, "ghidra", endpoint=str(project))
         _timeline_append(service, session_id, f"ghidra.{mode}", f"ghidra {mode} export")
         export_path = data.get("export_path")
         if isinstance(export_path, str) and Path(export_path).is_file():
-            import hashlib
-
-            raw = Path(export_path).read_bytes()
-            art = _ensure_repository(service).register_artifact(
+            exported = Path(export_path)
+            # Hashed in chunks like every other artifact here: a full-program
+            # decompilation is the one export big enough to matter.
+            art = _record_artifact(
+                service,
                 session_id=session_id,
                 kind=f"ghidra_{mode}",
                 path=export_path,
-                sha256=hashlib.sha256(raw).hexdigest(),
+                sha256=file_sha256(exported),
                 source=f"ghidra.{mode}",
-                size=len(raw),
+                size=exported.stat().st_size,
             )
             data["artifact_id"] = art["id"]
         return _success(data, session_id=session_id, backend="ghidra")

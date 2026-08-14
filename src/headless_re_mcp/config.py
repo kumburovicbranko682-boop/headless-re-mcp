@@ -42,6 +42,9 @@ class Settings:
     isolation_required: bool = True
     http_host: str = "127.0.0.1"
     http_port: int = 8765
+    # Startup work direction. "full" exposes every tool; pe/android/web trim the
+    # MCP surface to one workflow so a client is not flooded with unrelated tools.
+    workspace_profile: str = "full"
     diec: Path | None = None
     exeinfope: Path | None = None
     upx: Path | None = None
@@ -52,7 +55,17 @@ class Settings:
     scylla: Path | None = None
     r2: Path | None = None
     ghidra_home: Path | None = None
+    ghidra_wasm_plugin: Path | None = None
     cdb: Path | None = None
+    # Android and Web reverse-engineering tool paths (all optional; missing
+    # degrades the corresponding tool rather than blocking readiness).
+    adb: Path | None = None
+    frida_server: Path | None = None
+    jadx: Path | None = None
+    apktool: Path | None = None
+    apksigner: Path | None = None
+    wabt: Path | None = None
+    webcrack: Path | None = None
     windbg_allow_kernel: bool = False
     persist_debug_events: bool = False
     # Background drain keeps copying native ring events into the durable log
@@ -146,10 +159,51 @@ class Settings:
                 os.environ.get("HEADLESS_RE_GHIDRA_HOME")
                 or data.get("ghidra_home")
             ),
+            ghidra_wasm_plugin=_optional_path(
+                os.environ.get("HEADLESS_RE_GHIDRA_WASM_PLUGIN")
+                or data.get("ghidra_wasm_plugin")
+            ),
             cdb=_optional_path(
                 os.environ.get("HEADLESS_RE_CDB")
                 or data.get("cdb")
                 or shutil.which("cdb")
+            ),
+            adb=_optional_path(
+                os.environ.get("HEADLESS_RE_ADB")
+                or data.get("adb")
+                or shutil.which("adb")
+            ),
+            frida_server=_optional_path(
+                os.environ.get("HEADLESS_RE_FRIDA_SERVER")
+                or data.get("frida_server")
+            ),
+            jadx=_optional_path(
+                os.environ.get("HEADLESS_RE_JADX")
+                or data.get("jadx")
+                or shutil.which("jadx")
+                or shutil.which("jadx.bat")
+            ),
+            apktool=_optional_path(
+                os.environ.get("HEADLESS_RE_APKTOOL")
+                or data.get("apktool")
+                or shutil.which("apktool")
+                or shutil.which("apktool.bat")
+            ),
+            apksigner=_optional_path(
+                os.environ.get("HEADLESS_RE_APKSIGNER")
+                or data.get("apksigner")
+                or shutil.which("apksigner")
+                or shutil.which("apksigner.bat")
+            ),
+            wabt=_optional_path(
+                os.environ.get("HEADLESS_RE_WABT")
+                or data.get("wabt")
+                or shutil.which("wasm2wat")
+            ),
+            webcrack=_optional_path(
+                os.environ.get("HEADLESS_RE_WEBCRACK")
+                or data.get("webcrack")
+                or shutil.which("webcrack")
             ),
             windbg_allow_kernel=_as_bool(
                 os.environ.get("HEADLESS_RE_WINDBG_ALLOW_KERNEL"),
@@ -220,6 +274,10 @@ class Settings:
                 os.environ.get("HEADLESS_RE_HTTP_PORT"),
                 data.get("http_port", 8765),
                 fallback=8765,
+            ),
+            workspace_profile=_as_profile(
+                os.environ.get("HEADLESS_RE_WORKSPACE_PROFILE")
+                or data.get("workspace_profile")
             ),
             artifact_max_total_bytes=_as_int(
                 os.environ.get("HEADLESS_RE_ARTIFACT_MAX_TOTAL_BYTES"),
@@ -387,6 +445,14 @@ def _ida_config_home() -> Path | None:
     except (OSError, ValueError, TypeError):
         pass
     return None
+
+
+VALID_WORKSPACE_PROFILES = ("full", "pe", "android", "web")
+
+
+def _as_profile(value: object) -> str:
+    text = str(value).strip().lower() if value not in (None, "") else "full"
+    return text if text in VALID_WORKSPACE_PROFILES else "full"
 
 
 def _optional_path(value: object) -> Path | None:

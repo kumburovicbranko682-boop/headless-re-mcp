@@ -31,8 +31,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-activate-ida", action="store_true", help="不运行 idalib 激活脚本")
     parser.add_argument(
         "--extras",
-        default="ida,pe,web,native",
-        help="安装的 pyproject extras（默认：ida,pe,web,native）",
+        default="ida,pe,web,native,android,browser,proxy",
+        help=(
+            "安装的 pyproject extras"
+            "（默认：ida,pe,web,native,android,browser,proxy）。"
+            "android=ADB/APK/Frida，browser=Playwright CDP，proxy=mitmproxy 抓包"
+        ),
     )
     return parser
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import zipfile
 from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
+from typing import Any
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -13,6 +15,7 @@ from headless_re_mcp.core.models import (
     BackendKind,
     Session,
     SessionState,
+    TargetKind,
 )
 
 _ALLOWED_TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
@@ -48,6 +51,18 @@ class InvalidStateTransition(RuntimeError):
 _RETAINED_CLOSED_SESSIONS = 64
 
 
+class SessionNotFound(KeyError):
+    """Asked for a session that is not there.
+
+    A distinct type because the result mapper turned *any* KeyError into
+    ``session_not_found``: a missing dictionary key while parsing a backend
+    reply, or a cache eviction race, told an unattended caller that its session
+    had disappeared -- and the reasonable thing to do about that, recreating the
+    session, is exactly the wrong response to a transient internal error. It
+    subclasses KeyError so every existing ``except KeyError`` still catches it.
+    """
+
+
 class SessionRegistry:
     def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
         self._sessions: dict[str, Session] = {}
@@ -55,14 +70,46 @@ class SessionRegistry:
         self._retained_closed = max(0, retained_closed)
         self._lock = RLock()
 
-    def create(self, binary: Path) -> Session:
-        path = binary.expanduser().resolve(strict=True)
-        architecture = detect_pe_architecture(path)
-        session = Session(
-            binary=path,
-            sha256=file_sha256(path),
-            architecture=architecture,
-        )
+    def create(
+        self,
+        reference: str | Path,
+        *,
+        target: TargetKind | None = None,
+    ) -> Session:
+        text = str(reference).strip()
+        kind = target if target is not None else classify_target(text)
+        if kind is TargetKind.WEB:
+            candidate = Path(text).expanduser()
+            # A web target can be a remote URL (any scheme) or a local asset
+            # such as a downloaded .js/.wasm; only the latter has a binary.
+            if not is_http_url(text) and candidate.is_file():
+                path = candidate.resolve()
+                session = Session(
+                    target=kind,
+                    binary=path,
+                    locator=str(path),
+                    sha256=file_sha256(path),
+                )
+            else:
+                session = Session(target=kind, locator=text)
+        else:
+            path = Path(text).expanduser().resolve(strict=True)
+            if not path.is_file():
+                raise ValueError(f"session target is not a regular file: {path}")
+            architecture: Architecture | None = None
+            metadata: dict[str, Any] = {}
+            if kind is TargetKind.PE:
+                architecture = detect_pe_architecture(path)
+            elif kind is TargetKind.APK:
+                metadata = describe_apk(path)
+            session = Session(
+                target=kind,
+                binary=path,
+                locator=str(path),
+                sha256=file_sha256(path),
+                architecture=architecture,
+                metadata=metadata,
+            )
         with self._lock:
             self._sessions[session.id] = session
         return session.model_copy(deep=True)
@@ -71,7 +118,7 @@ class SessionRegistry:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                raise KeyError(f"session not found: {session_id}")
+                raise SessionNotFound(f"session not found: {session_id}")
             return session.model_copy(deep=True)
 
     def list(self, states: Iterable[SessionState] | None = None) -> list[Session]:
@@ -141,7 +188,7 @@ class SessionRegistry:
     def _require(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)
         if session is None:
-            raise KeyError(f"session not found: {session_id}")
+            raise SessionNotFound(f"session not found: {session_id}")
         return session
 
 
@@ -151,6 +198,91 @@ def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+_APK_SUFFIXES = frozenset({".apk", ".aab", ".apks", ".xapk"})
+_WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".har"})
+_APK_MANIFEST = "AndroidManifest.xml"
+# Enough for every magic number below without pulling a large header into memory.
+_MAGIC_BYTES = 8
+
+
+def is_http_url(reference: str) -> bool:
+    return reference.lower().startswith(("http://", "https://"))
+
+
+def classify_target(reference: str | Path) -> TargetKind:
+    """Infer the target kind so existing callers keep their one-argument create.
+
+    Extension first because it is the caller's stated intent, then magic bytes
+    for files named without one. Anything unrecognised stays PE, which keeps the
+    original "not a PE file" error rather than inventing a vaguer one.
+    """
+
+    text = str(reference).strip()
+    if is_http_url(text):
+        return TargetKind.WEB
+    path = Path(text).expanduser()
+    suffix = path.suffix.lower()
+    if suffix in _APK_SUFFIXES:
+        return TargetKind.APK
+    if suffix in _WEB_SUFFIXES:
+        return TargetKind.WEB
+    try:
+        with path.open("rb") as stream:
+            magic = stream.read(_MAGIC_BYTES)
+    except OSError:
+        return TargetKind.PE
+    if magic.startswith(b"MZ"):
+        return TargetKind.PE
+    if magic.startswith(b"\x00asm"):
+        return TargetKind.WEB
+    if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
+        return TargetKind.APK
+    return TargetKind.PE
+
+
+def _is_android_package(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return _APK_MANIFEST in archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def describe_apk(path: Path) -> dict[str, Any]:
+    """Read cheap identity facts from the package without a decompiler.
+
+    Deliberately stdlib-only: session creation must not depend on androguard
+    being installed, otherwise the whole Android surface becomes unavailable
+    instead of degrading to "opened, but cannot decompile".
+    """
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"not a readable Android package: {path}") from exc
+    if _APK_MANIFEST not in names:
+        raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
+    abis = sorted(
+        {
+            parts[1]
+            for name in names
+            if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
+        }
+    )
+    return {
+        "apk": {
+            "native_abis": abis,
+            "dex_count": sum(1 for name in names if name.endswith(".dex")),
+            "entry_count": len(names),
+            "signed_v1": any(
+                name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
+                for name in names
+            ),
+        }
+    }
 
 
 def detect_pe_architecture(path: Path) -> Architecture:

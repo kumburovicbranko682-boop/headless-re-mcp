@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
+from contextlib import suppress
 from ctypes import wintypes
 from typing import Any
 
 JsonObject = dict[str, Any]
 
 _MAX_CHILD_PIDS = 16
+# A timeout kill walks a launcher's descendants: jadx, apktool and Ghidra are
+# scripts that start a JVM, webcrack starts node. Deeper than this is not a
+# tool run, and the walk is bounded so a fork bomb cannot hold the killer.
+_MAX_KILL_DESCENDANTS = 64
+_MAX_KILL_DEPTH = 4
 _TH32CS_SNAPPROCESS = 0x00000002
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_TERMINATE = 0x0001
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -79,6 +87,80 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
         kernel32.CloseHandle(snap)
     children.sort()
     return children
+
+
+def collect_descendants(parent_pid: int) -> list[int]:
+    """Descendant PIDs, deepest last, bounded in both breadth and depth."""
+    found: list[int] = []
+    seen = {int(parent_pid)}
+    frontier = [int(parent_pid)]
+    for _ in range(_MAX_KILL_DEPTH):
+        if not frontier or len(found) >= _MAX_KILL_DESCENDANTS:
+            break
+        children: list[int] = []
+        for pid in frontier:
+            for child in enumerate_direct_children(pid, max_pids=_MAX_KILL_DESCENDANTS):
+                if child in seen:
+                    continue
+                seen.add(child)
+                children.append(child)
+                found.append(child)
+                if len(found) >= _MAX_KILL_DESCENDANTS:
+                    break
+            if len(found) >= _MAX_KILL_DESCENDANTS:
+                break
+        frontier = children
+    return found
+
+
+def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Kill a spawned process and everything it started. Returns the killed PIDs.
+
+    Killing only the process that was spawned is not enough here. Measured on
+    this machine: kill a launcher and the process it started keeps running,
+    which for jadx, apktool or Ghidra means an orphaned JVM holding CPU and a
+    lock on the sample after the tool call has already returned a timeout.
+
+    Descendants are enumerated *before* the parent dies, because that is while
+    the relationship is still recorded. Never raises: this runs on a failure
+    path that has somewhere better to be.
+    """
+    killed: list[int] = []
+    pid = getattr(process, "pid", None)
+    descendants: list[int] = []
+    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+        with suppress(Exception):
+            descendants = collect_descendants(pid)
+
+    with suppress(OSError, AttributeError):
+        if process.poll() is None:
+            process.kill()
+            if isinstance(pid, int):
+                killed.append(pid)
+    with suppress(OSError, AttributeError, ValueError, subprocess.TimeoutExpired):
+        process.wait(timeout=wait_s)
+
+    # Deepest last on the way in, so kill in reverse: a parent that respawns its
+    # child cannot outlive the sweep.
+    for child in reversed(descendants):
+        with suppress(Exception):
+            _kill_pid(child)
+            killed.append(child)
+    return killed
+
+
+def _kill_pid(pid: int) -> None:
+    if os.name != "nt":
+        os.kill(pid, 9)
+        return
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, int(pid))
+    if not handle:
+        return
+    try:
+        kernel32.TerminateProcess(handle, 1)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def filter_same_image_pids(debuggee_pid: int, candidates: list[int]) -> list[int]:

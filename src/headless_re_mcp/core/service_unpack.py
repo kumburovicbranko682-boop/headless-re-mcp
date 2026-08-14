@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from headless_re_mcp.core.limits import rebuild_would_exhaust_memory
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_detect import _detection_timeout
@@ -84,6 +85,41 @@ JsonObject = dict[str, Any]
 
 # How many memory regions one OEP scoring pass will look at.
 _OEP_REGION_SNAPSHOT_LIMIT = 512
+
+
+def _refuse_rebuild_that_will_not_fit(path: Path) -> Result[JsonObject] | None:
+    """Refuse a rebuild whose peak would not fit in memory, before allocating.
+
+    Rebuilding holds the dump, the rebuilt image and working copies at once:
+    measured at 3.0x the dump size for 64 MB and 4.0x for 256 MB. A dump of a
+    few gigabytes therefore does not fail, it takes the process down -- and an
+    unattended run loses every open session with it. The estimate is compared
+    against memory actually free, so a large machine is not refused work it can
+    do; when free memory cannot be determined the rebuild goes ahead.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    too_big, estimate, available = rebuild_would_exhaust_memory(size)
+    if not too_big:
+        return None
+    return Result[JsonObject](
+        ok=False,
+        error=RpcError(
+            code="dump_too_large",
+            message=(
+                f"rebuilding this {size / 1048576:.0f} MB dump needs about "
+                f"{estimate / 1048576:.0f} MB, and only {(available or 0) / 1048576:.0f} MB "
+                "is free; dump a narrower range or free memory first"
+            ),
+            details={
+                "dump_bytes": size,
+                "estimated_peak_bytes": estimate,
+                "available_bytes": available,
+            },
+        ),
+    )
 
 
 class UnpackMixin:
@@ -613,6 +649,9 @@ class UnpackMixin:
                         },
                     ),
                 )
+            refusal = _refuse_rebuild_that_will_not_fit(path)
+            if refusal is not None:
+                return refusal
             raw = path.read_bytes()
             # If dump looks like a pure memory image, remap first.
             try:
@@ -692,6 +731,9 @@ class UnpackMixin:
                         message="dump_path must be inside the session artifact root",
                     ),
                 )
+            refusal = _refuse_rebuild_that_will_not_fit(path)
+            if refusal is not None:
+                return refusal
             raw = path.read_bytes()
             rebuilt, report = remap_dump_to_file(raw, entry_point_rva=entry_point_rva)
             import_report = None
@@ -984,7 +1026,7 @@ class UnpackMixin:
             if not isinstance(candidates, list):
                 candidates = []
             session = self.registry.get(session_id)
-            pe_report = scan_pe(session.binary)
+            pe_report = scan_pe(session.require_binary())
             pe_vm_like = pe_suggests_vm_protector(
                 finding_ids=tuple(item.id for item in pe_report.findings),
                 section_names=tuple(section.name for section in pe_report.pe.sections),
@@ -1091,8 +1133,8 @@ class UnpackMixin:
             state = add_artifact(
                 state,
                 kind="input_binary",
-                path=str(session.binary),
-                sha256=session.sha256,
+                path=str(session.require_binary()),
+                sha256=session.sha256 or "",
                 phase=UnpackPhase.DETECTED,
             )
             bounded_probe: JsonObject | None = None

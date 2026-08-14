@@ -26,7 +26,7 @@ _PROBE_PREFIX = ".readyz-probe"
 
 
 class _Repository(Protocol):
-    def list_unclean_sessions(self) -> list[JsonObject]: ...
+    def list_unclean_sessions(self, *, offset: int = 0, limit: int = 100) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,11 +60,29 @@ def _describe(exc: BaseException) -> str:
 
 
 def probe_store(repository: _Repository) -> Check:
-    """Confirm the metadata database still answers a trivial read."""
+    """Confirm the metadata database still answers a read, and accepts a write.
+
+    Reading proves less than it looks: a database file that has gone read-only
+    -- a scanner quarantine, a permissions change, a volume remounted without
+    write access -- serves every query exactly as before while silently
+    accepting no session, artifact or audit row again. That is the same argument
+    ``probe_artifact_root`` already makes for the directory, applied to the file
+    the directory exists for. The write is a lock taken and released, so nothing
+    is stored to prove it.
+    """
     try:
-        repository.list_unclean_sessions()
+        # One page: the probe is asking whether the store answers, not how much
+        # it has to say, and a busy deployment can have thousands of these.
+        repository.list_unclean_sessions(limit=1)
     except BaseException as exc:  # noqa: BLE001 - reported, never raised at a probe
         return Check("store", False, _describe(exc))
+    writable = getattr(repository, "check_writable", None)
+    if callable(writable):
+        try:
+            writable()
+        except BaseException as exc:  # noqa: BLE001 - reported, never raised at a probe
+            return Check("store", False, _describe(exc))
+        return Check("store", True, "readable and writable")
     return Check("store", True, "readable")
 
 

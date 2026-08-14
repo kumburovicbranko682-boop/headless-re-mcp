@@ -32,6 +32,43 @@ class BackendKind(StrEnum):
     GHIDRA = "ghidra"
     FRIDA = "frida"
     WINDBG = "windbg"
+    APK = "apk"
+    ADB = "adb"
+    WEB = "web"
+    PROXY = "proxy"
+
+
+class TargetKind(StrEnum):
+    """What kind of artifact a session is bound to.
+
+    The debugger-oriented tools assume a local PE with a known machine type.
+    Android and browser targets share the session lifecycle, artifacts and
+    knowledge store but cannot answer PE questions, so every tool that needs a
+    PE says so explicitly rather than failing deep inside a backend.
+    """
+
+    PE = "pe"
+    APK = "apk"
+    WEB = "web"
+
+
+class TargetMismatch(RuntimeError):
+    """A tool was invoked against a session whose target cannot serve it."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected: tuple[TargetKind, ...] = (),
+        actual: TargetKind | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = "target_mismatch"
+        self.message = message
+        self.details: dict[str, Any] = {
+            "expected_targets": [item.value for item in expected],
+            "actual_target": actual.value if actual is not None else None,
+        }
 
 
 class Address(BaseModel):
@@ -128,14 +165,58 @@ class BackendHandle(BaseModel):
 
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
-    binary: Path
-    sha256: str
-    architecture: Architecture
+    target: TargetKind = TargetKind.PE
+    binary: Path | None = None
+    locator: str | None = None
+    sha256: str | None = None
+    architecture: Architecture | None = None
     state: SessionState = SessionState.CREATED
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     backends: dict[BackendKind, BackendHandle] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def require_binary(self) -> Path:
+        """Return the on-disk artifact, or explain why this session has none."""
+        if self.binary is None:
+            raise TargetMismatch(
+                f"session target {self.target.value} is not backed by a local file",
+                expected=(TargetKind.PE, TargetKind.APK),
+                actual=self.target,
+            )
+        return self.binary
+
+    def require_target(self, *expected: TargetKind) -> Path:
+        if self.target not in expected:
+            names = ", ".join(item.value for item in expected)
+            raise TargetMismatch(
+                f"this tool requires a {names} session, but the session target is "
+                f"{self.target.value}",
+                expected=expected,
+                actual=self.target,
+            )
+        return self.require_binary()
+
+    def require_pe(self) -> Path:
+        return self.require_target(TargetKind.PE)
+
+    def require_architecture(self) -> Architecture:
+        if self.architecture is None:
+            raise TargetMismatch(
+                f"session target {self.target.value} has no PE machine type",
+                expected=(TargetKind.PE,),
+                actual=self.target,
+            )
+        return self.architecture
+
+    def require_locator(self) -> str:
+        if not self.locator:
+            raise TargetMismatch(
+                f"session target {self.target.value} has no locator",
+                expected=(TargetKind.WEB,),
+                actual=self.target,
+            )
+        return self.locator
 
 
 class RpcError(BaseModel):

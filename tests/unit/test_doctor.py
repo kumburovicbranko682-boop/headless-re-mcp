@@ -23,6 +23,25 @@ from headless_re_mcp.doctor import (
 )
 
 
+def _as_probe_run(fake_run: object) -> object:
+    """Adapt a CompletedProcess-shaped fake to the probe seam.
+
+    The probes no longer call subprocess.run directly: a configured tool path is
+    often a launcher, and subprocess.run kills only the launcher on timeout and
+    then drains with no deadline, which hangs the doctor. Patching the seam
+    keeps these tests about what a probe makes of the output.
+    """
+
+    def run(command: list[str], *, timeout: float, env: object = None) -> object:
+        del env
+        completed = fake_run(command, timeout=timeout, capture_output=True)  # type: ignore[operator]
+        return doctor_module._ProbeOutput(
+            completed.returncode, completed.stdout or "", completed.stderr or ""
+        )
+
+    return run
+
+
 def _settings(
     source: Path | None,
     artifacts: Path,
@@ -178,7 +197,7 @@ def test_die_probe_verifies_version_and_json_interface(
             stderr="",
         )
 
-    monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
     probe = probe_die(settings)
 
     assert probe.status == ProbeStatus.READY
@@ -201,7 +220,7 @@ def test_die_probe_blocks_cli_without_json_capability(
         output = "die 3.21" if command[-1] == "--version" else "plain output only"
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
-    monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
 
     assert probe_die(settings).status == ProbeStatus.BLOCKED
 
@@ -226,7 +245,7 @@ def test_die_probe_accepts_short_json_flag(
             stderr="",
         )
 
-    monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
     probe = probe_die(settings)
 
     assert probe.status == ProbeStatus.READY
@@ -335,7 +354,7 @@ def test_upx_probe_verifies_version(
         assert kwargs["capture_output"] is True
         return subprocess.CompletedProcess(command, 0, stdout="upx 5.2.0\n", stderr="")
 
-    monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
     probe = probe_upx(settings)
 
     assert probe.status == ProbeStatus.READY
@@ -354,7 +373,7 @@ def test_upx_probe_blocks_without_usable_version(
         del kwargs
         return subprocess.CompletedProcess(command, 0, stdout="not-upx-tool\n", stderr="")
 
-    monkeypatch.setattr(doctor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
     assert probe_upx(settings).status == ProbeStatus.BLOCKED
 
 

@@ -259,11 +259,15 @@ def _creation_options() -> dict[str, Any]:
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    with suppress(OSError, subprocess.TimeoutExpired):
-        if process.poll() is None:
-            process.kill()
-    with suppress(OSError, subprocess.TimeoutExpired):
-        process.wait(timeout=5)
+    """Stop the deobfuscator and anything it started.
+
+    de4dot and NETReactorSlayer are often invoked through a runner (dotnet, or
+    a batch wrapper), and killing the runner leaves the work itself running on
+    the sample this call was told to stop touching.
+    """
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
+    terminate_process_tree(process, wait_s=5.0)
 
 
 def _capture_process(

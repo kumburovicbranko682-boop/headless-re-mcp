@@ -44,7 +44,15 @@ _SETTINGS_ENV_MAP: tuple[tuple[str, str], ...] = (
     ("scylla", "HEADLESS_RE_SCYLLA"),
     ("r2", "HEADLESS_RE_R2"),
     ("ghidra_home", "HEADLESS_RE_GHIDRA_HOME"),
+    ("ghidra_wasm_plugin", "HEADLESS_RE_GHIDRA_WASM_PLUGIN"),
     ("cdb", "HEADLESS_RE_CDB"),
+    ("adb", "HEADLESS_RE_ADB"),
+    ("frida_server", "HEADLESS_RE_FRIDA_SERVER"),
+    ("jadx", "HEADLESS_RE_JADX"),
+    ("apktool", "HEADLESS_RE_APKTOOL"),
+    ("apksigner", "HEADLESS_RE_APKSIGNER"),
+    ("wabt", "HEADLESS_RE_WABT"),
+    ("webcrack", "HEADLESS_RE_WEBCRACK"),
 )
 
 

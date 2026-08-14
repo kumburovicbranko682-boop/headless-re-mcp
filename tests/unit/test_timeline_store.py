@@ -47,7 +47,10 @@ def test_appending_does_not_read_the_whole_file(
     for index in range(50):
         _append(path, index)
 
-    assert reads == []
+    # Scoped to the timeline file on purpose: the patch is on Path itself, so an
+    # unrelated background thread reading any file would otherwise fail a test
+    # that is only making a claim about how this log is appended to.
+    assert [item for item in reads if item == path] == []
     entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert [item["event"] for item in entries] == [f"e{index:04d}" for index in range(50)]
 

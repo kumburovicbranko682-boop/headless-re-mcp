@@ -3,6 +3,7 @@ import { api, bootstrapToken, streamEvents } from "../api/client";
 import { initialState, reducer, type Message, type RunEvent, type Thread } from "../agent/state";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { Inspector } from "../components/Inspector";
+import { WorkspaceLanding, type WorkspaceProfile } from "../components/WorkspaceLanding";
 
 type Session = { id: string; binary?: string; state?: string };
 type ThreadsResponse = { threads: Thread[] };
@@ -18,6 +19,11 @@ export function App() {
   const [artifacts, setArtifacts] = useState<unknown>(null);
   const [audit, setAudit] = useState<unknown>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceProfile, setWorkspaceProfile] = useState<WorkspaceProfile | null>(() => {
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem("headless_ws_profile") : null;
+    return (stored as WorkspaceProfile | null) ?? null;
+  });
+  const [landingOpen, setLandingOpen] = useState(workspaceProfile === null);
   const abortRef = useRef<AbortController | null>(null);
   const cursorRef = useRef(0);
 
@@ -111,13 +117,17 @@ export function App() {
 
   const visibleMessages = useMemo(() => state.messages, [state.messages]);
 
+  if (landingOpen) {
+    return <WorkspaceLanding onChoose={(profile) => { setWorkspaceProfile(profile); setLandingOpen(false); }} />;
+  }
+
   return <main className="workbench">
     <aside className="sidebar">
       <div className="brand"><div className="logo">RE</div><div><b>Headless Workbench</b><small>{state.connected ? "streaming" : "loopback"}</small></div></div>
       <button className="new-thread" onClick={createThread}>＋ New thread</button>
       <label>Analysis session<select value={sessionId} onChange={(e) => setSessionId(e.target.value)}><option value="">No linked session</option>{sessions.map((session) => <option key={session.id} value={session.id}>{session.binary?.split(/[\\/]/).pop() ?? session.id} · {session.state}</option>)}</select></label>
       <nav>{state.threads.map((thread) => <button className={thread.id === state.selectedThread ? "thread active" : "thread"} key={thread.id} onClick={() => void selectThread(thread.id)}><span>{thread.title}</span><small>{thread.session_id ? "linked" : "chat"}</small></button>)}</nav>
-      <div className="sidebar-actions"><button onClick={() => setSettingsOpen(true)}>Provider & setup</button><a href="/api/mcp/export" onClick={(event) => event.preventDefault()}>MCP export</a></div>
+      <div className="sidebar-actions"><button onClick={() => setLandingOpen(true)}>Work direction{workspaceProfile ? ` · ${workspaceProfile}` : ""}</button><button onClick={() => setSettingsOpen(true)}>Provider & setup</button><a href="/api/mcp/export" onClick={(event) => event.preventDefault()}>MCP export</a></div>
     </aside>
     <section className="conversation">
       <header><div><h1>Agent analysis</h1><p>Read-only tools run automatically. Every mutation waits for one-time approval.</p></div>{state.activeRun && <button className="cancel" onClick={() => void api(`/api/agent/runs/${state.activeRun}/cancel`, { method: "POST" })}>Cancel run</button>}</header>

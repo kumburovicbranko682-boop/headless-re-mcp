@@ -79,7 +79,9 @@ class AnalysisRepository(Protocol):
         limit: int = 100,
     ) -> JsonObject: ...
 
-    def list_unclean_sessions(self) -> list[JsonObject]: ...
+    def list_unclean_sessions(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[list[JsonObject], int]: ...
 
     def append_audit(
         self,
@@ -183,9 +185,9 @@ class SqliteAnalysisRepository:
             else:
                 self.store.upsert_session(
                     session_id=session_id,
-                    binary=str(session.binary),
-                    sha256=session.sha256,
-                    architecture=session.architecture.value,
+                    binary=str(session.locator or session.binary or ""),
+                    sha256=session.sha256 or "",
+                    architecture=session.architecture.value if session.architecture else "",
                     state=session.state.value,
                     closed_cleanly=bool(result.ok),
                 )
@@ -265,8 +267,14 @@ class SqliteAnalysisRepository:
             limit=limit,
         )
 
-    def list_unclean_sessions(self) -> list[JsonObject]:
-        return self.store.list_unclean_sessions()
+    def list_unclean_sessions(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[list[JsonObject], int]:
+        return self.store.list_unclean_sessions(offset=offset, limit=limit)
+
+    def check_writable(self) -> None:
+        """Raise unless the store would accept a write; used by the readiness probe."""
+        self.store.check_writable()
 
     def persist_unpack_state(
         self,
@@ -401,17 +409,17 @@ class InMemoryAnalysisRepository:
             self._sessions[session_id] = {
                 "id": session_id,
                 "binary": (
-                    str(session.binary)
+                    str(session.locator or session.binary or "")
                     if session is not None
                     else str(existing.get("binary", ""))
                 ),
                 "sha256": (
-                    session.sha256
+                    (session.sha256 or "")
                     if session is not None
                     else str(existing.get("sha256", ""))
                 ),
                 "architecture": (
-                    session.architecture.value
+                    (session.architecture.value if session.architecture else "")
                     if session is not None
                     else str(existing.get("architecture", ""))
                 ),
@@ -559,10 +567,15 @@ class InMemoryAnalysisRepository:
             "has_more": offset + len(page) < total,
         }
 
-    def list_unclean_sessions(self) -> list[JsonObject]:
+    def list_unclean_sessions(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[list[JsonObject], int]:
         with self._lock:
             items = [dict(item) for item in self._sessions.values() if not item["closed_cleanly"]]
-        return sorted(items, key=lambda item: str(item["updated_at"]), reverse=True)
+        ordered = sorted(items, key=lambda item: str(item["updated_at"]), reverse=True)
+        window = max(1, min(int(limit), 1000))
+        start = max(0, int(offset))
+        return ordered[start : start + window], len(ordered)
 
     def append_audit(
         self,

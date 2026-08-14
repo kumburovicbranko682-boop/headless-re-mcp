@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.tools.apk import build_apk_tools
 from headless_re_mcp.tools.binding import BoundTool, input_schema_for
 from headless_re_mcp.tools.catalog import (
     COMMAND_CATALOG,
@@ -19,16 +20,21 @@ from headless_re_mcp.tools.core import (
     build_static_extended_tools,
     build_workflow_tools,
 )
+from headless_re_mcp.tools.device import build_device_tools
 from headless_re_mcp.tools.dynamic import build_dynamic_tools
 from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
 from headless_re_mcp.tools.frida import build_frida_tools
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
+from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
 from headless_re_mcp.tools.meta import build_meta_tools
+from headless_re_mcp.tools.proxy import build_proxy_tools
 from headless_re_mcp.tools.r2 import build_r2_tools
 from headless_re_mcp.tools.trace import build_trace_tools
 from headless_re_mcp.tools.ui import build_ui_tools
 from headless_re_mcp.tools.unpack import build_unpack_tools
+from headless_re_mcp.tools.web import build_web_tools
 from headless_re_mcp.tools.windbg import build_windbg_tools
+from headless_re_mcp.tools.workspace import build_workspace_tools
 
 ToolFactory = Callable[[AnalysisService], tuple[BoundTool, ...]]
 
@@ -49,6 +55,12 @@ TOOL_FACTORIES: tuple[ToolFactory, ...] = (
     build_ui_tools,
     build_unpack_tools,
     build_windbg_tools,
+    build_apk_tools,
+    build_device_tools,
+    build_js_wasm_tools,
+    build_web_tools,
+    build_proxy_tools,
+    build_workspace_tools,
 )
 
 

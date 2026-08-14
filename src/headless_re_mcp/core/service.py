@@ -13,7 +13,10 @@ from time import monotonic, sleep
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
+from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
+from headless_re_mcp.backends.proxy import ProxyBackend
+from headless_re_mcp.backends.web import WebBackend
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.addressing import (
@@ -52,6 +55,7 @@ from headless_re_mcp.core.models import (
     RpcError,
     Session,
     SessionState,
+    TargetKind,
 )
 from headless_re_mcp.core.readiness import readiness_report
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
@@ -70,7 +74,9 @@ from headless_re_mcp.core.runtime_state import (
     UnpackStateOwner,
     WorkflowStateOwner,
 )
+from headless_re_mcp.core.service_apk import ApkAnalysisMixin
 from headless_re_mcp.core.service_detect import DetectAnalysisMixin
+from headless_re_mcp.core.service_device import DeviceAnalysisMixin
 from headless_re_mcp.core.service_dotnet import DotnetAnalysisMixin
 from headless_re_mcp.core.service_dynamic_inspect import DynamicInspectMixin
 from headless_re_mcp.core.service_ext import (
@@ -80,6 +86,9 @@ from headless_re_mcp.core.service_ext import (
     note_session_closed,
     note_session_created,
 )
+from headless_re_mcp.core.service_frida import FridaDeviceMixin
+from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
+from headless_re_mcp.core.service_proxy import ProxyAnalysisMixin
 from headless_re_mcp.core.service_static import StaticAnalysisMixin
 from headless_re_mcp.core.service_trace import (
     TraceMixin,
@@ -89,7 +98,9 @@ from headless_re_mcp.core.service_trace import (
 from headless_re_mcp.core.service_ui import UiAutomationMixin
 from headless_re_mcp.core.service_unpack import UnpackMixin
 from headless_re_mcp.core.service_unpack_cli import UnpackCliMixin
+from headless_re_mcp.core.service_web import WebAnalysisMixin
 from headless_re_mcp.core.service_workflow import WorkflowAnalysisMixin
+from headless_re_mcp.core.service_workspace import WorkspaceMixin
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionRegistry,
@@ -293,6 +304,13 @@ class AnalysisService(
     DotnetAnalysisMixin,
     UnpackCliMixin,
     WorkflowAnalysisMixin,
+    ApkAnalysisMixin,
+    DeviceAnalysisMixin,
+    FridaDeviceMixin,
+    JsReAnalysisMixin,
+    WebAnalysisMixin,
+    ProxyAnalysisMixin,
+    WorkspaceMixin,
     ExtAnalysisMixin,
 ):
     def __init__(
@@ -330,6 +348,11 @@ class AnalysisService(
         self._vmp_dumper_runner = vmp_dumper_runner or run_vmp_dumper
         self._scylla_runner = scylla_runner or run_scylla
         self.repository = repository or SqliteAnalysisRepository(self.settings.artifact_root)
+        # Long-lived optional backends are owned here so concurrent tool calls
+        # cannot each construct one. Both constructors are cheap and import
+        # nothing: playwright and mitmproxy are only imported on first use.
+        self._web_backend = WebBackend()
+        self._proxy_backend = ProxyBackend()
         self._runtime_owner: BackendRuntimeOwner[_BackendRuntime] = BackendRuntimeOwner()
         self._workflow_owner: WorkflowStateOwner[WorkflowRuntime] = WorkflowStateOwner()
         self._unpack_owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
@@ -369,9 +392,10 @@ class AnalysisService(
     def doctor(self) -> Result[JsonObject]:
         return _success(run_doctor(self.settings).to_dict())
 
-    def create_session(self, binary: str) -> Result[JsonObject]:
+    def create_session(self, binary: str, target: str | None = None) -> Result[JsonObject]:
         try:
-            session = self.registry.create(Path(binary))
+            kind = TargetKind(target) if target else None
+            session = self.registry.create(binary, target=kind)
             result = _success({"session": _session_json(session)})
             note_session_created(self, binary, result)
             return result
@@ -440,7 +464,7 @@ class AnalysisService(
                 # instead of quietly reviving one whose invariants already broke.
                 return self._recover_by_replacement(
                     session_id,
-                    str(session.binary),
+                    str(session.locator or session.binary or ""),
                     requested,
                 )
 
@@ -776,6 +800,16 @@ class AnalysisService(
                 self._workflow_owner.clear(session_id)
                 self._unpack_owner.clear(session_id)
                 self._debuggee_owner.clear(session_id)
+                web_backend = getattr(self, "_web_backend", None)
+                if web_backend is not None:
+                    web_backend.close(session_id)
+                proxy_backend = getattr(self, "_proxy_backend", None)
+                if proxy_backend is not None:
+                    proxy_backend.stop(session_id)
+                # A parsed APK is tens to hundreds of MB; nothing else would
+                # reclaim it until three more APKs happened to be opened.
+                if session.target is TargetKind.APK and session.binary is not None:
+                    ApkClient.release(session.binary)
             except BaseException as exc:
                 result = _failure(exc, session_id=session_id)
                 note_session_closed(self, session_id, result)
@@ -803,6 +837,10 @@ class AnalysisService(
                     session_id,
                     reason="session_closed" if not close_errors else "worker_close_failed",
                 )
+
+        # Cleared only now: the loop above is what finalises and registers a
+        # trace whose worker went away, and it needs the state to do it.
+        self._trace_owner.clear(session_id)
 
         # A caller that closes sessions one at a time never reaches close_all, so
         # without this the sweep thread outlives every backend it existed for.
@@ -837,6 +875,22 @@ class AnalysisService(
         # a throttled collection never lands on a hot path.
         self._retention.maybe_collect(self.repository)
         return result
+
+    def record_artifact(self, **fields: Any) -> JsonObject:
+        """Register an artifact and take a retention checkpoint.
+
+        Session close was the only checkpoint, so a session held open for days --
+        the normal shape of an unattended run -- never enforced the byte budget
+        while it was the very thing filling the disk. Registration is the other
+        moment the tree grows; the collector's own throttle keeps a burst of
+        dumps from walking the artifact table once per file.
+        """
+        artifact = self.repository.register_artifact(**fields)
+        size = artifact.get("size")
+        self._retention.maybe_collect(
+            self.repository, added_bytes=int(size) if isinstance(size, int) else 0
+        )
+        return artifact
 
     def session_health(self, session_id: str | None = None) -> Result[JsonObject]:
         """Report backend liveness and any connections the monitor rebuilt.
@@ -913,6 +967,12 @@ class AnalysisService(
                     }
                 )
         self._health.stop()
+        web_backend = getattr(self, "_web_backend", None)
+        if web_backend is not None:
+            web_backend.close_all()
+        proxy_backend = getattr(self, "_proxy_backend", None)
+        if proxy_backend is not None:
+            proxy_backend.close_all()
         if errors:
             return Result[JsonObject](
                 ok=False,
@@ -1079,9 +1139,9 @@ class AnalysisService(
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            params: JsonObject = {"path": str(session.require_pe())}
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
-        params: JsonObject = {"path": str(session.binary)}
         if arguments:
             params["arguments"] = arguments
         if working_directory is not None:
@@ -2292,28 +2352,30 @@ class AnalysisService(
 
 
 def _create_ida_worker(session: Session, settings: Settings) -> StaticWorker:
-    return IdaWorkerClient(session.binary, settings)
+    return IdaWorkerClient(session.require_pe(), settings)
 
 
 def _create_xdbg_worker(session: Session, settings: Settings) -> DynamicWorker:
+    session.require_pe()
+    architecture = session.require_architecture()
     executable = {
         Architecture.X86: settings.x64dbg_headless_x86,
         Architecture.X64: settings.x64dbg_headless_x64,
-    }[session.architecture]
+    }[architecture]
     if executable is None:
         variable = (
             "HEADLESS_RE_X64DBG_HEADLESS_X86"
-            if session.architecture == Architecture.X86
+            if architecture == Architecture.X86
             else "HEADLESS_RE_X64DBG_HEADLESS_X64"
         )
         raise XdbgRpcError(
             "backend_unavailable",
-            f"x64dbg {session.architecture.value} headless executable is not configured",
+            f"x64dbg {architecture.value} headless executable is not configured",
             details={"environment_variable": variable},
         )
     return XdbgClient(
         executable,
-        session.architecture,
+        architecture,
         hidden_desktop=settings.hidden_desktop,
     )
 

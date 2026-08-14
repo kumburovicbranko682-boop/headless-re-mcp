@@ -36,10 +36,10 @@ class ModuleIdentity:
     @classmethod
     def from_session(cls, session: Session) -> ModuleIdentity:
         return cls(
-            name=session.binary.name,
-            path=str(session.binary),
-            sha256=session.sha256,
-            architecture=session.architecture,
+            name=session.require_binary().name,
+            path=str(session.require_binary()),
+            sha256=session.sha256 or "",
+            architecture=session.require_architecture(),
         )
 
     def to_dict(self) -> JsonObject:

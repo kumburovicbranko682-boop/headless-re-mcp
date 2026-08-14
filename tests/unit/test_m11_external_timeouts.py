@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 
@@ -42,17 +43,26 @@ def test_windbg_dump_timeout_maps_to_timeout(tmp_path: Path) -> None:
     stub = tmp_path / "cdb.exe"
     stub.write_bytes(b"")
     client = WindbgClient(cdb=stub, allow_kernel=False)
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="cdb", timeout=1)):
+    # The bounded runner is the seam now: it kills the tree before it raises, so
+    # the timeout a caller sees is the one it reports here.
+    with patch(
+        "headless_re_mcp.backends.windbg.client.run_bounded",
+        side_effect=TimedOut(1.0, [4321]),
+    ):
         with pytest.raises(WindbgError) as exc:
             client.open_dump(dump, ["lm"], timeout=1.0)
     assert exc.value.code == "timeout"
+    assert exc.value.details["killed_pids"] == [4321]
 
 
 def test_windbg_live_timeout_maps_to_timeout(tmp_path: Path) -> None:
     stub = tmp_path / "cdb.exe"
     stub.write_bytes(b"")
     client = WindbgClient(cdb=stub, allow_kernel=False)
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="cdb", timeout=1)):
+    with patch(
+        "headless_re_mcp.backends.windbg.client.run_bounded",
+        side_effect=TimedOut(1.0, [4321]),
+    ):
         with pytest.raises(WindbgError) as exc:
             client.attach(1234, allowed_pid=1234, timeout=1.0)
     assert exc.value.code == "timeout"

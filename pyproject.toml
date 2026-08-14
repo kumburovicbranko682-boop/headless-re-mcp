@@ -21,6 +21,12 @@ ida = ["idapro>=0.0.10"]
 pe = ["pefile>=2024.8.26"]
 web = ["fastapi>=0.115", "uvicorn>=0.34", "httpx>=0.28"]
 native = ["PySide6>=6.6"]
+# Android reverse engineering: pure-Python ADB + APK static analysis + Frida.
+android = ["adbutils>=2.12", "androguard>=4.1", "frida>=16.5"]
+# Web reverse engineering: Chrome DevTools Protocol via Playwright.
+browser = ["playwright>=1.40"]
+# HTTP(S) interception shared by Web and Android workflows.
+proxy = ["mitmproxy>=11"]
 test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0"]
 dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14"]
 
@@ -165,6 +171,14 @@ module = [
   "uiautomation.*",
   "numpy",
   "numpy.*",
+  "adbutils",
+  "adbutils.*",
+  "androguard",
+  "androguard.*",
+  "mitmproxy",
+  "mitmproxy.*",
+  "playwright",
+  "playwright.*",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

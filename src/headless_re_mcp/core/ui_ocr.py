@@ -12,12 +12,39 @@ from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.core.ui_win32 import capture_hwnd_screenshot, require_allowed_hwnd
 from headless_re_mcp.core.windows import UiPidBoundaryError
 
 JsonObject = dict[str, Any]
 _MAX_OCR_SECONDS = 30.0
 _T = TypeVar("_T")
+
+
+class _OcrOutput:
+    """Decoded output from an OCR run that had a deadline binding its children."""
+
+    __slots__ = ("returncode", "stdout", "stderr")
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_ocr(command: list[str], *, timeout: float, env: Any = None) -> _OcrOutput:
+    """OCR runs on every ui.ocr call, which a UI-driving loop makes constantly."""
+    completed = run_bounded(
+        command,
+        timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        env=env,
+    )
+    return _OcrOutput(
+        completed.returncode,
+        completed.stdout.decode("utf-8", errors="replace"),
+        completed.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def discover_tesseract() -> Path | None:
@@ -119,20 +146,17 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     prev = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join([p for p in [src_root, prev] if p])
     try:
-        completed = subprocess.run(
+        completed = _run_ocr(
             [sys.executable, str(worker), str(bmp), language],
-            capture_output=True,
-            text=True,
             timeout=_MAX_OCR_SECONDS,
-            check=False,
             env=env,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except subprocess.TimeoutExpired as exc:
+    except TimedOut as exc:
         raise UiPidBoundaryError(
             "timeout",
             "Windows OCR subprocess timed out",
             timeout_seconds=_MAX_OCR_SECONDS,
+            killed_pids=exc.killed,
         ) from exc
     if completed.returncode != 0:
         raise UiPidBoundaryError(
@@ -162,19 +186,15 @@ def ocr_bmp_tesseract(path: str | Path, *, tesseract: Path | None = None) -> Jso
     if not bmp.is_file():
         raise UiPidBoundaryError("invalid_params", "OCR input BMP missing", path=str(bmp))
     try:
-        completed = subprocess.run(
-            [str(exe), str(bmp), "stdout", "-l", "eng"],
-            capture_output=True,
-            text=True,
-            timeout=_MAX_OCR_SECONDS,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        completed = _run_ocr(
+            [str(exe), str(bmp), "stdout", "-l", "eng"], timeout=_MAX_OCR_SECONDS
         )
-    except subprocess.TimeoutExpired as exc:
+    except TimedOut as exc:
         raise UiPidBoundaryError(
             "timeout",
             "tesseract OCR timed out",
             timeout_seconds=_MAX_OCR_SECONDS,
+            killed_pids=exc.killed,
         ) from exc
     if completed.returncode != 0:
         raise UiPidBoundaryError(

@@ -45,13 +45,13 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 class _BrokenRepository:
-    def list_unclean_sessions(self) -> list[dict[str, Any]]:
+    def list_unclean_sessions(self, **_: object) -> tuple[list[dict[str, Any]], int]:
         raise OSError("database is locked")
 
 
 class _WorkingRepository:
-    def list_unclean_sessions(self) -> list[dict[str, Any]]:
-        return []
+    def list_unclean_sessions(self, **_: object) -> tuple[list[dict[str, Any]], int]:
+        return [], 0
 
 
 @pytest.fixture

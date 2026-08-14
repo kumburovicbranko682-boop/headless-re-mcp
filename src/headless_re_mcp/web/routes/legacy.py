@@ -208,6 +208,32 @@ def register_legacy_routes(
         _require_token(authorization, token_q)
         return JSONResponse(build_deps_snapshot(_settings()))
 
+    @app.get("/api/workspace/mode")
+    def workspace_mode_get(
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Return the active startup work direction (full/pe/android/web)."""
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.workspace_mode_get()))
+
+    @app.post("/api/workspace/mode")
+    def workspace_mode_set(
+        body: JsonObject,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Set the startup work direction; persists and mutates the live settings."""
+        _require_token(authorization, token_q)
+        profile = body.get("profile")
+        if not isinstance(profile, str) or not profile.strip():
+            raise HTTPException(status_code=400, detail="profile_required")
+        result = service.workspace_mode_set(profile.strip())
+        # workspace_mode_set mutates the shared Settings in place; keep the web
+        # app's view pointed at the same object so /api/meta reflects it too.
+        app.state.settings = service.settings
+        return JSONResponse(_result_payload(result))
+
     @app.get("/api/mcp/export")
     def mcp_export_get(
         authorization: str | None = Header(default=None),

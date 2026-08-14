@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.x64dbg.gate import run_command_loop_gate
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Architecture
@@ -100,6 +101,18 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             probe_python_module("frida", "frida"),
             probe_command("java", ("java",)),
             probe_command("windbg", ("cdb", "windbg", "windbgx")),
+            # Android reverse-engineering (all optional; missing only degrades).
+            probe_python_module("androguard", "androguard"),
+            probe_python_module("adbutils", "adbutils"),
+            probe_optional_tool("adb", current, "adb", ("adb",)),
+            probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
+            probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
+            probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+            # Web reverse-engineering (all optional).
+            probe_python_module("playwright", "playwright"),
+            probe_python_module("mitmproxy", "mitmproxy"),
+            probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+            probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
         )
     )
 
@@ -220,16 +233,8 @@ def probe_ida(settings: Settings) -> Probe:
         "import idapro; print(idapro.__file__); print(hasattr(idapro, 'open_database'))",
     ]
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=env,
-            creationflags=_no_window_flags(),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        completed = _probe_run(command, timeout=15, env=env)
+    except (OSError, TimedOut) as exc:
         return Probe(
             "ida_idalib",
             ProbeStatus.BLOCKED,
@@ -395,27 +400,9 @@ def probe_die(settings: Settings) -> Probe:
 
     details: dict[str, Any] = {"executable": str(executable)}
     try:
-        version = subprocess.run(
-            [str(executable), "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            creationflags=_no_window_flags(),
-            check=False,
-        )
-        help_result = subprocess.run(
-            [str(executable), "--help"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            creationflags=_no_window_flags(),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        version = _probe_run([str(executable), "--version"], timeout=5)
+        help_result = _probe_run([str(executable), "--help"], timeout=5)
+    except (OSError, TimedOut) as exc:
         return Probe(
             "diec",
             ProbeStatus.BLOCKED,
@@ -602,15 +589,8 @@ def probe_upx(settings: Settings) -> Probe:
 
     details: dict[str, Any] = {"executable": str(executable)}
     try:
-        version = subprocess.run(
-            [str(executable), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=_no_window_flags(),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        version = _probe_run([str(executable), "--version"], timeout=5)
+    except (OSError, TimedOut) as exc:
         return Probe(
             "upx",
             ProbeStatus.BLOCKED,
@@ -880,6 +860,23 @@ def probe_command(name: str, candidates: tuple[str, ...]) -> Probe:
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} backend is not installed")
 
 
+def probe_optional_tool(
+    name: str,
+    settings: Settings,
+    settings_attr: str,
+    commands: tuple[str, ...],
+) -> Probe:
+    """Detect an optional CLI from its configured path or PATH, never blocking."""
+    configured = getattr(settings, settings_attr, None)
+    if configured is not None and Path(str(configured)).is_file():
+        return Probe(name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)})
+    found = {candidate: shutil.which(candidate) for candidate in commands}
+    found = {candidate: path for candidate, path in found.items() if path}
+    if found:
+        return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
+    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
 def probe_python_module(name: str, module: str) -> Probe:
     spec = importlib.util.find_spec(module)
     if spec is None:
@@ -930,6 +927,34 @@ def _no_window_flags() -> int:
     if os.name != "nt":
         return 0
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbeOutput:
+    """What the probes read back, decoded, from a run that had a real deadline."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _probe_run(command: list[str], *, timeout: float, env: Any = None) -> _ProbeOutput:
+    """Run a version/help probe under a deadline that binds what it started.
+
+    These probe operator-configured paths, and a configured path is often a
+    launcher: jadx, apktool and Ghidra are scripts that start a JVM.
+    ``subprocess.run`` kills only the script on timeout and then drains with no
+    deadline of its own on Windows, so a hung tool hangs the doctor -- the one
+    command someone runs *because* the machine is misbehaving.
+    """
+    completed = run_bounded(
+        command, timeout=timeout, creationflags=_no_window_flags(), env=env
+    )
+    return _ProbeOutput(
+        completed.returncode,
+        completed.stdout.decode("utf-8", errors="replace"),
+        completed.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def _bounded_text(*values: str, limit: int = 4096) -> str:

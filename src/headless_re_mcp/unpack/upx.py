@@ -209,11 +209,10 @@ def _creation_options() -> dict[str, Any]:
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    with suppress(OSError, subprocess.TimeoutExpired):
-        if process.poll() is None:
-            process.kill()
-    with suppress(OSError, subprocess.TimeoutExpired):
-        process.wait(timeout=5)
+    """Stop upx and anything it started; the configured path may be a wrapper."""
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
+    terminate_process_tree(process, wait_s=5.0)
 
 
 def _capture_process(

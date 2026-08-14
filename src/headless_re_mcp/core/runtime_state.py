@@ -91,12 +91,20 @@ class BackendRuntimeOwner(Generic[RuntimeT]):
             return self.items.get((session_id, kind)) is runtime
 
     def pop_session(self, session_id: str) -> list[tuple[BackendKind, RuntimeT]]:
+        """Hand back every runtime for a session and forget the session entirely.
+
+        A closed session never reopens, so a retained phase marks nothing a
+        caller can act on: ``phase`` is only ever read to find FAILED backends
+        worth recovering. Keeping them turned a server that opens sessions all
+        day into one that remembers every session it ever closed.
+        """
         with self.lock:
             keys = [key for key in self.items if key[0] == session_id]
             result = []
             for sid, kind in keys:
                 result.append((kind, self.items.pop((sid, kind))))
-                self.phases[(sid, kind)] = BackendRuntimePhase.CLOSED
+            for key in [key for key in self.phases if key[0] == session_id]:
+                del self.phases[key]
             return result
 
 

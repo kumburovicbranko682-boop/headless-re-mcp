@@ -8,7 +8,9 @@ from headless_re_mcp.mcp.server import create_server
 
 @pytest.mark.asyncio
 async def test_minimal_mcp_tool_surface() -> None:
-    server = create_server(AnalysisService())
+    analysis = AnalysisService()
+    object.__setattr__(analysis.settings, "workspace_profile", "full")
+    server = create_server(analysis)
     tools = await server.list_tools()
     names = {tool.name for tool in tools}
     assert names == {
@@ -211,6 +213,77 @@ async def test_minimal_mcp_tool_surface() -> None:
         "workflow.breakpoint.list",
         "workflow.navigate_to_event",
         "workflow.navigate_to_breakpoint",
+        # Android static (apk.*)
+        "apk.open",
+        "apk.manifest",
+        "apk.permissions",
+        "apk.certificates",
+        "apk.components",
+        "apk.native_libs",
+        "apk.classes",
+        "apk.methods",
+        "apk.strings",
+        "apk.xrefs",
+        "apk.decompile",
+        "apk.export_sources",
+        "apk.decode",
+        "apk.repack",
+        "apk.sign",
+        # Device control (device.*)
+        "device.list",
+        "device.connect",
+        "device.info",
+        "device.properties",
+        "device.packages",
+        "device.install",
+        "device.uninstall",
+        "device.launch",
+        "device.force_stop",
+        "device.current_activity",
+        "device.logcat",
+        "device.screenshot",
+        "device.pull",
+        "device.push",
+        "device.forward",
+        # Frida device dimension
+        "frida.devices",
+        "frida.device.connect",
+        "frida.server.ensure",
+        "frida.applications",
+        "frida.spawn",
+        "frida.java.classes",
+        "frida.java.methods",
+        # Web static (js.* / wasm.*)
+        "js.deobfuscate",
+        "js.beautify",
+        "js.unpack_bundle",
+        "wasm.info",
+        "wasm.wat",
+        # Web dynamic (web.*)
+        "web.open",
+        "web.navigate",
+        "web.close",
+        "web.network.list",
+        "web.network.get",
+        "web.console",
+        "web.scripts",
+        "web.script.source",
+        "web.wasm.list",
+        "web.dom.snapshot",
+        "web.screenshot",
+        "web.har.export",
+        # Interception (proxy.*)
+        "proxy.start",
+        "proxy.stop",
+        "proxy.status",
+        "proxy.flows",
+        "proxy.flow.get",
+        "proxy.replay",
+        "proxy.export_har",
+        "proxy.ca.install_android",
+        # Workspace work direction
+        "workspace.mode.get",
+        "workspace.mode.set",
     }
 
     events_tool = next(tool for tool in tools if tool.name == "dynamic.events")

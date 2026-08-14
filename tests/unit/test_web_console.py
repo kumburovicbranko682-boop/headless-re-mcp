@@ -51,6 +51,35 @@ def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
     assert body["data"]["count"] == 0
 
 
+def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Redirect config persistence to a temp path so the gate never writes the
+    # real user config (which would leak workspace_profile into other tests).
+    monkeypatch.setattr(
+        "headless_re_mcp.config.default_config_path", lambda: tmp_path / "config.json"
+    )
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    app = create_app(service, token="test-token-value-0123456789abcdef", settings=settings)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer test-token-value-0123456789abcdef"}
+
+    got = client.get("/api/workspace/mode", headers=headers)
+    assert got.status_code == 200
+    body = got.json()
+    assert body["ok"] is True
+    assert body["data"]["profile"] == "full"
+
+    missing = client.post("/api/workspace/mode", headers=headers, json={})
+    assert missing.status_code == 400
+
+    changed = client.post("/api/workspace/mode", headers=headers, json={"profile": "android"})
+    assert changed.status_code == 200
+    changed_body = changed.json()
+    assert changed_body["ok"] is True
+    assert changed_body["data"]["profile"] == "android"
+    assert service.settings.workspace_profile == "android"
+
+
 def test_web_write_requires_confirm(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)

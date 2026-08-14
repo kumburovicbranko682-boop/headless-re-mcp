@@ -128,6 +128,8 @@ class TraceMixin:
 
     if TYPE_CHECKING:
 
+        def record_artifact(self, **fields: Any) -> JsonObject: ...
+
         def _runtime(self, session_id: str, kind: BackendKind) -> _BackendRuntime: ...
 
         def _require_current_runtime(
@@ -469,7 +471,9 @@ class TraceMixin:
         session = self.registry.get(session_id)
         directory = self.settings.artifact_root.expanduser().resolve() / "trace" / session_id
         directory.mkdir(parents=True, exist_ok=True)
-        suffix = ".trace64" if session.architecture == Architecture.X64 else ".trace32"
+        suffix = (
+            ".trace64" if session.require_architecture() == Architecture.X64 else ".trace32"
+        )
         output = (directory / f"run-{uuid4().hex}{suffix}").resolve()
         if output.parent != directory:
             raise ValueError("trace artifact escaped the session artifact directory")
@@ -597,7 +601,7 @@ class TraceMixin:
                     state.artifact_truncated = True
                     state.terminal_reason = "quota_violation"
                 digest = file_sha256(state.path)
-                artifact = self.repository.register_artifact(
+                artifact = self.record_artifact(
                     session_id=state.session_id,
                     kind="run_trace_partial" if state.artifact_truncated else "run_trace",
                     path=state.path,
@@ -701,7 +705,7 @@ class TraceMixin:
             if not 0 < float(timeout) <= MAX_WORKFLOW_TIMEOUT:
                 raise ValueError(f"timeout must be > 0 and <= {MAX_WORKFLOW_TIMEOUT}")
 
-            architecture = self.registry.get(session_id).architecture
+            architecture = self.registry.get(session_id).require_architecture()
             decodes_registers = architecture == Architecture.X64
             resolution: JsonObject | None = None
             target_address = address

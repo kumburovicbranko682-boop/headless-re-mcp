@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -24,12 +24,23 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         """Probe configured reverse-engineering backends and local build tools."""
         return _dump(analysis.doctor())
 
-    def session_create(binary: str) -> dict[str, Any]:
-        """Create a session for an existing local x86 or x64 PE file."""
-        return _dump(analysis.create_session(binary))
+    def session_create(
+        binary: str,
+        target: Annotated[
+            Literal["pe", "apk", "web"] | None,
+            Field(description="Force a target kind instead of inferring it"),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Create a session for a local PE, a local APK, or a web target.
+
+        binary is a local file path, or an http(s) URL when target is web. The
+        target kind is inferred from the extension and magic bytes when omitted,
+        so a PE path behaves exactly as before.
+        """
+        return _dump(analysis.create_session(binary, target))
 
     def session_get(session_id: str) -> dict[str, Any]:
-        """Return one session, including state, architecture, and attached backends."""
+        """Return one session, including target, state, architecture, and backends."""
         return _dump(analysis.get_session(session_id))
 
     def session_list() -> dict[str, Any]:

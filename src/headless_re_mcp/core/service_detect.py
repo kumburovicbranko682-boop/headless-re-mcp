@@ -66,6 +66,27 @@ def _exeinfope_log_path(artifact_root: Path, session_id: str) -> Path:
     return real(artifact_root, session_id)
 
 
+def _register_detection_artifact(
+    service: Any, session_id: str, path_text: str, *, kind: str, tool: str
+) -> list[str]:
+    """Register a raw scanner dump, returning any warning the caller should carry.
+
+    Every scan writes a fresh uuid-named file. Unregistered they are invisible
+    to collection, so a service that keeps scanning accumulates them for the
+    life of the artifact root. The scan itself must not fail over bookkeeping,
+    so a failure comes back as a warning rather than an exception.
+    """
+    from headless_re_mcp.core.service_ext import _register_capture
+
+    outcome = _register_capture(
+        service, session_id, Path(path_text), kind=kind, source="detect.scan", payload={}
+    )
+    error = outcome.get("artifact_error")
+    if error:
+        return [f"could not register the bounded {tool} artifact for collection: {error}"]
+    return []
+
+
 class DetectAnalysisMixin:
     """Detection / packer classify / unpack recommend ops.
 
@@ -96,7 +117,7 @@ class DetectAnalysisMixin:
             if type(use_exeinfope) is not bool:
                 raise ValueError("use_exeinfope must be a boolean")
 
-            current_sha = file_sha256(session.binary)
+            current_sha = file_sha256(session.require_binary())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -111,7 +132,7 @@ class DetectAnalysisMixin:
                     ),
                 )
 
-            report = scan_pe(session.binary, mode=parsed_mode)
+            report = scan_pe(session.require_binary(), mode=parsed_mode)
             findings = list(report.findings)
             sources = list(report.sources)
             warnings = list(report.warnings)
@@ -138,7 +159,7 @@ class DetectAnalysisMixin:
                 try:
                     die_result = self._die_scanner(
                         self.settings.diec,
-                        session.binary,
+                        session.require_binary(),
                         mode=parsed_mode,
                         timeout=bounded_timeout,
                     )
@@ -167,6 +188,11 @@ class DetectAnalysisMixin:
                         warnings.append(f"could not persist bounded Detect It Easy artifact: {exc}")
                     else:
                         die_source = die_source.model_copy(update={"artifact": artifact})
+                        warnings.extend(
+                            _register_detection_artifact(
+                                self, session_id, artifact, kind="detection_die", tool="diec"
+                            )
+                        )
                     sources.append(die_source)
 
             if not use_exeinfope:
@@ -196,7 +222,7 @@ class DetectAnalysisMixin:
                     log_path = _exeinfope_log_path(self.settings.artifact_root, session_id)
                     exeinfo_result = self._exeinfope_scanner(
                         self.settings.exeinfope,
-                        session.binary,
+                        session.require_binary(),
                         log_path=log_path,
                         mode=parsed_mode,
                         timeout=bounded_timeout,
@@ -227,6 +253,15 @@ class DetectAnalysisMixin:
                         warnings.append(f"could not persist bounded Exeinfo PE artifact: {exc}")
                     else:
                         exeinfo_source = exeinfo_source.model_copy(update={"artifact": artifact})
+                        warnings.extend(
+                            _register_detection_artifact(
+                                self,
+                                session_id,
+                                artifact,
+                                kind="detection_exeinfope",
+                                tool="exeinfope",
+                            )
+                        )
                     sources.append(exeinfo_source)
 
             merged = report.model_copy(
@@ -384,7 +419,7 @@ class DetectAnalysisMixin:
             candidates = []
         try:
             session = self.registry.get(session_id)
-            pe_report = scan_pe(session.binary)
+            pe_report = scan_pe(session.require_binary())
             pe_vm_like = pe_suggests_vm_protector(
                 finding_ids=tuple(item.id for item in pe_report.findings),
                 section_names=tuple(section.name for section in pe_report.pe.sections),

@@ -79,7 +79,16 @@ def register_agent_routes(
     )
     configs = ProviderConfigStore(config_path)
     autonomy = AutonomyPolicy.from_settings(settings)
-    orchestrator = AgentOrchestrator(store, catalog, configs, autonomy=autonomy)
+    orchestrator = AgentOrchestrator(
+        store,
+        catalog,
+        configs,
+        autonomy=autonomy,
+        # Read the live profile each run: workspace_mode_set mutates the shared
+        # Settings in place, so the web agent focuses on the chosen direction
+        # without recreating the orchestrator.
+        tool_profile_provider=lambda: getattr(service.settings, "workspace_profile", "full"),
+    )
     watchdog_policy = WatchdogPolicy.from_settings(settings)
     watchdog = Watchdog(service, policy=watchdog_policy)
     isolation_policy = IsolationPolicy.from_settings(settings)

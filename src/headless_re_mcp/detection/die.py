@@ -379,11 +379,16 @@ def _capture_process(
 
 
 def _terminate_process(process: Any) -> None:
-    with suppress(OSError, AttributeError):
-        if process.poll() is None:
-            process.kill()
-    with suppress(OSError, AttributeError, subprocess.TimeoutExpired):
-        process.wait(timeout=1.0)
+    """Stop the scanner and anything it started.
+
+    diec is normally the executable itself, but the path is operator-supplied
+    and a wrapper script is a reasonable thing to configure -- and killing a
+    wrapper leaves what it launched running, which on a timeout means a scanner
+    still reading the sample after the call has returned.
+    """
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
+    terminate_process_tree(process, wait_s=1.0)
 
 
 def _close_pipe(pipe: Any) -> None:

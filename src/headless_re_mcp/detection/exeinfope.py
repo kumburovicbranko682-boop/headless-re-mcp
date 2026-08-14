@@ -501,11 +501,10 @@ def _capture_process(
 
 
 def _terminate_process(process: Any) -> None:
-    with suppress(OSError, AttributeError):
-        if process.poll() is None:
-            process.kill()
-    with suppress(OSError, AttributeError, subprocess.TimeoutExpired):
-        process.wait(timeout=1.0)
+    """Stop the scanner and anything it started; see die._terminate_process."""
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
+    terminate_process_tree(process, wait_s=1.0)
 
 
 def _close_pipe(pipe: Any) -> None:

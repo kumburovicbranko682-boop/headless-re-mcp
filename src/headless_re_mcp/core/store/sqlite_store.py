@@ -70,6 +70,11 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id, kind);
 # appends here forever. Trimming is amortised over a batch of writes rather than
 # run per insert, so the bound is approximate by design.
 AUDIT_RETAINED_ROWS = 50_000
+
+# A knowledge value is stored as JSON text and cut at this length. Callers must
+# check against it before recording: a cut payload is no longer JSON, so it
+# reads back as a string fragment instead of the object that was written.
+KNOWLEDGE_VALUE_MAX_CHARS = 8000
 AUDIT_TRIM_INTERVAL = 256
 
 
@@ -93,13 +98,58 @@ class SessionStore:
         the interpreter got around to it. That is a file handle per call on a
         database a long-lived server writes to constantly.
         """
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+        except sqlite3.OperationalError:
+            # The artifact root went away under a running service: a disk
+            # cleanup, a scanner quarantine, a volume that came back unmounted.
+            # Without this every later call fails for the life of the process,
+            # because nothing recreates the directory the database lives in.
+            # Rebuilt rather than checked up front, so the ordinary call pays
+            # nothing for a case that should never happen twice.
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.executescript(_SCHEMA)
         conn.row_factory = sqlite3.Row
         try:
             with conn:
                 yield conn
         finally:
             conn.close()
+
+    def _prune_emptied_parent(self, path: Path) -> None:
+        """Remove the per-session directory a collected artifact leaves behind.
+
+        Measured over 150 sessions with one capture each: collection reclaimed
+        the files and left 142 empty directories, one per session, which every
+        disk-usage walk then has to visit for the life of the artifact root.
+        ``rmdir`` refuses a directory that still holds anything, which is
+        exactly the guard this needs, and every writer here creates its
+        directory before use, so a pruned one comes back on demand.
+        """
+        parent = path.parent
+        # Never the database's own directory, and never the artifact root.
+        if parent in {self.db_path.parent, self.db_path.parent.parent}:
+            return
+        with suppress(OSError):
+            parent.rmdir()
+
+    def check_writable(self) -> None:
+        """Raise unless the database would accept a write right now.
+
+        It has to dirty a page to find out. Measured against a read-only file:
+        ``BEGIN IMMEDIATE`` succeeds, with or without a rollback, because SQLite
+        defers the refusal until something actually writes -- so the obvious
+        probe reports a database that accepts nothing as healthy. Creating a
+        table inside a transaction that is then rolled back does raise, and
+        leaves the schema exactly as it found it.
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("CREATE TABLE _writable_probe(x)")
+            finally:
+                conn.execute("ROLLBACK")
 
     def upsert_session(
         self,
@@ -161,12 +211,29 @@ class SessionStore:
             conn.commit()
             return int(cur.rowcount or 0)
 
-    def list_unclean_sessions(self) -> list[JsonObject]:
+    def list_unclean_sessions(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[list[JsonObject], int]:
+        """A page of sessions that were never closed, newest first, plus the total.
+
+        Paged like every other listing here. Nothing clears these rows, and a
+        service that is hard-killed with sessions open adds one per session, so
+        the answer grows for as long as the deployment runs: measured at 3000
+        of them, an unpaged reply was 993 KiB -- returned by the very tool a
+        caller reaches for right after a crash.
+        """
+        window = max(1, min(int(limit), 1000))
+        start = max(0, int(offset))
         with self._lock, self._connect() as conn:
+            total = int(
+                conn.execute("SELECT COUNT(*) FROM sessions WHERE closed_cleanly=0").fetchone()[0]
+            )
             rows = conn.execute(
-                "SELECT * FROM sessions WHERE closed_cleanly=0 ORDER BY updated_at DESC"
+                "SELECT * FROM sessions WHERE closed_cleanly=0"
+                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (window, start),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row) for row in rows], total
 
     def upsert_backend(
         self,
@@ -357,7 +424,7 @@ class SessionStore:
     ) -> JsonObject:
         """Insert or update one analysis fact, keeping the original created_at."""
         now = datetime.now(UTC).isoformat()
-        payload = json.dumps(value, ensure_ascii=False)[:8000]
+        payload = json.dumps(value, ensure_ascii=False)[:KNOWLEDGE_VALUE_MAX_CHARS]
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT created_at FROM knowledge WHERE session_id=? AND kind=? AND key=?",
@@ -435,21 +502,51 @@ class SessionStore:
         }
 
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:
+        """Collect oldest-first until the budget is met, skipping what is in use.
+
+        A file another handle still holds -- a trace the debugger is writing, a
+        dump being copied -- cannot be unlinked on Windows. Letting that error
+        out of the loop was doubly wrong: collection always starts at the oldest
+        artifact, so one stuck file stopped every later one from ever being
+        collected and the budget quietly went unenforced (``maybe_collect``
+        swallows the failure, so nothing said so); and any file already deleted
+        in that pass had its row rolled back with the transaction, leaving rows
+        that point at nothing and keep counting against the budget forever.
+
+        Skipping keeps the row, so the artifact stays readable if the handle was
+        the only problem and is collected on a later pass.
+        """
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, path, size FROM artifacts ORDER BY created_at ASC"
             ).fetchall()
             total = sum(int(row["size"]) for row in rows)
             removed: list[str] = []
-            for row in rows:
+            skipped: list[JsonObject] = []
+            # The newest artifact is never collected. Collection now also runs
+            # right after registration, and a single dump larger than the whole
+            # budget would otherwise delete the file its caller is about to
+            # return the path of.
+            for row in rows[:-1]:
                 if total <= max_total_bytes:
                     break
                 path = Path(row["path"])
                 size = int(row["size"])
                 if path.is_file():
-                    path.unlink(missing_ok=True)
+                    try:
+                        path.unlink()
+                    except OSError as exc:
+                        skipped.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
+                        continue
+                    self._prune_emptied_parent(path)
                 conn.execute("DELETE FROM artifacts WHERE id=?", (row["id"],))
                 removed.append(row["id"])
                 total -= size
             conn.commit()
-        return {"removed": removed, "count": len(removed), "bytes_remaining_estimate": max(0, total)}
+        return {
+            "removed": removed,
+            "count": len(removed),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+            "bytes_remaining_estimate": max(0, total),
+        }

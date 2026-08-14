@@ -8,12 +8,30 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# Enough for any PE header: the DOS stub and the optional header live in the
+# first pages. The second read below covers the pathological ones.
+_HEADER_WINDOW = 64 * 1024
+_MAX_HEADER = 1024 * 1024
 
 
 def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
-    """Read PE preferred ImageBase without spawning r2."""
+    """Read PE preferred ImageBase without spawning r2.
+
+    A prefix, not the file. Every r2 tool call enriches its payload through
+    here, and slurping the target to read one header field cost, measured on a
+    200 MB sample, 200 MB of RSS per call and 0.41s for six calls.
+    """
     try:
-        data = binary.read_bytes()
+        with binary.open("rb") as stream:
+            data = stream.read(_HEADER_WINDOW)
+            # Twice at most: the first re-read reveals the file header, which is
+            # what says how long the optional header is.
+            for _ in range(2):
+                header_end = _needed_header_bytes(data)
+                if header_end is None or header_end <= len(data) or header_end > _MAX_HEADER:
+                    break
+                stream.seek(0)
+                data = stream.read(header_end)
     except OSError:
         return None, None
     if len(data) < 0x40 or data[:2] != b"MZ":
@@ -37,6 +55,21 @@ def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     if image_base <= 0:
         return architecture, None
     return architecture, image_base
+
+
+def _needed_header_bytes(head: bytes) -> int | None:
+    """How far into the file the optional header runs, if this looks like a PE."""
+    if len(head) < 0x40 or head[:2] != b"MZ":
+        return None
+    pe_offset = int.from_bytes(head[0x3C:0x40], "little")
+    if pe_offset <= 0 or pe_offset + 24 > len(head):
+        # Either not a PE, or the stub is longer than the window; ask for enough
+        # to reach the file header and let the caller re-read.
+        return pe_offset + 24 if 0 < pe_offset < _MAX_HEADER else None
+    if head[pe_offset : pe_offset + 4] != b"PE\0\0":
+        return None
+    optional_size = int.from_bytes(head[pe_offset + 20 : pe_offset + 22], "little")
+    return pe_offset + 24 + optional_size
 
 
 def address_dict(
@@ -132,6 +165,7 @@ def enrich_r2_payload(
 
     items: list[JsonObject] = []
     if isinstance(parsed, list):
+        available = len(parsed)
         for entry in parsed[:_MAX_ITEMS]:
             if not isinstance(entry, dict):
                 continue
@@ -154,6 +188,13 @@ def enrich_r2_payload(
             items.append(item)
         out["items"] = items
         out["count"] = len(items)
+        if available > _MAX_ITEMS:
+            # Said out loud, like the raw-output cut beside it. A list that
+            # stopped at the cap looks exactly like a list that ended, and a
+            # caller deciding "these are all the xrefs" is deciding wrongly.
+            out["items_truncated"] = True
+            out["items_total"] = available
+            out["items_limit"] = _MAX_ITEMS
         out["parsed"] = True
     elif isinstance(parsed, dict):
         out["info"] = parsed

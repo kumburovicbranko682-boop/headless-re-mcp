@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
@@ -232,16 +234,19 @@ class GhidraClient:
         if delete_project:
             cmd.append("-deleteProject")
         try:
-            completed = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-                creationflags=creationflags,
-                env=env,
+            completed = run_bounded(
+                cmd, timeout=timeout, creationflags=creationflags, env=env
             )
-        except subprocess.TimeoutExpired as exc:
-            raise GhidraError("timeout", "ghidra analyzeHeadless timed out", timeout=timeout) from exc
+        except TimedOut as exc:
+            # analyzeHeadless is a script that starts a JVM. Killing the script
+            # alone left that JVM analysing a large binary with nobody waiting
+            # for it, holding a core and the project directory.
+            raise GhidraError(
+                "timeout",
+                "ghidra analyzeHeadless timed out",
+                timeout=timeout,
+                killed_pids=exc.killed,
+            ) from exc
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)

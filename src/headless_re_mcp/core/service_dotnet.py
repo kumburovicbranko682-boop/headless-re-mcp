@@ -73,7 +73,7 @@ class DotnetAnalysisMixin:
                         message="require_verified must be a boolean",
                     ),
                 )
-            report = inspect_dotnet(session.binary, require_verified=require_verified)
+            report = inspect_dotnet(session.require_binary(), require_verified=require_verified)
             return _success(
                 report.to_dict(),
                 session_id=session_id,
@@ -107,8 +107,8 @@ class DotnetAnalysisMixin:
                         },
                     ),
                 )
-            inspect = inspect_dotnet(session.binary, require_verified=True)
-            current_sha = file_sha256(session.binary)
+            inspect = inspect_dotnet(session.require_binary(), require_verified=True)
+            current_sha = file_sha256(session.require_binary())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -127,7 +127,7 @@ class DotnetAnalysisMixin:
             out_path = out_dir / f"de4dot-{uuid4().hex}.exe"
             result = self._de4dot_runner(
                 self.settings.de4dot,
-                session.binary,
+                session.require_binary(),
                 out_path,
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
@@ -138,7 +138,7 @@ class DotnetAnalysisMixin:
                     "de4dot": result.to_dict(),
                     "before": inspect.to_dict(),
                     "after": after.to_dict(),
-                    "input_unchanged": file_sha256(session.binary) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
                     "claims_universal_unpack": False,
                     "stats": {
                         "before": (
@@ -195,8 +195,8 @@ class DotnetAnalysisMixin:
                         },
                     ),
                 )
-            inspect = inspect_dotnet(session.binary, require_verified=True)
-            current_sha = file_sha256(session.binary)
+            inspect = inspect_dotnet(session.require_binary(), require_verified=True)
+            current_sha = file_sha256(session.require_binary())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -215,7 +215,7 @@ class DotnetAnalysisMixin:
             out_path = out_dir / f"nrs-{uuid4().hex}.exe"
             result = self._net_reactor_slayer_runner(
                 self.settings.net_reactor_slayer,
-                session.binary,
+                session.require_binary(),
                 out_path,
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
@@ -226,7 +226,7 @@ class DotnetAnalysisMixin:
                     "net_reactor_slayer": result.to_dict(),
                     "before": inspect.to_dict(),
                     "after": after.to_dict(),
-                    "input_unchanged": file_sha256(session.binary) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
                     "claims_universal_unpack": False,
                     "authorized_samples_only": True,
                     "stats": {
@@ -270,7 +270,7 @@ class DotnetAnalysisMixin:
         try:
             session = self.registry.get(session_id)
             page = enumerate_metadata(
-                session.binary,
+                session.require_binary(),
                 kind,
                 offset=offset,
                 limit=limit,
@@ -296,7 +296,7 @@ class DotnetAnalysisMixin:
         try:
             session = self.registry.get(session_id)
             payload = disassemble_method_il(
-                session.binary,
+                session.require_binary(),
                 method_token,
                 require_verified=require_verified,
             )
@@ -321,7 +321,7 @@ class DotnetAnalysisMixin:
         try:
             session = self.registry.get(session_id)
             page = list_memberref_xrefs(
-                session.binary,
+                session.require_binary(),
                 offset=offset,
                 limit=limit,
                 require_verified=require_verified,

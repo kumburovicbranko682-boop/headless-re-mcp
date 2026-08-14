@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析与 x64dbg `headless.exe` 动态调试收成 199 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令，也不弹 IDA/x64dbg GUI。
+Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析、x64dbg `headless.exe` 动态调试、Android 设备/APK 逆向与 Web（CDP/JS/WASM/抓包）收成 263 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传，也不弹 IDA/x64dbg GUI。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -35,6 +35,8 @@ powershell -File .\scripts\build_deps_bundle.ps1
 | x64dbg headless | 官方源码含 `add_executable(headless)` 的构建 | `x64dbg_source` + `x64dbg_headless_binaries`（x86/x64 零窗口命令循环 Gate） |
 | 原生工具链 | VS 2022 Build Tools + CMake + Ninja | `native_toolchain` |
 | 可选 CLI | DIE `diec`（需 `--json`）、UPX、de4dot、NETReactorSlayer、Scylla、XVLKC、r2/rizin、Ghidra、frida、cdb/WinDbg | 各自独立探针，`missing` 不影响 `ready` |
+| Android（可选） | `pip install '.[android]'`（adbutils / androguard / frida）；jadx、apktool、apksigner 需自备 JRE | `androguard`/`adbutils`/`adb`/`jadx`/`apktool`/`apksigner` 各自探针 |
+| Web（可选） | `pip install '.[browser]'`（Playwright，另需 `playwright install chromium`）、`.[proxy]`（mitmproxy）；webcrack 需 Node 22/24，wabt 自备 | `playwright`/`mitmproxy`/`webcrack`/`wabt` 各自探针 |
 
 `python -m headless_re_mcp doctor` 按「必需 / 可选」分组输出，并单独列出阻塞项与对应修复命令。
 
@@ -99,8 +101,22 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
+- Android 静态：`apk.open/manifest/permissions/certificates/components/classes/methods/strings/xrefs`（androguard 进程内）、`apk.decompile/export_sources`（jadx CLI）
+- Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
+- Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
+- Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
+- Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）；WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin
+- Web 动态：`web.open/navigate/close/network.list/network.get/console/scripts/script.source/wasm.list/dom.snapshot/screenshot/har.export`（Playwright 驱动 CDP）
+- 抓包（Web 与 Android 共用）：`proxy.start/stop/status/flows/flow.get/replay/export_har/ca.install_android`（mitmproxy 进程内）
+- 工作方向：`workspace.mode.get/set`（`full|pe|android|web`）
 
-动态写操作仅接受明确参数与白名单寄存器；无 `dynamic.command`。
+### 目标类型与工作方向
+
+`session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web），也可显式传 `target`。PE 专属工具对非 PE 会话返回结构化 `target_mismatch`，不会深入后端才失败。
+
+工作方向（`workspace_profile`）把工具面裁剪到单一场景：`pe` 隐藏 Android 与 Web 工具，`android` 隐藏 Web 工具，`web` 隐藏 Android 工具，默认 `full` 不裁剪。裁剪只影响**可见性**，完整 catalog 仍是唯一权威；读写策略是另一条独立边界。监控台开屏会让你选择方向，选择同时作用于 MCP 客户端下次连接看到的工具集与监控台 Agent 的工具面。
+
+动态写操作仅接受明确参数与白名单寄存器；无 `dynamic.command`。同样的原则贯穿新增面：**没有 `device.shell`、没有 `web.evaluate`、不接受调用方自带 Frida 脚本**——设备与浏览器上的每个能力都是具名且校验过参数的工具。设备序列号与包名按严格正则校验，杜绝参数注入。
 
 ### 故障自愈
 
@@ -146,8 +162,9 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-199 个工具的读写归类（114 只读 / 85 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
-读取，改配置不必重启。
+263 个工具的读写归类（149 只读 / 114 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
+「看得见什么」，后者决定「能不能改」。
 
 守卫下沉在 `CommandCatalog.bind_mcp`——所有绑定路径的唯一收口，所以 MCP、Web 控制台的
 agent 路由与 OpenAI 桥接拿到的是同一套策略；Web 那条直接调服务方法的写入路径单独做了检查。
@@ -308,13 +325,31 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-当前证据（在一台配好 IDA 9.x + x64dbg headless + DIE/UPX/de4dot/rizin/cdb 的机器上实测）：
+**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
-- 单元测试 658 passed / 0 skipped
-- 集成 Gate 65 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、隐藏桌面隔离、连接掉线自愈、crackme 端到端）
-- 剩余 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
-- 198 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
-  且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制校验，不是一次性测量
+当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
+该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
+
+- 单元测试 952 passed / 1 skipped（唯一 skip 是需要 IDA 的 UPX 夹具），连续 10 轮全绿无抖动
+- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+- 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
+  wabt（1）、以及 2 个有文档说明的故意跳过
+- 262 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
+  且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制校验，不是一次性测量。
+  敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的
+  `storage_unavailable` 码并区分是否可重试），就绪探针如实报不可用，服务在目录恢复后自愈
+- 长期驻留状态有专门的有界性与并发回归测试（`tests/unit/test_unattended_resource_bounds.py`）：
+  抓包双缓冲同步淘汰、浏览器脚本表有界、多线程读写不撕裂、后端单例、APK 缓存随会话回收、
+  会话关闭后无任何字典仍以其 id 为键、产物配额在会话开着时也生效且能扛住突发写入、失败的抓包
+  启动不留残留、浏览器调用线程收敛且等待有界、产物目录被删后服务照常应答并自动重建
+- 抓包的有界性用真实流量复核过：2600 次经代理的请求后保留数停在 2000（环形缓冲上限），
+  内存在到达上限后不再增长（2000→2500 次请求期间 98 MB 持平），句柄 +2、线程 0
+- 上述结论用压缩时间的 soak 实测复核过：600 轮会话生命周期 RSS +1 MB、线程与句柄零增长；
+  20 轮抓包起停与 15 轮浏览器开关同样零增长；失败路径（上千次无后端调用、40 次端口被占的抓包
+  启动、12 次浏览器启动失败）在修复后均为零增长。其中会话流失那条已固化为常驻测试
+  （200 轮 create/register/close，断言线程数归位、产物根不超配额三倍），不再依赖"记得去 soak"
 - 安装包：清空 PATH 里所有解释器后仍能用自带运行时启动工作台，SPA 与 `/api/sessions` 均返回 200，
   卸载后目录完全移除
 

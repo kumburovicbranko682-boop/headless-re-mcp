@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -42,6 +43,14 @@ ProviderFactory = Callable[[ProviderProfile], ProviderPort]
 # their own pool so a stuck backend can only starve more tool calls, and reaching
 # the bound queues them instead of failing silently.
 _TOOL_THREADS = 8
+
+# The limiter does not restrain an abandoned call: cancelling returns its token
+# while the thread carries on, so the next call starts immediately and the stuck
+# one is still there. Measured: sixty timed-out calls against a backend that
+# never answers left sixty live threads, one per call, with nothing to stop the
+# next sixty. A backend that stops answering plus a mission loop that retries is
+# exactly that shape. Past this many still running, saying so beats adding to it.
+_MAX_STUCK_TOOL_THREADS = 32
 
 
 class AgentOrchestrator:
@@ -88,11 +97,31 @@ class AgentOrchestrator:
         self._lock = asyncio.Lock()
         # Built on first use because a capacity limiter binds to the running loop.
         self._tool_threads: anyio.CapacityLimiter | None = None
+        # Threads that have been handed a tool call and have not come back,
+        # including the ones whose callers already gave up on them.
+        self._inflight_tools = 0
+        self._inflight_lock = threading.Lock()
 
     def _tool_limiter(self) -> anyio.CapacityLimiter:
         if self._tool_threads is None:
             self._tool_threads = anyio.CapacityLimiter(_TOOL_THREADS)
         return self._tool_threads
+
+    @property
+    def stuck_tool_threads(self) -> int:
+        """Tool calls still running, however long ago their caller gave up."""
+        with self._inflight_lock:
+            return self._inflight_tools
+
+    def _invoke_counted(self, name: str, arguments: JsonObject) -> JsonObject:
+        """Run the tool, and know when the thread carrying it is free again."""
+        with self._inflight_lock:
+            self._inflight_tools += 1
+        try:
+            return self.catalog.invoke(name, arguments)
+        finally:
+            with self._inflight_lock:
+                self._inflight_tools -= 1
 
     def _provider_tools(self) -> list[JsonObject]:
         from headless_re_mcp.core.workspace import is_tool_visible
@@ -344,10 +373,31 @@ class AgentOrchestrator:
         self.store.transition(run_id, RunStatus.EXECUTING_TOOL)
         self.store.append_event(run_id, "tool.started", {"tool_call_id": call_id, "name": name})
         timeout = min(self.tool_timeout, spec.resource_policy.timeout_seconds)
+        stuck = self.stuck_tool_threads
+        if stuck >= _MAX_STUCK_TOOL_THREADS:
+            # Refusing costs this call. Not refusing costs a thread per attempt,
+            # for as long as whatever is not answering keeps not answering.
+            failure = {
+                "ok": False,
+                "error": {
+                    "code": "tool_workers_stuck",
+                    "message": (
+                        f"{stuck} earlier tool calls are still running and none have"
+                        " returned; a backend has stopped answering"
+                    ),
+                },
+            }
+            self.store.complete_tool_call(run_id, call_id, failure, ok=False)
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {"tool_call_id": call_id, "name": name, "ok": False, "error": "tool_workers_stuck"},
+            )
+            raise RuntimeError(f"tool workers are stuck: {name}")
         try:
             value = await asyncio.wait_for(
                 anyio.to_thread.run_sync(
-                    self.catalog.invoke,
+                    self._invoke_counted,
                     name,
                     arguments,
                     # The timeout has to return now rather than wait out a backend

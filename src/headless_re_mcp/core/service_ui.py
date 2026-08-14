@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.models import BackendKind, Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 from headless_re_mcp.core.service_static import _FATAL_WORKER_ERRORS
 from headless_re_mcp.core.ui_ocr import ocr_hwnd
 from headless_re_mcp.core.ui_sendinput import click_hwnd_sendinput, send_key_sendinput
@@ -714,6 +716,30 @@ class UiAutomationMixin:
             include_same_image_children=include_same_image_children,
             action=action,
         )
+    def _register_ui_capture(
+        self,
+        result: Result[JsonObject],
+        session_id: str,
+        path: Path,
+        *,
+        kind: str,
+        source: str,
+    ) -> Result[JsonObject]:
+        """Register a captured bitmap in place, leaving the payload otherwise as is.
+
+        These are uncompressed BMPs -- a full window is megabytes -- written per
+        call under a fresh uuid, and until now they were registered nowhere. That
+        made them both unreadable, because no tool opens a bare path, and
+        unreclaimable, because retention only collects what the repository knows
+        about. A UI-driving loop left behind gigabytes that nothing could see.
+        """
+        if not result.ok or result.data is None or not path.is_file():
+            return result
+        result.data.update(
+            _register_capture(self, session_id, path, kind=kind, source=source, payload={})
+        )
+        return result
+
     def ui_screenshot(
         self,
         session_id: str,
@@ -743,12 +769,18 @@ class UiAutomationMixin:
                 **result,
             }
 
-        return self._ui_call(
+        return self._register_ui_capture(
+            self._ui_call(
+                session_id,
+                capability="ui.screenshot",
+                allow_child_pids=allow_child_pids,
+                include_same_image_children=include_same_image_children,
+                action=action,
+            ),
             session_id,
-            capability="ui.screenshot",
-            allow_child_pids=allow_child_pids,
-            include_same_image_children=include_same_image_children,
-            action=action,
+            artifact_path,
+            kind="ui_screenshot",
+            source="ui.screenshot",
         )
     def ui_ocr(
         self,
@@ -783,13 +815,20 @@ class UiAutomationMixin:
                 **result,
             }
 
-        return self._ui_call(
+        return self._register_ui_capture(
+            self._ui_call(
+                session_id,
+                capability="ui.ocr",
+                allow_child_pids=allow_child_pids,
+                include_same_image_children=include_same_image_children,
+                action=action,
+            ),
             session_id,
-            capability="ui.ocr",
-            allow_child_pids=allow_child_pids,
-            include_same_image_children=include_same_image_children,
-            action=action,
+            artifact_path,
+            kind="ui_ocr_capture",
+            source="ui.ocr",
         )
+
     def _ui_call(
         self,
         session_id: str,

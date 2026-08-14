@@ -7,13 +7,14 @@ re-importing them from ``core.service`` (which would create an import cycle).
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.addressing import AddressSyncError
-from headless_re_mcp.core.models import Result, RpcError
-from headless_re_mcp.core.session import InvalidStateTransition
+from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
+from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
 from headless_re_mcp.detection import PeFormatError
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.upx import UpxScanError
@@ -46,6 +47,12 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=str(exc),
             details=dict(details),
         )
+    elif isinstance(exc, TargetMismatch):
+        error = RpcError(
+            code=exc.code,
+            message=exc.message,
+            details={**details, **exc.details},
+        )
     elif isinstance(exc, AddressSyncError):
         error = RpcError(
             code=exc.code,
@@ -59,7 +66,12 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             details={**details, **exc.details},
             retryable=exc.retryable,
         )
-    elif isinstance(exc, KeyError):
+    elif isinstance(exc, SessionNotFound):
+        # Only this type. Any KeyError used to become session_not_found, so a
+        # missing key while reading a backend reply, or a cache eviction race,
+        # told the caller its session was gone -- and recreating the session,
+        # the reasonable response to that, is the wrong answer to a transient
+        # internal fault.
         message = str(exc.args[0]) if exc.args else "session not found"
         error = RpcError(code="session_not_found", message=message, details=dict(details))
     elif isinstance(exc, FileNotFoundError):
@@ -73,6 +85,18 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
         )
     elif isinstance(exc, (InvalidStateTransition, ValueError)):
         error = RpcError(code="invalid_request", message=str(exc), details=dict(details))
+    elif isinstance(exc, sqlite3.Error):
+        # Named rather than left as internal_error: the store being unreachable,
+        # read-only or corrupt says nothing about the request and everything
+        # about the instance. An unattended caller that cannot tell them apart
+        # retries a query that will never work again, or gives up on a database
+        # that was only locked.
+        error = RpcError(
+            code="storage_unavailable",
+            message=f"{type(exc).__name__}: {exc}",
+            details=dict(details),
+            retryable=isinstance(exc, sqlite3.OperationalError),
+        )
     else:
         from headless_re_mcp.error_boundary import record_exception
 

@@ -117,7 +117,9 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
         },
     )
     repository.note_session_created("fixture.exe", created)
-    assert [item["id"] for item in repository.list_unclean_sessions()] == [session_id]
+    unclean, unclean_total = repository.list_unclean_sessions()
+    assert [item["id"] for item in unclean] == [session_id]
+    assert unclean_total == 1
 
     repository.record_backend(
         session_id,
@@ -183,7 +185,7 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
         None,
         Result(ok=True, data={"closed": True}),
     )
-    assert repository.list_unclean_sessions() == []
+    assert repository.list_unclean_sessions() == ([], 0)
 
 
 def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
@@ -236,4 +238,4 @@ def test_analysis_service_accepts_repository_without_legacy_store(tmp_path: Path
 
     assert created.ok is True
     assert not hasattr(service, "_store")
-    assert len(repository.list_unclean_sessions()) == 1
+    assert repository.list_unclean_sessions()[1] == 1

@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
 JsonObject = dict[str, Any]
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
 
@@ -233,15 +235,13 @@ class WindbgClient:
         # -pv: non-invasive; can coexist with another debugger on the same PID.
         argv = [str(cdb), "-pv", "-p", str(pid), "-c", script]
         try:
-            completed = subprocess.run(
-                argv,
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-                creationflags=creationflags,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise WindbgError("timeout", "cdb timed out", timeout=timeout) from exc
+            completed = run_bounded(argv, timeout=timeout, creationflags=creationflags)
+        except TimedOut as exc:
+            # cdb attaches to a live process; a deadline that only reaches the
+            # launcher would leave a debugger holding the target.
+            raise WindbgError(
+                "timeout", "cdb timed out", timeout=timeout, killed_pids=exc.killed
+            ) from exc
         except OSError as exc:
             raise WindbgError(
                 "backend_error",
@@ -277,15 +277,15 @@ class WindbgClient:
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
+            completed = run_bounded(
                 [str(cdb), "-z", str(dump), "-c", script],
-                capture_output=True,
                 timeout=timeout,
-                check=False,
                 creationflags=creationflags,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise WindbgError("timeout", "cdb timed out", timeout=timeout) from exc
+        except TimedOut as exc:
+            raise WindbgError(
+                "timeout", "cdb timed out", timeout=timeout, killed_pids=exc.killed
+            ) from exc
         except OSError as exc:
             raise WindbgError(
                 "backend_error",

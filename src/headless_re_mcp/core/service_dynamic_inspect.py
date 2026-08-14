@@ -24,7 +24,7 @@ from headless_re_mcp.core.addressing import RuntimeModuleCatalog
 from headless_re_mcp.core.limits import MAX_MODULE_DUMP_BYTES
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _timeline_append
+from headless_re_mcp.core.service_ext import _register_capture, _timeline_append
 from headless_re_mcp.core.service_static import _FATAL_WORKER_ERRORS
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.unpack.pe_rebuild import PeRebuildError, parse_runtime_headers
@@ -78,6 +78,8 @@ class DynamicInspectMixin:
     repository: AnalysisRepository
 
     if TYPE_CHECKING:
+
+        def record_artifact(self, **fields: Any) -> JsonObject: ...
 
         def _runtime(self, session_id: str, kind: BackendKind) -> _BackendRuntime: ...
 
@@ -489,7 +491,7 @@ class DynamicInspectMixin:
             path = data.get("output_path")
             sha = data.get("sha256")
             if isinstance(path, str) and isinstance(sha, str):
-                art = self.repository.register_artifact(
+                art = self.record_artifact(
                     session_id=session_id,
                     kind=str(data.get("artifact_kind") or "module_dump"),
                     path=path,
@@ -552,6 +554,18 @@ class DynamicInspectMixin:
                 if header_path.is_file():
                     data["header_artifact"] = str(header_path)
                     data["header_sha256"] = file_sha256(header_path)
+                    # Registered like the module dump beside it: a bare path is
+                    # one nothing can read back and collection cannot reclaim.
+                    data.update(
+                        _register_capture(
+                            self,
+                            session_id,
+                            header_path,
+                            kind="pe_headers",
+                            source="pe.headers.runtime",
+                            payload={},
+                        )
+                    )
                 return Result[JsonObject](ok=True, data=data, meta=result.meta)
             if (
                 not result.ok

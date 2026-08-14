@@ -14,6 +14,7 @@ from headless_re_mcp.core.runtime_state import (
     UnpackStateOwner,
     WorkflowStateOwner,
 )
+from headless_re_mcp.core.session import SessionNotFound
 
 
 class ServicePort(Protocol):
@@ -143,7 +144,7 @@ class ArtifactApplicationService:
         """
         page = self.repository.list_timeline(session_id, offset=offset, limit=limit)
         if isinstance(page, dict) and page.get("exists") is False:
-            raise KeyError(f"session not found: {session_id}")
+            raise SessionNotFound(f"session not found: {session_id}")
         return page
 
     def list_audit(

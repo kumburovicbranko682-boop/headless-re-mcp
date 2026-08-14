@@ -39,8 +39,27 @@ def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
     register_workflow_tools(server, analysis)
     register_dotnet_tools(server, analysis)
     register_remaining_tools(server, analysis)
+    _apply_workspace_profile(server, analysis)
     install_cursor_underscore_aliases(server)
     return server
+
+
+def _apply_workspace_profile(server: FastMCP[None], analysis: AnalysisService) -> None:
+    """Hide tools outside the configured work direction.
+
+    The full catalog is always registered first so it stays the single
+    authority; this only trims what a client sees. ``full`` (the default) hides
+    nothing, so the complete surface is unchanged unless a profile is chosen.
+    """
+    from headless_re_mcp.core.workspace import excluded_prefixes
+
+    profile = str(getattr(analysis.settings, "workspace_profile", "full"))
+    prefixes = excluded_prefixes(profile)
+    if not prefixes:
+        return
+    tools = server._tool_manager._tools
+    for name in [n for n in tools if n.startswith(prefixes)]:
+        del tools[name]
 
 
 def run_stdio(service: AnalysisService | None = None) -> None:
