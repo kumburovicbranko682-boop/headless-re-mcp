@@ -11,6 +11,7 @@ import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
 
+from headless_re_mcp.agent.context import bounded_tool_result
 from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandCatalog, CommandTransport
 from headless_re_mcp.error_boundary import guard_tool_handler
 from headless_re_mcp.telemetry import instrument
@@ -30,6 +31,27 @@ def _limiter() -> anyio.CapacityLimiter:
     if _tool_limiter is None:
         _tool_limiter = anyio.CapacityLimiter(_TOOL_THREADS)
     return _tool_limiter
+
+
+def apply_result_budget(
+    handler: Callable[..., dict[str, Any]],
+    *,
+    max_bytes: int,
+) -> Callable[..., dict[str, Any]]:
+    """Cut a tool reply that outran the catalog byte budget.
+
+    The agent transport already does this. MCP was sending the raw envelope,
+    so a 400 KB jadx class went into the Cursor context while the same call
+    on the agent path was replaced with a 16 KB truncated summary.
+    """
+
+    @wraps(handler)
+    def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        value = handler(*args, **kwargs)
+        result, _truncated = bounded_tool_result(value, max_bytes=max_bytes)
+        return result
+
+    return wrapped
 
 
 def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
@@ -74,6 +96,9 @@ def register_tool(
     # inside the instrumentation so a defect is recorded as the envelope's
     # internal_error rather than as a raw exception type.
     observed = instrument(guard_tool_handler(handler, tool_name=name), name=name)
+    budgeted = apply_result_budget(
+        observed, max_bytes=spec.resource_policy.max_result_bytes
+    )
     tool = Tool.from_function(
         observed,
         name=name,
@@ -84,7 +109,7 @@ def register_tool(
     # rather than registering the unguarded one with the server.
     bound = catalog.bind_mcp(
         name,
-        observed,
+        budgeted,
         input_schema=dict(tool.parameters),
         description=tool.description,
     )
