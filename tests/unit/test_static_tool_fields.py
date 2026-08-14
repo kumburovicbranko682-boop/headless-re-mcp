@@ -462,3 +462,30 @@ def test_static_globals_description_names_items_not_globals() -> None:
     assert "named addresses outside functions" in chunk
     assert '"globals"' not in chunk
 
+
+def test_static_names_description_names_items_not_names() -> None:
+    """The live catalog omitted the list field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    names.data['items'][0]['name']. The worker pages items with ea and
+    name, and no names field. A caller looking for names after a
+    successful list reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_names").split())
+    assert "Answers with items" in described
+    assert "no names field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _names")
+    chunk = worker[start : worker.index("def _globals", start)]
+    assert "return _page_items(items, offset, limit)" in chunk
+    assert '"ea": int(ea)' in chunk
+    assert '"name": name' in chunk
+    assert '"names"' not in chunk
+
