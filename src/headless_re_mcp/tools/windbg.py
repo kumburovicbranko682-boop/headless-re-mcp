@@ -30,7 +30,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         For post-mortem work on a .dmp, not on a live debuggee. commands
         defaults to a general triage set. Kernel dumps need kernel=true and are
         refused unless HEADLESS_RE_WINDBG_ALLOW_KERNEL is set. The reply carries
-        truncated when the session output was cut at the buffer.
+        output holding the session text, and truncated when it was cut at the
+        buffer.
         """
         return _dump(
             analysis.windbg_open_dump(dump_path, commands=commands, timeout=timeout, kernel=kernel)
@@ -40,14 +41,22 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_threads(
         dump_path: str, timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0
     ) -> dict[str, Any]:
-        """Thread list of a crash dump, as cdb prints it."""
+        """Thread list of a crash dump, as cdb prints it.
+
+        Answers with threads holding that text, plus dump, and truncated when
+        the session was cut at the buffer.
+        """
         return _dump(analysis.windbg_threads(dump_path, timeout=timeout))
 
     @tools.tool(name="windbg.modules")
     def windbg_modules(
         dump_path: str, timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0
     ) -> dict[str, Any]:
-        """Loaded module list of a crash dump, as cdb prints it."""
+        """Loaded module list of a crash dump, as cdb prints it.
+
+        Answers with modules holding that text, plus dump, and truncated when
+        the session was cut at the buffer.
+        """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
     @tools.tool(name="windbg.disasm")
@@ -57,7 +66,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         length: Annotated[int, Field(ge=1, le=256)] = 16,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0,
     ) -> dict[str, Any]:
-        """Disassemble length instructions at address inside a crash dump."""
+        """Disassemble length instructions at address inside a crash dump.
+
+        Answers with disasm holding that text, plus dump, address and length.
+        """
         return _dump(analysis.windbg_disasm(dump_path, address, length=length, timeout=timeout))
 
     @tools.tool(name="windbg.attach")
@@ -66,8 +78,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Non-invasive cdb probe of this session's live debuggee.
 
-        Reads the process without taking control, so x64dbg keeps it. Answers
-        with the target's version and platform.
+        Reads the process without taking control, so x64dbg keeps it.
+        Answers with output holding the cdb session text (vertarget/version),
+        not separate version or platform fields, plus attached and mode.
         """
         return _dump(analysis.windbg_attach(session_id, timeout=timeout))
 
@@ -75,14 +88,20 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_live_threads(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Thread list of this session's live debuggee, read non-invasively."""
+        """Thread list of this session's live debuggee, read non-invasively.
+
+        Answers with threads holding the cdb text.
+        """
         return _dump(analysis.windbg_live_threads(session_id, timeout=timeout))
 
     @tools.tool(name="windbg.live_modules")
     def windbg_live_modules(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Loaded module list of this session's live debuggee, read non-invasively."""
+        """Loaded module list of this session's live debuggee, read non-invasively.
+
+        Answers with modules holding the cdb text.
+        """
         return _dump(analysis.windbg_live_modules(session_id, timeout=timeout))
 
     @tools.tool(name="windbg.live_disasm")
@@ -92,7 +111,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         length: Annotated[int, Field(ge=1, le=256)] = 16,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disassemble length instructions at address in this session's live debuggee."""
+        """Disassemble length instructions at address in this session's live debuggee.
+
+        Answers with disasm holding that text, plus address and length.
+        """
         return _dump(
             analysis.windbg_live_disasm(session_id, address, length=length, timeout=timeout)
         )

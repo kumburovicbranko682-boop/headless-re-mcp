@@ -126,3 +126,63 @@ def test_launch_failure_becomes_a_structured_error(
     assert exc.value.code == "backend_error"
     assert "could not be launched" in exc.value.message
     assert exc.value.details["cdb"] == str(cdb)
+
+
+def test_attach_puts_cdb_text_in_output_not_version_or_platform(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catalog said version and platform; those fields are not on the reply.
+
+    Measured: a vertarget/version probe answers with output holding the cdb
+    session text. Looking for version after a successful attach reads as the
+    probe having returned nothing about the target.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    text = b"Windows 10 Version 19045 MP (8 procs) Free x64\n"
+
+    def fake_run(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(0, text, b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", fake_run)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    payload = WindbgClient(cdb).attach(4242, allowed_pid=4242)
+
+    assert payload["output"] == text.decode()
+    assert "version" not in payload
+    assert "platform" not in payload
+
+
+def test_windbg_descriptions_name_the_fields_cdb_text_comes_back_in() -> None:
+    import ast
+
+    from headless_re_mcp.tools.windbg import build_windbg_tools
+
+    source = Path(build_windbg_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    docs: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                ):
+                    docs[str(keyword.value.value)] = ast.get_docstring(node) or ""
+
+    assert "version and platform" not in docs["windbg.attach"]
+    assert "Answers with output" in docs["windbg.attach"]
+    assert "Answers with threads" in docs["windbg.threads"]
+    assert "Answers with modules" in docs["windbg.modules"]
+    assert "Answers with disasm" in docs["windbg.disasm"]
+    assert "Answers with threads" in docs["windbg.live_threads"]
+    assert "Answers with modules" in docs["windbg.live_modules"]
+    assert "Answers with disasm" in docs["windbg.live_disasm"]
