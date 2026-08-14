@@ -420,7 +420,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         expect_window_class: str | None = None,
         ui_pid: int | None = None,
     ) -> dict[str, Any]:
-        """Verify a rebuilt PE; optional UI title/class gates need ui_pid or live debuggee."""
+        """Verify a rebuilt PE; optional UI title/class gates need ui_pid or live debuggee.
+
+        Answers with path, sha256, architecture, pe, unfixed, and
+        claims_universal_unpack false. There is no verified field.
+        """
         return _dump(
             analysis.unpack_verify(
                 session_id,

@@ -296,3 +296,27 @@ def test_unpack_pe_rebuild_names_output_path() -> None:
     assert '"claims_universal_unpack": False' in chunk
     assert '"rebuilt"' not in chunk
 
+def test_unpack_verify_names_pe_and_refuses_universal() -> None:
+    """The live catalog omitted pe and the unpack-claim flag.
+
+    tests/unit/test_m4_unpack_service.py already reads verified.data['claims_universal_unpack'].
+    The service returns path, sha256, architecture, pe, unfixed and
+    claims_universal_unpack, and has no verified field. A caller looking for
+    verified after a successful parse reads the rebuild as unconfirmed.
+    """
+    described = " ".join(_tool_docstring("unpack.verify").split())
+    assert "Answers with path" in described
+    assert "no verified field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_verify")
+    chunk = source[start : start + 1800]
+    assert '"claims_universal_unpack": False' in chunk
+    assert '"pe":' in chunk
+
