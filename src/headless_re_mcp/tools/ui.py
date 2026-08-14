@@ -45,7 +45,12 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         allow_child_pids: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Read-only process-tree + window probe (does not grant UI rights)."""
+        """Read-only process-tree + window probe (does not grant UI rights).
+
+        Answers with debuggee_windows, children, child_candidates, debuggee_pid,
+        debugger_pid, debuggee_image and note. There is no tree field and
+        no processes field.
+        """
         return _dump(
             analysis.ui_process_tree(
                 session_id,

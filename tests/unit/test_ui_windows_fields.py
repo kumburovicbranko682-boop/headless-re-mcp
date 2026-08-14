@@ -48,3 +48,26 @@ def test_ui_windows_list_puts_hwnds_in_windows_not_items() -> None:
     assert "Answers with windows" in described
     assert "no items" in described
     assert "no tree field" in described
+
+def test_ui_process_tree_puts_windows_in_debuggee_windows_not_tree() -> None:
+    """The catalog said process-tree and never named the payload.
+
+    Measured against the service action: windows are debuggee_windows, child
+    processes are children, plus child_candidates and note. There is no tree
+    or processes field. Looking for tree after a successful probe reads as
+    the debuggee having no windows, so the agent never passes allow_child_pids.
+    """
+    source = Path(_ui_finalize_windows.__code__.co_filename).read_text(encoding="utf-8")
+    start = source.index("def ui_process_tree")
+    chunk = source[start : source.index("def ui_tree", start)]
+    returned = chunk[chunk.index("return {") :]
+    assert '"debuggee_windows"' in returned
+    assert '"children"' in returned
+    assert '"child_candidates"' in returned
+    assert '"tree"' not in returned
+    assert '"processes"' not in returned
+    described = _tool_docstring("ui.process_tree")
+    assert "Answers with debuggee_windows" in described
+    assert "children" in described
+    assert "no tree field" in described
+    assert "no processes field" in described
