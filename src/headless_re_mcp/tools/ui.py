@@ -332,7 +332,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         language: str = "en-US",
         client_only: bool = False,
     ) -> dict[str, Any]:
-        """OCR a debuggee hwnd via screenshot + Windows OCR / tesseract (PID-bounded)."""
+        """OCR a debuggee hwnd via screenshot + Windows OCR / tesseract (PID-bounded).
+
+        Answers with text, lines, ocr_backend, artifact_id, format bmp and path.
+        There is no ocr_text field.
+        """
         return _dump(
             analysis.ui_ocr(
                 session_id,
