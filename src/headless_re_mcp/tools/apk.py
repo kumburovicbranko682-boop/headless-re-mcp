@@ -52,7 +52,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files."""
+        """List signing certificates and v1 signature files.
+
+        Answers with certificates (subject, issuer, serial, sha256),
+        signature_files, v1_signed, and has_more so a list that filled the
+        cap is not read as every signer. There is no certs or signatures field.
+        """
         return _dump(analysis.apk_certificates(session_id))
 
     @tools.tool(name="apk.components")
