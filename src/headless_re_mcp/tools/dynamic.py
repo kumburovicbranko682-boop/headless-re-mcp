@@ -97,7 +97,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: RunControlTimeout = 30.0,
         pause_after_attach: bool = False,
     ) -> dict[str, Any]:
-        """Attach to an authorized process; default waits for paused|running (GUI-friendly)."""
+        """Attach to an authorized process; default waits for paused|running (GUI-friendly).
+
+        Answers with submitted and state, the same shape as dynamic.wait, plus
+        child_windows_hint, suggested_child_pids and child_candidates when the
+        debuggee has child windows. There is no attached or top-level pid field.
+        """
         return _dump(
             analysis.dynamic_attach(
                 session_id,
