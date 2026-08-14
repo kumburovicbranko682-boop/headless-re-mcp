@@ -700,3 +700,29 @@ def test_static_comment_set_description_names_previous_comment() -> None:
     assert '"comment": after' in chunk
     assert '"text"' not in chunk
 
+
+def test_static_type_apply_description_names_previous_type() -> None:
+    """The live catalog omitted the payload fields.
+
+    The IDA worker returns address, type, previous_type and ok, and no
+    applied field. A caller looking for applied after a successful write
+    cannot tell what type was overwritten.
+    """
+    described = " ".join(_docstring("static_type_apply").split())
+    assert "Answers with address" in described
+    assert "previous_type" in described
+    assert "no applied field" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _type_apply")
+    chunk = worker[start : worker.index("def _function_create", start)]
+    assert '"previous_type": before' in chunk
+    assert '"type": after' in chunk
+    assert '"applied"' not in chunk
+

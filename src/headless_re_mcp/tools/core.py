@@ -613,7 +613,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         address: int,
         type: str,
     ) -> dict[str, Any]:
-        """Apply a type string at an address."""
+        """Apply a type string at an address.
+
+        Answers with address, type, previous_type and ok. There is no
+        applied field.
+        """
         return _dump(
             analysis.static_type_apply(session_id, address=address, type=type)
         )
