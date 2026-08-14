@@ -1264,3 +1264,36 @@ def test_workflow_breakpoint_list_description_names_breakpoints() -> None:
     assert '"workflow"' not in returned
     assert '"items"' not in returned
 
+
+def test_workflow_navigate_to_event_description_names_nested_workflow() -> None:
+    """The live catalog omitted the payload field.
+
+    tests/unit/test_dynamic_service.py already reads
+    navigated.data['workflow'] then state['navigation']['matched_event'].
+    The navigate path returns workflow only. A caller looking for event or
+    matched after a successful call cannot tell whether the pattern hit.
+    """
+    described = " ".join(_docstring("workflow_navigate_to_event").split())
+    assert "Answers with workflow" in described
+    assert "matched_event" in described
+    assert "navigation" in described
+    assert "not a top-level" in described
+    tests = (
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "unit"
+        / "test_dynamic_service.py"
+    ).read_text(encoding="utf-8")
+    assert 'navigated.data["workflow"]' in tests
+    assert 'navigation["matched_event"]' in tests
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def _navigate_locked")
+    chunk = source[start : start + 4000]
+    assert 'return {"workflow": workflow.to_dict()}' in chunk
+

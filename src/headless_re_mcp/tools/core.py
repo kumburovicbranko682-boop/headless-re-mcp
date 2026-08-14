@@ -922,7 +922,12 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
         event_budget: Annotated[int, Field(ge=1, le=100_000)] = 1024,
     ) -> dict[str, Any]:
-        """Resume and consume bounded events until a strict event pattern matches."""
+        """Resume and consume bounded events until a strict event pattern matches.
+
+        Answers with workflow. The match lives under
+        workflow.state.navigation (status and matched_event), not a top-level
+        event or matched field.
+        """
         return _dump(
             analysis.workflow_navigate_to_event(
                 session_id,
