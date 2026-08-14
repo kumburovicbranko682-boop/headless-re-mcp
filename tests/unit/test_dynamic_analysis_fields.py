@@ -567,3 +567,27 @@ def test_memory_bp_list_description_names_breakpoints_not_memory() -> None:
     described = _tool_docstring("breakpoints.memory.list")
     assert "Answers with breakpoints" in described
     assert "no memory field" in described
+
+def test_condition_get_description_names_expression_not_condition() -> None:
+    """The catalog said break condition and never named the payload field.
+
+    Measured against GetBreakpointConditionRpc: success is expression, plus
+    address and type. There is no condition field. Looking for condition after
+    a successful get reads as no break condition, so the agent sets one that
+    was already there.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome GetBreakpointConditionRpc")
+    chunk = native[start : native.index("Outcome ListPatches", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "expression"' in returned
+    assert 'JsonSet(result.get(), "address"' in returned
+    assert '"condition"' not in returned
+    described = _tool_docstring("breakpoints.condition.get")
+    assert "Answers with expression" in described
+    assert "no condition field" in described

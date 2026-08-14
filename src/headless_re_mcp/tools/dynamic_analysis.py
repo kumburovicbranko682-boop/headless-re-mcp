@@ -381,7 +381,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Read the break condition for an existing breakpoint."""
+        """Read the break condition for an existing breakpoint.
+
+        Answers with expression, address and type. There is no condition field.
+        """
         return _dump(analysis.breakpoints_condition_get(session_id, address, timeout=timeout))
 
     @tools.tool(name="patches.list")
