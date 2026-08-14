@@ -26,8 +26,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List top-level windows for the session debuggee PID (opt-in children).
 
-        Child-process windows require allow_child_pids or include_same_image_children.
-        The headless debugger PID and MCP host PID are always blocked.
+        Answers with windows, plus count, debuggee_pid, debugger_pid,
+        allowed_pids, blocked_pids and note. There is no items field and no tree field. Child-process windows require allow_child_pids or
+        include_same_image_children. The headless debugger PID and MCP host PID
+        are always blocked.
         """
         return _dump(
             analysis.ui_windows_list(
