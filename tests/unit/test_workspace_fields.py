@@ -48,3 +48,22 @@ def test_workspace_mode_get_names_profile_not_options() -> None:
     assert "hidden_prefixes" in doc
     set_doc = _tool_docstring("workspace.mode.set")
     assert "Answers with profile" in set_doc
+
+
+def test_workspace_mode_set_names_note_and_persisted() -> None:
+    """The catalog said the same payload as get and never named the extras.
+
+    Measured against the service: set adds note and persisted=True on top of
+    profile_summary. Looking at get's fields after a successful set misses
+    that MCP clients still have the old tool surface until they reconnect.
+    """
+    import inspect
+
+    from headless_re_mcp.core.service_workspace import WorkspaceMixin
+
+    source = inspect.getsource(WorkspaceMixin.workspace_mode_set)
+    assert 'summary["note"]' in source
+    assert 'summary["persisted"]' in source
+    doc = " ".join(_tool_docstring("workspace.mode.set").split())
+    assert "note" in doc
+    assert "persisted" in doc

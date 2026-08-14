@@ -36,8 +36,10 @@ def build_workspace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Set the startup work direction; persists and applies on next connection.
 
-        Same payload as workspace.mode.get: Answers with profile, label,
-        available, and hidden_prefixes.
+        Same payload as workspace.mode.get, plus note and persisted.
+        Answers with profile, label, available, hidden_prefixes, note and
+        persisted. note says MCP clients see the new tool surface on their
+        next connection.
         """
         return _dump(analysis.workspace_mode_set(profile))
 
