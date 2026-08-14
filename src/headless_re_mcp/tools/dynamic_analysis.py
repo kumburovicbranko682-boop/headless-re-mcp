@@ -137,7 +137,12 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         count: Annotated[int, Field(ge=1, le=256)] = 32,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disassemble a bounded instruction range starting at address."""
+        """Disassemble a bounded instruction range starting at address.
+
+        Answers with instructions, each carrying address, size and instruction
+        (not text), plus count. There is no disasm field, no items field and
+        no text field.
+        """
         return _dump(analysis.disassembly_read(session_id, address, count=count, timeout=timeout))
 
     @tools.tool(name="symbols.list")

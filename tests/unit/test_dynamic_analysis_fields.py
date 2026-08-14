@@ -92,3 +92,35 @@ def test_stack_trace_description_names_frames_not_stack() -> None:
     assert "has_more" in described
     assert "no stack field" in described
     assert "no items" in described
+
+def _read_disassembly_cpp() -> str:
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ReadDisassembly")
+    return native[start : native.index("struct BoundedSymbolContext", start)]
+
+
+def test_disassembly_read_description_names_instructions_not_disasm() -> None:
+    """The catalog said disassemble and never named the list field.
+
+    Measured against ReadDisassembly: the page is instructions, each carrying
+    instruction (not text), plus address and count. There is no disasm or items
+    field. Looking for disasm after a successful read reads as empty.
+    """
+    chunk = _read_disassembly_cpp()
+    assert 'JsonSet(result.get(), "instructions"' in chunk
+    assert 'JsonSet(value.get(), "instruction"' in chunk
+    returned = chunk[chunk.index("auto result = JsonObject()") :]
+    assert '"disasm"' not in returned
+    assert '"items"' not in returned
+    assert '"text"' not in returned
+    described = _tool_docstring("disassembly.read")
+    assert "Answers with instructions" in described
+    assert "instruction" in described
+    assert "no disasm field" in described
+    assert "no items" in described
+    assert "no text field" in described
