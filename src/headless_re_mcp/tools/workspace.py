@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
@@ -29,7 +31,9 @@ def build_workspace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.workspace_mode_get())
 
     @tools.tool(name="workspace.mode.set")
-    def workspace_mode_set(profile: str) -> dict[str, Any]:
+    def workspace_mode_set(
+        profile: Annotated[str, Field(pattern="^(full|pe|android|web)$")],
+    ) -> dict[str, Any]:
         """Set the startup work direction; persists and applies on next connection.
 
         Same payload as workspace.mode.get: Answers with profile, label,
