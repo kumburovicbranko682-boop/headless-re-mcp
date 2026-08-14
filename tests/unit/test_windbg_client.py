@@ -66,9 +66,7 @@ def test_a_dump_analysis_cut_at_the_cap_says_it_was_cut(
     assert payload["output_chars"] == 500
     assert payload["returned_chars"] == 64
     assert len(str(payload["modules"])) == 64
-    # The wrapper renames output, so the notice has to travel with the rename
-    # rather than stay behind in the nested raw payload.
-    assert "truncated" not in {key for key in payload if key == "raw"}
+    assert "raw" not in payload
 
 
 def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
@@ -186,3 +184,35 @@ def test_windbg_descriptions_name_the_fields_cdb_text_comes_back_in() -> None:
     assert "Answers with threads" in docs["windbg.live_threads"]
     assert "Answers with modules" in docs["windbg.live_modules"]
     assert "Answers with disasm" in docs["windbg.live_disasm"]
+
+
+def test_windbg_listing_does_not_echo_the_nested_session_as_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wrapper renamed output to modules and then nested the session again.
+
+    Measured: modules() puts the cdb text in modules and a second copy under
+    raw.output, plus dump, stderr and exit_code. A 200-char session therefore
+    occupies the MCP envelope twice. An overnight pass that serialises the
+    reply pays for the listing twice.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    text = "m" * 200
+
+    def fake_run(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(0, text.encode(), b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", fake_run)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    payload = WindbgClient(cdb).modules(dump)
+    assert payload["modules"] == text
+    assert "raw" not in payload
+    source = Path(WindbgClient.modules.__code__.co_filename).read_text(encoding="utf-8")
+    assert '"raw": data' not in source

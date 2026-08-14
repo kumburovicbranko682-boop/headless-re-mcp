@@ -56,8 +56,8 @@ def _carried(data: JsonObject) -> dict[str, object]:
     """Lift a truncation notice out of the raw payload a wrapper nests.
 
     Every wrapper here renames ``output`` to something the caller reads --
-    threads, modules, disasm -- and files the rest under ``raw``. A caller
-    reading the renamed field has no reason to open ``raw``, so the notice has
+    threads, modules, disasm -- and drops the rest. A caller reading the
+    renamed field has no reason to open a nested copy, so the notice has
     to travel with it.
     """
     if not data.get("truncated"):
@@ -117,11 +117,11 @@ class WindbgClient:
 
     def threads(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["~*"], timeout=timeout)
-        return {"dump": str(dump), "threads": data.get("output", ""), "raw": data, **_carried(data)}
+        return {"dump": str(dump), "threads": data.get("output", ""), **_carried(data)}
 
     def modules(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["lm"], timeout=timeout)
-        return {"dump": str(dump), "modules": data.get("output", ""), "raw": data, **_carried(data)}
+        return {"dump": str(dump), "modules": data.get("output", ""), **_carried(data)}
 
     def disasm(
         self,
@@ -149,7 +149,6 @@ class WindbgClient:
             "address": addr,
             "length": length,
             "disasm": data.get("output", ""),
-            "raw": data,
             **_carried(data),
         }
 
@@ -167,16 +166,15 @@ class WindbgClient:
             "mode": "noninvasive",
             "note": "cdb -pv probe; detached via q",
             **_summarised(str(data.get("output", "")), _MAX_ATTACH_OUTPUT),
-            "raw": data,
         }
 
     def live_threads(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["~*"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "threads": data.get("output", ""), "raw": data, **_carried(data)}
+        return {"pid": pid, "threads": data.get("output", ""), **_carried(data)}
 
     def live_modules(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["lm"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "modules": data.get("output", ""), "raw": data, **_carried(data)}
+        return {"pid": pid, "modules": data.get("output", ""), **_carried(data)}
 
     def live_disasm(
         self,
@@ -204,7 +202,6 @@ class WindbgClient:
             "address": addr,
             "length": length,
             "disasm": data.get("output", ""),
-            "raw": data,
             **_carried(data),
         }
 
