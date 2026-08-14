@@ -24,11 +24,12 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Run Ghidra headless import and analysis, then delete the project.
 
-        The other ghidra tools do not read what this produced. Each of
-        ghidra.functions, ghidra.symbols, ghidra.xrefs and ghidra.decompile
-        imports the binary again under -deleteProject, so calling this first
-        does not save them any work. Minutes on a large binary. Requires
-        HEADLESS_RE_GHIDRA_HOME.
+        Answers with project_dir, stdout_excerpt and note.
+        There is no functions field and no analysis field. The other ghidra tools
+        do not read what this produced. Each of ghidra.functions, ghidra.symbols,
+        ghidra.xrefs and ghidra.decompile imports the binary again under
+        -deleteProject, so calling this first does not save them any work. Minutes
+        on a large binary. Requires HEADLESS_RE_GHIDRA_HOME.
         """
         return _dump(analysis.ghidra_analyze(session_id, timeout=timeout))
 
