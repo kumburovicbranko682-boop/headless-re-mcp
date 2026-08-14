@@ -123,7 +123,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
-        """Capture a screenshot of the current page to a PNG artifact."""
+        """Capture a screenshot of the current page to a PNG artifact.
+
+        Answers with path, plus artifact_id when the PNG was registered.
+        There is no screenshot or png field.
+        """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 
     @tools.tool(name="web.har.export")
