@@ -721,3 +721,25 @@ async def test_capabilities_search_description_names_live_fields() -> None:
         assert "status_probe" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_capabilities_describe_description_names_the_nested_object() -> None:
+    """The catalog did not say the record is nested under capability.
+
+    Measured payload is capability holding id, backend, status, status_probe,
+    summary and tools. A caller looking for status on the reply reads a
+    successful describe as missing.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "capabilities.describe")
+        text = tool.description or ""
+        assert "Answers with capability" in text
+        assert "not top-level" in text
+        assert "not_found" in text
+    finally:
+        analysis.close_all()

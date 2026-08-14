@@ -74,7 +74,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="capabilities.describe")
     def capabilities_describe(capability_id: str) -> dict[str, Any]:
-        """Describe one capability id from the catalog."""
+        """Describe one capability id from the catalog.
+
+        Answers with capability holding id, backend, status, status_probe,
+        summary and tools. Those keys are not top-level. Unknown ids answer
+        not_found, not an empty object.
+        """
         return _dump(analysis.capabilities_describe(capability_id))
 
     @tools.tool(name="artifacts.list")
