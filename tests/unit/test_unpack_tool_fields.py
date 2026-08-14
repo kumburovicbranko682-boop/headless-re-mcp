@@ -224,3 +224,27 @@ def test_unpack_start_nests_state_under_unpack() -> None:
     ).read_text(encoding="utf-8")
     assert '"unpack": state.to_dict()' in source
 
+def test_unpack_artifacts_names_artifacts_not_items() -> None:
+    """The live catalog omitted the artifacts array.
+
+    tests/unit/test_m5_unpack_session.py already reads arts.data['count'] and
+    data['timeline_path']. The service returns artifacts, count, timeline_path,
+    state_path and claims_universal_unpack, and has no items field. A caller
+    looking for items after a successful list reads dumps as missing.
+    """
+    described = " ".join(_tool_docstring("unpack.artifacts").split())
+    assert "Answers with artifacts" in described
+    assert "no items field" in described
+    assert "timeline_path" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_artifacts")
+    chunk = source[start : start + 1200]
+    assert '"artifacts": [item.to_dict() for item in state.artifacts]' in chunk
+    assert '"items"' not in chunk
+

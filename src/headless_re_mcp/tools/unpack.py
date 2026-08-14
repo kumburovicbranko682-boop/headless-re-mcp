@@ -216,7 +216,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="unpack.artifacts")
     def unpack_artifacts(session_id: str) -> dict[str, Any]:
-        """List unpack session artifacts and timeline/state paths."""
+        """List unpack session artifacts and timeline/state paths.
+
+        Answers with artifacts, count, timeline_path, state_path, and
+        claims_universal_unpack false. There is no items field.
+        """
         return _dump(analysis.unpack_artifacts(session_id))
 
     @tools.tool(name="unpack.score_oep")
