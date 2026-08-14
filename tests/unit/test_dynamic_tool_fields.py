@@ -63,3 +63,42 @@ def test_dynamic_events_description_names_events_not_items() -> None:
     assert "items" not in payload
     assert payload["events"][0]["kind"] == "pause"
     assert payload["events"][0]["sequence"] == 1
+
+def test_dynamic_memory_read_schema_matches_native_size_cap() -> None:
+    """The catalog accepted an unbounded size.
+
+    Measured: input schema size has no maximum. Native ReadMemory caps size
+    at MaxMemoryBytes (2 MiB) and rejects zero. A caller that asks for 10**9
+    bytes still occupies a worker until the adapter refuses, and the catalog
+    never said the read would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_internal.h"
+    ).read_text(encoding="utf-8")
+    marker = "constexpr std::uint64_t MaxMemoryBytes = "
+    start = header.index(marker) + len(marker)
+    expr = header[start : header.index(";", start)]
+    assert "2U * 1024U * 1024U" in expr
+    cap = 2 * 1024 * 1024
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    chunk = native[native.index("Outcome ReadMemory") : native.index("Outcome WriteMemory")]
+    assert 'ReadUnsigned(params, "size", size, error, MaxMemoryBytes)' in chunk
+    assert 'return InvalidField("size", "size must be positive")' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_tools(object())  # type: ignore[arg-type]
+        if binding.name == "dynamic.memory.read"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["size"]["minimum"] == 1
+    assert props["size"]["maximum"] == cap
