@@ -42,3 +42,32 @@ def test_static_functions_description_names_items_not_functions() -> None:
     chunk = worker[start : start + 900]
     assert '"items": items' in chunk
     assert '"functions"' not in chunk.split("return")[-1]
+
+def test_static_decompile_description_names_code_not_text() -> None:
+    """The live catalog omitted the decompiled-text field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    decompiled.data['code']. The worker returns address, end and code, and no
+    text field. A caller looking for text after a successful decompile reads
+    it as IDA returning nothing.
+    """
+    described = _docstring("static_decompile")
+    assert "Answers with code" in described
+    assert "no text field" in described
+    assert "address" in described
+    assert "end" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _decompile")
+    chunk = worker[start : worker.index("def _require_function", start)]
+    assert '"code": text' in chunk
+    returned = chunk.split("return")[-1]
+    assert '"code"' in returned
+    assert '"text"' not in returned
+
