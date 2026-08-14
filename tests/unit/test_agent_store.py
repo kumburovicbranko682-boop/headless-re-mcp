@@ -299,6 +299,28 @@ def _finish_one(store: AgentStore, title: str) -> str:
     return thread.id
 
 
+def test_a_run_does_not_keep_every_streamed_delta(tmp_path: Path) -> None:
+    """list_events pages at most 5000; the table itself did not stop writing.
+
+    2000 deltas of 20 bytes were 414 KB and still climbing. A live mission
+    keeps every run until it finishes, so a night of streamed tokens grew the
+    file with a prefix no SSE client pages in one reply.
+    """
+    store = AgentStore(tmp_path / "events.db")
+    store.retained_events_per_run = 5
+    thread = store.create_thread()
+    other = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.append_event(other.id, "message.delta", {"delta": "leave me"})
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    for index in range(12):
+        store.append_event(run.id, "message.delta", {"n": index})
+
+    remaining = store.list_events(run.id, after=0, limit=50)
+    assert [event.data.get("n") for event in remaining] == [7, 8, 9, 10, 11]
+    kept = store.list_events(other.id, after=0, limit=50)
+    assert any(event.data.get("delta") == "leave me" for event in kept)
+
+
 def test_a_live_thread_does_not_keep_every_message_it_ever_wrote(tmp_path: Path) -> None:
     """list_messages already windows at 2000; the table itself did not.
 

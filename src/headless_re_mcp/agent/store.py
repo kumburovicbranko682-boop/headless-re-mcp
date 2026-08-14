@@ -53,6 +53,12 @@ _FINISHED_TRIM_INTERVAL = 32
 # so keeping it only grows the file.
 _RETAINED_MESSAGES_PER_THREAD = 2_000
 
+# Each streamed token is a run_events row. 2000 deltas of 20 bytes were 414 KB
+# and still climbing. A live mission keeps every run until it finishes, and
+# list_events already only pages 5000 at a time, so the prefix nobody can
+# page in one reply is only growing the file.
+_RETAINED_EVENTS_PER_RUN = 5_000
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -65,6 +71,7 @@ class AgentStore:
         self.retained_finished_threads = _RETAINED_FINISHED_THREADS
         self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
         self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
+        self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -303,6 +310,14 @@ class AgentStore:
         created = utc_now()
         safe = redact(data)
         con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, json.dumps(safe, ensure_ascii=False, default=str), created))
+        keep = max(1, int(self.retained_events_per_run))
+        con.execute(
+            "DELETE FROM run_events WHERE run_id=? AND seq IN ("
+            "  SELECT seq FROM run_events WHERE run_id=?"
+            "  ORDER BY seq DESC LIMIT -1 OFFSET ?"
+            ")",
+            (run_id, run_id, keep),
+        )
         return RunEvent(run_id, seq, event_type, safe, created)
 
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
