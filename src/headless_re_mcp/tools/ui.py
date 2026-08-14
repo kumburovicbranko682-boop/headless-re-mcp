@@ -180,7 +180,12 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
     ) -> dict[str, Any]:
-        """Close via background NC X-click/SC_CLOSE/WM_CLOSE; never foreground it."""
+        """Close via background NC X-click/SC_CLOSE/WM_CLOSE; never foreground it.
+
+        Answers with hwnd, action, method, backend, shown_noactivate,
+        foreground_required and injection_required, plus debuggee_pid and
+        debugger_pid. There is no closed field.
+        """
         return _dump(
             analysis.ui_window_close(
                 session_id,
@@ -219,8 +224,8 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_key(
         session_id: str,
         hwnd: int,
-        text: str | None = None,
-        vk: int | None = None,
+        text: Annotated[str, Field(min_length=1, max_length=32)] | None = None,
+        vk: Annotated[int, Field(ge=1, le=0xFE)] | None = None,
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
