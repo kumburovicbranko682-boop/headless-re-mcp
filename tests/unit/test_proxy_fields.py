@@ -178,3 +178,35 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     doc = _tool_docstring("proxy.status")
     assert "flow_count" in doc
     assert "retained_max" in doc
+
+
+def test_proxy_export_har_names_path_and_entry_count(
+    tmp_path: Path,
+) -> None:
+    """The catalog said a HAR artifact and never named the payload.
+
+    Measured: 4 flows -> path ending capture.har, entry_count 4, no har or
+    output key. Looking for har after a successful export reads as a missing
+    capture.
+    """
+    recorder = _FlowRecorder()
+    for index in range(4):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    payload = backend.export_har("s", tmp_path / "capture.har")
+    assert "har" not in payload
+    assert "output" not in payload
+    assert payload["entry_count"] == 4
+    assert payload["path"].endswith("capture.har")
+    doc = _tool_docstring("proxy.export_har")
+    assert "path" in doc
+    assert "entry_count" in doc

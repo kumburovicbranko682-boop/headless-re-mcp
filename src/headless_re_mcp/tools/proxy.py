@@ -80,7 +80,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.export_har")
     def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a HAR artifact."""
+        """Export captured flows to a HAR artifact.
+
+        Answers with path and entry_count. There is no har, output or
+        artifact field. path is the file; looking for har after a successful
+        export reads as a missing capture.
+        """
         return _dump(analysis.proxy_export_har(session_id))
 
     @tools.tool(name="proxy.ca.install_android")
