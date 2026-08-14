@@ -126,7 +126,12 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
         backend: str = "win32",
     ) -> dict[str, Any]:
-        """Click a control via win32/uia/sendinput (PID-bounded; SendInput rechecks FG PID)."""
+        """Click a control via win32/uia/sendinput (PID-bounded; SendInput rechecks FG PID).
+
+        Answers with hwnd, action, backend, foreground_required and
+        injection_required, plus debuggee_pid and debugger_pid.
+        There is no clicked field.
+        """
         return _dump(
             analysis.ui_click(
                 session_id,

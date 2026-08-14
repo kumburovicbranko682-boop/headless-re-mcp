@@ -89,3 +89,25 @@ def test_ui_resolve_nests_hwnd_under_window() -> None:
     described = _tool_docstring("ui.resolve")
     assert "Answers with window" in described
     assert "no hwnd field" in described
+
+def test_ui_click_names_action_not_clicked() -> None:
+    """The catalog said click and never named the payload.
+
+    Measured against click_hwnd: success is hwnd, action, backend,
+    foreground_required and injection_required. There is no clicked field.
+    Looking for clicked after a successful click reads as the click not
+    happening, so the agent retries and double-fires the control.
+    """
+    from headless_re_mcp.core.ui_win32 import click_hwnd
+
+    source = Path(click_hwnd.__code__.co_filename).read_text(encoding="utf-8")
+    start = source.index("def click_hwnd(")
+    chunk = source[start : source.index("def click_hwnd_at")]
+    returned = chunk[chunk.rindex("return {") :]
+    assert '"action": "click"' in returned
+    assert '"hwnd"' in returned
+    assert '"clicked"' not in returned
+    described = _tool_docstring("ui.click")
+    assert "Answers with hwnd" in described
+    assert "action" in described
+    assert "no clicked field" in described
