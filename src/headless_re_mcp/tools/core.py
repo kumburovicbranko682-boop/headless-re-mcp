@@ -748,7 +748,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Remove managed bindings and replace the workflow at the current event cursor."""
+        """Remove managed bindings and replace the workflow at the current event cursor.
+
+        Same payload as workflow.status: Answers with workflow holding id,
+        status, operation_count, failure and state. There is no reset field.
+        """
         return _dump(analysis.workflow_reset(session_id, timeout=timeout))
 
     def workflow_cancel(

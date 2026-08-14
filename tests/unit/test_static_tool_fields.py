@@ -984,3 +984,27 @@ def test_workflow_status_description_names_nested_workflow() -> None:
     assert '"state":' in chunk
     assert '"id": self.id' in chunk
 
+
+def test_workflow_reset_description_names_nested_workflow() -> None:
+    """The live catalog omitted the payload field.
+
+    tests/unit/test_dynamic_service.py already reads reset.data['workflow'].
+    The service returns the replacement runtime under workflow, and no
+    reset field. A caller looking for reset after a successful call cannot
+    tell that the previous workflow was replaced.
+    """
+    described = " ".join(_docstring("workflow_reset").split())
+    assert "Answers with workflow" in described
+    assert "no reset field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_reset")
+    chunk = service[start : service.index("def workflow_cancel", start)]
+    assert '"workflow": reset.to_dict()' in chunk
+    assert '"reset"' not in chunk.split("return")[-1]
+
