@@ -224,7 +224,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="session.recover")
     def session_recover(
         session_id: str,
-        backends: list[str] | None = None,
+        backends: list[
+            Annotated[str, Field(pattern="^(ida|static|x64dbg|dynamic)$")]
+        ] | None = None,
     ) -> dict[str, Any]:
         """Re-open backends whose worker process died, without resuming execution.
 
