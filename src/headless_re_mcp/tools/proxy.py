@@ -46,7 +46,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List captured HTTP flows (method, url, status, content type)."""
+        """List captured HTTP flows (method, url, status, content type).
+
+        Answers with flows (id, seq, method, url, host, status, content_type),
+        count, total, and offset. The list field is flows, not items or
+        requests, and the type column is content_type.
+        """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="proxy.flow.get")
