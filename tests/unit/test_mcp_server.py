@@ -418,3 +418,25 @@ def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
         assert len(web) >= 15
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_batch_analyze_description_names_live_fields() -> None:
+    """The catalog did not name the fields a successful batch actually returns.
+
+    Measured: keys are entries, count, succeeded, failed, max_workers; each
+    entry has binary, ok, session_id, and error when that sample failed. A
+    caller looking for sessions or results at the top level reads an empty
+    batch that in fact created two sessions.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "batch.analyze")
+        text = tool.description or ""
+        for name in ("entries", "count", "succeeded", "failed", "session_id", "max_workers"):
+            assert name in text, name
+    finally:
+        analysis.close_all()

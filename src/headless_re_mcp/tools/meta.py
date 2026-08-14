@@ -197,8 +197,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Create one session per binary with bounded parallelism.
 
-        Entries fail independently so one unreadable sample cannot abort the
-        batch; parallelism is capped because each static backend is a process.
+        Answers with entries (each: binary, ok, session_id, and error when that
+        sample failed), plus count, succeeded, failed and max_workers. One
+        unreadable sample cannot abort the batch; parallelism is capped because
+        each static backend is a process.
         """
         return _dump(
             analysis.batch_analyze(
