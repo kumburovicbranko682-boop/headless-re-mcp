@@ -595,3 +595,26 @@ def test_a_live_thread_does_not_keep_every_mission_it_ever_finished(tmp_path: Pa
     assert other_ids == [keep.id]
     assert store.get_mission(finished[0]) is None
     assert store.get_mission(pending.id) is not None
+
+
+def test_oversized_run_profile_and_model_are_refused_not_stored(tmp_path: Path) -> None:
+    """Tool names already refuse 128 characters; run identity strings did not.
+
+    Measured: 100,000 character provider_profile and model values made the
+    database 262 KB. Truncating a profile id would select a different
+    provider, so the write must fail and leave no row.
+    """
+    store = AgentStore(tmp_path / "run-id.db")
+    store.run_profile_max_chars = 32
+    store.run_model_max_chars = 32
+    thread = store.create_thread()
+
+    with pytest.raises(ValueError, match="provider profile"):
+        store.create_run(thread.id, provider_profile="p" * 80, model=None, deadline_seconds=60)
+    with pytest.raises(ValueError, match="run model"):
+        store.create_run(thread.id, provider_profile="ok", model="m" * 80, deadline_seconds=60)
+
+    run = store.create_run(thread.id, provider_profile="ok", model="gpt-4.1-mini", deadline_seconds=60)
+    assert store.get_run(run.id) is not None
+    with store._reading() as con:
+        assert con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1

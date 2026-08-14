@@ -95,6 +95,12 @@ _RETAINED_TERMINAL_RUNS_PER_THREAD = 128
 # still-pending objective were 192 KB and still climbing.
 _RETAINED_TERMINAL_MISSIONS_PER_THREAD = 128
 
+# create_run stored provider_profile and model verbatim. 100,000 characters
+# each made the database 262 KB. Truncating a profile id would select a
+# different provider, so refuse.
+_RUN_PROFILE_MAX_CHARS = 128
+_RUN_MODEL_MAX_CHARS = 128
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -115,6 +121,8 @@ class AgentStore:
         self.tool_call_id_max_chars = _TOOL_CALL_ID_MAX_CHARS
         self.retained_terminal_runs_per_thread = _RETAINED_TERMINAL_RUNS_PER_THREAD
         self.retained_terminal_missions_per_thread = _RETAINED_TERMINAL_MISSIONS_PER_THREAD
+        self.run_profile_max_chars = _RUN_PROFILE_MAX_CHARS
+        self.run_model_max_chars = _RUN_MODEL_MAX_CHARS
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -306,6 +314,19 @@ class AgentStore:
     def create_run(self, thread_id: str, *, provider_profile: str, model: str | None, deadline_seconds: float) -> AgentRun:
         if self.get_thread(thread_id) is None:
             raise KeyError(thread_id)
+        profile_limit = max(8, int(self.run_profile_max_chars))
+        if len(provider_profile) > profile_limit:
+            raise ValueError(
+                f"provider profile is {len(provider_profile)} characters, "
+                f"over the {profile_limit} character limit"
+            )
+        if model is not None:
+            model_limit = max(8, int(self.run_model_max_chars))
+            if len(model) > model_limit:
+                raise ValueError(
+                    f"run model is {len(model)} characters, "
+                    f"over the {model_limit} character limit"
+                )
         run_id = uuid.uuid4().hex
         now_dt = datetime.now(UTC)
         now = now_dt.isoformat()
