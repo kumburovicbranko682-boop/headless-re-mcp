@@ -516,3 +516,30 @@ def test_static_types_description_names_items_not_types() -> None:
     assert "local type library ordinals" in chunk
     assert '"types"' not in chunk
 
+
+def test_static_structs_description_names_items_not_structs() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items whose kind is struct or union, each carrying
+    ordinal, name, kind and optional size, and no structs field. A caller
+    looking for structs after a successful list reads it as IDA finding
+    none.
+    """
+    described = " ".join(_docstring("static_structs").split())
+    assert "Answers with items" in described
+    assert "no structs field" in described
+    assert "ordinal" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _structs")
+    chunk = worker[start : worker.index("def _enums", start)]
+    assert "return _page_items(items, offset, limit)" in chunk
+    assert '{"struct", "union"}' in chunk
+    assert '"structs"' not in chunk
+
