@@ -111,7 +111,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to and from address, as radare2 resolved them.
 
         Answers with items, each carrying from, to, type, from_address and
-        to_address.
+        to_address, plus address (va/rva/module) and address_va (the integer
+        that was asked). There is no integer address field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
