@@ -234,7 +234,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=500)] = 100,
     ) -> dict[str, Any]:
-        """Read accumulated analysis facts for a session, optionally one kind."""
+        """Read accumulated analysis facts for a session, optionally one kind.
+
+        Answers with entries (each: session_id, kind, key, value, created_at,
+        updated_at), plus count, total, offset, limit, has_more and kinds.
+        """
         return _dump(
             analysis.knowledge_query(
                 session_id,

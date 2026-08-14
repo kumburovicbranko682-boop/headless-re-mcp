@@ -462,3 +462,24 @@ async def test_knowledge_record_description_names_live_fields() -> None:
         assert "not echoed" in text
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_query_description_names_live_fields() -> None:
+    """The catalog did not name the paged list a query actually returns.
+
+    Measured keys are entries, count, total, offset, limit, has_more, kinds
+    and session_id. A caller looking for a top-level facts array reads an
+    empty query that in fact held the page in entries.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "knowledge.query")
+        text = tool.description or ""
+        for name in ("entries", "total", "has_more", "kinds"):
+            assert name in text, name
+    finally:
+        analysis.close_all()
