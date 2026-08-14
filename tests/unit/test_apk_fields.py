@@ -81,6 +81,28 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert "has_more" in doc
 
 
+def test_apk_xrefs_names_method_name_on_the_payload(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog named callers and never named the method the page is for.
+
+    Measured: xrefs(..., 'decrypt', limit=10) -> method_name decrypt, 10
+    callers. Looking for method after a successful page reads as a list
+    with no target, so a later page cannot be aimed at the same name.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeMethod("decrypt", 25)]),
+    )
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
+    assert payload["method_name"] == "decrypt"
+    assert "method" not in payload
+    doc = " ".join(_tool_docstring("apk.xrefs").split())
+    assert "callers (class and method), method_name" in doc
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)
