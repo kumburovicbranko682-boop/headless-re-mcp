@@ -187,3 +187,31 @@ def test_static_segments_description_names_items_not_segments() -> None:
     assert '"total": len(items)' in paging
     assert '"has_more"' not in paging
 
+
+def test_static_imports_description_names_items_not_imports() -> None:
+    """The live catalog omitted the list field.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    imports.data['items'][0]['name']. The worker pages items with ea,
+    module, name and ordinal, and no imports field. A caller looking for
+    imports after a successful list reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_imports").split())
+    assert "Answers with items" in described
+    assert "no imports field" in described
+    assert "ordinal" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _imports")
+    chunk = worker[start : worker.index("def _exports", start)]
+    assert "return _page_items(items, offset, limit)" in chunk
+    assert '"module": _module' in chunk
+    assert '"ordinal": int(ordinal)' in chunk
+    assert '"imports"' not in chunk
+
