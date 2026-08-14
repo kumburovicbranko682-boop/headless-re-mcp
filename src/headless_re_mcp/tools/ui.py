@@ -196,7 +196,7 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ui_text_set(
         session_id: str,
         hwnd: int,
-        text: str,
+        text: Annotated[str, Field(max_length=4096)],
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
         timeout_ms: Annotated[int, Field(ge=1, le=30_000)] = 5_000,
