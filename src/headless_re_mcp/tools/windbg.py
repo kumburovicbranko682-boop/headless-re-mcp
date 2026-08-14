@@ -101,7 +101,8 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Loaded module list of this session's live debuggee, read non-invasively.
 
-        Answers with modules holding the cdb text.
+        Answers with modules holding the cdb text, plus pid. There is no
+        process_id or output field.
         """
         return _dump(analysis.windbg_live_modules(session_id, timeout=timeout))
 

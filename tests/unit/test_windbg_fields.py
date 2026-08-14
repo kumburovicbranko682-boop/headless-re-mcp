@@ -51,3 +51,26 @@ def test_windbg_live_threads_names_pid_not_process_id(monkeypatch: Any) -> None:
     assert "Answers with threads" in doc
     assert "pid" in doc
     assert "There is no process_id" in doc
+
+def test_windbg_live_modules_names_pid_not_process_id(monkeypatch: Any) -> None:
+    """The catalog named modules and never named the pid field.
+
+    Measured: live_modules(4242) -> pid 4242, modules holding the cdb text,
+    no process_id or output key. Looking for process_id after a successful
+    list reads as a debuggee that returned no process.
+    """
+    client = WindbgClient(cdb=Path("cdb.exe"))
+    monkeypatch.setattr(
+        client,
+        "_run_process",
+        lambda *args, **kwargs: {"output": "notepad  00007ff612340000"},
+    )
+    payload = client.live_modules(4242, allowed_pid=4242)
+    assert "process_id" not in payload
+    assert "output" not in payload
+    assert payload["pid"] == 4242
+    assert "notepad" in payload["modules"]
+    doc = " ".join(_tool_docstring("windbg.live_modules").split())
+    assert "Answers with modules" in doc
+    assert "pid" in doc
+    assert "There is no process_id" in doc
