@@ -1381,3 +1381,34 @@ def test_dotnet_deobfuscate_description_names_before_after() -> None:
     assert '"claims_universal_unpack": False' in returned
     assert '"output"' not in returned
 
+
+def test_dotnet_reactor_unpack_description_names_net_reactor_slayer() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns net_reactor_slayer, before, after, input_unchanged,
+    stats, authorized_samples_only and claims_universal_unpack, and no
+    output or unpacked field. A caller looking for unpacked after a
+    successful call cannot tell where the slayer wrote.
+    """
+    described = " ".join(_docstring("dotnet_reactor_unpack").split())
+    assert "Answers with net_reactor_slayer" in described
+    assert "authorized_samples_only" in described
+    assert "claims_universal_unpack false" in described
+    assert "no output field" in described
+    assert "no unpacked field" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_dotnet.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def dotnet_reactor_unpack")
+    chunk = source[start : source.index("def dotnet_enumerate", start)]
+    returned = chunk.split("return _success")[-1]
+    assert '"net_reactor_slayer": result.to_dict()' in returned
+    assert '"authorized_samples_only": True' in returned
+    assert '"claims_universal_unpack": False' in returned
+    assert '"output"' not in returned
+    assert '"unpacked"' not in returned
+

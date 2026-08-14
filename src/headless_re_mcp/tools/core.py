@@ -1016,7 +1016,12 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
     ) -> dict[str, Any]:
-        """Optional NETReactorSlayer unpack (authorized Reactor samples only)."""
+        """Optional NETReactorSlayer unpack (authorized Reactor samples only).
+
+        Answers with net_reactor_slayer, before, after, input_unchanged,
+        stats, authorized_samples_only true, and claims_universal_unpack
+        false. There is no output field and no unpacked field.
+        """
         return _dump(analysis.dotnet_reactor_unpack(session_id, timeout=timeout))
 
     def dotnet_enumerate(
