@@ -142,7 +142,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
         force_route: str | None = None,
     ) -> dict[str, Any]:
-        """Build a non-authoritative unpack plan without executing side effects."""
+        """Build a non-authoritative unpack plan without executing side effects.
+
+        Answers with plan (route, backend), recommendation, pe_vm_like,
+        force_route, and claims_universal_unpack false. There is no routes field.
+        """
         return _dump(
             analysis.unpack_plan(
                 session_id,

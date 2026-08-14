@@ -156,3 +156,27 @@ def test_unpack_auto_names_status_not_a_boolean() -> None:
     assert 'payload["status"] = "not_upx"' in source
     assert 'payload["status"] = "unpacked"' in source
 
+def test_unpack_plan_names_plan_not_routes() -> None:
+    """The live catalog omitted the plan object.
+
+    tests/unit/test_m5_unpack_session.py already reads planned.data['plan']['route'].
+    The service returns plan, recommendation, pe_vm_like, force_route and
+    claims_universal_unpack, and has no routes field. A caller looking for
+    routes after a successful plan reads it as no unpack path existing.
+    """
+    described = " ".join(_tool_docstring("unpack.plan").split())
+    assert "Answers with plan" in described
+    assert "no routes field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_plan")
+    chunk = source[start : source.index("def unpack_start", start)]
+    assert '"plan": plan' in chunk
+    assert '"routes"' not in chunk
+
