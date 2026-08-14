@@ -854,7 +854,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         one_shot: bool = False,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Create or replace a managed RVA breakpoint intent and reconcile it."""
+        """Create or replace a managed RVA breakpoint intent and reconcile it.
+
+        Answers with workflow and intent_id. There is no breakpoint field
+        and no set field.
+        """
         return _dump(
             analysis.workflow_breakpoint_put(
                 session_id,

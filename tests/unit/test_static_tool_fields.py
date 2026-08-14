@@ -1152,3 +1152,31 @@ def test_workflow_module_refresh_description_names_workflow() -> None:
     assert '"modules"' not in returned
     assert '"refreshed"' not in returned
 
+
+def test_workflow_breakpoint_put_description_names_intent_id() -> None:
+    """The live catalog omitted the payload fields.
+
+    The service returns workflow and intent_id, and no breakpoint or set
+    field. A caller looking for breakpoint after a successful call cannot
+    tell which intent was recorded.
+    """
+    described = " ".join(_docstring("workflow_breakpoint_put").split())
+    assert "Answers with workflow" in described
+    assert "intent_id" in described
+    assert "no breakpoint field" in described
+    assert "no set field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_breakpoint_put")
+    chunk = service[start : service.index("def workflow_breakpoint_disable", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    assert '"intent_id": intent.id' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"breakpoint"' not in returned
+    assert '"set"' not in returned
+
