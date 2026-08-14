@@ -27,10 +27,12 @@ def create_server(service: AnalysisService | None = None) -> FastMCP[None]:
     server: FastMCP[None] = FastMCP(
         "Headless RE-MCP",
         instructions=(
-            "Create a session for an authorized local PE, then open its static IDA "
-            "backend, dynamic x64dbg backend, or both. Dynamic tools expose only "
-            "bounded debugger operations; arbitrary x64dbg commands are unavailable. "
-            "Every tool returns an ok/data/error/meta envelope. Close sessions when finished."
+            "Create a session for an authorized local PE, a local APK, or a web "
+            "target. PE sessions open static IDA, dynamic x64dbg, or both. APK "
+            "and web sessions have their own tools; IDA and x64dbg are PE-only. "
+            "Dynamic PE tools expose only bounded debugger operations; arbitrary "
+            "x64dbg commands are unavailable. Every tool returns an ok/data/error/meta "
+            "envelope. Close sessions when finished."
         ),
     )
     register_core_session_tools(server, analysis)

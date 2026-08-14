@@ -392,3 +392,29 @@ def test_garbage_without_an_id_stays_silent() -> None:
     from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
 
     assert error_message_for_unreadable_line("{not-json") is None
+
+
+def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
+    """The initialize payload told the model it could only open a PE.
+
+    Measured: instructions were 290 characters, mentioned PE and IDA,
+    mentioned neither APK nor web, while session.create already accepts
+    both and the live catalog had 42 apk-family tools and 25 web-family
+    tools. A caller that follows the instructions will not start those
+    sessions.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        text = (server.instructions or "").casefold()
+        assert "apk" in text
+        assert "web" in text
+        assert "authorized local pe, then open its static ida" not in text
+        tools = server._tool_manager._tools
+        apk = [name for name in tools if name.startswith(("apk.", "device."))]
+        web = [name for name in tools if name.startswith(("web.", "js.", "wasm.", "proxy."))]
+        assert len(apk) >= 20
+        assert len(web) >= 15
+    finally:
+        analysis.close_all()
