@@ -13,6 +13,7 @@ from uuid import uuid4
 from headless_re_mcp.core.models import Result, Session
 from headless_re_mcp.core.store import SessionStore
 from headless_re_mcp.core.store.sqlite_store import (
+    CLOSED_SESSION_RETAINED,
     KNOWLEDGE_RETAINED_PER_SESSION,
     encode_knowledge_value,
 )
@@ -380,6 +381,7 @@ class InMemoryAnalysisRepository:
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self.retained_knowledge_per_session = KNOWLEDGE_RETAINED_PER_SESSION
+        self.retained_closed_sessions = CLOSED_SESSION_RETAINED
         self._sessions: dict[str, JsonObject] = {}
         self._backends: dict[tuple[str, str], JsonObject] = {}
         self._artifacts: dict[str, JsonObject] = {}
@@ -446,6 +448,7 @@ class InMemoryAnalysisRepository:
                     ok=True,
                     result_summary={"ok": True},
                 )
+                self._trim_closed_sessions()
             return
         with self.transaction():
             existing = self._sessions.get(session_id, {})
@@ -472,6 +475,26 @@ class InMemoryAnalysisRepository:
                 ok=bool(result.ok),
                 result_summary={"ok": bool(result.ok)},
             )
+            if result.ok:
+                self._trim_closed_sessions()
+
+    def _trim_closed_sessions(self) -> None:
+        keep = max(0, int(self.retained_closed_sessions))
+        closed = [
+            sid
+            for sid, row in self._sessions.items()
+            if int(row.get("closed_cleanly") or 0) == 1
+        ]
+        closed.sort(
+            key=lambda sid: (str(self._sessions[sid].get("updated_at") or ""), sid),
+            reverse=True,
+        )
+        for sid in closed[keep:]:
+            self._sessions.pop(sid, None)
+            for key in [item for item in self._knowledge if item[0] == sid]:
+                self._knowledge.pop(key, None)
+            for key in [item for item in self._backends if item[0] == sid]:
+                self._backends.pop(key, None)
 
     def record_backend(self, session_id: str, kind: str, **fields: object) -> None:
         with self.transaction():

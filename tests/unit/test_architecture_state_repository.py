@@ -218,6 +218,61 @@ def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     assert listed["total"] == len(actions)
 
 
+def test_cleanly_closed_sessions_are_dropped_and_unclean_ones_are_not(tmp_path: Path) -> None:
+    """The in-memory registry keeps 64 closed sessions; sqlite kept every one.
+
+    Measured at 800 closed rows: 225 KB and still climbing, plus every
+    knowledge fact those sessions recorded. sessions.unclean is how an
+    operator finds work that was open when the process died, so those rows
+    stay.
+    """
+    repository = SqliteAnalysisRepository(tmp_path / "closed-quota")
+    store = repository.store
+    store.retained_closed_sessions = 3
+
+    store.upsert_session(
+        session_id="live",
+        binary="live.exe",
+        sha256="aa" * 32,
+        architecture="x86_64",
+        state="ready",
+        closed_cleanly=False,
+    )
+    store.upsert_session(
+        session_id="crash",
+        binary="crash.exe",
+        sha256="bb" * 32,
+        architecture="x86_64",
+        state="failed",
+        closed_cleanly=False,
+    )
+    store.record_knowledge(session_id="live", kind="function", key="keep", value={})
+    for index in range(6):
+        sid = f"closed-{index}"
+        store.upsert_session(
+            session_id=sid,
+            binary=f"{sid}.exe",
+            sha256="cc" * 32,
+            architecture="x86_64",
+            state="closed",
+            closed_cleanly=True,
+        )
+        store.record_knowledge(session_id=sid, kind="function", key="fact", value={"n": index})
+
+    assert store.get_session("live") is not None
+    assert store.get_session("crash") is not None
+    remaining_closed = [
+        sid for sid in (f"closed-{index}" for index in range(6)) if store.get_session(sid) is not None
+    ]
+    assert remaining_closed == ["closed-3", "closed-4", "closed-5"]
+    assert store.list_knowledge("live")["total"] == 1
+    assert store.list_knowledge("closed-0")["total"] == 0
+    assert store.list_knowledge("closed-5")["total"] == 1
+    unclean, total = store.list_unclean_sessions()
+    assert total == 2
+    assert {row["id"] for row in unclean} == {"live", "crash"}
+
+
 def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:
     image = bytearray(0x200)
     image[:2] = b"MZ"

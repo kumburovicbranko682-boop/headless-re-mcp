@@ -77,6 +77,12 @@ AUDIT_RETAINED_ROWS = 50_000
 # table itself was not.
 KNOWLEDGE_RETAINED_PER_SESSION = 10_000
 
+# The in-memory registry keeps 64 closed sessions. The sqlite row was never
+# collected, so every session ever opened stayed in the database after the
+# registry had forgotten it. Measured at 800 closed rows: 225 KB and still
+# climbing, plus every knowledge fact those sessions recorded.
+CLOSED_SESSION_RETAINED = 64
+
 # A knowledge value is stored as JSON text. The bound used to be applied by
 # slicing the serialised form, which stops it being JSON: the write answered
 # successfully and the next read returned a string fragment. Refuse instead.
@@ -104,6 +110,7 @@ class SessionStore:
         self.audit_retained_rows = AUDIT_RETAINED_ROWS
         self.audit_trim_interval = AUDIT_TRIM_INTERVAL
         self.retained_knowledge_per_session = KNOWLEDGE_RETAINED_PER_SESSION
+        self.retained_closed_sessions = CLOSED_SESSION_RETAINED
         self._audit_writes = 0
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
@@ -217,7 +224,30 @@ class SessionStore:
                             session_id,
                         ),
                     )
+            if closed_cleanly:
+                self._trim_closed_sessions(conn)
             conn.commit()
+
+    def _trim_closed_sessions(self, conn: sqlite3.Connection) -> None:
+        """Drop the oldest cleanly-closed sessions, and the facts they stored.
+
+        Unclean rows stay: sessions.unclean is how an operator finds work that
+        was open when the process died. Artifacts stay too -- artifacts.gc
+        owns the files, and deleting the row without the file would leak both.
+        """
+        keep = max(0, int(self.retained_closed_sessions))
+        rows = conn.execute(
+            "SELECT id FROM sessions WHERE closed_cleanly=1"
+            " ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?",
+            (keep,),
+        ).fetchall()
+        ids = [str(row["id"]) for row in rows]
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM knowledge WHERE session_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM backends WHERE session_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", ids)
 
     def get_session(self, session_id: str) -> JsonObject | None:
         """The stored row, or None if this id was never created."""

@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from headless_re_mcp.agent.redaction import masked_secret, redact
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 ZEROFALL_IMPORT_FIELDS = frozenset(
     {
@@ -83,22 +84,27 @@ class ProviderConfigStore:
         self._best_effort_protect(self.path.parent, directory=True)
 
     @staticmethod
-    def _best_effort_protect(path: Path, *, directory: bool = False) -> None:
+    def _best_effort_protect(path: Path, *, directory: bool = False, timeout: float = 10.0) -> None:
         try:
             if os.name == "nt":
                 import subprocess
 
                 target = str(path)
-                subprocess.run(
-                    ["icacls", target, "/inheritance:r", "/grant:r", f"{os.getlogin()}:(OI)(CI)F" if directory else f"{os.getlogin()}:F"],
-                    check=False,
-                    capture_output=True,
-                    timeout=10,
+                grant = (
+                    f"{os.getlogin()}:(OI)(CI)F" if directory else f"{os.getlogin()}:F"
+                )
+                # icacls is looked up on PATH. A hanging stand-in plus
+                # subprocess.run's untimed drain after kill left this ACL
+                # tweak blocking a provider save; TimeoutExpired is not a
+                # TimeoutError, so the old except also missed it.
+                run_bounded(
+                    ["icacls", target, "/inheritance:r", "/grant:r", grant],
+                    timeout=timeout,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             else:
                 path.chmod(0o700 if directory else 0o600)
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, TimedOut):
             pass
 
     def _read(self) -> dict[str, Any]:

@@ -248,3 +248,48 @@ async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path
     with pytest.raises(ValueError, match="not JSON"):
         async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
             pass
+
+
+def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """subprocess.run timed out then drained with no deadline; the except missed it.
+
+    Measured: TimeoutExpired is not a TimeoutError (its MRO stops at
+    SubprocessError), so a 10s icacls deadline raised out of a function named
+    best-effort. A launcher that held the pipes did not return at all. Provider
+    saves run this on every write.
+    """
+    import os
+    import sys
+    import time
+
+    from headless_re_mcp.agent.config import ProviderConfigStore
+
+    if os.name != "nt":
+        pytest.skip("icacls protect is Windows-only (skip != pass)")
+
+    stub = tmp_path / "icacls_stub.py"
+    stub.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "print(child.pid, flush=True)\n"
+        "while True: time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "icacls.cmd").write_text(
+        f'@echo off\r\n"{sys.executable}" "{stub}"\r\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    target = tmp_path / "providers.json"
+    target.write_text("{}", encoding="utf-8")
+    started = time.monotonic()
+    ProviderConfigStore._best_effort_protect(target, timeout=0.8)
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0, f"deadline 0.8s, caller waited {elapsed:.1f}s"
