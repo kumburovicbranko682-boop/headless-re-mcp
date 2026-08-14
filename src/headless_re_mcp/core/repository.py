@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, Session
 from headless_re_mcp.core.store import SessionStore
+from headless_re_mcp.core.store.sqlite_store import encode_knowledge_value
 from headless_re_mcp.core.store.timeline import (
     append_session_timeline,
     list_session_timeline,
@@ -659,6 +660,7 @@ class InMemoryAnalysisRepository:
         value: JsonObject,
     ) -> JsonObject:
         now = datetime.now(UTC).isoformat()
+        encode_knowledge_value(value)
         with self._lock:
             existing = self._knowledge.get((session_id, kind, key))
             created_at = str(existing["created_at"]) if existing is not None else now
