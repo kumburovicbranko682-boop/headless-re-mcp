@@ -648,3 +648,31 @@ def test_threads_context_read_description_names_registers_not_context() -> None:
     assert "tid" in described
     assert "restored_tid" in described
     assert "no context field" in described
+
+def test_threads_context_write_schema_matches_native_register_name_cap() -> None:
+    """The catalog accepted an unbounded register name.
+
+    Measured: input schema name has no maximum. Native WriteRegister reads
+    name with a 16-byte cap. A caller that sends a huge name still occupies a
+    worker until the adapter refuses, and the catalog never said the write
+    would be rejected.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome WriteRegister")
+    chunk = native[start : native.index("char HexDigit", start)]
+    assert 'ReadString(params, "name", name, error, true, 16)' in chunk
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "threads.context.write"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["name"]["minLength"] == 1
+    assert props["name"]["maxLength"] == 16

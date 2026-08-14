@@ -113,7 +113,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def threads_context_write(
         session_id: str,
         tid: Annotated[int, Field(ge=1)],
-        name: str,
+        name: Annotated[str, Field(min_length=1, max_length=16)],
         value: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
