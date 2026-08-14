@@ -46,6 +46,13 @@ def canonical_args_sha256(arguments: JsonObject) -> str:
 _RETAINED_FINISHED_THREADS = 2_000
 _FINISHED_TRIM_INTERVAL = 32
 
+# A live thread is not collected by the finished-thread trim. list_messages
+# already only reads the newest 2000, but add_message kept writing past that:
+# 1500 messages of 200 bytes each were 831 KB and still climbing, and each
+# message may be up to 1 MiB. The orchestrator never sees the dropped prefix,
+# so keeping it only grows the file.
+_RETAINED_MESSAGES_PER_THREAD = 2_000
+
 
 class AgentStore:
     def __init__(self, path: Path) -> None:
@@ -57,6 +64,7 @@ class AgentStore:
         self._init_schema()
         self.retained_finished_threads = _RETAINED_FINISHED_THREADS
         self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
+        self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
         # diagnostic script, a second tool or a test does, and recovery rewrites
@@ -213,6 +221,14 @@ class AgentStore:
                 raise KeyError(thread_id)
             con.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?)", (message_id, thread_id, role, content, run_id, tool_call_id, now))
             con.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
+            keep = max(1, int(self.retained_messages_per_thread))
+            con.execute(
+                "DELETE FROM messages WHERE id IN ("
+                "  SELECT id FROM messages WHERE thread_id=?"
+                "  ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+                ")",
+                (thread_id, keep),
+            )
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
     def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:

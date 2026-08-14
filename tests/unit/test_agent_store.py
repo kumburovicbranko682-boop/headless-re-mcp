@@ -299,6 +299,28 @@ def _finish_one(store: AgentStore, title: str) -> str:
     return thread.id
 
 
+def test_a_live_thread_does_not_keep_every_message_it_ever_wrote(tmp_path: Path) -> None:
+    """list_messages already windows at 2000; the table itself did not.
+
+    1500 messages of 200 bytes were 831 KB and still climbing. A live mission
+    is never finished-thread-trimmed, and each message may be 1 MiB, so a
+    night of unattended turns would grow the file without anyone reading the
+    dropped prefix.
+    """
+    store = AgentStore(tmp_path / "messages.db")
+    store.retained_messages_per_thread = 5
+    kept = store.create_thread(title="other")
+    store.add_message(kept.id, "user", "leave me")
+    thread = store.create_thread(title="live")
+    for index in range(1, 13):
+        store.add_message(thread.id, "user", f"message {index}")
+
+    window = store.list_messages(thread.id, limit=50)
+    assert [m.content for m in window] == [f"message {i}" for i in range(8, 13)]
+    other = store.list_messages(kept.id, limit=50)
+    assert [m.content for m in other] == ["leave me"]
+
+
 def test_finished_threads_are_trimmed_and_live_ones_are_not(tmp_path: Path) -> None:
     """Every completed mission used to leave its thread in the database forever.
 
