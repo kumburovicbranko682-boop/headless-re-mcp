@@ -621,3 +621,30 @@ def test_static_search_text_description_names_items_not_matches() -> None:
     assert 'matches.append({"ea": found_ea})' in chunk
     assert '"matches":' not in chunk
 
+
+def test_static_search_immediate_description_names_items_not_matches() -> None:
+    """The live catalog omitted the list field.
+
+    The IDA worker pages items with ea, value and optional operand, plus
+    value, start and end, and no matches field. A caller looking for
+    matches after a successful search reads it as IDA finding none.
+    """
+    described = " ".join(_docstring("static_search_immediate").split())
+    assert "Answers with items" in described
+    assert "no matches field" in described
+    assert "operand" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _search_immediate")
+    chunk = worker[start : worker.index("def _name_set", start)]
+    assert "payload = _page_items(matches, offset, limit)" in chunk
+    assert '"ea": found_ea' in chunk
+    assert '"operand"' in chunk
+    assert '"matches":' not in chunk
+
