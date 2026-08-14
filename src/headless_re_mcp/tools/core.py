@@ -832,7 +832,11 @@ def build_workflow_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         keys: list[str] | None = None,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Refresh selected tracked modules from one current modules.list snapshot."""
+        """Refresh selected tracked modules from one current modules.list snapshot.
+
+        Answers with workflow. There is no modules field and no refreshed
+        field.
+        """
         return _dump(
             analysis.workflow_module_refresh(
                 session_id,

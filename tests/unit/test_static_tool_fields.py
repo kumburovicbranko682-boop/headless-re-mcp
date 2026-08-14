@@ -1126,3 +1126,29 @@ def test_workflow_module_untrack_description_names_module_key() -> None:
     assert '"untracked"' not in returned
     assert '"module"' not in returned
 
+
+def test_workflow_module_refresh_description_names_workflow() -> None:
+    """The live catalog omitted the payload field.
+
+    The service returns workflow only, and no modules or refreshed field.
+    A caller looking for modules after a successful refresh cannot tell
+    whether any identities were updated.
+    """
+    described = " ".join(_docstring("workflow_module_refresh").split())
+    assert "Answers with workflow" in described
+    assert "no modules field" in described
+    assert "no refreshed field" in described
+    service = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_workflow.py"
+    ).read_text(encoding="utf-8")
+    start = service.index("def workflow_module_refresh")
+    chunk = service[start : service.index("def workflow_breakpoint_put", start)]
+    assert '"workflow": updated.to_dict()' in chunk
+    returned = chunk.split("return {")[-1]
+    assert '"modules"' not in returned
+    assert '"refreshed"' not in returned
+
