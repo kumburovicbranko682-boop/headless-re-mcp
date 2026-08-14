@@ -1,0 +1,58 @@
+"""frida.attach must name the probe fields it actually returns."""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from headless_re_mcp.backends.frida.client import FridaClient
+from headless_re_mcp.tools.frida import build_frida_tools
+
+
+def _tool_docstring(name: str) -> str:
+    source = Path(build_frida_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
+
+
+def _attach_return() -> str:
+    source = Path(FridaClient.attach.__code__.co_filename).read_text(encoding="utf-8")
+    start = source.index("def attach(self, pid: int")
+    chunk = source[start : source.index("def modules(", start)]
+    return chunk[chunk.rindex("return {") :]
+
+
+def test_frida_attach_answers_with_pid_not_session() -> None:
+    """The catalog said probe-attach and never named the object.
+
+    Measured: FridaClient.attach returns pid, attached, device and note.
+    There is no session, handle or session_id. Looking for session after
+    success retries the probe against a debuggee that already handled it.
+    """
+    returned = _attach_return()
+    assert '"pid": pid' in returned
+    assert '"attached": True' in returned
+    assert '"device": "local"' in returned
+    assert '"note":' in returned
+    assert '"session"' not in returned
+    assert '"handle"' not in returned
+    assert '"session_id"' not in returned
+    described = _tool_docstring("frida.attach")
+    assert "Answers with pid" in described
+    assert "attached" in described
+    assert "device" in described
+    assert "note" in described
+    assert "no session" in described

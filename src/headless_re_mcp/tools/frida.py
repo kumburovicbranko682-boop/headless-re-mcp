@@ -25,6 +25,8 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         This is not a lasting Frida session: attached is true only for the probe,
         and note says it detached immediately. Limited to the debuggee pid.
+        Answers with pid, attached, device and note. There is no session,
+        handle or session_id field.
         """
         return _dump(analysis.frida_attach(session_id))
 
