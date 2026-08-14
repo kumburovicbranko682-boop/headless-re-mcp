@@ -67,7 +67,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
-        """List bundled native libraries and their ABIs."""
+        """List bundled native libraries and their ABIs.
+
+        Answers with native_libs, abis, count, and has_more so a list that
+        filled the cap is not read as every .so. There is no libs or
+        libraries field.
+        """
         return _dump(analysis.apk_native_libs(session_id))
 
     @tools.tool(name="apk.classes")
