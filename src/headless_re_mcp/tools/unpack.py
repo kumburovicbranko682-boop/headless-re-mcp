@@ -358,7 +358,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         dump_path: str | None = None,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Validate a caller-confirmed IAT VA/size and optional OEP RVA."""
+        """Validate a caller-confirmed IAT VA/size and optional OEP RVA.
+
+        Answers with confirmed (boolean, not automatic), rebuild_gate,
+        recoverability, and claims_universal_unpack false. There is no valid field.
+        """
         return _dump(
             analysis.unpack_iat_validate(
                 session_id,

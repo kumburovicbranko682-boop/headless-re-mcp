@@ -417,3 +417,27 @@ def test_unpack_iat_scan_names_candidates_not_items() -> None:
     assert 'data["confirmed"] = False' in chunk
     assert '"items"' not in chunk
 
+def test_unpack_iat_validate_names_confirmed_boolean() -> None:
+    """The live catalog omitted the confirmed flag.
+
+    tests/unit/test_m4_unpack_service.py already reads validated.data['confirmed'].
+    confirmed is a boolean from rebuild+pause gates, not a valid field. A caller
+    looking for valid after a successful call treats an unready IAT as rebuildable.
+    """
+    described = " ".join(_tool_docstring("unpack.iat.validate").split())
+    assert "Answers with confirmed" in described
+    assert "no valid field" in described
+    assert "claims_universal_unpack false" in described
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "core"
+        / "service_unpack.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def unpack_iat_validate")
+    chunk = source[start : source.index("def unpack_iat_rebuild", start)]
+    assert '"confirmed": confirmed' in chunk
+    assert '"claims_universal_unpack": False' in chunk
+    assert '"valid"' not in chunk
+
