@@ -71,3 +71,32 @@ def test_static_decompile_description_names_code_not_text() -> None:
     assert '"code"' in returned
     assert '"text"' not in returned
 
+def test_static_strings_description_names_items_and_value() -> None:
+    """The live catalog omitted the list field and named the string body wrong.
+
+    tests/unit/test_service.py already drives a fake IDA worker and reads
+    strings.data['items'][0]['value']. The worker returns items with address,
+    length, type, value and truncated, and no strings or text field. A caller
+    looking for strings or text after a successful list reads it as IDA
+    finding none.
+    """
+    described = _docstring("static_strings")
+    assert "Answers with items" in described
+    assert "no strings field" in described
+    assert "no text field" in described
+    assert "value" in described
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "headless_re_mcp"
+        / "backends"
+        / "ida"
+        / "worker.py"
+    ).read_text(encoding="utf-8")
+    start = worker.index("def _strings")
+    chunk = worker[start : worker.index("def _decompile", start)]
+    assert '"items": items' in chunk
+    assert '"value": value[:max_length]' in chunk
+    assert '"strings":' not in chunk
+    assert '"text":' not in chunk
+

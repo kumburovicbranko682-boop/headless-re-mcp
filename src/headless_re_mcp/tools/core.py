@@ -90,7 +90,11 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: int = 100,
         max_length: int = 4096,
     ) -> dict[str, Any]:
-        """List analyzed strings with addresses, types, and bounded text values."""
+        """List analyzed strings.
+
+        Answers with items, each carrying address, length, type, value and
+        truncated, plus total. There is no strings field and no text field.
+        """
         return _dump(
             analysis.static_strings(
                 session_id,

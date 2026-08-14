@@ -255,7 +255,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         include_audit: bool = True,
         audit_limit: Annotated[int, Field(ge=1, le=200)] = 30,
     ) -> dict[str, Any]:
-        """Render a Markdown analysis report from session state, findings and audit."""
+        """Render a Markdown analysis report from session state, findings and audit.
+
+        Answers with markdown, path, bytes, findings and artifact_id. The text
+        is inline; the same file is registered so artifacts.gc can collect it.
+        """
         return _dump(
             analysis.report_generate(
                 session_id,

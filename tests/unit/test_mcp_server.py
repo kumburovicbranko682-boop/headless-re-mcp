@@ -504,3 +504,24 @@ async def test_meta_metrics_description_names_live_fields() -> None:
             assert name in text, name
     finally:
         analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_generate_description_names_live_fields() -> None:
+    """The catalog did not name where the rendered report actually is.
+
+    Measured keys are markdown, path, bytes, findings and artifact_id. A
+    caller looking for a top-level report or text field reads a successful
+    generate as if nothing was written.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "report.generate")
+        text = tool.description or ""
+        for name in ("markdown", "path", "bytes", "findings", "artifact_id"):
+            assert name in text, name
+    finally:
+        analysis.close_all()
