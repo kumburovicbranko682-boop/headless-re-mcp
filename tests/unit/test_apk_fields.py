@@ -210,3 +210,34 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     doc = _tool_docstring("apk.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+
+def test_apk_decompile_names_source_and_says_when_it_was_cut(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said Java and never named the payload.
+
+    Measured: truncated True, source 400000 chars (the cap), no java, code
+    or text field. Looking for those after a successful call reads as a
+    missing class, and a 400000-char string with no truncated flag reads
+    as the whole file.
+    """
+    from headless_re_mcp.backends.jadx.client import _MAX_SOURCE_BYTES, JadxClient
+
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    out = tmp_path / "out"
+    src_dir = out / "sources" / "com" / "example"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Foo.java").write_text("x" * (_MAX_SOURCE_BYTES + 80), encoding="utf-8")
+    client = JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "export_sources", lambda *args, **kwargs: {"ok": True})
+    payload = client.decompile(apk, out, "com.example.Foo")
+    assert "java" not in payload
+    assert "code" not in payload
+    assert "text" not in payload
+    assert payload["truncated"] is True
+    assert payload["class_name"] == "com.example.Foo"
+    assert len(payload["source"]) == _MAX_SOURCE_BYTES
+    doc = _tool_docstring("apk.decompile")
+    assert "source" in doc
+    assert "truncated" in doc
