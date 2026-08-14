@@ -6,12 +6,12 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.core.process_tree import terminate_process_tree
 
 JsonObject = dict[str, Any]
 
@@ -203,13 +203,10 @@ def stop_owned_process(
     """
     if proc is None or proc.poll() is not None:
         return
-    proc.terminate()
-    try:
-        proc.wait(timeout=wait_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        with suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=wait_s)
+    # terminate()/kill() on the serve process left IDA and the debuggee
+    # running. Measured: launcher dead after stop_owned_process, sleeper
+    # still alive, so the next start fought over the same backend.
+    terminate_process_tree(proc, wait_s=wait_s)
 
 
 def _ask(prompt: str, default: str | None = None) -> str:
