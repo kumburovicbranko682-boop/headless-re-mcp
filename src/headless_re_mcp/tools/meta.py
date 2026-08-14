@@ -229,7 +229,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="batch.analyze")
     def batch_analyze(
-        binaries: list[str],
+        binaries: Annotated[list[str], Field(min_length=1, max_length=32)],
         max_workers: Annotated[int, Field(ge=1, le=8)] = 2,
         open_static: bool = True,
     ) -> dict[str, Any]:
