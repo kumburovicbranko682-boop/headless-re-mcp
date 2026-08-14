@@ -66,7 +66,13 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
     @tools.tool(name="frida.hook.template")
-    def frida_hook_template(session_id: str, template: str = "noop") -> dict[str, Any]:
+    def frida_hook_template(
+        session_id: str,
+        template: Annotated[
+            str,
+            Field(pattern="^(noop|android_ssl_unpin|android_crypto_monitor|android_root_bypass)$"),
+        ] = "noop",
+    ) -> dict[str, Any]:
         """Load a canned Frida probe template and destroy it before returning.
 
         Nothing stays hooked: persisted is false and note says so. A device
