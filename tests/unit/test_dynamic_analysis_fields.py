@@ -545,3 +545,25 @@ def test_hardware_list_description_names_breakpoints_not_hardware() -> None:
     described = _tool_docstring("breakpoints.hardware.list")
     assert "Answers with breakpoints" in described
     assert "no hardware field" in described
+
+def test_memory_bp_list_description_names_breakpoints_not_memory() -> None:
+    """The catalog said memory breakpoints and never named the list field.
+
+    Measured against ListMemoryBreakpoints: it reuses ListBreakpointsFiltered
+    with key breakpoints, plus count. There is no memory field. Looking for
+    memory after a successful list reads as no page breakpoints, so the agent
+    sets more of them.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ListMemoryBreakpoints")
+    chunk = native[start : native.index("bool SanitizeConditionExpression", start)]
+    assert 'ListBreakpointsFiltered(bp_memory, "breakpoints")' in chunk
+    assert '"memory"' not in chunk
+    described = _tool_docstring("breakpoints.memory.list")
+    assert "Answers with breakpoints" in described
+    assert "no memory field" in described

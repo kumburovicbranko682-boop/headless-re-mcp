@@ -286,7 +286,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         size: Annotated[int, Field(ge=1, le=8)] = 1,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Set a hardware breakpoint with structured type/size enums only."""
+        """Set a hardware breakpoint with structured type/size enums only.
+
+        Answers with set, address, type and size. There is no ok or hardware
+        field.
+        """
         return _dump(
             analysis.breakpoints_hardware_set(
                 session_id,
@@ -349,7 +353,11 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """List memory breakpoints."""
+        """List memory breakpoints.
+
+        Answers with breakpoints, plus count. There is no memory field.
+        Same list key as breakpoints.list, filtered to memory type.
+        """
         return _dump(analysis.breakpoints_memory_list(session_id, timeout=timeout))
 
     @tools.tool(name="breakpoints.condition.set")
