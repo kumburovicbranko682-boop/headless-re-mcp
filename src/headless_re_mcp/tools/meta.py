@@ -193,7 +193,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="audit.list")
     def audit_list(
         session_id: str | None = None,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
         """Session opens, session closes and UI drives, with arguments and outcome.
