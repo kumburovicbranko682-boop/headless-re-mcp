@@ -413,3 +413,27 @@ def test_imports_scan_description_names_candidates_not_iat() -> None:
     assert "Answers with candidates" in described
     assert "blind_selection" in described
     assert "no iat field" in described
+
+def test_imports_read_description_names_entries_not_imports() -> None:
+    """The catalog said IAT range and never named the list field.
+
+    Measured against ReadImports: thunks are entries, plus resolved_count,
+    iat_va and size. There is no imports field. Looking for imports after a
+    successful read reads as an empty table.
+    """
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("Outcome ReadImports")
+    chunk = native[start : native.index("Outcome ListModules", start)]
+    returned = chunk[chunk.rindex("auto result = JsonObject()") :]
+    assert 'JsonSet(result.get(), "entries"' in returned
+    assert 'JsonSet(result.get(), "resolved_count"' in returned
+    assert '"imports"' not in returned
+    described = _tool_docstring("imports.read")
+    assert "Answers with entries" in described
+    assert "resolved_count" in described
+    assert "no imports field" in described

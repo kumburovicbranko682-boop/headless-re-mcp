@@ -246,7 +246,10 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)],
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
-        """Read one confirmed IAT range and resolve thunks against loaded exports."""
+        """Read one confirmed IAT range and resolve thunks against loaded exports.
+
+        Answers with entries, resolved_count, iat_va and size. There is no imports field.
+        """
         return _dump(analysis.imports_read(session_id, iat_va, size, timeout=timeout))
 
     @tools.tool(name="modules.list")
