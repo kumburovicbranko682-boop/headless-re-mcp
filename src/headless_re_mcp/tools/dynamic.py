@@ -117,7 +117,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="dynamic.pause")
     def dynamic_pause(session_id: str, timeout: RunControlTimeout = 30.0) -> dict[str, Any]:
-        """Pause the active debuggee and wait for a stable paused state."""
+        """Pause the active debuggee and wait for a stable paused state.
+
+        Answers with state and submitted, the same shape as dynamic.wait.
+        """
         return _dump(analysis.dynamic_pause(session_id, timeout=timeout))
 
     @tools.tool(name="dynamic.resume")
