@@ -60,7 +60,11 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         root_hwnd: int | None = None,
         backend: str = "win32",
     ) -> dict[str, Any]:
-        """Return a bounded window/control tree (win32 or uia) for the debuggee PID."""
+        """Window/control tree for the debuggee PID (win32 or uia).
+
+        Answers with nodes (each carrying children), count, truncated,
+        max_depth and max_nodes. There is no tree or windows field.
+        """
         return _dump(
             analysis.ui_tree(
                 session_id,
