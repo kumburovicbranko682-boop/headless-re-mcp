@@ -97,7 +97,12 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         allow_child_pids: list[int] | None = None,
         include_same_image_children: bool = False,
     ) -> dict[str, Any]:
-        """Resolve one window/control inside the debuggee PID boundary."""
+        """Resolve one window/control inside the debuggee PID boundary.
+
+        Answers with window (hwnd, pid, class_name, title, visible, control_id,
+        enabled), plus debuggee_pid, debugger_pid and backend.
+        There is no hwnd field at the top level.
+        """
         return _dump(
             analysis.ui_resolve(
                 session_id,

@@ -71,3 +71,21 @@ def test_ui_process_tree_puts_windows_in_debuggee_windows_not_tree() -> None:
     assert "children" in described
     assert "no tree field" in described
     assert "no processes field" in described
+
+def test_ui_resolve_nests_hwnd_under_window() -> None:
+    """The catalog said resolve a window and never named the payload.
+
+    Measured against the service action: the match is window (hwnd, pid,
+    class_name, title), plus debuggee_pid, debugger_pid and backend. There is
+    no top-level hwnd field. Looking for hwnd after a successful resolve
+    reads as no match, so the agent retries or clicks a stale handle.
+    """
+    source = Path(_ui_finalize_windows.__code__.co_filename).read_text(encoding="utf-8")
+    start = source.index("def ui_resolve")
+    chunk = source[start : source.index("def ui_click", start)]
+    returned = chunk[chunk.index("return {") :]
+    assert '"window": window' in returned
+    assert '"hwnd"' not in returned
+    described = _tool_docstring("ui.resolve")
+    assert "Answers with window" in described
+    assert "no hwnd field" in described
