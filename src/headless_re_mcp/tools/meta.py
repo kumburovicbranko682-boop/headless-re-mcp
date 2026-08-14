@@ -156,7 +156,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="timeline.list")
     def timeline_list(
-        session_id: str, offset: int = 0, limit: Annotated[int, Field(ge=1, le=256)] = 100
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
     ) -> dict[str, Any]:
         """What a session did that left a mark: opened, closed, wrote, drove a UI.
 
