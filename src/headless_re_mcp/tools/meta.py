@@ -20,12 +20,22 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
     @tools.tool(name="sync.static_to_runtime")
     def sync_static_to_runtime(session_id: str, address: int) -> dict[str, Any]:
-        """Map an IDA address to the matching loaded main-module runtime address."""
+        """Map an IDA address to the matching loaded main-module runtime address.
+
+        Answers with runtime.address and static.address, plus rva, rebase_delta,
+        module, source, target and match_basis. There is no runtime_address
+        field; that name is sync.resolve_runtime_address.
+        """
         return _dump(analysis.sync_static_to_runtime(session_id, address))
 
     @tools.tool(name="sync.runtime_to_static")
     def sync_runtime_to_static(session_id: str, address: int) -> dict[str, Any]:
-        """Map a loaded main-module runtime address back to its IDA address."""
+        """Map a loaded main-module runtime address back to its IDA address.
+
+        Same payload as sync.static_to_runtime: Answers with static.address and
+        runtime.address, plus rva, rebase_delta, module, source, target and
+        match_basis. There is no runtime_address field.
+        """
         return _dump(analysis.sync_runtime_to_static(session_id, address))
 
     @tools.tool(name="sync.module_preferred_to_runtime")
