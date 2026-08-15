@@ -273,6 +273,47 @@ async def test_a_usable_proxy_environment_is_still_honoured(
 
 
 @pytest.mark.asyncio
+async def test_model_listing_stops_reading_an_oversized_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 1,000-model output cap did not bound bytes downloaded before parsing.
+
+    A valid 2,068-byte payload arrived in nine 256-byte chunks and was retained
+    whole. With a 512-byte test ceiling, the third chunk is enough to reject it.
+    """
+    monkeypatch.setattr(openai_compatible, "_MAX_MODELS_BODY_BYTES", 512, raising=False)
+    payload = json.dumps(
+        {"data": [{"id": "m" * 2_048}]},
+        separators=(",", ":"),
+    ).encode()
+    chunks = [payload[offset : offset + 256] for offset in range(0, len(payload), 256)]
+
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.chunks_read = 0
+
+        async def __aiter__(self):  # type: ignore[no-untyped-def]
+            for chunk in chunks:
+                self.chunks_read += 1
+                yield chunk
+
+    stream = CountingStream()
+
+    def models(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(models),
+    )
+
+    with pytest.raises(ValueError, match="models response exceeded 512 bytes"):
+        await provider.list_models()
+
+    assert stream.chunks_read == 3
+
+
+@pytest.mark.asyncio
 async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path) -> None:
     """Every field in a chunk is type-checked; the chunk being JSON was assumed."""
 

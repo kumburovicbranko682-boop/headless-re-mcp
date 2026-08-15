@@ -15,6 +15,7 @@ JsonObject = dict[str, Any]
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_ERROR_DETAIL_CHARS = 500
+_MAX_MODELS_BODY_BYTES = 1024 * 1024
 _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
 _MAX_TOOL_CALLS = 128
 _reported_bad_proxy_env = False
@@ -259,15 +260,29 @@ class OpenAICompatibleProvider:
             import httpx
         except ImportError as exc:
             raise RuntimeError("web extra requires httpx") from exc
-        async with build_client(
-            httpx,
-            timeout=min(self.timeout, 30.0),
-            follow_redirects=False,
-            transport=self.transport,
-        ) as client:
-            response = await client.get(f"{self.profile.base_url}/models", headers=self._headers())
+        async with (
+            build_client(
+                httpx,
+                timeout=min(self.timeout, 30.0),
+                follow_redirects=False,
+                transport=self.transport,
+            ) as client,
+            client.stream(
+                "GET",
+                f"{self.profile.base_url}/models",
+                headers=self._headers(),
+            ) as response,
+        ):
             response.raise_for_status()
-            payload = response.json()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                allowance = _MAX_MODELS_BODY_BYTES + 1 - len(body)
+                body.extend(chunk[:allowance])
+                if len(chunk) > allowance or len(body) > _MAX_MODELS_BODY_BYTES:
+                    raise ValueError(
+                        f"provider models response exceeded {_MAX_MODELS_BODY_BYTES} bytes"
+                    )
+            payload = json.loads(body)
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
