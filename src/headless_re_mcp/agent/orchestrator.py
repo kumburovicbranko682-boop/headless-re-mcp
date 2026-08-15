@@ -242,6 +242,7 @@ class AgentOrchestrator:
             compacted = compact_messages(conversation, threshold_percent=profile.context_compression_threshold_percent)
             text_parts: list[str] = []
             completed_calls: tuple[ProviderToolCall, ...] = ()
+            stream_completed = False
             async for event in provider.stream_chat(
                 messages=compacted,
                 tools=tools,
@@ -256,7 +257,14 @@ class AgentOrchestrator:
                     text_parts.append(event.text)
                     self.store.append_event(run_id, "message.delta", {"delta": event.text})
                 elif event.type == "completed":
+                    stream_completed = True
                     completed_calls = event.tool_calls
+            if not stream_completed:
+                # A clean iterator EOF is not proof that the remote answer was
+                # complete. Providers use this terminal event to distinguish a
+                # full response from a connection that ended after partial
+                # deltas; treating both alike reports cut-off work as success.
+                raise RuntimeError("provider stream ended without a completed event")
             visible_text = "".join(text_parts)
             if visible_text:
                 self.store.add_message(run.thread_id, "assistant", visible_text, run_id=run_id)

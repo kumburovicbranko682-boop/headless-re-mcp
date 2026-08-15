@@ -469,6 +469,42 @@ async def test_tool_timeout_and_total_deadline_fail_runs(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_a_provider_stream_that_ends_without_completion_fails_the_run(
+    tmp_path: Path,
+) -> None:
+    """EOF before the provider's terminal event is not a successful answer.
+
+    Measured: a provider that yielded one partial token and then ended without
+    a ``completed`` event left the run as completed and wrote a run.completed
+    event. An unattended mission could therefore accept a cut-off answer as
+    finished work.
+    """
+
+    class CutOffProvider(FakeProvider):
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="partial")
+
+    store = AgentStore(tmp_path / "cut-off.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "cut-off-config"),
+        provider_factory=lambda _: CutOffProvider([]),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.FAILED
+    failed = store.get_run(run["id"])
+    assert failed is not None and "without a completed event" in str(failed.error)
+    assert not any(
+        event.type == "run.completed" for event in store.list_events(run["id"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) -> None:
     calls = [
         (ProviderToolCall(f"call-{index}", "test.tool", {}),)
