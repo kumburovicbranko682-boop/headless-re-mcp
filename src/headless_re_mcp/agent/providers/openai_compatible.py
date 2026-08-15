@@ -13,6 +13,7 @@ from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 
+_MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
@@ -115,6 +116,7 @@ class OpenAICompatibleProvider:
             payload["reasoning_effort"] = reasoning_effort
         url = f"{self.profile.base_url}/chat/completions"
         tool_fragments: dict[int, dict[str, str]] = {}
+        tool_buffer_bytes = 0
         finish_reason: str | None = None
         timeout = httpx.Timeout(self.timeout, connect=min(self.timeout, 30.0))
         async with (
@@ -182,6 +184,12 @@ class OpenAICompatibleProvider:
                         item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
                         call_id = raw_call.get("id")
                         if isinstance(call_id, str):
+                            tool_buffer_bytes += len(call_id.encode("utf-8"))
+                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                                raise ValueError(
+                                    "provider tool-call buffer exceeded "
+                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                                )
                             item["id"] += call_id
                         function_value = raw_call.get("function")
                         function: dict[str, Any] = (
@@ -189,9 +197,21 @@ class OpenAICompatibleProvider:
                         )
                         function_name = function.get("name")
                         if isinstance(function_name, str):
+                            tool_buffer_bytes += len(function_name.encode("utf-8"))
+                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                                raise ValueError(
+                                    "provider tool-call buffer exceeded "
+                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                                )
                             item["name"] += function_name
                         function_arguments = function.get("arguments")
                         if isinstance(function_arguments, str):
+                            tool_buffer_bytes += len(function_arguments.encode("utf-8"))
+                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                                raise ValueError(
+                                    "provider tool-call buffer exceeded "
+                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                                )
                             item["arguments"] += function_arguments
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):

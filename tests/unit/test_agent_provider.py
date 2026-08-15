@@ -250,6 +250,57 @@ async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path
             pass
 
 
+@pytest.mark.asyncio
+async def test_tool_call_stream_is_rejected_before_unbounded_buffering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider-controlled argument stream needs a byte ceiling while assembling.
+
+    With a 1 KiB test ceiling, the previous implementation accepted a 2,059-byte
+    arguments value and only handed it to the later orchestrator size check after
+    retaining the whole value. The production path therefore retained any amount
+    the peer sent during its 600-second response window.
+    """
+    monkeypatch.setattr(
+        openai_compatible,
+        "_MAX_TOOL_CALL_BUFFER_BYTES",
+        1_024,
+        raising=False,
+    )
+    arguments = json.dumps({"blob": "x" * 2_048}, separators=(",", ":"))
+
+    def oversized_call(request: httpx.Request) -> httpx.Response:
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-a",
+                                "function": {
+                                    "name": "session.get",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(oversized_call),
+    )
+
+    with pytest.raises(ValueError, match="tool-call buffer exceeded 1024 bytes"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
