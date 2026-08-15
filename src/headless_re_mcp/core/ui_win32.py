@@ -157,18 +157,25 @@ def describe_hwnd(hwnd: int) -> JsonObject:
     }
 
 
-def list_child_windows(parent_hwnd: int, allowed_pids: frozenset[int]) -> list[JsonObject]:
+def list_child_windows(
+    parent_hwnd: int,
+    allowed_pids: frozenset[int],
+    *,
+    max_callbacks: int | None = None,
+) -> list[JsonObject]:
     require_allowed_hwnd(parent_hwnd, allowed_pids)
     user32 = _user32()
     children: list[JsonObject] = []
+    examined = 0
     callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     def callback(hwnd: int, _: int) -> bool:
+        nonlocal examined
+        examined += 1
         pid = hwnd_owner_pid(hwnd)
-        if pid not in allowed_pids:
-            return True
-        children.append(describe_hwnd(int(hwnd)))
-        return True
+        if pid in allowed_pids:
+            children.append(describe_hwnd(int(hwnd)))
+        return max_callbacks is None or examined < max_callbacks
 
     user32.EnumChildWindows(int(parent_hwnd), callback_type(callback), 0)
     children.sort(key=lambda item: item["hwnd"])
@@ -208,7 +215,12 @@ def build_window_tree(
         if depth >= max_depth:
             return item
         hwnd = int(node["hwnd"])
-        for child in list_child_windows(hwnd, allowed_pids):
+        remaining = max_nodes - nodes
+        for child in list_child_windows(
+            hwnd,
+            allowed_pids,
+            max_callbacks=remaining,
+        ):
             if nodes >= max_nodes:
                 truncated = True
                 break
