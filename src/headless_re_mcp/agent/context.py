@@ -8,6 +8,17 @@ from typing import Any
 JsonObject = dict[str, Any]
 
 
+def _message_size(item: JsonObject) -> int:
+    """Characters this whole message contributes to the provider request."""
+    try:
+        return len(json.dumps(item, ensure_ascii=False, default=str, separators=(",", ":")))
+    except (RecursionError, ValueError):
+        # A cyclic or excessively nested non-content field is larger than any
+        # useful context budget: classify it as such instead of letting the
+        # compactor itself fail while trying to enforce the boundary.
+        return 1 << 60
+
+
 def _shrink(item: JsonObject, limit: int) -> JsonObject:
     """Return ``item`` with its content cut to ``limit`` characters, marked."""
     content = str(item.get("content", ""))
@@ -22,7 +33,7 @@ def _shrink(item: JsonObject, limit: int) -> JsonObject:
 
 def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_chars: int = 120_000) -> list[JsonObject]:
     budget = max(8_000, int(max_chars * max(10, min(threshold_percent, 95)) / 100))
-    total = sum(len(str(item.get("content", ""))) for item in messages)
+    total = sum(_message_size(item) for item in messages)
     if total <= budget:
         return messages
     system = [item for item in messages if item.get("role") == "system"][:1]
@@ -32,7 +43,7 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
     for item in reversed(messages):
         if item is prompt:
             continue
-        size = len(str(item.get("content", "")))
+        size = _message_size(item)
         if not tail and size > budget:
             # Tool results are capped well above this budget, so one large read
             # arrives here. Kept whole it was the only message that fit, then
@@ -40,7 +51,14 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
             # the task nor the output. Half the budget leaves room for the turn
             # it answers, which is what keeps it from being orphaned.
             item = _shrink(item, budget // 2)
-            size = len(str(item.get("content", "")))
+            size = _message_size(item)
+            if size > budget:
+                # Tool-call arguments are part of the request but not content,
+                # so shortening content cannot make this message fit. Dropping
+                # the old turn is safer than truncating its instruction into a
+                # different tool call; the recent user task is restored below
+                # if no complete tail survives.
+                continue
         if tail and used + size > budget:
             break
         tail.append(item)
