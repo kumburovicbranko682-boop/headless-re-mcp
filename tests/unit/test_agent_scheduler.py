@@ -592,6 +592,15 @@ async def test_a_run_that_never_finishes_does_not_park_the_scheduler(
     final = store.get_mission(mission.id)
     assert final.status is MissionStatus.FAILED
     assert "interrupted" in str(final.error)
+    stranded = store.get_run(started[0])
+    assert stranded is not None and stranded.status is RunStatus.INTERRUPTED, (
+        f"scheduler moved on but left the run {stranded.status.value if stranded else 'missing'}"
+    )
+    assert "scheduler wait timed out" in str(stranded.error)
+    assert any(
+        event.type == "run.failed" and event.data.get("status") == "interrupted"
+        for event in store.list_events(stranded.id)
+    ), "the run-level timeout must be visible to event consumers"
     # And the queue keeps moving: a second mission is still reachable.
     other = store.create_mission(thread.id, "next one")
     assert store.claim_next_mission().id == other.id

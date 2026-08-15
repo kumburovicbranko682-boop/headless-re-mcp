@@ -328,8 +328,18 @@ class MissionScheduler:
                         "waited_s": round(self.run_wait_timeout_s, 1),
                     },
                 )
-                # Reported as interrupted rather than silently abandoned: the
-                # mission fails, the scheduler moves on, and the alert says why.
+                error = (
+                    f"scheduler wait timed out after {self.run_wait_timeout_s:g}s"
+                )
+                # The bound has to end the run, not merely this wait. Leaving
+                # it streaming strands an active row forever and gives run
+                # event consumers no terminal explanation.
+                self.store.transition(run_id, RunStatus.INTERRUPTED, error=error)
+                self.store.append_event(
+                    run_id,
+                    "run.failed",
+                    {"status": RunStatus.INTERRUPTED.value, "error": error},
+                )
                 return RunStatus.INTERRUPTED
             await asyncio.sleep(self.run_poll_interval_s)
 
