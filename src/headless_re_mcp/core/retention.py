@@ -165,6 +165,7 @@ class UsageCache:
     _at: float = field(default=0.0)
     _lock: Lock = field(default_factory=Lock)
     _refreshing: bool = field(default=False)
+    _failing: bool = field(default=False)
 
     def get(self, root: Path, *, now: float | None = None) -> DiskUsage:
         moment = time.monotonic() if now is None else now
@@ -190,9 +191,39 @@ class UsageCache:
     def _refresh(self, root: Path) -> None:
         try:
             measured = measure_usage(root)
-        finally:
+        except Exception as exc:  # noqa: BLE001 - background maintenance must stay bounded
             with self._lock:
+                # An empty cache is always stale, so merely clearing the claim
+                # starts another daemon thread on the next probe and bypasses
+                # the TTL. Cache the same honest "unknown floor" returned on a
+                # cold start (or retain the last measurement), and timestamp
+                # the attempt so a broken walk is retried at the configured
+                # cadence rather than at the readiness request rate.
+                if self._value is None:
+                    self._value = DiskUsage(bytes=0, files=0, truncated=True)
+                self._at = time.monotonic()
                 self._refreshing = False
+                first_failure = not self._failing
+                self._failing = True
+            if first_failure:
+                record_alert(
+                    "artifact_usage_measurement_failing",
+                    fields={
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "consequence": "artifact usage is stale until a later measurement succeeds",
+                    },
+                )
+            return
+
         with self._lock:
+            recovered = self._failing
             self._value = measured
             self._at = time.monotonic()
+            self._refreshing = False
+            self._failing = False
+        if recovered:
+            record_alert(
+                "artifact_usage_measurement_recovered",
+                severity="info",
+                fields={"detail": "artifact usage measurement succeeded"},
+            )
