@@ -643,6 +643,30 @@ def test_oversized_mission_profile_and_model_are_refused_not_stored(tmp_path: Pa
         assert con.execute("SELECT COUNT(*) FROM missions").fetchone()[0] == 1
 
 
+def test_oversized_mission_objectives_are_refused_not_silently_truncated(
+    tmp_path: Path,
+) -> None:
+    """A queued objective must be either intact or rejected.
+
+    Measured: an 8001-character objective returned a pending mission while
+    storing only 8000 characters. Completion criteria commonly live at the
+    end, so the unattended scheduler then worked on a different instruction
+    without telling its caller.
+    """
+    store = AgentStore(tmp_path / "mission-objective.db")
+    store.mission_objective_max_chars = 32
+    thread = store.create_thread()
+
+    with pytest.raises(ValueError, match="mission objective"):
+        store.create_mission(thread.id, "x" * 33)
+
+    with store._reading() as con:
+        assert con.execute("SELECT COUNT(*) FROM missions").fetchone()[0] == 0
+    objective = "x" * 32
+    mission = store.create_mission(thread.id, objective)
+    assert mission.objective == objective
+
+
 def test_oversized_thread_session_ids_are_refused_not_stored(tmp_path: Path) -> None:
     """Thread titles already clip at 200 characters; session_id did not.
 

@@ -101,6 +101,12 @@ _RETAINED_TERMINAL_MISSIONS_PER_THREAD = 128
 _RUN_PROFILE_MAX_CHARS = 128
 _RUN_MODEL_MAX_CHARS = 128
 
+# create_mission clipped the objective at 8000 characters after accepting it.
+# That reports a different instruction as successfully queued, and completion
+# criteria commonly live at the end. Refuse instead so no work is silently
+# changed after the caller has handed it off.
+_MISSION_OBJECTIVE_MAX_CHARS = 8_000
+
 # create_thread already clips title at 200 characters; session_id was stored
 # verbatim. A 100,000 character id made the database 163 KB. Truncating it
 # would point at a different session, so refuse.
@@ -128,6 +134,7 @@ class AgentStore:
         self.retained_terminal_missions_per_thread = _RETAINED_TERMINAL_MISSIONS_PER_THREAD
         self.run_profile_max_chars = _RUN_PROFILE_MAX_CHARS
         self.run_model_max_chars = _RUN_MODEL_MAX_CHARS
+        self.mission_objective_max_chars = _MISSION_OBJECTIVE_MAX_CHARS
         self.thread_session_id_max_chars = _THREAD_SESSION_ID_MAX_CHARS
         self._finished_writes = 0
         # Deliberately not recovering here. Opening a database is what a
@@ -584,6 +591,12 @@ class AgentStore:
         text = objective.strip()
         if not text:
             raise ValueError("mission objective must not be empty")
+        objective_limit = max(1, int(self.mission_objective_max_chars))
+        if len(text) > objective_limit:
+            raise ValueError(
+                f"mission objective is {len(text)} characters, "
+                f"over the {objective_limit} character limit"
+            )
         if provider_profile is not None:
             profile_limit = max(8, int(self.run_profile_max_chars))
             if len(provider_profile) > profile_limit:
@@ -605,7 +618,7 @@ class AgentStore:
             con.execute(
                 "INSERT INTO missions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    mission_id, thread_id, text[:8000], MissionStatus.PENDING.value,
+                    mission_id, thread_id, text, MissionStatus.PENDING.value,
                     provider_profile, model, bounded, 0, None, None, now, now,
                 ),
             )
