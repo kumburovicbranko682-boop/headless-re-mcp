@@ -13,11 +13,35 @@ from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 
+_MAX_ERROR_BODY_BYTES = 64 * 1024
+_MAX_ERROR_DETAIL_CHARS = 500
 _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
 _MAX_TOOL_CALLS = 128
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
+
+
+async def _read_bounded_error_detail(response: Any) -> str:
+    """Read enough of a rejected response to diagnose it, never the whole body."""
+    body = bytearray()
+    truncated = False
+    async for chunk in response.aiter_bytes():
+        allowance = _MAX_ERROR_BODY_BYTES + 1 - len(body)
+        if allowance <= 0:
+            truncated = True
+            break
+        body.extend(chunk[:allowance])
+        if len(chunk) > allowance or len(body) > _MAX_ERROR_BODY_BYTES:
+            truncated = True
+            break
+
+    detail = bytes(body[:_MAX_ERROR_BODY_BYTES]).decode("utf-8", "replace").strip()
+    if not truncated:
+        return detail[:_MAX_ERROR_DETAIL_CHARS]
+    marker = f"...[provider error body truncated at {_MAX_ERROR_BODY_BYTES} bytes]"
+    kept = max(0, _MAX_ERROR_DETAIL_CHARS - len(marker))
+    return f"{detail[:kept]}{marker}"
 
 
 def shared_ssl_context(httpx: Any) -> Any:
@@ -137,11 +161,11 @@ class OpenAICompatibleProvider:
                 # only "429" -- and in an unattended deployment that record is
                 # all anyone gets. Re-raised as the same type so the retry
                 # classifier still reads the status code off it.
-                detail = (await response.aread()).decode("utf-8", "replace").strip()
+                detail = await _read_bounded_error_detail(response)
                 if not detail:
                     raise
                 raise httpx.HTTPStatusError(
-                    f"{exc}: {detail[:500]}",
+                    f"{exc}: {detail}",
                     request=exc.request,
                     response=exc.response,
                 ) from exc

@@ -149,6 +149,45 @@ async def test_a_rejected_request_carries_what_the_provider_said(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_a_rejected_request_stops_reading_its_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sliced error message previously came from an unlimited body read.
+
+    Eight 256-byte chunks were all consumed even though only 500 characters
+    reached the exception. A 512-byte test limit should need only the third
+    chunk to prove truncation, leaving the remaining five unread.
+    """
+    monkeypatch.setattr(openai_compatible, "_MAX_ERROR_BODY_BYTES", 512, raising=False)
+
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.chunks_read = 0
+
+        async def __aiter__(self):  # type: ignore[no-untyped-def]
+            for _ in range(8):
+                self.chunks_read += 1
+                yield b"x" * 256
+
+    stream = CountingStream()
+
+    def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, stream=stream)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(rejected),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+    assert stream.chunks_read == 3
+    assert "truncated at 512 bytes" in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_a_proxy_setting_httpx_cannot_parse_does_not_end_every_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
