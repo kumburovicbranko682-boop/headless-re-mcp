@@ -98,7 +98,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="threads.context.read")
     def threads_context_read(
         session_id: str,
-        tid: Annotated[int, Field(ge=1)],
+        tid: Annotated[int, Field(ge=1, le=0xFFFFFFFF)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
         """Read allowlisted registers for one thread, restoring the prior TID.
@@ -112,7 +112,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="threads.context.write")
     def threads_context_write(
         session_id: str,
-        tid: Annotated[int, Field(ge=1)],
+        tid: Annotated[int, Field(ge=1, le=0xFFFFFFFF)],
         name: Annotated[str, Field(min_length=1, max_length=16)],
         value: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
