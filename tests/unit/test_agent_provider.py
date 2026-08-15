@@ -301,6 +301,36 @@ async def test_tool_call_stream_is_rejected_before_unbounded_buffering(
             pass
 
 
+@pytest.mark.asyncio
+async def test_tool_call_stream_caps_distinct_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Small calls still grew the per-response fragment map without a count bound."""
+    monkeypatch.setattr(openai_compatible, "_MAX_TOOL_CALLS", 2, raising=False)
+
+    def too_many_calls(request: httpx.Request) -> httpx.Response:
+        calls = [
+            {
+                "index": index,
+                "id": f"call-{index}",
+                "function": {"name": "doctor", "arguments": "{}"},
+            }
+            for index in range(3)
+        ]
+        chunk = {"choices": [{"delta": {"tool_calls": calls}}]}
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(too_many_calls),
+    )
+
+    with pytest.raises(ValueError, match="tool-call count exceeded 2"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

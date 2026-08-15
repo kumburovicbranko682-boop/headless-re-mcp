@@ -14,6 +14,7 @@ from headless_re_mcp.telemetry import record_alert
 JsonObject = dict[str, Any]
 
 _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
+_MAX_TOOL_CALLS = 128
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
@@ -181,6 +182,11 @@ class OpenAICompatibleProvider:
                         if not isinstance(raw_call, dict):
                             continue
                         index = int(raw_call.get("index", 0))
+                        if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
+                            raise ValueError(
+                                "provider tool-call count exceeded "
+                                f"{_MAX_TOOL_CALLS} while assembling index {index}"
+                            )
                         item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
                         call_id = raw_call.get("id")
                         if isinstance(call_id, str):
