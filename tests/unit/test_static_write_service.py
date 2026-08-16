@@ -770,3 +770,24 @@ def test_the_basic_blocks_tool_says_a_page_is_only_a_page() -> None:
     }
     assert docs["static_basic_blocks"]
     assert "has_more" in docs["static_basic_blocks"]
+
+
+def test_the_name_set_tool_says_an_unchanged_name_fails() -> None:
+    """The worker already refuses a no-op set_name; the description did not.
+
+    An agent that only reads the tool text treats any return as a name that
+    landed.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_name_set"]
+    assert "did not land" in docs["static_name_set"]

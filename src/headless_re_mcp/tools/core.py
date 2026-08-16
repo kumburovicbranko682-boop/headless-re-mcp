@@ -545,7 +545,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         address: int,
         name: str,
     ) -> dict[str, Any]:
-        """Set a name at an address inside the current IDA database."""
+        """Set a name at an address inside the current IDA database.
+
+        The write is checked on the way out: a name that did not land is an
+        error, not ok.
+        """
         return _dump(analysis.static_name_set(session_id, address=address, name=name))
 
     def static_comment_set(
