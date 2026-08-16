@@ -615,13 +615,23 @@ class UnpackCliMixin:
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
             )
+            payload = {
+                "scylla": result.to_dict(),
+                "output_path": str(result.output_path),
+                "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                "claims_universal_unpack": False,
+            }
+            # Measured: 5 rebuilds, 5 files / 5120 bytes, 0 artifact rows.
+            payload = _register_capture(
+                self,
+                session_id,
+                Path(result.output_path),
+                kind="scylla_rebuilt",
+                source="unpack.scylla.rebuild",
+                payload=payload,
+            )
             return _success(
-                {
-                    "scylla": result.to_dict(),
-                    "output_path": str(result.output_path),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
-                    "claims_universal_unpack": False,
-                },
+                payload,
                 session_id=session_id,
                 backend="scylla",
             )

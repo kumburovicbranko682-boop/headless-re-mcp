@@ -390,3 +390,8 @@ def test_unpack_scylla_mocked(tmp_path: Path) -> None:
     assert result.data["input_unchanged"] is True
     assert Path(result.data["output_path"]).is_file()
     assert "iat-rebuilt" in Path(result.data["output_path"]).name
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "scylla_rebuilt"
