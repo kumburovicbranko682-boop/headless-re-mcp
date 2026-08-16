@@ -421,6 +421,24 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_native_libs_does_not_return_every_lib_as_if_it_were_small() -> None:
+    """5000 native libs serialised to 138_945 bytes with no total/has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _FakeApk:
+        def get_files(self) -> list[str]:
+            return [f"lib/arm64-v8a/lib{i}.so" for i in range(5000)]
+
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    got = client.native_libs(Path("dummy.apk"))
+    assert got["count"] == 2000
+    assert got["total"] == 5000
+    assert got["has_more"] is True
+    assert got["abis"] == ["arm64-v8a"]
+
+
 def test_apk_components_does_not_return_every_component_as_if_it_were_small() -> None:
     """5000 activities serialised to 108_705 bytes with no total/has_more."""
     from headless_re_mcp.backends.apk.client import ApkClient

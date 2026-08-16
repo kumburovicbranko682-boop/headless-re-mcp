@@ -159,6 +159,8 @@ until 1.0 the tool surface may still change between minor versions.
   它是生产可用的仓储。现在用同一套保留上限。
 - **`apk.components` 没有上限**。5000 个 activity 序列化成 108_705 字节，
   回包没有 total/has_more。现在每类最多回 2000 个并标明还有更多。
+- **`apk.native_libs` 没有上限**。5000 个 so 序列化成 138_945 字节，没有
+  total/has_more。现在最多回 2000 个并标明还有更多。 ABI 仍按完整列表算。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

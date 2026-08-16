@@ -255,7 +255,14 @@ class ApkClient:
         abis = sorted(
             {name.split("/")[1] for name in libs if len(name.split("/")) >= 3}
         )
-        return {"native_libs": libs, "abis": abis, "count": len(libs)}
+        window = libs[:_MAX_COMPONENTS]
+        return {
+            "native_libs": window,
+            "abis": abis,
+            "count": len(window),
+            "total": len(libs),
+            "has_more": len(window) < len(libs),
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

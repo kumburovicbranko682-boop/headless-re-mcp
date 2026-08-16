@@ -56,7 +56,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
-        """List bundled native libraries and their ABIs."""
+        """List bundled native libraries and their ABIs.
+
+        Capped; read `total` and `has_more`. `count` is this page.
+        """
         return _dump(analysis.apk_native_libs(session_id))
 
     @tools.tool(name="apk.classes")
