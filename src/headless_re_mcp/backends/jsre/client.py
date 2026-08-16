@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
+_MAX_LISTED_FILES = 2000
 
 
 class JsReError(RuntimeError):
@@ -100,7 +101,15 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        # file_count is the whole tree; the list is a window. Same shape as
+        # jadx export_sources: 2500 files came back as 2000 names and no
+        # truncated field.
+        return {
+            "output_dir": str(out_dir),
+            "file_count": len(files),
+            "files": files[:_MAX_LISTED_FILES],
+            "truncated": len(files) > _MAX_LISTED_FILES,
+        }
 
 
 class WasmClient:

@@ -464,3 +464,68 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class TestExportListingsSayWhenTheyStopped:
+    """The file list is a window; the count is the tree.
+
+    Measured: 2500 jadx sources and 2500 unpacked JS modules both came back
+    as 2000 names and no truncated field. An agent that only reads the list
+    treats the rest of the tree as missing.
+    """
+
+    def test_jadx_marks_a_cut_listing(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.jadx.client import _MAX_LISTED_FILES, JadxClient
+
+        out = tmp_path / "out"
+        for index in range(_MAX_LISTED_FILES + 500):
+            path = out / "sources" / f"C{index}.java"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("class X {}", encoding="utf-8")
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        client = JadxClient(stub)
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        result = client.export_sources(apk, out)
+        assert result["java_file_count"] == _MAX_LISTED_FILES + 500
+        assert len(result["java_files"]) == _MAX_LISTED_FILES
+        assert result["truncated"] is True
+
+    def test_jadx_marks_a_short_listing_complete(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        out = tmp_path / "out"
+        path = out / "sources" / "A.java"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("class A {}", encoding="utf-8")
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        client = JadxClient(stub)
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        result = client.export_sources(apk, out)
+        assert result["java_file_count"] == 1
+        assert result["truncated"] is False
+
+    def test_webcrack_marks_a_cut_listing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+        from headless_re_mcp.backends.jsre.client import JsClient, _MAX_LISTED_FILES
+
+        out = tmp_path / "jsout"
+        out.mkdir()
+        for index in range(_MAX_LISTED_FILES + 500):
+            (out / f"m{index}.js").write_text("x", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        src = tmp_path / "bundle.js"
+        src.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda *args, **kwargs: ("", "", 0))
+        result = JsClient(stub).unpack_bundle(src, out)
+        assert result["file_count"] == _MAX_LISTED_FILES + 500
+        assert len(result["files"]) == _MAX_LISTED_FILES
+        assert result["truncated"] is True
