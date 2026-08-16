@@ -15,7 +15,8 @@ from uuid import uuid4
 from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Result
+from headless_re_mcp.core.limits import MAX_MODULE_DUMP_BYTES
+from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 
 JsonObject = dict[str, Any]
@@ -47,6 +48,37 @@ def prune_device_artifacts(directory: Path, *, keep: int = _MAX_DEVICE_ARTIFACTS
     for stale in files[:extra]:
         with suppress(OSError):
             stale.unlink()
+
+
+def refuse_oversized_device_file(
+    path: Path, *, limit: int = MAX_MODULE_DUMP_BYTES
+) -> Result[JsonObject] | None:
+    """Delete a capture that is larger than one module dump and say so.
+
+    The directory bound is a count. 32 unbounded pulls is still unbounded
+    bytes. The transfer itself cannot be stopped mid-stream -- adbutils
+    writes the whole file -- so this is after the fact: the bytes hit disk,
+    then they are removed and the caller is told.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size <= limit:
+        return None
+    with suppress(OSError):
+        path.unlink()
+    return Result[JsonObject](
+        ok=False,
+        error=RpcError(
+            code="output_too_large",
+            message=(
+                f"device file is {size} bytes, over the {limit} byte limit; "
+                "pull a smaller path"
+            ),
+            details={"path": str(path), "size": size, "limit": limit},
+        ),
+    )
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
@@ -117,14 +149,20 @@ class DeviceAnalysisMixin:
         out = self._device_artifact_path("screenshot", ".png")
         result = self._adb_wrap("screenshot", serial=serial, out_path=out)
         if result.ok:
+            oversized = refuse_oversized_device_file(out)
             prune_device_artifacts(out.parent)
+            if oversized is not None:
+                return oversized
         return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
         result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
         if result.ok:
+            oversized = refuse_oversized_device_file(out)
             prune_device_artifacts(out.parent)
+            if oversized is not None:
+                return oversized
         return result
 
     def device_push(

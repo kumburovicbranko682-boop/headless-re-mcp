@@ -95,8 +95,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Capture a device screenshot to a PNG under artifact_root/device/.
 
         Returns path and serial. The file is not a registered artifact --
-        artifacts.read cannot open it -- and only the newest 32 device
-        captures are kept.
+        artifacts.read cannot open it -- only the newest 32 device captures
+        are kept, and a file over 64 MiB is deleted and refused.
         """
         return _dump(analysis.device_screenshot(serial))
 
@@ -105,8 +105,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Pull a device file to artifact_root/device/.
 
         Returns remote and local. The file is not a registered artifact --
-        artifacts.read cannot open it -- and only the newest 32 device
-        captures are kept.
+        artifacts.read cannot open it -- only the newest 32 device captures
+        are kept, and a file over 64 MiB is deleted and refused.
         """
         return _dump(analysis.device_pull(serial, remote_path))
 
