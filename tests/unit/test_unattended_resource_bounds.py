@@ -404,10 +404,7 @@ class TestWebScriptBufferIsBounded:
     def test_parsed_scripts_do_not_grow_without_bound(self) -> None:
         handle = _WebSession(object(), object(), object(), object(), object())
         for index in range(_MAX_SCRIPTS + 500):
-            with handle.lock:
-                handle.scripts[str(index)] = {"scriptId": str(index)}
-                while len(handle.scripts) > _MAX_SCRIPTS:
-                    handle.scripts.popitem(last=False)
+            handle.remember_script({"scriptId": str(index)})
         assert len(handle.scripts) == _MAX_SCRIPTS
         assert isinstance(handle.scripts, OrderedDict)
         # The window keeps the newest scripts, which are the ones worth fetching.
@@ -418,6 +415,54 @@ class TestWebScriptBufferIsBounded:
         handle = _WebSession(object(), object(), object(), object(), object())
         assert handle.console.maxlen is not None
         assert isinstance(handle.requests, OrderedDict)
+
+    def test_a_full_script_window_says_what_was_dropped(self) -> None:
+        """The list sits at the cap and looks complete once older scripts go."""
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        dropped = 500
+        for index in range(_MAX_SCRIPTS + dropped):
+            handle.remember_script({"scriptId": str(index), "url": f"https://x/{index}.js"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.scripts("s")
+        assert result["count"] == _MAX_SCRIPTS
+        assert result["evicted"] == dropped
+        assert result["truncated"] is True
+
+    def test_a_short_script_list_is_complete(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.remember_script({"scriptId": "1", "url": "https://x/a.js"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.scripts("s")
+        assert result["count"] == 1
+        assert result["evicted"] == 0
+        assert result["truncated"] is False
+
+    def test_console_and_network_rings_say_the_same(self) -> None:
+        from headless_re_mcp.backends.web.client import (
+            _MAX_CONSOLE,
+            _MAX_REQUESTS,
+            WebBackend,
+        )
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_CONSOLE + 7):
+            handle.remember_console({"type": "log", "text": str(index)})
+        for index in range(_MAX_REQUESTS + 11):
+            handle.remember_request({"requestId": str(index)})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        console = backend.console("s", limit=_MAX_CONSOLE)
+        network = backend.network_list("s", offset=0, limit=10)
+        assert console["evicted"] == 7
+        assert console["truncated"] is True
+        assert network["evicted"] == 11
+        assert network["truncated"] is True
 
 
 class TestFridaAuthorizationWindow:

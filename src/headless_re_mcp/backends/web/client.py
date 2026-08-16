@@ -126,10 +126,36 @@ class _WebSession:
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
+        # How many entries the rings dropped. The lists look complete once they
+        # sit at the cap; without this an overnight page that eval()s reports
+        # "2000 scripts" as if that were all it ever parsed.
+        self.requests_evicted = 0
+        self.scripts_evicted = 0
+        self.console_evicted = 0
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
         self.runner: _Runner | None = None
+
+    def remember_request(self, info: JsonObject) -> None:
+        with self.lock:
+            self.requests[str(info.get("requestId"))] = info
+            while len(self.requests) > _MAX_REQUESTS:
+                self.requests.popitem(last=False)
+                self.requests_evicted += 1
+
+    def remember_script(self, info: JsonObject) -> None:
+        with self.lock:
+            self.scripts[str(info.get("scriptId"))] = info
+            while len(self.scripts) > _MAX_SCRIPTS:
+                self.scripts.popitem(last=False)
+                self.scripts_evicted += 1
+
+    def remember_console(self, entry: JsonObject) -> None:
+        with self.lock:
+            if self.console.maxlen is not None and len(self.console) >= self.console.maxlen:
+                self.console_evicted += 1
+            self.console.append(entry)
 
     def close(self) -> None:
         for closer in (self.context.close, self.browser.close, self.playwright.stop):
@@ -230,8 +256,8 @@ class WebBackend:
 
         def on_request(params: JsonObject) -> None:
             req = params.get("request") or {}
-            with handle.lock:
-                handle.requests[str(params.get("requestId"))] = {
+            handle.remember_request(
+                {
                     "requestId": params.get("requestId"),
                     "url": req.get("url"),
                     "method": req.get("method"),
@@ -239,8 +265,7 @@ class WebBackend:
                     "status": None,
                     "mimeType": None,
                 }
-                while len(handle.requests) > _MAX_REQUESTS:
-                    handle.requests.popitem(last=False)
+            )
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
@@ -251,14 +276,13 @@ class WebBackend:
                     entry["mimeType"] = resp.get("mimeType")
 
         def on_script(params: JsonObject) -> None:
-            with handle.lock:
-                handle.scripts[str(params.get("scriptId"))] = {
+            handle.remember_script(
+                {
                     "scriptId": params.get("scriptId"),
                     "url": params.get("url"),
                     "language": params.get("scriptLanguage", "JavaScript"),
                 }
-                while len(handle.scripts) > _MAX_SCRIPTS:
-                    handle.scripts.popitem(last=False)
+            )
 
         def on_console(params: JsonObject) -> None:
             parts: list[str] = []
@@ -271,10 +295,9 @@ class WebBackend:
                     parts.append(str(argument["description"]))
                 else:
                     parts.append(str(argument.get("type", "")))
-            with handle.lock:
-                handle.console.append(
-                    {"type": str(params.get("type") or "log"), "text": " ".join(parts)}
-                )
+            handle.remember_console(
+                {"type": str(params.get("type") or "log"), "text": " ".join(parts)}
+            )
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
@@ -324,7 +347,15 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
         window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        evicted = handle.requests_evicted
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "evicted": evicted,
+            "truncated": evicted > 0,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
@@ -360,15 +391,27 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            evicted = handle.console_evicted
+        return {
+            "console": items,
+            "count": len(items),
+            "evicted": evicted,
+            "truncated": evicted > 0,
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
+            evicted = handle.scripts_evicted
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        return {
+            "scripts": values,
+            "count": len(values),
+            "evicted": evicted,
+            "truncated": evicted > 0,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

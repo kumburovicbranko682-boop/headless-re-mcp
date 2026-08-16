@@ -55,7 +55,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List captured network requests (url, method, status, type)."""
+        """List captured network requests (url, method, status, type).
+
+        The buffer is a window; read `truncated` and `evicted` rather than
+        assuming these are every request the page ever made.
+        """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="web.network.get")
@@ -67,12 +71,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_console(
         session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
     ) -> dict[str, Any]:
-        """Return recent browser console messages."""
+        """Return recent browser console messages.
+
+        The buffer is a window; read `truncated` and `evicted` rather than
+        assuming these are every line the page ever logged.
+        """
         return _dump(analysis.web_console(session_id, limit=limit))
 
     @tools.tool(name="web.scripts")
     def web_scripts(session_id: str, wasm_only: bool = False) -> dict[str, Any]:
-        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger."""
+        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger.
+
+        The buffer is a window; read `truncated` and `evicted` rather than
+        assuming these are every script the page ever parsed.
+        """
         return _dump(analysis.web_scripts(session_id, wasm_only=wasm_only))
 
     @tools.tool(name="web.script.source")
