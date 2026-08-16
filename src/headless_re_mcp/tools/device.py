@@ -133,7 +133,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.pull")
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
-        """Pull a file from the device into a local artifact."""
+        """Pull a file from the device into a local artifact.
+
+        The write is checked on the way out: a pull that did not produce a
+        local file is an error, not a path.
+        """
         return _dump(analysis.device_pull(serial, remote_path))
 
     @tools.tool(name="device.push")

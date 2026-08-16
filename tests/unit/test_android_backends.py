@@ -1674,6 +1674,21 @@ class TestDevicePullDoesNotReportAGhost:
         assert dest.is_file()
         assert dest.read_bytes() == b"abc"
 
+    def test_the_tool_description_names_a_missing_local(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_pull"]
+        assert "local file" in docs["device_pull"]
+
 
 class TestDeviceScreenshotDoesNotReportAGhost:
     """A screenshot that wrote nothing used to be reported as a PNG path.
