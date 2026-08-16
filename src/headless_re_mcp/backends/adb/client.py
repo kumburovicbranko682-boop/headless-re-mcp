@@ -387,6 +387,11 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
+        # Measured: app_current() returning None still answered
+        # {'package': None, 'activity': None} as success, so an agent
+        # treated a failed dumpsys as an empty foreground.
+        if current is None:
+            raise AdbError("backend_error", "no current activity")
         return {
             "package": getattr(current, "package", None),
             "activity": getattr(current, "activity", None),

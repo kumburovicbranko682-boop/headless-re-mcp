@@ -1704,6 +1704,28 @@ class TestCurrentActivityIsBounded:
         assert result["activity"] == ".Main"
 
 
+class TestCurrentActivityDoesNotInventSuccess:
+    """A missing app_current used to look like an empty foreground.
+
+    Measured: app_current() returning None still answered
+    ``{'package': None, 'activity': None}`` as success.
+    """
+
+    def test_none_is_not_a_current_activity(self) -> None:
+        class _Dev:
+            def app_current(self) -> None:
+                return None
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as info:
+            backend.current_activity("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "no current activity" in info.value.message
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
