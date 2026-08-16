@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from headless_re_mcp.core.models import Result, RpcError
+from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
 from headless_re_mcp.dotnet.de4dot import De4dotError
 from headless_re_mcp.dotnet.metadata_enum import (
@@ -96,6 +96,14 @@ class DotnetAnalysisMixin:
         """Run configured de4dot into a session artifact; never overwrite input."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"dotnet.deobfuscate cannot run in {session.state.value} state"
+                )
             if self.settings.de4dot is None:
                 return Result[JsonObject](
                     ok=False,
@@ -132,6 +140,15 @@ class DotnetAnalysisMixin:
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"dotnet.deobfuscate cannot run in {session.state.value} state"
+                )
             after = inspect_dotnet(result.output_path, require_verified=True)
             return _success(
                 {
