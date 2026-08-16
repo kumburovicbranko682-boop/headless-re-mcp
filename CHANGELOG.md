@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`ghidra.functions` / `symbols` / `xrefs` 停在上限时看起来像完整表**。默认
+  256 条函数整页返回，没有 `has_more`。现在脚本在提前停下时标 `has_more`，旧
+  脚本的满页也由客户端补上。
 - **`apk.strings` 先截断再去重，长串被静默合并**。两条 2500 字符、只在截断点
   之后不同的串变成一条 2000 字符，没有 `truncated`。现在先按完整值去重，页面里
   有被切过的串就标 `truncated`。

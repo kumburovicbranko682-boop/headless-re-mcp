@@ -207,6 +207,8 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         if mode == "decompile":
             payload = _mark_decompile_cap(payload)
+        elif mode in {"functions", "symbols", "xrefs"}:
+            payload = _mark_export_page(payload, limit=capped)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
@@ -253,6 +255,25 @@ class GhidraClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
+
+
+def _mark_export_page(payload: JsonObject, *, limit: int) -> JsonObject:
+    """ExportJson.py used to stop at ``limit`` and say nothing.
+
+    Measured: a functions export of 256 items (the default cap) came back
+    with no ``has_more``, so a caller treated a page as every function.
+    The script now reports the stop; this still marks a silent full page
+    so an older postScript cannot lie.
+    """
+    items = payload.get("items")
+    if not isinstance(items, list):
+        payload["items"] = []
+        payload["has_more"] = False
+        return payload
+    if payload.get("has_more") is True or payload.get("has_more") is False:
+        return payload
+    payload["has_more"] = len(items) >= max(1, int(limit))
+    return payload
 
 
 def _mark_decompile_cap(payload: JsonObject) -> JsonObject:

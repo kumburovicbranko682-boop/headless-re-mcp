@@ -1612,6 +1612,61 @@ class TestGhidraDecompileSaysWhenItWasCut:
         assert page["decompiled"].startswith("int foo")
 
 
+class TestGhidraExportSaysWhenTheListStopped:
+    """Function/symbol/xref exports stopped at the cap and said nothing.
+
+    Measured: a functions export of 256 items (the default cap) came back
+    with no has_more, so a caller would treat a page as every function.
+    """
+
+    def _client(self, tmp_path: Any, payload: dict[str, Any]) -> Any:
+        import json
+
+        from headless_re_mcp.backends.ghidra.client import GhidraClient
+
+        home = tmp_path / "ghidra"
+        analyze = home / "support" / "analyzeHeadless"
+        analyze.parent.mkdir(parents=True)
+        analyze.write_text("#!/bin/sh\n")
+        java = tmp_path / "java"
+        java.write_text("")
+        client = GhidraClient(home=home, java=java)
+
+        def fake_run(*args: object, **kwargs: object) -> tuple[str, str, int]:
+            del args, kwargs
+            out = tmp_path / "proj" / "export_functions.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload))
+            return ("", "", 0)
+
+        client._run_headless = fake_run  # type: ignore[method-assign]
+        return client
+
+    def test_a_silent_full_page_is_reported(self, tmp_path: Any) -> None:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        items = [{"name": f"f{index}", "entry": hex(index), "body_size": 8} for index in range(256)]
+        page = self._client(
+            tmp_path, {"mode": "functions", "items": items, "count": 256}
+        ).functions(binary, tmp_path / "proj", limit=256)
+        assert page["count"] == 256
+        assert page["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self, tmp_path: Any) -> None:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        page = self._client(
+            tmp_path,
+            {
+                "mode": "functions",
+                "items": [{"name": "foo", "entry": "0x1000", "body_size": 8}],
+                "count": 1,
+                "has_more": False,
+            },
+        ).functions(binary, tmp_path / "proj", limit=256)
+        assert page["has_more"] is False
+
+
 class TestAFindingIsEitherRecordedOrRefused:
     """Findings are what an unattended run remembers between sessions.
 

@@ -37,7 +37,11 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """Functions Ghidra found, with address, size and name."""
+        """Functions Ghidra found, with address, size and name.
+
+        Capped by `limit`. Read `has_more` rather than treating a full
+        page as every function in the program.
+        """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
 
     @tools.tool(name="ghidra.symbols")
@@ -46,7 +50,11 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """Symbols Ghidra recovered, with address and namespace."""
+        """Symbols Ghidra recovered, with address and namespace.
+
+        Capped by `limit`. Read `has_more` rather than treating a full
+        page as every symbol.
+        """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
     @tools.tool(name="ghidra.xrefs")
@@ -56,7 +64,11 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """References to and from address, as Ghidra resolved them."""
+        """References to and from address, as Ghidra resolved them.
+
+        Capped by `limit`. Read `has_more` rather than treating a full
+        page as every reference.
+        """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
     @tools.tool(name="ghidra.decompile")

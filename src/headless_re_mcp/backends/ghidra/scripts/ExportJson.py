@@ -33,8 +33,10 @@ def _addr(value):
 
 if mode == "functions":
     items = []
+    stopped = False
     for fn in fm.getFunctions(True):
         if len(items) >= limit:
+            stopped = True
             break
         entry = fn.getEntryPoint()
         items.append(
@@ -45,10 +47,13 @@ if mode == "functions":
             }
         )
     payload["items"] = items
+    payload["has_more"] = stopped
 elif mode == "symbols":
     items = []
+    stopped = False
     for sym in st.getAllSymbols(True):
         if len(items) >= limit:
+            stopped = True
             break
         items.append(
             {
@@ -58,13 +63,16 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+    payload["has_more"] = stopped
 elif mode == "xrefs":
     items = []
+    stopped = False
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
             for ref in refmgr.getReferencesTo(addr):
                 if len(items) >= limit:
+                    stopped = True
                     break
                 items.append(
                     {
@@ -74,6 +82,7 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["has_more"] = stopped
 elif mode == "decompile":
     text = ""
     if address_arg:
