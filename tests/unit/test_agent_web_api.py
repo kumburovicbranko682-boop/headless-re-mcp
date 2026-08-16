@@ -64,6 +64,36 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_a_thread_at_the_message_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        created = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
+        thread_id = created.json()["thread"]["id"]
+        for index in range(3):
+            posted = client.post(
+                f"/api/agent/threads/{thread_id}/messages",
+                headers=headers,
+                json={"content": f"m{index}"},
+            )
+            assert posted.status_code == 201
+        listed = client.get(
+            f"/api/agent/threads/{thread_id}?limit=2", headers=headers
+        ).json()
+        assert listed["count"] == 2
+        assert listed["total"] == 3
+        assert listed["has_more"] is True
+        assert [item["content"] for item in listed["messages"]] == ["m1", "m2"]
+        full = client.get(
+            f"/api/agent/threads/{thread_id}?limit=10", headers=headers
+        ).json()
+        assert full["has_more"] is False
+        assert [item["content"] for item in full["messages"]] == ["m0", "m1", "m2"]
+
+
 def test_a_thread_list_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")

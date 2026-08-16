@@ -214,6 +214,14 @@ class AgentStore:
             con.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
+    def count_messages(self, thread_id: str) -> int:
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:
         """The most recent `limit` messages, oldest first.
 

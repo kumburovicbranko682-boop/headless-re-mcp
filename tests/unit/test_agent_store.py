@@ -251,6 +251,24 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
 
 
+def test_a_message_window_at_the_cap_is_not_the_whole_thread(tmp_path: Path) -> None:
+    """600 messages with limit=500 used to come back as 500 items, unmarked.
+
+    The window keeps the newest end on purpose. GET /api/agent/threads/{id}
+    used to present that window as the whole thread, so the older turns
+    disappeared from whoever was supposed to reconstruct the conversation.
+    """
+    store = AgentStore(tmp_path / "messages.db")
+    thread = store.create_thread()
+    for index in range(600):
+        store.add_message(thread.id, "user", f"m{index}")
+    assert store.count_messages(thread.id) == 600
+    window = store.list_messages(thread.id, limit=500)
+    assert len(window) == 500
+    assert window[0].content == "m100"
+    assert window[-1].content == "m599"
+
+
 def test_a_thread_page_at_the_cap_is_not_the_whole_list(tmp_path: Path) -> None:
     """150 threads with limit=100 used to come back as 100 items, unmarked."""
     store = AgentStore(tmp_path / "threads.db")
