@@ -349,3 +349,50 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+def test_device_file_tools_do_not_call_the_path_an_artifact(tmp_path: Path) -> None:
+    """The docs said artifact; artifacts.list did not have the file.
+
+    Measured: device.screenshot wrote a PNG under artifact_root/device and
+    returned ok, then artifacts.list reported total=0. A model that went to
+    artifacts.read next was looking in the wrong table.
+    """
+    from unittest.mock import MagicMock
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.device import build_device_tools
+
+    class _FakeAdb:
+        def screenshot(self, serial: str, out_path: Path) -> dict[str, str]:
+            Path(out_path).write_bytes(b"PNG")
+            return {"path": str(out_path), "serial": serial}
+
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        service._backend = lambda: _FakeAdb()  # type: ignore[method-assign]
+        result = service.device_screenshot("emulator-5554")
+        assert result.ok and result.data is not None
+        assert Path(str(result.data["path"])).is_file()
+        listed = service.artifacts_list()
+        assert listed.ok and listed.data is not None
+        assert listed.data["total"] == 0
+    finally:
+        service.close_all()
+
+    tools = {item.name: item for item in build_device_tools(MagicMock())}
+    shot = (tools["device.screenshot"].handler.__doc__ or "").casefold()
+    pull = (tools["device.pull"].handler.__doc__ or "").casefold()
+    assert "not registered" in shot and "artifacts.list" in shot
+    assert "not registered" in pull and "artifacts.list" in pull
+    assert "png artifact" not in shot
+    assert "local artifact" not in pull

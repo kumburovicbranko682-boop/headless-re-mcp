@@ -105,6 +105,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **`frida.session` 能力摘要声称钩子常驻**。`capabilities.describe` 回
   `Session-bound Frida hooks`，而每次调用都是 attach 完立刻 detach，hook 回包
   已是 `persisted: False`。摘要改为 one-shot，钩子不会留在目标里。
+- **`device.screenshot` / `device.pull` 把未入库的文件叫做 artifact**。截图写入
+  `artifact_root/device` 并报成功，但 `artifacts.list` 的 total 是 0。模型接着去
+  `artifacts.read` 会落空。描述改为读回包路径，并写明未注册。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
