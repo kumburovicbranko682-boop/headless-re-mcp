@@ -277,6 +277,49 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkStringsSayWhenTheyStopped:
+    """250 strings with limit=200 used to come back as count=200, no has_more."""
+
+    def _strings(self, n: int, *, offset: int = 0, limit: int = 200) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_strings(self) -> list[_Item]:
+                return [_Item(f"s{index}") for index in range(n)]
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client.strings(Path("app.apk"), offset=offset, limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._strings(250, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._strings(3, limit=200)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._strings(200, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 200
+        assert result["has_more"] is False
+
+
 class TestApkMethodsSayWhenTheyStopped:
     """150 methods with limit=100 used to come back as count=100, no has_more."""
 

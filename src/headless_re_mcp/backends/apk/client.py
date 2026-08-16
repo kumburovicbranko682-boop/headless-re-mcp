@@ -311,6 +311,8 @@ class ApkClient:
             "count": len(window),
             "total": len(values),
             "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(window) < len(values),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
