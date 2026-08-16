@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from headless_re_mcp.core.models import Result, RpcError
+from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
 from headless_re_mcp.detection import ScanMode, scan_pe
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.scylla import ScyllaError
@@ -128,6 +128,14 @@ class UnpackCliMixin:
         """Run official ``upx -d`` into a session artifact without overwriting the input."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.upx.unpack cannot run in {session.state.value} state"
+                )
             bounded_timeout = _detection_timeout(timeout)
             if type(open_ida) is not bool:
                 raise ValueError("open_ida must be a boolean")
@@ -166,6 +174,15 @@ class UnpackCliMixin:
                 input_sha256=session.sha256,
                 timeout=bounded_timeout,
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.upx.unpack cannot run in {session.state.value} state"
+                )
             assert result.output_path is not None
             after = scan_pe(result.output_path)
             comparison = {
