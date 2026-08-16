@@ -495,3 +495,60 @@ def test_a_written_comment_is_set() -> None:
     assert result["ok"] is True
     assert result["comment"] == "new comment"
     assert result["previous_comment"] == "old comment"
+
+
+def _install_fake_types(holder: dict[str, str]) -> None:
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    idc = types.ModuleType("idc")
+    idc.get_type = lambda ea: holder["type"]  # type: ignore[attr-defined]
+    idc.SetType = lambda ea, type_str: True  # type: ignore[attr-defined]
+    sys.modules["idc"] = idc
+
+
+def test_an_unchanged_type_is_not_applied() -> None:
+    """SetType True with the old type still present used to say ok=True."""
+    from headless_re_mcp.backends.ida.worker import WorkerRequestError, _type_apply
+
+    _install_fake_types({"type": "int"})
+    try:
+        _type_apply({"address": 0x1000, "type": "char *"})
+    except WorkerRequestError as exc:
+        assert "still found" in str(exc)
+        return
+    raise AssertionError("an unchanged type was reported applied")
+
+
+def test_a_written_type_is_applied() -> None:
+    from headless_re_mcp.backends.ida.worker import _type_apply
+
+    holder = {"type": "int"}
+
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    idc = types.ModuleType("idc")
+    idc.get_type = lambda ea: holder["type"]  # type: ignore[attr-defined]
+
+    def set_type(ea: int, type_str: str) -> bool:
+        holder["type"] = type_str
+        return True
+
+    idc.SetType = set_type  # type: ignore[attr-defined]
+    sys.modules["idc"] = idc
+
+    result = _type_apply({"address": 0x1000, "type": "char *"})
+    assert result["ok"] is True
+    assert result["type"] == "char *"
+    assert result["previous_type"] == "int"

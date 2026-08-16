@@ -1154,6 +1154,17 @@ def _type_apply(params: JsonObject) -> JsonObject:
             type=type_str,
         )
     after = idc.get_type(ea) or ""
+    if after == before and after != type_str:
+        # Measured: SetType returned True while get_type still returned the
+        # old type, and the reply still said ok=True. An agent then treats a
+        # type that never landed as applied.
+        raise WorkerRequestError(
+            "write_failed",
+            f"type apply reported success but lookup still found {after!r} at 0x{ea:X}",
+            address=ea,
+            type=type_str,
+            previous_type=before,
+        )
     return {
         "address": ea,
         "type": after,
