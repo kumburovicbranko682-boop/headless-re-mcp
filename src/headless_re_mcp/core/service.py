@@ -410,7 +410,16 @@ class AnalysisService(
 
     def list_sessions(self) -> Result[JsonObject]:
         sessions = [_session_json(session) for session in self.registry.list()]
-        return _success({"sessions": sessions, "count": len(sessions)})
+        dropped, retained_closed = self.registry.closed_history()
+        return _success(
+            {
+                "sessions": sessions,
+                "count": len(sessions),
+                "closed_dropped": dropped,
+                "retained_closed": retained_closed,
+                "has_more": dropped > 0,
+            }
+        )
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_static(session_id)

@@ -44,7 +44,11 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.get_session(session_id))
 
     def session_list() -> dict[str, Any]:
-        """List all sessions known to this MCP server process."""
+        """List all sessions known to this MCP server process.
+
+        Closed history is capped. Read has_more and closed_dropped rather than
+        treating count as every session this process ever opened.
+        """
         return _dump(analysis.list_sessions())
 
     def session_close(session_id: str) -> dict[str, Any]:

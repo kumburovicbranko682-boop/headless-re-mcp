@@ -73,9 +73,39 @@ def test_closed_sessions_are_retained_but_bounded(tmp_path: Path) -> None:
     assert len(registry.list()) == 3
     # The newest closures are the ones a caller might still ask about.
     assert [item.id for item in registry.list()] == ids[-3:]
+    assert registry.closed_history() == (7, 3)
     for stale in ids[:-3]:
         with pytest.raises(KeyError):
             registry.get(stale)
+
+
+def test_session_list_says_when_closed_history_was_cut(tmp_path: Path) -> None:
+    """10 closures with retain=3 used to come back as count=3, unmarked.
+
+    session.list is what an unattended agent reaches for after a night of
+    analysis. A list sitting at the retained cap looked like the whole
+    history, so the older closed sessions disappeared from whoever was
+    supposed to reconstruct the night.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    service = AnalysisService(registry=SessionRegistry(retained_closed=3))
+    try:
+        for _ in range(10):
+            created = service.create_session(str(binary))
+            assert created.ok and created.data is not None
+            closed = service.close_session(created.data["session"]["id"])
+            assert closed.ok, closed.error
+        listed = service.list_sessions()
+        assert listed.ok and listed.data is not None
+        assert listed.data["count"] == 3
+        assert listed.data["closed_dropped"] == 7
+        assert listed.data["retained_closed"] == 3
+        assert listed.data["has_more"] is True
+    finally:
+        service.close_all()
 
 
 def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> None:

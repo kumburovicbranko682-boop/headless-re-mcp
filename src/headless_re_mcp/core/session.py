@@ -68,6 +68,7 @@ class SessionRegistry:
         self._sessions: dict[str, Session] = {}
         self._closed_order: deque[str] = deque()
         self._retained_closed = max(0, retained_closed)
+        self._closed_dropped = 0
         self._lock = RLock()
 
     def create(
@@ -145,11 +146,17 @@ class SessionRegistry:
                 self._retire_closed(session_id)
             return session.model_copy(deep=True)
 
+    def closed_history(self) -> tuple[int, int]:
+        """How many closed sessions were evicted, and how many we keep."""
+        with self._lock:
+            return self._closed_dropped, self._retained_closed
+
     def _retire_closed(self, session_id: str) -> None:
         """Drop the oldest closed sessions once the retained history is full."""
         self._closed_order.append(session_id)
         while len(self._closed_order) > self._retained_closed:
             self._sessions.pop(self._closed_order.popleft(), None)
+            self._closed_dropped += 1
 
     def attach_backend(self, session_id: str, handle: BackendHandle) -> Session:
         with self._lock:
