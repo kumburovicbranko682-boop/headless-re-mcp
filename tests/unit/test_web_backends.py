@@ -245,6 +245,50 @@ class TestWasmInfoSaysHowMuchWasCut:
         assert page["bytes"] == 3
 
 
+class TestWebDomSnapshotSaysHowMuchWasCut:
+    """A capped DOM snapshot said it was truncated but not how long it was.
+
+    Measured: 250,001 characters came back as 200,000 with truncated=True
+    and no bytes, so a caller could not tell how much of the page was missing.
+    """
+
+    def _backend(self, html: str) -> WebBackend:
+        from headless_re_mcp.backends.web.client import _WebSession
+
+        class _Page:
+            url = "https://x/"
+
+            def content(self) -> str:
+                return html
+
+            def title(self) -> str:
+                return "t"
+
+        class _Immediate:
+            def call(self, work: object, timeout: float = 60.0) -> object:
+                del timeout
+                return work()  # type: ignore[operator]
+
+        handle = object.__new__(_WebSession)
+        handle.page = _Page()
+        handle.runner = object()
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        backend._runner = lambda session: _Immediate()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_cut_page_reports_its_original_size(self) -> None:
+        page = self._backend("H" * 250_001).dom_snapshot("s")
+        assert len(page["html"]) == 200_000
+        assert page["truncated"] is True
+        assert page["bytes"] == 250_001
+
+    def test_a_short_page_is_not_labelled_partial(self) -> None:
+        page = self._backend("<html></html>").dom_snapshot("s")
+        assert page["truncated"] is False
+        assert page["bytes"] == 13
+
+
 class TestWebConsoleSaysWhenItStopped:
     """A page that hit the cap looks exactly like one that ended.
 

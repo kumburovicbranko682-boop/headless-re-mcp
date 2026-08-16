@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`web.dom.snapshot` 截断后不说原来有多长**。250,001 字符的 HTML 被切成
+  200,000 且 `truncated=True`，但没有 `bytes`。agent 无法判断丢掉了多少。
+  现在带回 `bytes`。
 - **`wasm.info` 截断后不说原来有多长**。500,001 字符被切成 400,000 且
   `truncated=True`，但没有 `bytes`。`wasm.wat` 已经带了长度，agent 无法判断
   丢掉了多少。现在带回 `bytes`。

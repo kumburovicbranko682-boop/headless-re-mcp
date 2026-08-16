@@ -108,7 +108,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
-        """Return the current page HTML, URL, and title."""
+        """Return the current page HTML, URL, and title.
+
+        Large pages are capped. Read `truncated` and `bytes` rather than
+        treating `html` as the whole document.
+        """
         return _dump(analysis.web_dom_snapshot(session_id))
 
     @tools.tool(name="web.screenshot")

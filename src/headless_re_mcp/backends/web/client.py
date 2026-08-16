@@ -429,6 +429,7 @@ class WebBackend:
                 "title": _safe_title(handle.page),
                 "html": html[:_MAX_INLINE_BODY],
                 "truncated": len(html) > _MAX_INLINE_BODY,
+                "bytes": len(html),
             }
 
         return self._runner(handle).call(work)
