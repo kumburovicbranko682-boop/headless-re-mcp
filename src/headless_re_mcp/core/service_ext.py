@@ -38,6 +38,15 @@ _TERMINAL_EVENT_KINDS = frozenset({"process.exited", "debug.stopped"})
 _DEBUG_EVENT_BUDGET_PER_BATCH = 64
 
 
+def _frida_rpc(exc: FridaError) -> XdbgRpcError:
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -388,7 +397,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "frida.attach", "frida probe attach", pid=pid)
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_frida_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -400,7 +409,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "frida.modules", "frida modules listed", count=data.get("count"))
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_frida_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -421,7 +430,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_frida_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -434,7 +443,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             data = client.memory_read(pid, address, size, allowed_pid=pid)
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_frida_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -461,7 +470,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_frida_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 

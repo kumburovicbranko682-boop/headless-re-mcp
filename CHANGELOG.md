@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **本地 `frida.attach` 超时信封把可重试失败标成永久失败**。设备路径
+  已标 `retryable=True`，本地路径 `retryable=False`。agent 不会再试。
+  现在本地 `timeout` 也标可重试。
 - **APK 超时信封把可重试失败标成永久失败**。`apk.open` 超时后
   `retryable=False`。agent 不会再试，一整夜任务就此停。现在 `timeout`
   标 `retryable=True`，与 device/frida 设备路径一致。

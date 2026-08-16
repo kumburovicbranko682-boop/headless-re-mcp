@@ -457,6 +457,33 @@ class TestFridaAttachHasADeadline:
         assert time.monotonic() - started < 0.3
 
 
+class TestFridaLocalTimeoutEnvelopeIsRetryable:
+    """A local attach timeout was reported as a permanent failure.
+
+    Measured: FridaError(code=timeout) through the local service path
+    mapped to retryable=False. The device path already set retryable.
+    An unattended agent then treats a wedged attach as permanent.
+    """
+
+    def test_a_timeout_is_retryable(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_ext import _frida_rpc
+
+        result = _failure(_frida_rpc(FridaError("timeout", "attach did not finish", op="attach")))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+
+    def test_a_backend_error_stays_permanent(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_ext import _frida_rpc
+
+        result = _failure(_frida_rpc(FridaError("backend_error", "attach failed")))
+        assert result.error is not None
+        assert result.error.retryable is False
+
+
 class TestFridaLocalReadsShareTheAttachDeadline:
     """The other local reads still parked on a wedged attach.
 
