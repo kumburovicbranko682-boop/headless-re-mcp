@@ -262,6 +262,21 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
+            # am force-stop exits 0 with empty output even when the package
+            # was never installed. Measured: com.no.such.app still became
+            # stopped=True, so an unattended agent then traces a process
+            # that is not there.
+            path_out = str(dev.shell(["pm", "path", pkg]))
+        except Exception as exc:  # noqa: BLE001
+            raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
+        if "package:" not in path_out.casefold():
+            raise AdbError(
+                "backend_error",
+                "force-stop failed: package is not installed",
+                package=pkg,
+                output=path_out[:2000],
+            )
+        try:
             dev.shell(["am", "force-stop", pkg])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc

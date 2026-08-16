@@ -81,7 +81,7 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.force_stop")
     def device_force_stop(serial: str, package: str) -> dict[str, Any]:
-        """Force-stop a running package."""
+        """Force-stop an installed package; fails if it is not on the device."""
         return _dump(analysis.device_force_stop(serial, package))
 
     @tools.tool(name="device.current_activity")

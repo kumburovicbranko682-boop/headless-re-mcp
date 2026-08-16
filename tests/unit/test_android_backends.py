@@ -559,6 +559,42 @@ class TestDeviceLaunchDoesNotInventSuccess:
         assert result == {"launched": True, "package": "com.example.app"}
 
 
+class TestDeviceForceStopDoesNotInventSuccess:
+    """am force-stop used to be reported as stopped=True for any package.
+
+    Measured: ``com.no.such.app`` with empty stdout still produced
+    ``{"stopped": true}``. An unattended agent then traces or screenshots
+    a process that is not there.
+    """
+
+    def _backend(self, path_out: str) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                if isinstance(cmd, list) and cmd[:2] == ["pm", "path"]:
+                    return path_out
+                return ""
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_missing_package_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("").force_stop("emulator-5554", "com.no.such.app")
+        assert info.value.code == "backend_error"
+        assert "not installed" in str(info.value)
+
+    def test_an_installed_package_is_stopped(self) -> None:
+        result = self._backend("package:/data/app/com.example.app/base.apk\n").force_stop(
+            "emulator-5554", "com.example.app"
+        )
+        assert result == {"stopped": True, "package": "com.example.app"}
+
+
 class TestDeviceLogcatSaysWhenItStopped:
     """A logcat page that hit the cap looks exactly like one that ended."""
 
