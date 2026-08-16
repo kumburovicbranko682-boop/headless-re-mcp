@@ -1336,6 +1336,57 @@ class TestDeviceLogcatSaysWhenItStopped:
         assert page["has_more"] is False
 
 
+class TestDevicePullDoesNotInventSuccess:
+    """A refused pull was still reported as a successful tool call.
+
+    Measured: a device whose sync.pull() returned False still answered
+    {remote, local} with no error, and the local file was never written.
+    An unattended agent then reads an empty path. adbutils itself returns
+    None on success, so only an explicit False is a refusal.
+    """
+
+    def _backend(self, result: object) -> AdbBackend:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> object:
+                del remote, local
+                return result
+
+        class _Dev:
+            sync = _Sync()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_refused_pull_is_a_failure(self, tmp_path: Path) -> None:
+        local = tmp_path / "x.bin"
+        with pytest.raises(AdbError) as info:
+            self._backend(False).pull("emulator-5554", "/sdcard/x", local)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("pulled") is False
+        assert not local.exists()
+
+    def test_a_none_return_is_still_success(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> None:
+                del remote
+                Path(local).write_bytes(b"ok")
+
+        class _Dev:
+            sync = _Sync()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        local = tmp_path / "x.bin"
+        page = backend.pull("emulator-5554", "/sdcard/x", local)
+        assert page["local"] == str(local)
+        assert local.read_bytes() == b"ok"
+
+
 class TestDevicePushDoesNotInventSuccess:
     """A refused push was still reported as a successful tool call.
 

@@ -443,9 +443,20 @@ class AdbBackend:
             dev = self._device(serial)
             local_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                dev.sync.pull(remote_path, str(local_path))
+                result = dev.sync.pull(remote_path, str(local_path))
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+            # adbutils returns None on success. Measured: an explicit False
+            # was still reported as a successful pull, and the local file
+            # was never written.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "pull was refused",
+                    remote=remote_path,
+                    local=str(local_path),
+                    pulled=False,
+                )
             return {"remote": remote_path, "local": str(local_path)}
 
         return self._call("pull", work, timeout=self._transfer_timeout)

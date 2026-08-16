@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.pull` 在拉取被拒绝时仍报成功**。假设备 `sync.pull()` 返回
+  `False` 时仍回 `{remote, local}`，本地文件也不存在。agent 会去读空路径。
+  现在显式 `False` 报 `backend_error`；`None` 仍算成功。
 - **`device.push` 在推送被拒绝时仍报成功**。假设备 `sync.push()` 返回
   `False` 时仍回 `{local, remote}`。agent 会把没到设备上的文件当已推送。
   现在显式 `False` 报 `backend_error`；`None` 仍算成功。
