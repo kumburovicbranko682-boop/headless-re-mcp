@@ -16,6 +16,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 
 JsonObject = dict[str, Any]
 
@@ -36,6 +37,16 @@ class DeviceAnalysisMixin:
         root = self.settings.artifact_root.expanduser().resolve() / "device"
         root.mkdir(parents=True, exist_ok=True)
         return root / f"{name}-{uuid4().hex}{suffix}"
+
+    def _device_artifact_session(self, serial: str) -> str:
+        """Bucket device captures live under.
+
+        Device tools are addressed by serial, not by a debug session, and the
+        artifact table still needs a session_id. There is no foreign key: this
+        is a stable bucket so retention can see the files and the agent can
+        read them back. Using the serial keeps two devices from sharing a row.
+        """
+        return f"device:{serial.strip()}"
 
     def _adb_wrap(self, op: str, /, **kwargs: Any) -> Result[JsonObject]:
         try:
@@ -86,11 +97,44 @@ class DeviceAnalysisMixin:
 
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        result = self._adb_wrap("screenshot", serial=serial, out_path=out)
+        return self._register_device_capture(
+            result, serial, out, kind="device_screenshot", source="device.screenshot"
+        )
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        return self._register_device_capture(
+            result, serial, out, kind="device_pull", source="device.pull"
+        )
+
+    def _register_device_capture(
+        self,
+        result: Result[JsonObject],
+        serial: str,
+        path: Path,
+        *,
+        kind: str,
+        source: str,
+    ) -> Result[JsonObject]:
+        """Register a device file so it is readable and reclaimable.
+
+        A bare path is a dead end: nothing on the tool surface opens one, and
+        retention only collects registered artifacts. Registration must not
+        fail the capture -- the file exists either way.
+        """
+        if not result.ok or result.data is None:
+            return result
+        data = _register_capture(
+            self,
+            self._device_artifact_session(serial),
+            path,
+            kind=kind,
+            source=source,
+            payload=result.data,
+        )
+        return _success(data, **result.meta)
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str

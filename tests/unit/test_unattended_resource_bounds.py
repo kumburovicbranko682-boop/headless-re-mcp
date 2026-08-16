@@ -819,6 +819,116 @@ class TestUiCapturesAreRegistered:
             assert "_register_ui_capture" in inspect.getsource(method)
 
 
+class _FakeDeviceBackend:
+    """Writes the files device.screenshot / device.pull would write, without adb."""
+
+    def screenshot(self, serial: str, out_path: Any) -> dict[str, Any]:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x89PNG" + b"X" * (64 * 1024))
+        return {"path": str(out_path), "serial": serial}
+
+    def pull(self, serial: str, remote_path: str, local_path: Any) -> dict[str, Any]:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(b"Y" * (32 * 1024))
+        return {"remote": remote_path, "local": str(local_path)}
+
+
+class TestDeviceCapturesAreRegistered:
+    """Device screenshots and pulls were the leftover of the capture leak.
+
+    ``device.screenshot`` and ``device.pull`` write a fresh uuid file under
+    the artifact root and return a bare path. Measured: 8 screenshots and 8
+    pulls (786 KiB of device files) against an 80 KiB budget left
+    ``artifacts.list`` at total=0 and ``artifacts.gc`` at count=0, with
+    786 KiB still on disk afterwards. The tools describe themselves as
+    writing artifacts; nothing could read or reclaim them.
+    """
+
+    def _service(self, tmp_path: Any, *, budget: int = 512 * 1024 * 1024) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(
+            Settings.load(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_max_total_bytes=budget,
+        )
+        service = AnalysisService(settings)
+        service._backend = lambda: _FakeDeviceBackend()  # type: ignore[method-assign]
+        return service
+
+    def test_screenshot_and_pull_are_readable_and_reclaimable(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path, budget=80_000)
+        try:
+            shot = service.device_screenshot("emulator-5554")
+            pulled = service.device_pull("emulator-5554", "/sdcard/x.bin")
+            for result in (shot, pulled):
+                assert result.ok, result.error
+                assert result.data is not None
+                assert "artifact_error" not in result.data
+                assert result.data["artifact_id"]
+
+            listed = service.repository.list_artifacts("device:emulator-5554")
+            kinds = {item["kind"] for item in listed["artifacts"]}
+            assert kinds == {"device_screenshot", "device_pull"}
+
+            read = service.artifacts_read(str(shot.data["artifact_id"]), offset=0, limit=4)
+            assert read.ok and read.data is not None
+            assert read.data["data"].startswith("89504e47")
+        finally:
+            service.close_all()
+
+    def test_unattended_captures_stay_inside_the_budget(self, tmp_path: Any) -> None:
+        """The measured leak: 16 writes, 0 rows, GC a no-op, 786 KiB left behind."""
+        from headless_re_mcp.core.retention import measure_usage
+
+        budget = 80_000
+        service = self._service(tmp_path, budget=budget)
+        root = (tmp_path / "artifacts").resolve()
+        try:
+            for index in range(8):
+                assert service.device_screenshot("emulator-5554").ok
+                assert service.device_pull("emulator-5554", f"/sdcard/x{index}.bin").ok
+
+            listed = service.repository.list_artifacts(None, offset=0, limit=100)
+            assert listed["total"] > 0
+            usage = measure_usage(root)
+            # 768 KiB written against 80 KiB. Unregistered, all of it stayed.
+            assert usage.bytes < 3 * budget
+        finally:
+            service.close_all()
+
+    def test_a_registration_failure_does_not_fail_the_capture(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        service = self._service(tmp_path)
+        try:
+
+            def explode(**_: object) -> dict[str, Any]:
+                raise RuntimeError("repository is down")
+
+            service.record_artifact = explode  # type: ignore[method-assign]
+            result = service.device_screenshot("emulator-5554")
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_id" not in result.data
+            assert "repository is down" in result.data["artifact_error"]
+            assert Path(str(result.data["path"])).is_file()
+        finally:
+            service.close_all()
+
+    def test_both_device_capture_tools_route_through_registration(self) -> None:
+        import inspect
+
+        from headless_re_mcp.core import service_device
+
+        mixin = service_device.DeviceAnalysisMixin
+        for method in (mixin.device_screenshot, mixin.device_pull):
+            assert "_register_device_capture" in inspect.getsource(method)
+
+
 def _minimal_pe(path: Any) -> Any:
     image = bytearray(0x200)
     image[:2] = b"MZ"
