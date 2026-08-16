@@ -314,33 +314,62 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            _call_bounded(lambda: dev.uninstall(pkg), timeout=_SHELL_TIMEOUT, op="uninstall")
+            outcome = _call_bounded(
+                lambda: dev.uninstall(pkg), timeout=_SHELL_TIMEOUT, op="uninstall"
+            )
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
+        # adbutils returns False when the package was not removed. Treating
+        # that as uninstalled=True is how an agent concludes the app is gone.
+        if outcome is False:
+            raise AdbError("backend_error", "uninstall did not remove the package", package=pkg)
         return {"uninstalled": True, "package": pkg}
 
     def launch(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            _shell(dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            raw = _shell(
+                dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
+            )
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
+        text = str(raw)
+        lowered = text.lower()
+        # monkey writes these and still exits 0. Measured: "No activities
+        # found to run, monkey aborted" and a CRASH line both came back as
+        # launched=True.
+        if "no activities found" in lowered or "monkey aborted" in lowered:
+            raise AdbError(
+                "backend_error",
+                "launch failed: no launcher activity",
+                package=pkg,
+            )
+        if "crash:" in lowered:
+            raise AdbError("backend_error", "launch crashed", package=pkg)
         return {"launched": True, "package": pkg}
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            _shell(dev, ["am", "force-stop", pkg])
+            raw = _shell(dev, ["am", "force-stop", pkg])
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
+        text = str(raw)
+        if "error:" in text.lower() or "unknown package" in text.lower():
+            raise AdbError(
+                "backend_error",
+                "force-stop failed",
+                package=pkg,
+                output=text[:300],
+            )
         return {"stopped": True, "package": pkg}
 
     def current_activity(self, serial: str) -> JsonObject:

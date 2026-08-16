@@ -2754,3 +2754,79 @@ class TestDevicePackagesArePaged:
         assert result["total"] == 2
         assert result["has_more"] is False
 
+
+class TestAdbMutationsDoNotInventSuccess:
+    """monkey and pm write a failure and still exit 0.
+
+    Measured: "No activities found to run, monkey aborted", a CRASH line,
+    uninstall returning False, and force-stop "Error: unknown package" all
+    came back as launched/uninstalled/stopped=True.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_monkey_aborted_is_not_launched(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "** No activities found to run, monkey aborted.\n"
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).launch("emulator-5554", "com.example.app")
+        assert caught.value.code == "backend_error"
+        assert "no launcher activity" in caught.value.message
+
+    def test_a_monkey_crash_is_not_launched(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "CRASH: com.example.app (pid 12)\n"
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).launch("emulator-5554", "com.example.app")
+        assert caught.value.code == "backend_error"
+        assert "crashed" in caught.value.message
+
+    def test_events_injected_is_launched(self) -> None:
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "Events injected: 1\n"
+
+        result = self._backend(Device()).launch("emulator-5554", "com.example.app")
+        assert result["launched"] is True
+
+    def test_uninstall_false_is_not_removed(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def uninstall(self, package: str) -> bool:
+                del package
+                return False
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).uninstall("emulator-5554", "com.example.app")
+        assert caught.value.code == "backend_error"
+
+    def test_force_stop_unknown_package_is_not_stopped(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "Error: unknown package: com.example.app"
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).force_stop("emulator-5554", "com.example.app")
+        assert caught.value.code == "backend_error"
+
