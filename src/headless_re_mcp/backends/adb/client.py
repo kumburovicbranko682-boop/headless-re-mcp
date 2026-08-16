@@ -132,19 +132,32 @@ class AdbBackend:
         }
 
     def info(self, serial: str) -> JsonObject:
+        """Read a few well-known properties. Every adb hop is bounded.
+
+        ``get_state`` / ``prop.*`` / ``getprop`` used to be invoked with no
+        deadline. Six of those in a row held the worker for the life of the
+        process when adb had stopped answering. A successful ``getprop``
+        already means the device accepted a shell, so ``state`` is ``device``.
+        """
         dev = self._device(serial)
         try:
-            return {
-                "serial": _check_serial(serial),
-                "state": dev.get_state(),
-                "model": dev.prop.model,
-                "device": dev.prop.device,
-                "sdk": dev.getprop("ro.build.version.sdk"),
-                "release": dev.getprop("ro.build.version.release"),
-                "abi": dev.getprop("ro.product.cpu.abi"),
-            }
+            raw = dev.shell("getprop", timeout=15.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+        props: dict[str, str] = {}
+        for line in str(raw).splitlines():
+            match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
+            if match:
+                props[match.group(1)] = match.group(2)
+        return {
+            "serial": _check_serial(serial),
+            "state": "device",
+            "model": props.get("ro.product.model"),
+            "device": props.get("ro.product.device"),
+            "sdk": props.get("ro.build.version.sdk"),
+            "release": props.get("ro.build.version.release"),
+            "abi": props.get("ro.product.cpu.abi"),
+        }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)

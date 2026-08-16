@@ -272,6 +272,54 @@ class TestAdbArgumentValidation:
         assert device.timeout == 15.0
         assert result["stopped"] is True
 
+    def test_info_does_not_wait_on_adb_forever(self) -> None:
+        """info used six unbounded adbutils calls.
+
+        Measured: get_state, prop.model, prop.device, and three getprop
+        keys were invoked with no timeout. A wedged adb held the worker
+        for the life of the process.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+                self.cmd: object = None
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.cmd = cmd
+                self.timeout = timeout
+                return (
+                    "[ro.product.model]: [Pixel]\n"
+                    "[ro.product.device]: [pixel]\n"
+                    "[ro.build.version.sdk]: [33]\n"
+                    "[ro.build.version.release]: [13]\n"
+                    "[ro.product.cpu.abi]: [arm64-v8a]\n"
+                )
+
+            def get_state(self) -> str:
+                raise AssertionError("unbounded get_state")
+
+            def getprop(self, name: str) -> str:
+                raise AssertionError(f"unbounded getprop {name}")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).info("emulator-5554")
+        assert device.timeout == 15.0
+        assert device.cmd == "getprop"
+        assert result["model"] == "Pixel"
+        assert result["sdk"] == "33"
+        assert result["state"] == "device"
+
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
         if backend.available:
