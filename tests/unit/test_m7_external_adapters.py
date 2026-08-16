@@ -5,6 +5,8 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
@@ -39,6 +41,98 @@ def test_vmpdump_parse_written_path() -> None:
         "** File written to: C:\\tmp\\foo.VMPDump.exe\n", ""
     )
     assert path == Path(r"C:\tmp\foo.VMPDump.exe")
+
+
+class TestVmpDumpDoesNotSucceedOnLeftoverPe:
+    """VMPDump exit 1 still answered dump_ok if leftover PE was named in stdout.
+
+    Measured: run_vmp_dumper against a leftover PE one hour old, with
+    returncode=1 and File-written pointing at that PE, returned dump_ok=True
+    and copied the leftover bytes. An unattended agent would treat a failed
+    dump as a recovered PE.
+    """
+
+    def test_exit_1_with_leftover_written_path_is_process_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        import time
+        from types import SimpleNamespace
+
+        from headless_re_mcp.unpack import vmp_dumper as vmp_mod
+        from headless_re_mcp.unpack.vmp_dumper import run_vmp_dumper
+
+        leftover = tmp_path / "old.VMPDump.exe"
+        _write_minimal_pe(leftover)
+        old = time.time() - 3600
+        os.utime(leftover, (old, old))
+
+        source = tmp_path / "sample.exe"
+        _write_minimal_pe(source)
+        dumper = tmp_path / "vmpdump.exe"
+        dumper.write_bytes(b"MZ")
+        dest = tmp_path / "out.exe"
+
+        monkeypatch.setattr(
+            vmp_mod,
+            "_capture_process",
+            lambda *args, **kwargs: SimpleNamespace(
+                stdout=f"File written to: {leftover}\n",
+                stderr="open process failed\n",
+                returncode=1,
+                stdout_exceeded=False,
+                stderr_exceeded=False,
+            ),
+        )
+        with pytest.raises(VmpDumperError) as info:
+            run_vmp_dumper(
+                dumper,
+                source,
+                dest,
+                input_sha256=file_sha256(source),
+                pid=4242,
+                search_roots=[tmp_path],
+            )
+        assert info.value.code == "output_missing"
+        assert not dest.exists()
+
+    def test_this_run_written_pe_still_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.unpack import vmp_dumper as vmp_mod
+        from headless_re_mcp.unpack.vmp_dumper import run_vmp_dumper
+
+        produced = tmp_path / "fresh.VMPDump.exe"
+        _write_minimal_pe(produced)
+        source = tmp_path / "sample.exe"
+        _write_minimal_pe(source)
+        dumper = tmp_path / "vmpdump.exe"
+        dumper.write_bytes(b"MZ")
+        dest = tmp_path / "out.exe"
+
+        monkeypatch.setattr(
+            vmp_mod,
+            "_capture_process",
+            lambda *args, **kwargs: SimpleNamespace(
+                stdout=f"File written to: {produced}\n",
+                stderr="",
+                returncode=0,
+                stdout_exceeded=False,
+                stderr_exceeded=False,
+            ),
+        )
+        result = run_vmp_dumper(
+            dumper,
+            source,
+            dest,
+            input_sha256=file_sha256(source),
+            pid=4242,
+            search_roots=[tmp_path],
+        )
+        assert result.dump_ok is True
+        assert dest.is_file()
 
 
 def test_vmpdump_rejects_file_only_without_pid(tmp_path: Path) -> None:

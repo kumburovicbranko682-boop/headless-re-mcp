@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **VMPDump 失败时仍把上次残留 PE 当成功**。exit 1 但 stdout 仍写着
+  `File written to:` 指向一小时前的 PE 时，`dump_ok=True` 并拷走旧文件。
+  过夜任务会把失败的 dump 当恢复后的 PE。现在只认本次时间窗内的输出。
 - **provider 模型列表在 1000 条时不标 `has_more`**。1500 个模型 id
   被切成 1000 且 `ok=True`。过夜探测会把一页当完整目录。现在满页标
   `has_more`。

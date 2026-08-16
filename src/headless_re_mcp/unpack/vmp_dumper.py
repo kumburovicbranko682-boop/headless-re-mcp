@@ -213,7 +213,14 @@ def _collect_output_pe(
 ) -> Path:
     written = parse_vmpdump_written_path(stdout, stderr)
     if written is not None and written.is_file() and _is_pe_file(written):
-        return written
+        try:
+            written_mtime = written.stat().st_mtime
+        except OSError:
+            written_mtime = None
+        # Same floor as the fallback scan: a leftover PE named in stdout
+        # from a previous dump is not this run's output.
+        if written_mtime is not None and written_mtime >= mtime_floor:
+            return written
 
     candidates: list[tuple[float, Path]] = []
     for root in search_roots:
