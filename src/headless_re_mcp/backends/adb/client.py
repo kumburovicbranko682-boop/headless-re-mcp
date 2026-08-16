@@ -402,7 +402,14 @@ class AdbBackend:
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"logcat failed: {exc}") from exc
             text = str(raw)
-            return {"lines": text.splitlines()[-capped:], "requested": capped}
+            all_lines = text.splitlines()
+            returned = all_lines[-capped:]
+            return {
+                "lines": returned,
+                "requested": capped,
+                "count": len(returned),
+                "has_more": len(all_lines) > capped,
+            }
 
         return self._call("logcat", work)
 

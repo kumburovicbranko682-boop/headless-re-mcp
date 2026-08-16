@@ -1225,3 +1225,34 @@ class TestDevicePullDoesNotClaimAnArtifact:
         doc = docs["device.pull"]
         assert "not a registered artifact" in doc
         assert "local artifact" not in doc
+
+
+class TestDeviceLogcatSaysWhenItStopped:
+    """An oversized logcat dump was sliced with no signal.
+
+    Measured: 500 lines with lines=20 came back as 20 lines and requested=20,
+    with no has_more, so a caller would treat a slice as the whole buffer.
+    """
+
+    def _backend(self, n: int) -> AdbBackend:
+        class _Dev:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return "\n".join(f"line {index}" for index in range(n))
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(500).logcat("emulator-5554", lines=20)
+        assert page["count"] == 20
+        assert page["requested"] == 20
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).logcat("emulator-5554", lines=20)
+        assert page["count"] == 3
+        assert page["has_more"] is False
