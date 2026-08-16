@@ -1243,3 +1243,17 @@ class TestIdaDecompileDoesNotInventEmptySource:
         page = worker._decompile({"address": 0x1000})
         assert page["code"] == "void foo(void) {}"
         assert page["address"] == 0x1000
+
+    def test_the_tool_description_says_empty_is_not_success(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_decompile(")[1].split("def static_metadata(")[0]
+        assert "empty" in block.casefold()
+        assert "not success" in block
