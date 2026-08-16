@@ -558,7 +558,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         comment: str,
         repeatable: bool = False,
     ) -> dict[str, Any]:
-        """Set a regular or repeatable comment at an address."""
+        """Set a regular or repeatable comment at an address.
+
+        The write is checked on the way out: a comment that did not land is
+        an error, not ok.
+        """
         return _dump(
             analysis.static_comment_set(
                 session_id,

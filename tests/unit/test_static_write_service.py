@@ -791,3 +791,24 @@ def test_the_name_set_tool_says_an_unchanged_name_fails() -> None:
     }
     assert docs["static_name_set"]
     assert "did not land" in docs["static_name_set"]
+
+
+def test_the_comment_set_tool_says_an_unchanged_comment_fails() -> None:
+    """The worker already refuses a no-op set_cmt; the description did not.
+
+    An agent that only reads the tool text treats any return as a comment
+    that landed.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_comment_set"]
+    assert "did not land" in docs["static_comment_set"]
