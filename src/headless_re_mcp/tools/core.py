@@ -412,7 +412,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """Search for a binary pattern (IDA bin-string syntax)."""
+        """Search for a binary pattern (IDA bin-string syntax; check has_more)."""
         return _dump(
             analysis.static_search_bytes(
                 session_id,
