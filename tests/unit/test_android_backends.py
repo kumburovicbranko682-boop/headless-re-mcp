@@ -226,6 +226,57 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkManifestSaysWhenItWasCut:
+    """A 250 KiB manifest used to come back as 200_000 characters, unmarked.
+
+    Measured: a 250_011-character document was returned as 200_000 characters
+    with no truncated flag. The tool claims to return the decoded manifest, so
+    an agent treating that XML as complete would miss whatever lived past the
+    cut -- exported activities, intent filters -- and keep going.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, xml: str) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _FakeApk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
+            def get_android_manifest_axml(self) -> Any:
+                class _Axml:
+                    def get_xml(self) -> bytes:
+                        return xml.encode("utf-8")
+
+                return _Axml()
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
+        return client
+
+    def test_an_oversized_manifest_is_marked_truncated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS
+
+        xml = "<manifest>" + ("x" * 250_000) + "</manifest>"
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is True
+        assert result["bytes"] == len(xml)
+        assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+        assert result["manifest_xml"] == xml[:_MAX_MANIFEST_CHARS]
+
+    def test_a_complete_manifest_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        xml = "<manifest package='com.example.app'/>"
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is False
+        assert result["bytes"] == len(xml)
+        assert result["manifest_xml"] == xml
+
+
 class TestApkXrefsSayWhenTheyStopped:
     """A caller list that hit the cap looks exactly like one that ended."""
 

@@ -19,6 +19,9 @@ JsonObject = dict[str, Any]
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
+# Inline cap for the decoded manifest. Cutting without saying so turns a
+# 250 KiB document into a 200_000-character prefix that still looks complete.
+_MAX_MANIFEST_CHARS = 200_000
 
 
 class ApkError(RuntimeError):
@@ -171,7 +174,13 @@ class ApkClient:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
+        truncated = len(xml) > _MAX_MANIFEST_CHARS
+        return {
+            "package": apk.get_package(),
+            "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+            "truncated": truncated,
+            "bytes": len(xml),
+        }
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)

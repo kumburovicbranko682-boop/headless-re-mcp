@@ -28,7 +28,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.manifest")
     def apk_manifest(session_id: str) -> dict[str, Any]:
-        """Return the decoded AndroidManifest.xml for the APK session."""
+        """Return the decoded AndroidManifest.xml for the APK session.
+
+        Oversized manifests are cut and marked truncated, with the original
+        length in bytes, so a caller can tell a complete document from a slice.
+        """
         return _dump(analysis.apk_manifest(session_id))
 
     @tools.tool(name="apk.permissions")
