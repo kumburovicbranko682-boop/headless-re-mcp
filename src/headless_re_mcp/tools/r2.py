@@ -48,7 +48,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Functions radare2 found, with address, size and name.
 
         Useful where IDA and radare2 disagree about where code begins, which is
-        common in packed or obfuscated samples.
+        common in packed or obfuscated samples. A cut listing carries
+        truncated or items_truncated; read those rather than treating
+        the page as every function r2 found.
         """
         return _dump(analysis.r2_functions(session_id, timeout=timeout))
 
