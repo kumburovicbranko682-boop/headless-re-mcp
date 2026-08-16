@@ -21,6 +21,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.attach")
     def frida_attach(session_id: str) -> dict[str, Any]:
+        """Probe-attach to the authorized process, then detach immediately.
+
+        attached is not a live session. The probe is gone before the caller
+        reads the reply.
+        """
         return _dump(analysis.frida_attach(session_id))
 
     @tools.tool(name="frida.modules")
