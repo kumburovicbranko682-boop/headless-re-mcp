@@ -378,6 +378,40 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestDevicePropertiesSayWhenTheyStopped:
+    """800 properties with limit=500 used to come back as count=500, unmarked."""
+
+    def _properties(self, n: int, *, limit: int = 500) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object) -> str:
+                return "\n".join(f"[ro.prop.{index}]: [v{index}]" for index in range(n))
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.properties("emulator-5554", limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._properties(800, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 800
+        assert result["limit"] == 500
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._properties(3, limit=500)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._properties(500, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 500
+        assert result["has_more"] is False
+
+
 class TestJadxExportSaysWhenTheFileListWasCut:
     """java_file_count said 2500 while java_files held 2000, with no has_more.
 
