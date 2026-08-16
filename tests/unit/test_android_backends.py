@@ -497,6 +497,41 @@ class TestApkStringsDoNotMergeAtTheCap:
         assert page["truncated"] is False
 
 
+class TestApkPermissionsAreCapped:
+    """The permission lists had no page and no signal that they had stopped.
+
+    Measured: 2000 declared plus 1500 requested came back in one 95 KiB
+    reply, with no has_more.
+    """
+
+    def _client(self, declared: int, requested: int) -> ApkClient:
+        class _Apk:
+            def get_permissions(self) -> list[str]:
+                return [f"android.permission.P{index}" for index in range(declared)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return [f"android.permission.R{index}" for index in range(requested)]
+
+        client = ApkClient()
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(2000, 1500).permissions(tmp_path / "app.apk", limit=10)
+        assert page["count"] == 10
+        assert page["totals"]["permissions"] == 2000
+        assert page["totals"]["requested_permissions"] == 1500
+        assert page["has_more"] is True
+        assert len(page["permissions"]) == 10
+        assert len(page["requested_permissions"]) == 10
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3, 2).permissions(tmp_path / "app.apk", limit=10)
+        assert page["has_more"] is False
+        assert page["totals"]["permissions"] == 3
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

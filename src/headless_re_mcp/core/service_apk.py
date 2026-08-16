@@ -60,8 +60,8 @@ class ApkAnalysisMixin:
     def apk_manifest(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "manifest")
 
-    def apk_permissions(self, session_id: str) -> Result[JsonObject]:
-        return self._apk_call(session_id, "permissions")
+    def apk_permissions(self, session_id: str, limit: int = 500) -> Result[JsonObject]:
+        return self._apk_call(session_id, "permissions", limit=limit)
 
     def apk_certificates(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "certificates")

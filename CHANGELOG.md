@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.permissions` 一次回完整权限表**。2000 条声明 + 1500 条请求整包返回
+  （95 KiB），没有 `has_more`。现在每类列表默认 500，截断时标 `totals` /
+  `has_more`。
 - **`ghidra.functions` / `symbols` / `xrefs` 停在上限时看起来像完整表**。默认
   256 条函数整页返回，没有 `has_more`。现在脚本在提前停下时标 `has_more`，旧
   脚本的满页也由客户端补上。
