@@ -1033,6 +1033,53 @@ class TestStaticEntrypointsDescriptionSaysWhenItWasCut:
         assert "has_more" in block
 
 
+class TestStaticTypesDescriptionSaysWhenItWasCut:
+    """The type page already carries has_more; the tool text did not say so.
+
+    Measured: 250 types, limit 100, returned=100, total=250, has_more=True,
+    while the description omitted has_more. An unattended agent that trusted
+    the description treated the page as every local type.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        ida_typeinf = types.ModuleType("ida_typeinf")
+        ida_typeinf.get_idati = lambda: object()  # type: ignore[attr-defined]
+        ida_typeinf.get_ordinal_limit = lambda til: 251  # type: ignore[attr-defined]
+        ida_typeinf.get_numbered_type_name = (  # type: ignore[attr-defined]
+            lambda til, ordinal: f"T{ordinal}"
+        )
+
+        class _Tinfo:
+            def get_numbered_type(self, til: object, ordinal: int) -> bool:
+                del til, ordinal
+                return False
+
+        ida_typeinf.tinfo_t = _Tinfo  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_typeinf", ida_typeinf)
+        page = worker._types({"offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_types(")[1].split("def static_structs(")[0]
+        assert "has_more" in block
+
+
 class TestIdaDecompileDoesNotInventEmptySource:
     """An empty Hex-Rays result used to look like a finished decompile.
 
