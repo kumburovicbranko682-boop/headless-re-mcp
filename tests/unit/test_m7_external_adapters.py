@@ -248,6 +248,11 @@ def test_unpack_vmp_dump_mocked(tmp_path: Path) -> None:
     assert result.data["vm_restored"] is False
     assert result.data["pid"] == 4242
     assert result.data["input_unchanged"] is True
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "vmp_dumped"
 
 
 def test_unpack_vmp_dump_requires_debuggee(tmp_path: Path) -> None:

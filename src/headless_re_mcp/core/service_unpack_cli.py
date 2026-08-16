@@ -541,21 +541,27 @@ class UnpackCliMixin:
                 disable_reloc=disable_reloc,
                 search_roots=search_roots,
             )
-            return _success(
-                {
-                    "vmp_dumper": result.to_dict(),
-                    "output_path": str(result.output_path),
-                    "dump_ok": result.dump_ok,
-                    "imports_rebuilt": result.imports_rebuilt,
-                    "vm_restored": result.vm_restored,
-                    "pid": debuggee_pid,
-                    "module_name": resolved_module,
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
-                    "claims_universal_unpack": False,
-                },
-                session_id=session_id,
-                backend="vmp_dumper",
+            payload = {
+                "vmp_dumper": result.to_dict(),
+                "output_path": str(result.output_path),
+                "dump_ok": result.dump_ok,
+                "imports_rebuilt": result.imports_rebuilt,
+                "vm_restored": result.vm_restored,
+                "pid": debuggee_pid,
+                "module_name": resolved_module,
+                "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                "claims_universal_unpack": False,
+            }
+            # Measured: 5 dumps, 5 files / 5120 bytes, 0 artifact rows.
+            payload = _register_capture(
+                self,
+                session_id,
+                Path(result.output_path),
+                kind="vmp_dumped",
+                source="unpack.vmp.dump",
+                payload=payload,
             )
+            return _success(payload, session_id=session_id, backend="vmp_dumper")
         except VmpDumperError as exc:
             return Result[JsonObject](
                 ok=False,
