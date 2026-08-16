@@ -375,13 +375,28 @@ class WebBackend:
             "has_more": len(retained) > len(page),
         }
 
-    def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
+    def scripts(
+        self, session_id: str, *, wasm_only: bool = False, limit: int = 200
+    ) -> JsonObject:
+        """Recent parsed scripts. A page is not every script the tab loaded.
+
+        Measured: 80 scripts came back in one reply, count=80, no total or
+        has_more. The buffer holds 2000; a long-lived tab would dump them
+        all into the model context.
+        """
         handle = self._get(session_id)
+        capped = max(1, min(int(limit), _MAX_SCRIPTS))
         with handle.lock:
             values = list(handle.scripts.values())
         if wasm_only:
-            values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+            values = [item for item in values if str(item.get("language")).lower() == "webassembly"]
+        page = values[-capped:]
+        return {
+            "scripts": page,
+            "count": len(page),
+            "total": len(values),
+            "has_more": len(values) > len(page),
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

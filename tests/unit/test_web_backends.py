@@ -29,6 +29,33 @@ class TestNoArbitraryExecution:
         assert not {"evaluate", "eval", "run_code"} & public
 
 
+class TestWebScriptPaging:
+    def test_a_script_page_says_when_more_is_retained(self) -> None:
+        """The full script buffer used to be returned as if it were complete.
+
+        Measured: 80 scripts, one reply, count=80, no total or has_more.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(80):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "url": f"https://ex/{index}.js",
+                "language": "JavaScript",
+            }
+        backend._sessions["s"] = handle
+        result = backend.scripts("s", limit=10)
+        assert result["count"] == 10
+        assert result["total"] == 80
+        assert result["has_more"] is True
+        assert result["scripts"][0]["scriptId"] == "70"
+        assert result["scripts"][-1]["scriptId"] == "79"
+
+        complete = backend.scripts("s", limit=80)
+        assert complete["has_more"] is False
+        assert complete["total"] == 80
+
+
 class TestWebConsolePaging:
     def test_a_console_page_says_when_more_is_retained(self) -> None:
         """A 200-line page used to look like the whole console.
