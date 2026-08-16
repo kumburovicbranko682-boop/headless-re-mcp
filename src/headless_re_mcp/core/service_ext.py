@@ -56,6 +56,15 @@ def _r2_rpc(exc: R2Error) -> XdbgRpcError:
     )
 
 
+def _ghidra_rpc(exc: GhidraError) -> XdbgRpcError:
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -371,7 +380,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "ghidra.analyze", "ghidra analyze finished")
             return _success(data, session_id=session_id, backend="ghidra")
         except GhidraError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_ghidra_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -1012,7 +1021,7 @@ def _ghidra_export(
             data["artifact_id"] = art["id"]
         return _success(data, session_id=session_id, backend="ghidra")
     except GhidraError as exc:
-        return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        return _failure(_ghidra_rpc(exc), session_id=session_id)
     except BaseException as exc:
         return _failure(exc, session_id=session_id)
 
