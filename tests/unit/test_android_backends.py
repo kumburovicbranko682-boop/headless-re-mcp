@@ -226,6 +226,59 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkManifestSaysWhenItWasCut:
+    """A 200_000-character slice used to look exactly like the whole manifest."""
+
+    def test_an_oversized_manifest_is_marked_truncated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+
+        class _Axm:
+            def get_xml(self) -> bytes:
+                return ("<manifest>" + ("<uses-permission/>" * 20_000) + "</manifest>").encode()
+
+        class _Apk:
+            def get_package(self) -> str:
+                return "com.example"
+
+            def get_android_manifest_axml(self) -> _Axm:
+                return _Axm()
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        result = client.manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is True
+        assert result["bytes"] > _MAX_MANIFEST_CHARS
+        assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+        assert not result["manifest_xml"].rstrip().endswith("</manifest>")
+
+    def test_a_short_manifest_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Axm:
+            def get_xml(self) -> bytes:
+                return b"<manifest package='com.example'/>"
+
+        class _Apk:
+            def get_package(self) -> str:
+                return "com.example"
+
+            def get_android_manifest_axml(self) -> _Axm:
+                return _Axm()
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        result = client.manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is False
+        assert result["bytes"] == len(result["manifest_xml"])
+        assert result["manifest_xml"].endswith("/>")
+
+
 class TestApkXrefsSayWhenTheyStopped:
     """A caller list that hit the cap looks exactly like one that ended."""
 
