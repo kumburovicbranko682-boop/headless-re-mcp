@@ -3054,6 +3054,72 @@ class TestAdbInstallDoesNotInventSuccess:
         assert result["installed"] is True
 
 
+class TestAdbCapturesDoNotInventAFile:
+    """A pull or screenshot that wrote nothing still returned a path.
+
+    Measured: both came back as success with a local path whose file did
+    not exist. An overnight agent then reads a capture that was never stored.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_pull_that_writes_nothing_is_not_stored(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            @property
+            def sync(self) -> Device:
+                return self
+
+            def pull(self, remote: str, local: str) -> None:
+                del remote, local
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).pull("emulator-5554", "/sdcard/x", tmp_path / "x.bin")
+        assert caught.value.code == "backend_error"
+        assert not (tmp_path / "x.bin").exists()
+
+    def test_a_screenshot_that_writes_nothing_is_not_stored(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Image:
+            def save(self, path: str) -> None:
+                del path
+
+        class Device:
+            def screenshot(self) -> Image:
+                return Image()
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).screenshot("emulator-5554", tmp_path / "s.png")
+        assert caught.value.code == "backend_error"
+        assert not (tmp_path / "s.png").exists()
+
+    def test_a_pull_that_writes_a_file_is_stored(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        out = tmp_path / "x.bin"
+
+        class Device:
+            @property
+            def sync(self) -> Device:
+                return self
+
+            def pull(self, remote: str, local: str) -> None:
+                del remote
+                Path(local).write_bytes(b"data")
+
+        result = self._backend(Device()).pull("emulator-5554", "/sdcard/x", out)
+        assert result["local"] == str(out)
+        assert out.read_bytes() == b"data"
+
+
 class TestAdbConnectDoesNotInventALink:
     """adb connect writes a sentence; the word 'already' is not success.
 

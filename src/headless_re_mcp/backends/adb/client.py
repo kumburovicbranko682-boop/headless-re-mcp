@@ -448,6 +448,10 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+        # Measured: a screenshot whose save() wrote nothing still came back
+        # as a path. The caller then reads an artifact that does not exist.
+        if not out_path.is_file():
+            raise AdbError("backend_error", "screenshot did not write an image", path=str(out_path))
         return {"path": str(out_path), "serial": _check_serial(serial)}
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:
@@ -463,6 +467,15 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+        # Measured: a pull that never created the local file still returned
+        # local= that path. The caller then treats the capture as stored.
+        if not local_path.is_file():
+            raise AdbError(
+                "backend_error",
+                "pull did not write a local file",
+                remote=remote_path,
+                local=str(local_path),
+            )
         return {"remote": remote_path, "local": str(local_path)}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
