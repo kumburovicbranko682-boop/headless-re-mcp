@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import headless_re_mcp.backends.r2.client as r2_client
+from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     enrich_r2_payload,
@@ -65,10 +67,10 @@ def test_output_cut_at_the_buffer_says_it_was_cut(
     binary = _minimal_pe(tmp_path)
     monkeypatch.setattr(r2_client, "_MAX_OUTPUT", 64)
 
-    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"A" * 500, stderr=b"")
+    def huge(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"A" * 500, stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    monkeypatch.setattr(r2_client, "run_bounded", huge)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
@@ -86,10 +88,10 @@ def test_output_that_fits_is_not_labelled_truncated(
     """The flag has to mean something, so it stays off when nothing was cut."""
     binary = _minimal_pe(tmp_path)
 
-    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"[]", stderr=b"")
+    def small(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"[]", stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    monkeypatch.setattr(r2_client, "run_bounded", small)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
@@ -153,3 +155,47 @@ def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     assert enriched["address"]["rva"] == 0x1000
     assert enriched["address_va"] == 0x140001000
     assert enriched["items"][0]["address"]["module"] == binary.name
+
+
+def test_a_timeout_kills_what_the_r2_launcher_started(tmp_path: Path) -> None:
+    """r2 used subprocess.run, which kills the launcher and leaves the tool.
+
+    Measured the same shape as isolation: a wrapper that starts a sleeper
+    returns a timeout while the sleeper is reparented to pid 1. r2 is
+    invoked on every listing, so that orphan holds the sample open.
+    """
+    pid_path = tmp_path / "child.pid"
+    launcher = tmp_path / "fake-r2"
+    launcher.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
+        "while True: time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    binary = _minimal_pe(tmp_path)
+    client = r2_client.R2Client(launcher)
+
+    started = time.monotonic()
+    with pytest.raises(r2_client.R2Error) as caught:
+        client.run(binary, ["i"], timeout=0.8)
+    elapsed = time.monotonic() - started
+
+    assert caught.value.code == "timeout"
+    assert elapsed < 5.0
+    assert pid_path.is_file()
+    child = int(pid_path.read_text())
+    deadline = time.monotonic() + 2.0
+    alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except OSError:
+            alive = False
+            break
+        time.sleep(0.05)
+    assert alive is False, "the process r2 started outlived the timeout"
+    assert child in list(caught.value.details.get("killed") or [])
