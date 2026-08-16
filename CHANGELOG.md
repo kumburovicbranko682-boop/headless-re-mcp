@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.applications` 停在上限时看起来像完整应用表**。500 个应用、limit=20
+  时回 `count=20` / `total=500`，没有 `has_more`。只看列表的 agent 会停在第一
+  页。现在截断时标 `has_more`。
 - **`device.pull` 把裸路径说成 artifact**。文档写 “local artifact”，回包只有
   `local` / `remote`，没有登记。agent 会拿去 `artifacts.read` 并当成已纳入回收。
   现在写明这是本地路径，不是登记产物。

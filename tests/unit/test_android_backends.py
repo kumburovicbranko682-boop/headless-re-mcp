@@ -123,6 +123,41 @@ class TestFridaTargetAuthorization:
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
 
+class TestFridaApplicationsSayWhenTheyStopped:
+    """An application page that hit the cap looks exactly like one that ended.
+
+    Measured: 500 apps with limit=20 came back as count=20 and total=500,
+    with no has_more.
+    """
+
+    def _client(self, n: int) -> FridaClient:
+        class _App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = f"App{index}"
+                self.pid = 0
+
+        class _Dev:
+            def enumerate_applications(self) -> list[_App]:
+                return [_App(index) for index in range(n)]
+
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        client._resolve_device = lambda device_id: _Dev()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._client(500).applications("usb", limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 500
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._client(3).applications("usb", limit=20)
+        assert page["has_more"] is False
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False
