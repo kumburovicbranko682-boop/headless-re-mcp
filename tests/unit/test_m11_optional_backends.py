@@ -139,6 +139,43 @@ class TestR2OpenSaysWhenInfoWasCut:
         assert page["info"].startswith("arch")
 
 
+class TestR2TimeoutKillsWhatItStarted:
+    """r2 timeout left the process the stub launched still running.
+
+    Measured: a stub that launched sleep 60 still left that child alive
+    after subprocess.run timed out at 0.4s, so an overnight r2 that
+    forks a helper would keep the process for the rest of the service.
+    """
+
+    def test_a_timeout_kills_the_child(self, tmp_path: Path) -> None:
+        import os
+        import time
+
+        child_pid_file = tmp_path / "child.pid"
+        stub = tmp_path / "r2"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"sleep 60 &\n"
+            f"echo $! > {child_pid_file}\n"
+            "sleep 60\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        binary = tmp_path / "x.exe"
+        binary.write_bytes(b"MZ")
+        client = R2Client(executable=stub)
+        started = time.monotonic()
+        with pytest.raises(R2Error) as info:
+            client.run(binary, ["i"], timeout=0.4)
+        assert info.value.code == "timeout"
+        assert time.monotonic() - started < 7.0
+        child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        still = os.path.exists(f"/proc/{child_pid}")
+        if still:
+            os.kill(child_pid, 9)
+        assert still is False
+
+
 class TestR2TimeoutEnvelopeIsRetryable:
     """An r2 timeout was reported as a permanent failure.
 
