@@ -65,6 +65,15 @@ def _ghidra_rpc(exc: GhidraError) -> XdbgRpcError:
     )
 
 
+def _windbg_rpc(exc: WindbgError) -> XdbgRpcError:
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -509,7 +518,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(_windbg_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -518,7 +527,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             client = _windbg_client(self)
             return _success(client.threads(Path(dump_path), timeout=timeout), backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(_windbg_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -527,7 +536,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             client = _windbg_client(self)
             return _success(client.modules(Path(dump_path), timeout=timeout), backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(_windbg_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -545,7 +554,7 @@ class ExtAnalysisMixin(UiDriveMixin):
                 backend="windbg",
             )
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(_windbg_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -558,7 +567,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.attach", "windbg noninvasive attach probe", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_windbg_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -570,7 +579,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.live_threads", "windbg live threads", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_windbg_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -582,7 +591,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.live_modules", "windbg live modules", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_windbg_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -604,7 +613,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_windbg_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 

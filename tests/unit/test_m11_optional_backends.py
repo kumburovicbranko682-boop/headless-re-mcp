@@ -193,3 +193,30 @@ class TestGhidraTimeoutEnvelopeIsRetryable:
         result = _failure(_ghidra_rpc(GhidraError("backend_error", "failed")))
         assert result.error is not None
         assert result.error.retryable is False
+
+
+class TestWindbgTimeoutEnvelopeIsRetryable:
+    """A WinDbg timeout was reported as a permanent failure.
+
+    Measured: WindbgError(code=timeout) through the service path mapped to
+    retryable=False. An unattended agent then treats a wedged cdb as
+    permanent and stops the overnight job.
+    """
+
+    def test_a_timeout_is_retryable(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_ext import _windbg_rpc
+
+        result = _failure(_windbg_rpc(WindbgError("timeout", "cdb timed out")))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+
+    def test_a_backend_error_stays_permanent(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_ext import _windbg_rpc
+
+        result = _failure(_windbg_rpc(WindbgError("backend_error", "failed")))
+        assert result.error is not None
+        assert result.error.retryable is False

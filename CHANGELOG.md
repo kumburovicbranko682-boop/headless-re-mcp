@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`windbg.*` 超时信封把可重试失败标成永久失败**。`WindbgError(timeout)`
+  映射 `retryable=False`。agent 不会再试卡住的 cdb。现在 `timeout` 标可
+  重试。
 - **`ghidra.*` 超时信封把可重试失败标成永久失败**。`GhidraError(timeout)`
   映射 `retryable=False`。agent 不会再试卡住的 headless。现在 `timeout`
   标可重试。
