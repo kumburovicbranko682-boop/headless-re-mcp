@@ -1336,6 +1336,45 @@ class TestDeviceLogcatSaysWhenItStopped:
         assert page["has_more"] is False
 
 
+class TestDevicePushDoesNotInventSuccess:
+    """A refused push was still reported as a successful tool call.
+
+    Measured: a device whose sync.push() returned False still answered
+    {local, remote} with no error. An unattended agent then treats a file
+    that never left the host as on-device. adbutils itself returns None
+    on success, so only an explicit False is a refusal.
+    """
+
+    def _backend(self, result: object) -> AdbBackend:
+        class _Sync:
+            def push(self, *args: object, **kwargs: object) -> object:
+                del args, kwargs
+                return result
+
+        class _Dev:
+            sync = _Sync()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_refused_push_is_a_failure(self, tmp_path: Path) -> None:
+        local = tmp_path / "payload.bin"
+        local.write_bytes(b"x")
+        with pytest.raises(AdbError) as info:
+            self._backend(False).push("emulator-5554", str(local), "/sdcard/x")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("pushed") is False
+
+    def test_a_none_return_is_still_success(self, tmp_path: Path) -> None:
+        local = tmp_path / "payload.bin"
+        local.write_bytes(b"x")
+        page = self._backend(None).push("emulator-5554", str(local), "/sdcard/x")
+        assert page["remote"] == "/sdcard/x"
+
+
 class TestDeviceForceStopDoesNotInventSuccess:
     """am force-stop writing an error was still reported as stopped.
 

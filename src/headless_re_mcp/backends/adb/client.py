@@ -457,9 +457,19 @@ class AdbBackend:
             if not path.is_file():
                 raise AdbError("not_found", "local file not found", path=str(path))
             try:
-                dev.sync.push(str(path), remote_path)
+                result = dev.sync.push(str(path), remote_path)
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
+            # adbutils returns None on success. Measured: an explicit False
+            # was still reported as a successful push.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "push was refused",
+                    local=str(path),
+                    remote=remote_path,
+                    pushed=False,
+                )
             return {"local": str(path), "remote": remote_path}
 
         return self._call("push", work, timeout=self._transfer_timeout)

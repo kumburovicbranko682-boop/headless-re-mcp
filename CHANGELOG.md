@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.push` 在推送被拒绝时仍报成功**。假设备 `sync.push()` 返回
+  `False` 时仍回 `{local, remote}`。agent 会把没到设备上的文件当已推送。
+  现在显式 `False` 报 `backend_error`；`None` 仍算成功。
 - **`device.force_stop` 在 `am` 报错时仍报 `stopped: True`**。假设备
   `force-stop` 回 `Error: Unknown command: force-stop` 时仍成功。agent
   会把还在跑的进程当已停。现在 `Error:` / `Exception` 报 `backend_error`。
