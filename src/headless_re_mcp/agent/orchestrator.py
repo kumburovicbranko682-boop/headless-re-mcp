@@ -52,6 +52,29 @@ _TOOL_THREADS = 8
 # exactly that shape. Past this many still running, saying so beats adding to it.
 _MAX_STUCK_TOOL_THREADS = 32
 
+# redact() already stops at 250. The size check used to treat RecursionError
+# from json.dumps as the depth bound, but CPython's C encoder does not raise:
+# measured 5000-deep arguments dumped as 35019 bytes, _arguments_too_large
+# returned None, and propose_tool_call stored them for execution.
+_MAX_ARGUMENT_DEPTH = 250
+
+
+def _argument_depth(value: object, *, limit: int = _MAX_ARGUMENT_DEPTH) -> int:
+    """Walk containers iteratively and stop once ``limit`` is passed."""
+    stack: list[tuple[object, int]] = [(value, 1)]
+    deepest = 0
+    while stack:
+        current, depth = stack.pop()
+        if depth > deepest:
+            deepest = depth
+        if depth > limit:
+            return depth
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend((item, depth + 1) for item in current)
+    return deepest
+
 
 class AgentOrchestrator:
     def __init__(
@@ -290,13 +313,24 @@ class AgentOrchestrator:
         The refusal goes back as a tool result, which is the one thing the model
         reads, so it can correct itself instead of repeating the call.
         """
+        if _argument_depth(arguments) > _MAX_ARGUMENT_DEPTH:
+            # Nesting deep enough to exhaust the encoder is the same answer as
+            # too many bytes. The RecursionError path below never ran on
+            # CPython 3.12: the C encoder accepted 5000-deep / 35 KB args
+            # and the call proceeded.
+            return {
+                "ok": False,
+                "error": {
+                    "code": "arguments_too_large",
+                    "message": (
+                        "arguments are nested too deeply to encode; send a reference "
+                        "such as an artifact_id rather than inline data"
+                    ),
+                },
+            }
         try:
             encoded = len(json.dumps(arguments, ensure_ascii=False, default=str).encode("utf-8"))
         except RecursionError:
-            # Nesting deep enough to exhaust the encoder is the same answer as
-            # too many bytes, and it arrives first: this check runs before
-            # anything else touches the arguments, and 14 KB nested two
-            # thousand deep gets here well inside the size limit.
             return {
                 "ok": False,
                 "error": {
