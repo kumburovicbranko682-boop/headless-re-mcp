@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
-pytestmark = pytest.mark.skipif(not FIXTURE.is_file(), reason="fixture binary is not built")
+_needs_fixture = pytest.mark.skipif(not FIXTURE.is_file(), reason="fixture binary is not built")
 
 
 def _offsets() -> tuple[int, int]:
@@ -35,6 +35,7 @@ def _with(offset: int, packed: bytes) -> bytes:
     return bytes(raw)
 
 
+@_needs_fixture
 def test_an_alignment_the_format_does_not_allow_is_refused() -> None:
     """FileAlignment multiplies the headers and every section in turn.
 
@@ -53,6 +54,7 @@ def test_an_alignment_the_format_does_not_allow_is_refused() -> None:
     assert time.perf_counter() - started < 5.0, "and refused promptly, not after the work"
 
 
+@_needs_fixture
 def test_a_section_cannot_be_larger_than_the_dump_it_came_from() -> None:
     """A SizeOfImage dump holds the whole image, so no section inside it is bigger.
 
@@ -70,6 +72,7 @@ def test_a_section_cannot_be_larger_than_the_dump_it_came_from() -> None:
     assert any("not trusted" in item for item in report.unfixed), report.unfixed
 
 
+@_needs_fixture
 def test_an_ordinary_dump_rebuilds_unchanged() -> None:
     """The bounds must not touch a dump that was telling the truth."""
     rebuilt, report = remap_dump_to_file(FIXTURE.read_bytes())
@@ -86,6 +89,7 @@ def test_an_ordinary_dump_rebuilds_unchanged() -> None:
         ("64 KiB file alignment", "file", 0x10000),
     ],
 )
+@_needs_fixture
 def test_alignments_within_the_format_are_still_accepted(
     label: str,
     offset_kind: str,
@@ -100,6 +104,7 @@ def test_alignments_within_the_format_are_still_accepted(
     assert len(rebuilt) > 0, label
 
 
+@_needs_fixture
 def test_the_import_rebuild_reads_the_same_headers_and_needs_the_same_bound() -> None:
     """The sibling call site, which pads the appended import section.
 
@@ -124,3 +129,70 @@ def test_the_import_rebuild_reads_the_same_headers_and_needs_the_same_bound() ->
         _with(optional + 36, struct.pack("<I", 0x10000)), entries
     )
     assert 0 < len(within_the_format) < 1_000_000, "the format's own ceiling still works"
+
+
+def _craft_dump(*, sections: int, dump_size: int = 64 * 1024) -> bytes:
+    """A SizeOfImage-style dump whose section table the test controls.
+
+    Each section claims the whole dump at VA 0, which is what turns the count
+    into an allocation multiplier: remap copies the dump once per section.
+    """
+    pe_offset = 0x80
+    optional_size = 0xE0
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    table = optional + optional_size
+    dump_size = max(dump_size, table + sections * 40 + 0x200)
+    data = bytearray(dump_size)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x14C)
+    struct.pack_into("<H", data, file_header + 2, sections)
+    struct.pack_into("<H", data, file_header + 16, optional_size)
+    struct.pack_into("<H", data, optional, 0x10B)
+    struct.pack_into("<I", data, optional + 16, 0x1000)
+    struct.pack_into("<I", data, optional + 28, 0x400000)
+    struct.pack_into("<I", data, optional + 32, 0x1000)
+    struct.pack_into("<I", data, optional + 36, 0x200)
+    struct.pack_into("<I", data, optional + 56, dump_size)
+    struct.pack_into("<I", data, optional + 60, 0x400)
+    struct.pack_into("<H", data, optional + 68, 3)
+    struct.pack_into("<I", data, optional + 92, 16)
+    for index in range(sections):
+        off = table + index * 40
+        data[off : off + 8] = f".s{index}".encode()[:8].ljust(8, b"\0")
+        struct.pack_into("<I", data, off + 8, dump_size)
+        struct.pack_into("<I", data, off + 12, 0)
+        struct.pack_into("<I", data, off + 16, dump_size)
+        struct.pack_into("<I", data, off + 20, 0)
+    return bytes(data)
+
+
+def test_a_section_count_the_loader_will_not_map_is_refused() -> None:
+    """NumberOfSections multiplies the dump: each section is copied out of it.
+
+    The per-section size is already capped at the dump, so a count the loader
+    will not accept was the remaining multiplier. Measured at 2000 sections on
+    an 81 KB dump: 162 MB out, 496 MB peak heap, while the memory gate -- which
+    only sees the dump -- estimated 0.32 MB and let it through. 400 sections on
+    a 1 MB dump: 419 MB out, 842 MB peak. The loader's own ceiling is 96.
+    """
+    dump = _craft_dump(sections=200)
+
+    started = time.perf_counter()
+    with pytest.raises(PeRebuildError) as caught:
+        remap_dump_to_file(dump)
+
+    assert "NumberOfSections" in str(caught.value)
+    assert str(MAX_SECTIONS) in str(caught.value)
+    assert time.perf_counter() - started < 5.0, "and refused promptly, not after the copies"
+
+
+def test_the_loader_ceiling_still_rebuilds() -> None:
+    """96 sections is what the loader accepts; the bound must not refuse it."""
+    dump = _craft_dump(sections=MAX_SECTIONS)
+
+    rebuilt, _report = remap_dump_to_file(dump)
+
+    assert len(rebuilt) > 0
