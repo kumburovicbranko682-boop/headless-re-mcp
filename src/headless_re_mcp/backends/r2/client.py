@@ -10,6 +10,10 @@ from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# r2.open only needs identity, not the whole analysis dump. Cutting without
+# saying so turns a long `i` listing into an 8000-character prefix that still
+# looks complete.
+_MAX_OPEN_INFO = 8000
 _ALLOWED = frozenset(
     {
         "i",
@@ -50,12 +54,22 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         data = self.run(binary, ["i"], timeout=timeout)
-        return {
+        raw = str(data.get("raw") or "")
+        info = raw[:_MAX_OPEN_INFO]
+        result: JsonObject = {
             "opened": True,
             "binary": str(binary),
-            "info": data.get("raw", "")[:8000],
+            "info": info,
             "note": "r2.open is one-shot validation; subsequent tools reopen the binary",
         }
+        original = int(data.get("output_bytes") or len(raw))
+        if original > _MAX_OPEN_INFO or data.get("truncated"):
+            # Measured: 20000 characters of `i` still came back as info of
+            # 8000 with no mark, so an agent treated the prefix as the file.
+            result["truncated"] = True
+            result["info_chars"] = original
+            result["returned_chars"] = len(info)
+        return result
 
     def disasm(
         self,

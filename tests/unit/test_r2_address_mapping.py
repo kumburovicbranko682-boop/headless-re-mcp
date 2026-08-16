@@ -98,6 +98,44 @@ def test_output_that_fits_is_not_labelled_truncated(
     assert payload["raw"] == "[]"
 
 
+def test_open_info_cut_at_the_excerpt_says_it_was_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """20000 characters of `i` used to come back as info of 8000 with no mark."""
+    binary = _minimal_pe(tmp_path)
+
+    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"I" * 20000, stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.open(binary)
+
+    assert payload["opened"] is True
+    assert len(payload["info"]) == r2_client._MAX_OPEN_INFO
+    assert payload["truncated"] is True
+    assert payload["info_chars"] == 20000
+    assert payload["returned_chars"] == r2_client._MAX_OPEN_INFO
+
+
+def test_open_info_that_fits_is_not_labelled_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = _minimal_pe(tmp_path)
+
+    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"arch x86", stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.open(binary)
+
+    assert payload["info"] == "arch x86"
+    assert "truncated" not in payload
+
+
 def test_parse_r2_json_trailing_array() -> None:
     raw = "warning stuff\n" + json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 16}])
     parsed = parse_r2_json(raw)

@@ -37,7 +37,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Independent of the IDA database; the other r2 tools read what this
         produced. Analysis cost scales with the binary, so give a packed or
-        large sample a longer timeout.
+        large sample a longer timeout. The identity excerpt is capped: read
+        truncated rather than treating info as the whole `i` listing.
         """
         return _dump(analysis.r2_open(session_id, timeout=timeout))
 
