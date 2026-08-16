@@ -446,3 +446,62 @@ class TestAdbCallsHaveADeadline:
         payload = backend.properties("emulator-5554", limit=10)
         assert payload["count"] == 1
         assert time.monotonic() - started < 0.3
+
+
+class TestEnsureFridaServerDoesNotInventAProcess:
+    """A successful su command is not evidence that frida-server is running.
+
+    Measured: a device whose ``ps`` never listed frida-server, and whose launch
+    shell returned empty, still answered ``running: True``. An unattended agent
+    then attaches and waits for a server that is not there.
+    """
+
+    def _backend(self, device: object) -> AdbBackend:
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_launch_without_a_process_is_a_failure(self) -> None:
+        class _Dead:
+            def shell(self, cmd: object, **kwargs: object) -> str:
+                del kwargs
+                if "ps" in str(cmd):
+                    return "root         1     0  init"
+                return ""
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dead()).ensure_frida_server("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("running") is False
+
+    def test_already_running_is_still_success(self) -> None:
+        class _Already:
+            def shell(self, cmd: object, **kwargs: object) -> str:
+                del kwargs
+                if "ps" in str(cmd):
+                    return "root        99     1  frida-server"
+                raise AssertionError(f"should not launch: {cmd}")
+
+        payload = self._backend(_Already()).ensure_frida_server("emulator-5554")
+        assert payload["running"] is True
+        assert payload["pushed"] is False
+
+    def test_a_launch_that_actually_appears_in_ps_is_success(self) -> None:
+        class _Starts:
+            def __init__(self) -> None:
+                self.launched = False
+
+            def shell(self, cmd: object, **kwargs: object) -> str:
+                del kwargs
+                text = str(cmd)
+                if "nohup" in text or "su -c" in text:
+                    self.launched = True
+                    return ""
+                if "ps" in text:
+                    return "root 99 frida-server" if self.launched else "root 1 init"
+                return ""
+
+        payload = self._backend(_Starts()).ensure_frida_server("emulator-5554")
+        assert payload["running"] is True

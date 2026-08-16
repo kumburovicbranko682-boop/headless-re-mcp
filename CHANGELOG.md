@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.server.ensure` 在进程根本没起来时报告 `running: True`**。`su` 命令返回就被当成
+  成功，不再看 `ps`。对一个 `ps` 里从未出现 frida-server、启动 shell 只回空串的设备，回包
+  仍是 `running: True`。无人值守的 agent 随后去 attach，永远等不到服务。现在启动后再读一次
+  `ps`，看不到进程就回 `backend_error`，不再把失败说成成功。
 - **卡住的 adb 会把调用一直挂到进程被杀**。`device.connect` 已有超时，其余具名操作没有：
   对一个永不返回的 `shell()` 测 `properties()`，2 秒时线程仍活着，满 8 秒的睡眠才返回
   8.000 秒。无人值守碰到不再应答的设备就会占死一条工作线程。现在每条 adb 操作在本侧

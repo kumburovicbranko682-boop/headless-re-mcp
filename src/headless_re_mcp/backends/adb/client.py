@@ -71,6 +71,16 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _frida_running(dev: Any) -> bool:
+    """Whether ``ps`` currently lists a frida-server process."""
+    try:
+        return "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
+            dev.shell("ps")
+        )
+    except Exception:  # noqa: BLE001 - a wedged ps is "not running"
+        return False
+
+
 class AdbBackend:
     def __init__(self, adb_path: Path | None = None, *, timeout: float | None = None) -> None:
         self._adbutils: Any = None
@@ -387,13 +397,7 @@ class AdbBackend:
 
         def work() -> JsonObject:
             dev = self._device(serial)
-            try:
-                running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                    dev.shell("ps")
-                )
-            except Exception:  # noqa: BLE001
-                running = False
-            if running:
+            if _frida_running(dev):
                 return {"running": True, "pushed": False, "port": port}
             pushed = False
             if server_binary:
@@ -419,6 +423,17 @@ class AdbBackend:
                     "port": port,
                     "note": f"launch attempted; verify manually ({exc})",
                 }
+            # The su command returning is not evidence the process exists.
+            # Measured: a device whose ps never listed frida-server still
+            # answered running: True, and the caller then waited on nothing.
+            if not _frida_running(dev):
+                raise AdbError(
+                    "backend_error",
+                    "frida-server did not appear in the process list after launch",
+                    running=False,
+                    pushed=pushed,
+                    port=port,
+                )
             return {"running": True, "pushed": pushed, "port": port}
 
         return self._call("ensure_frida_server", work)
