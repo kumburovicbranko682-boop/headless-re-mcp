@@ -28,6 +28,7 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Child-process windows require allow_child_pids or include_same_image_children.
         The headless debugger PID and MCP host PID are always blocked.
+        Capped. Read `has_more` rather than treating `count` as every window.
         """
         return _dump(
             analysis.ui_windows_list(

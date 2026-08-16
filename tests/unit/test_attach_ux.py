@@ -82,3 +82,45 @@ class TestUiProcessTreeSaysWhenWindowsStopped:
         page, has_more = _page_windows([{"hwnd": 1}, {"hwnd": 2}])
         assert len(page) == 2
         assert has_more is False
+
+
+class TestUiWindowsListIsCapped:
+    """The debuggee window list had no page and no signal that it had stopped.
+
+    Measured: 500 windows came back in one reply, with no has_more.
+    """
+
+    def test_hitting_the_cap_is_reported(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from headless_re_mcp.core.service_ui import _windows_list_payload
+
+        monkeypatch.setattr(
+            "headless_re_mcp.core.service_ui.list_windows_for_pids",
+            lambda pids: [{"pid": 1, "hwnd": index} for index in range(500)],
+        )
+        page = _windows_list_payload(
+            {
+                "debuggee_pid": 1,
+                "debugger_pid": 2,
+                "allowed": frozenset({1}),
+                "blocked": frozenset(),
+            }
+        )
+        assert len(page["windows"]) == 256
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from headless_re_mcp.core.service_ui import _windows_list_payload
+
+        monkeypatch.setattr(
+            "headless_re_mcp.core.service_ui.list_windows_for_pids",
+            lambda pids: [{"pid": 1, "hwnd": 7}],
+        )
+        page = _windows_list_payload(
+            {
+                "debuggee_pid": 1,
+                "debugger_pid": 2,
+                "allowed": frozenset({1}),
+                "blocked": frozenset(),
+            }
+        )
+        assert page["has_more"] is False

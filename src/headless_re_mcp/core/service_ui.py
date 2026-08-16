@@ -60,6 +60,8 @@ JsonObject = dict[str, Any]
 
 # Measured: 40 child windows came back as 16 with no has_more.
 _MAX_CHILD_WINDOWS = 16
+# Measured: 500 top-level windows came back in one reply with no has_more.
+_MAX_WINDOWS_LIST = 256
 
 
 def _page_windows(
@@ -69,6 +71,27 @@ def _page_windows(
     if len(items) > limit:
         return items[:limit], True
     return items, False
+
+
+def _windows_list_payload(ctx: JsonObject) -> JsonObject:
+    windows, has_more = _page_windows(
+        list_windows_for_pids(sorted(ctx["allowed"])),
+        limit=_MAX_WINDOWS_LIST,
+    )
+    return {
+        "debuggee_pid": ctx["debuggee_pid"],
+        "debugger_pid": ctx["debugger_pid"],
+        "allowed_pids": sorted(ctx["allowed"]),
+        "blocked_pids": sorted(ctx["blocked"]),
+        "windows": windows,
+        "has_more": has_more,
+        "count": 0,  # filled below
+        "note": (
+            "windows are filtered to debuggee_pid "
+            "(plus explicit allow_child_pids); "
+            "debugger_pid/host are blocked"
+        ),
+    }
 
 
 def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None]:
@@ -321,19 +344,7 @@ class UiAutomationMixin:
             capability="ui.windows.list",
             allow_child_pids=allow_child_pids,
             include_same_image_children=include_same_image_children,
-            action=lambda ctx: {
-                "debuggee_pid": ctx["debuggee_pid"],
-                "debugger_pid": ctx["debugger_pid"],
-                "allowed_pids": sorted(ctx["allowed"]),
-                "blocked_pids": sorted(ctx["blocked"]),
-                "windows": list_windows_for_pids(sorted(ctx["allowed"])),
-                "count": 0,  # filled below
-                "note": (
-                    "windows are filtered to debuggee_pid "
-                    "(plus explicit allow_child_pids); "
-                    "debugger_pid/host are blocked"
-                ),
-            },
+            action=_windows_list_payload,
             finalize=lambda payload, ctx: _ui_finalize_windows(
                 payload, ctx, hidden_desktop=bool(self.settings.hidden_desktop)
             ),
