@@ -362,6 +362,27 @@ class TestJsUnpackSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestJsDeobfuscateDescriptionMatchesTheCut:
+    """js.deobfuscate already cuts at 400000 bytes, but the tool text hid that.
+
+    Measured: 400001-byte stdout, code length 400000, truncated=true, while
+    the description said "returns code" -- so a model treats the slice as
+    the whole deobfuscation.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_js_wasm_tools(service)}
+            doc = tools["js.deobfuscate"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
