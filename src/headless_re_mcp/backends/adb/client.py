@@ -33,6 +33,7 @@ _PACKAGES_TIMEOUT = 15.0
 _LOGCAT_TIMEOUT = 15.0
 _FORCE_STOP_TIMEOUT = 15.0
 _LAUNCH_TIMEOUT = 15.0
+_CURRENT_ACTIVITY_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -485,25 +486,33 @@ class AdbBackend:
         adbutils ``app_current`` used to run up to three dumpsys commands
         with the library's 600s socket default and retry them. A wedged
         adb held the worker; a large window dump also had no size cap.
-        Grep on the device keeps the reply small.
+        Grep on the device keeps the reply small. adbutils
+        ``shell(timeout=15)`` still opened the transport with a 600s
+        default.
         """
-        dev = self._device(serial)
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         try:
-            focused = str(
-                dev.shell("dumpsys window windows | grep mCurrentFocus", timeout=15.0)
+            focused = self._adb_shell(
+                serial,
+                "dumpsys window windows | grep mCurrentFocus",
+                timeout=_CURRENT_ACTIVITY_TIMEOUT,
             )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
         match = _FOCUSED_WINDOW_RE.search(focused)
         if match:
             return {"package": match.group("package"), "activity": match.group("activity")}
         try:
-            resumed = str(
-                dev.shell(
-                    "dumpsys activity activities | grep mResumedActivity",
-                    timeout=15.0,
-                )
+            resumed = self._adb_shell(
+                serial,
+                "dumpsys activity activities | grep mResumedActivity",
+                timeout=_CURRENT_ACTIVITY_TIMEOUT,
             )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
         match = _RESUMED_ACTIVITY_RE.search(resumed)

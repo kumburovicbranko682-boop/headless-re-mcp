@@ -669,40 +669,54 @@ class TestAdbArgumentValidation:
         assert result["stopped"] is True
         assert result["package"] == "com.example.app"
 
-    def test_current_activity_does_not_wait_on_adb_forever(self) -> None:
-        """app_current used three dumpsys calls with no deadline.
+    def test_current_activity_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """current_activity used adbutils shell, which connects with a 600s default.
 
-        Measured: app_current() was invoked with no timeout. adbutils
-        retries and defaults the socket to 600s. A wedged adb held the
-        worker; the window dump also had no size cap.
+        Measured on info: shell(timeout=15) opened the transport with the
+        library default first.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeouts: list[object] = []
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeouts.append(timeout)
-                return (
-                    "mCurrentFocus=Window{41b37570 u0 com.example.app/.MainActivity}"
-                )
-
-            def app_current(self) -> object:
-                raise AssertionError("unbounded app_current")
+        monkeypatch.setattr(adb_client, "_CURRENT_ACTIVITY_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).current_activity("emulator-5554")
-        assert device.timeouts == [15.0]
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).current_activity("emulator-5554")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
+
+    def test_current_activity_reads_focus_from_bounded_shell(self, tmp_path: Path) -> None:
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
+
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "print('mCurrentFocus=Window{41b37570 u0 com.example.app/.MainActivity}')\n"
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).current_activity("emulator-5554")
         assert result["package"] == "com.example.app"
         assert result["activity"] == ".MainActivity"
 
