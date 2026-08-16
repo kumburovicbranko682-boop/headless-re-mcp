@@ -98,3 +98,33 @@ def test_frida_exports_does_not_wait_on_attach_forever(
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_memory_read_does_not_wait_on_attach_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """frida.memory.read used the same unbounded attach hop.
+
+    Measured: a 0.8s sleep in attach held memory_read 0.8s after
+    frida.attach itself was already bounded.
+    """
+    monkeypatch.setattr(frida_client, "_ATTACH_TIMEOUT", 0.4)
+
+    class _Sess:
+        def detach(self) -> None:
+            return None
+
+    class _Fake:
+        def attach(self, pid: int) -> _Sess:
+            time.sleep(30)
+            return _Sess()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(4242, 0x1000, 4, allowed_pid=4242)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"

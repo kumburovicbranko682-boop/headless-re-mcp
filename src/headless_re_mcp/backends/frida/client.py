@@ -303,7 +303,7 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._frida.attach(pid)
+        session = self._attach_with_deadline(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
