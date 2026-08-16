@@ -95,7 +95,7 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         length: Annotated[int, Field(ge=1, le=256)] = 16,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disassemble length instructions at address in this session's live debuggee."""
+        """Live disassembly at address; read truncated when the listing was cut."""
         return _dump(
             analysis.windbg_live_disasm(session_id, address, length=length, timeout=timeout)
         )
