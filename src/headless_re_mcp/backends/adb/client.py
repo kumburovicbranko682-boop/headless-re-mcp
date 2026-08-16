@@ -24,6 +24,7 @@ _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
 _INSTALL_PUSH_TIMEOUT = 180.0
 _PUSH_TIMEOUT = 180.0
+_PULL_TIMEOUT = 180.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -262,6 +263,34 @@ class AdbBackend:
                 f"push failed: {err or completed.returncode}",
             )
 
+    def _pull_file(self, serial: str, remote: str, local: str, *, timeout: float) -> None:
+        """Pull one file with a deadline. adbutils ``sync.pull`` has none.
+
+        Measured: ``pull()`` was invoked with no kwargs; a 0.8s sleep in
+        pull held ``device.pull`` for 0.8s. A wedged sync transfer held
+        the worker.
+        """
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "-s", _check_serial(serial), "pull", remote, local],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"pull timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"pull failed: {err or completed.returncode}",
+            )
+
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         """Push and ``pm install``. Both hops are bounded.
 
@@ -415,10 +444,17 @@ class AdbBackend:
         return {"path": str(out_path), "serial": _check_serial(serial)}
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:
-        dev = self._device(serial)
+        """Pull one file. The transfer is bounded.
+
+        adbutils ``sync.pull`` has no timeout. Measured: pull() was
+        invoked with no kwargs; a 0.8s sleep held ``device.pull`` 0.8s.
+        """
+        self._device(serial)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dev.sync.pull(remote_path, str(local_path))
+            self._pull_file(serial, remote_path, str(local_path), timeout=_PULL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
         return {"remote": remote_path, "local": str(local_path)}
