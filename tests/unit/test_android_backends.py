@@ -226,6 +226,56 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkManifestSaysWhenItWasCut:
+    """A manifest that hit the cap looks exactly like one that ended.
+
+    ``apk.manifest`` is the document an agent reads to decide exported
+    components and permissions. It was sliced at 200_000 characters with
+    nothing to say so, so a large app's tail -- often the interesting
+    parts -- vanished while the reply still looked complete.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, xml: str) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _FakeAx:
+            def get_xml(self) -> bytes:
+                return xml.encode("utf-8")
+
+        class _FakeApk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
+            def get_android_manifest_axml(self) -> _FakeAx:
+                return _FakeAx()
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
+        return client
+
+    def test_hitting_the_cap_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        xml = "<manifest>" + ("<uses-permission android:name='p'/>" * 8000) + "</manifest>"
+        assert len(xml) > 200_000
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is True
+        assert result["bytes"] == len(xml)
+        assert len(result["manifest_xml"]) == 200_000
+        assert not result["manifest_xml"].endswith("</manifest>")
+
+    def test_a_complete_manifest_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        xml = "<manifest><application/></manifest>"
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is False
+        assert result["bytes"] == len(xml)
+        assert result["manifest_xml"] == xml
+
+
 class TestApkXrefsSayWhenTheyStopped:
     """A caller list that hit the cap looks exactly like one that ended."""
 
