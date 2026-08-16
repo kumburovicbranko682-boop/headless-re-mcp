@@ -70,12 +70,29 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id, kind);
 # appends here forever. Trimming is amortised over a batch of writes rather than
 # run per insert, so the bound is approximate by design.
 AUDIT_RETAINED_ROWS = 50_000
-
-# A knowledge value is stored as JSON text and cut at this length. Callers must
-# check against it before recording: a cut payload is no longer JSON, so it
-# reads back as a string fragment instead of the object that was written.
-KNOWLEDGE_VALUE_MAX_CHARS = 8000
 AUDIT_TRIM_INTERVAL = 256
+
+# A knowledge value is stored as JSON text. The store refuses anything over this
+# length rather than cutting it: a cut payload is no longer JSON.
+KNOWLEDGE_VALUE_MAX_CHARS = 8000
+
+
+def encode_knowledge_value(value: JsonObject) -> str:
+    """Serialise a finding, or refuse it rather than cut it mid-JSON.
+
+    The store used to slice the text at the cap. A cut payload is not JSON, so
+    a write that answered success read back as a string fragment -- measured:
+    9012 characters in, 8000 out, ``json.loads`` raised Unterminated string.
+    The in-memory repository kept the object whole, so the two stores disagreed.
+    """
+    encoded = json.dumps(value, ensure_ascii=False)
+    if len(encoded) > KNOWLEDGE_VALUE_MAX_CHARS:
+        raise ValueError(
+            f"value serialises to {len(encoded)} chars, over the "
+            f"{KNOWLEDGE_VALUE_MAX_CHARS} a finding may hold; record the bulk as an "
+            "artifact and keep the reference here"
+        )
+    return encoded
 
 
 class SessionStore:
@@ -424,7 +441,7 @@ class SessionStore:
     ) -> JsonObject:
         """Insert or update one analysis fact, keeping the original created_at."""
         now = datetime.now(UTC).isoformat()
-        payload = json.dumps(value, ensure_ascii=False)[:KNOWLEDGE_VALUE_MAX_CHARS]
+        payload = encode_knowledge_value(value)
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT created_at FROM knowledge WHERE session_id=? AND kind=? AND key=?",

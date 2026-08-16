@@ -65,6 +65,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **r2 超时只杀启动器**。jadx / Ghidra / apktool 已改走有界执行，r2 还在用 `subprocess.run`：
   包装脚本起一个 sleeper 时，0.40 秒拿到 timeout，子进程仍是 S。现在同一条有界执行，被杀
   pid 进错误详情。
+- **产物库仍会把过大的 finding 静默切成非法 JSON**。服务层已经拒绝，存储层还在切片：9012
+  字符写入成功，读回来是 8000 字符的字符串碎片（`Unterminated string`），内存库却原样保留。
+  现在两处都拒绝。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

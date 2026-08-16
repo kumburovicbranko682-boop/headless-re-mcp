@@ -77,3 +77,25 @@ def test_knowledge_paginates(repository: Any) -> None:
     assert page["count"] == 2
     assert page["has_more"] is True
     assert [entry["key"] for entry in page["entries"]] == ["0002", "0003"]
+
+
+def test_an_oversized_finding_is_refused_not_silently_cut(repository: Any) -> None:
+    """The store used to slice the JSON and still answer success.
+
+    Measured through SqliteAnalysisRepository: 9012 characters in, a successful
+    write, and a read-back that was an 8000-character string
+    ``json.loads`` rejected as Unterminated string. The in-memory repository
+    kept the object, so the two stores disagreed about what a finding is.
+    """
+    from headless_re_mcp.core.store.sqlite_store import KNOWLEDGE_VALUE_MAX_CHARS
+
+    oversized = {"note": "x" * 9000}
+    with pytest.raises(ValueError, match=str(KNOWLEDGE_VALUE_MAX_CHARS)):
+        repository.record_knowledge(
+            session_id="s1",
+            kind="function",
+            key="too-big",
+            value=oversized,
+        )
+    listing = repository.list_knowledge("s1")
+    assert listing["total"] == 0
