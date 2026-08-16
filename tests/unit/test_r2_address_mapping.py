@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import headless_re_mcp.backends.r2.client as r2_client
+from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     enrich_r2_payload,
@@ -65,10 +65,10 @@ def test_output_cut_at_the_buffer_says_it_was_cut(
     binary = _minimal_pe(tmp_path)
     monkeypatch.setattr(r2_client, "_MAX_OUTPUT", 64)
 
-    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"A" * 500, stderr=b"")
+    def huge(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"A" * 500, stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    monkeypatch.setattr(r2_client, "run_bounded", huge)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
@@ -86,10 +86,10 @@ def test_output_that_fits_is_not_labelled_truncated(
     """The flag has to mean something, so it stays off when nothing was cut."""
     binary = _minimal_pe(tmp_path)
 
-    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"[]", stderr=b"")
+    def small(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"[]", stderr=b"")
 
-    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    monkeypatch.setattr(r2_client, "run_bounded", small)
     client = r2_client.R2Client(_stub_executable(tmp_path))
 
     payload = client.run(binary, ["aa"])
