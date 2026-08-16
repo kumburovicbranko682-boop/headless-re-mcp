@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.launch` 在 monkey 明确失败时仍报 `launched: True`**。包没有 launcher 时
+  monkey 写 `No activities found to run, monkey aborted.` 却仍回成功。无人值守的
+  agent 随后去操作一个根本没起来的界面。现在识别这段输出并回 `backend_error`。
 - **`frida.server.ensure` 在 su 超时后仍报成功**。启动命令抛错时回 `running: None` 且
   工具信封 `ok=True`，时间线还写「ensured」。对一个 `ps` 里只有 init 的设备，调用方会
   当成已经起来。现在超时后仍读 `ps`：看不到进程就失败，看到才成功。

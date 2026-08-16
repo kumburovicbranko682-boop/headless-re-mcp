@@ -572,6 +572,42 @@ class TestDevicePropertiesSayWhenTheyStopped:
         assert page["has_more"] is False
 
 
+class TestDeviceLaunchDoesNotInventSuccess:
+    """monkey aborting is not a launched app.
+
+    Measured: a device whose monkey output was
+    ``No activities found to run, monkey aborted.`` still answered
+    ``launched: True``. An unattended agent then talks to an activity that
+    never started.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return output
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_monkey_abort_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("** No activities found to run, monkey aborted.\n").launch(
+                "emulator-5554", "com.missing.app"
+            )
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("launched") is False
+
+    def test_a_real_injection_is_still_success(self) -> None:
+        payload = self._backend("Events injected: 1\n").launch(
+            "emulator-5554", "com.example.app"
+        )
+        assert payload["launched"] is True
+
+
 class TestDevicePackagesAreCapped:
     """The package list had no page and no signal that it had stopped.
 
