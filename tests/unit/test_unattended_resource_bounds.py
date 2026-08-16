@@ -1274,6 +1274,84 @@ class TestApktoolRepackIsRegistered:
         )
 
 
+class _FakeApktoolSign:
+    def sign(self, apk: Any, out_apk: Any, **kwargs: Any) -> dict[str, Any]:
+        out_apk.parent.mkdir(parents=True, exist_ok=True)
+        out_apk.write_bytes(b"S" * 40_000)
+        return {"apk": str(out_apk), "size": 40_000, "signed": True}
+
+
+class TestApktoolSignIsRegistered:
+    """A signed APK used to sit under apktool/ with nothing able to reclaim it.
+
+    Measured: 8 create/sign/close cycles left 8 APKs and 320 KiB, with
+    artifacts.list total=0 and artifacts.gc collected=0, against a 20 KiB
+    budget.
+    """
+
+    def _apk(self, tmp_path: Any) -> Any:
+        import zipfile
+
+        apk = tmp_path / "app.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+        return apk
+
+    def _service(self, tmp_path: Any, monkeypatch: Any, *, budget: int) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core import service_apk
+        from headless_re_mcp.core.service import AnalysisService
+
+        monkeypatch.setattr(
+            service_apk.ApkAnalysisMixin, "_apktool_client", lambda self: _FakeApktoolSign()
+        )
+        settings = replace(
+            Settings.load(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_max_total_bytes=budget,
+        )
+        return AnalysisService(settings)
+
+    def test_closed_sessions_do_not_leave_an_unreclaimable_apk(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        budget = 20_000
+        service = self._service(tmp_path, monkeypatch, budget=budget)
+        apk = self._apk(tmp_path)
+        try:
+            last = None
+            for _ in range(8):
+                created = service.create_session(str(apk), target="apk")
+                assert created.data is not None
+                session_id = str(created.data["session"]["id"])
+                result = service.apk_sign(session_id)
+                assert result.ok, result.error
+                last = result.data
+                assert service.close_session(session_id).ok
+            assert last is not None
+            assert last.get("artifact_id")
+            listed = service.repository.list_artifacts(None, offset=0, limit=50)
+            assert listed["total"] > 0
+            trees = tmp_path / "artifacts" / "apktool"
+            file_bytes = sum(
+                path.stat().st_size for path in trees.rglob("*") if path.is_file()
+            )
+            assert file_bytes < 3 * budget
+        finally:
+            service.close_all()
+
+    def test_sign_routes_through_registration(self) -> None:
+        import inspect
+
+        from headless_re_mcp.core import service_apk
+
+        assert "_register_capture" in inspect.getsource(
+            service_apk.ApkAnalysisMixin.apk_sign
+        )
+
+
 def _minimal_pe(path: Any) -> Any:
     image = bytearray(0x200)
     image[:2] = b"MZ"

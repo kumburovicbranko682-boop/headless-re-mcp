@@ -259,6 +259,16 @@ class ApkAnalysisMixin:
                 key_alias=key_alias,
                 timeout=timeout,
             )
+            # Measured: 8 create/sign/close cycles left 8 APKs and 320 KiB,
+            # with artifacts.list total=0 and artifacts.gc collected=0.
+            data = _register_capture(
+                self,
+                session_id,
+                out_apk,
+                kind="apktool_signed",
+                source="apk.sign",
+                payload=data,
+            )
             _timeline_append(self, session_id, "apk.sign", "apksigner signed apk")
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
