@@ -25,6 +25,8 @@ from headless_re_mcp.backends.ida.worker import (
     _open_database_error,
     _overview,
     _page_items,
+    _search_immediate,
+    _search_text,
     _strings,
     _types,
 )
@@ -328,6 +330,74 @@ def test_metadata_does_not_keep_every_function(monkeypatch: Any) -> None:
     assert "strings" not in result
     assert functions.yielded == 20_000
     assert strings.yielded == 20_000
+
+
+def test_a_search_page_says_when_there_is_more(monkeypatch: Any) -> None:
+    """500 text hits and limit=100 came back as total=100, has_more=False."""
+    import sys
+    import types
+
+    hits = list(range(0x1000, 0x1000 + 500))
+
+    def find_text(ea: int, y: int, x: int, text: str, flags: int) -> int:
+        del y, x, text, flags
+        for addr in hits:
+            if addr >= ea:
+                return addr
+        return 0xFFFFFFFFFFFFFFFF
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x1000 + 10_000  # type: ignore[attr-defined]
+    ida_idaapi = types.ModuleType("ida_idaapi")
+    ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    ida_search = types.ModuleType("ida_search")
+    ida_search.SEARCH_DOWN = 1  # type: ignore[attr-defined]
+    ida_search.find_text = find_text  # type: ignore[attr-defined]
+    idc = types.ModuleType("idc")
+    idc.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_ida", ida_ida)
+    monkeypatch.setitem(sys.modules, "ida_idaapi", ida_idaapi)
+    monkeypatch.setitem(sys.modules, "ida_search", ida_search)
+    monkeypatch.setitem(sys.modules, "idc", idc)
+    result = _search_text({"text": "MZ", "offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["has_more"] is True
+    assert "total" not in result
+    assert len(result["items"]) == 100
+
+
+def test_a_finished_search_reports_its_total(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    hits = list(range(0x1000, 0x1000 + 30))
+
+    def find_imm(ea: int, flags: int, value: int) -> int:
+        del flags, value
+        for addr in hits:
+            if addr >= ea:
+                return addr
+        return 0xFFFFFFFFFFFFFFFF
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x1000 + 10_000  # type: ignore[attr-defined]
+    ida_idaapi = types.ModuleType("ida_idaapi")
+    ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    ida_search = types.ModuleType("ida_search")
+    ida_search.SEARCH_DOWN = 1  # type: ignore[attr-defined]
+    ida_search.find_imm = find_imm  # type: ignore[attr-defined]
+    idc = types.ModuleType("idc")
+    idc.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_ida", ida_ida)
+    monkeypatch.setitem(sys.modules, "ida_idaapi", ida_idaapi)
+    monkeypatch.setitem(sys.modules, "ida_search", ida_search)
+    monkeypatch.setitem(sys.modules, "idc", idc)
+    result = _search_immediate({"value": 0, "offset": 0, "limit": 100})
+    assert result["returned"] == 30
+    assert result["has_more"] is False
+    assert result["total"] == 30
 
 
 def _install_flowchart(monkeypatch: Any, block_count: int) -> None:

@@ -436,7 +436,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """Search for a binary pattern (IDA bin-string syntax)."""
+        """Search for a binary pattern (IDA bin-string syntax).
+
+        The hit list is a window; read `has_more` rather than assuming the
+        page is every match. `total` is present only when the scan finished.
+        """
         return _dump(
             analysis.static_search_bytes(
                 session_id,
@@ -456,7 +460,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """Search for text in the IDA database."""
+        """Search for text in the IDA database.
+
+        The hit list is a window; read `has_more` rather than assuming the
+        page is every match. `total` is present only when the scan finished.
+        """
         return _dump(
             analysis.static_search_text(
                 session_id,
@@ -476,7 +484,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """Search for an immediate operand value."""
+        """Search for an immediate operand value.
+
+        The hit list is a window; read `has_more` rather than assuming the
+        page is every match. `total` is present only when the scan finished.
+        """
         return _dump(
             analysis.static_search_immediate(
                 session_id,

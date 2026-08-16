@@ -155,6 +155,27 @@ def _capabilities() -> frozenset[str]:
     return frozenset(capabilities)
 
 
+def _page_search_window(matches: list[JsonObject], offset: int, limit: int) -> JsonObject:
+    """Page a prefix of search hits. ``matches`` may be incomplete.
+
+    Measured: 500 hits and limit=100 came back as total=100, has_more=False,
+    so a caller that only reads the window treats the first page as the
+    whole search.
+    """
+    window = matches[offset : offset + limit]
+    has_more = offset + len(window) < len(matches)
+    payload: JsonObject = {
+        "items": window,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(window),
+        "has_more": has_more,
+    }
+    if not has_more:
+        payload["total"] = offset + len(window)
+    return payload
+
+
 def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
     window = items[offset : offset + limit]
     # total is already here. Measured: 500 items and limit=100 came back as
@@ -1019,7 +1040,7 @@ def _search_bytes(params: JsonObject) -> JsonObject:
             "ida_bytes.bin_search API is unavailable in this IDA build",
         )
 
-    while len(matches) < offset + limit and ea < end_ea:
+    while len(matches) < offset + limit + 1 and ea < end_ea:
         patterns = compile_vec()
         parsed = parse_pat(patterns, ea, normalized, 16)
         if parsed is False:
@@ -1038,7 +1059,7 @@ def _search_bytes(params: JsonObject) -> JsonObject:
             break
         matches.append({"ea": found_ea})
         ea = found_ea + 1
-    payload = _page_items(matches, offset, limit)
+    payload = _page_search_window(matches, offset, limit)
     payload["pattern"] = pattern
     payload["normalized_pattern"] = normalized
     payload["start"] = start_ea
@@ -1064,7 +1085,7 @@ def _search_text(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_text(ea, 0, 0, text, flags)
         if found in {idc.BADADDR, ida_idaapi.BADADDR, -1} or found is None:
             break
@@ -1073,7 +1094,7 @@ def _search_text(params: JsonObject) -> JsonObject:
             break
         matches.append({"ea": found_ea})
         ea = found_ea + 1
-    payload = _page_items(matches, offset, limit)
+    payload = _page_search_window(matches, offset, limit)
     payload["text"] = text
     payload["start"] = start_ea
     payload["end"] = end_ea
@@ -1095,7 +1116,7 @@ def _search_immediate(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_imm(ea, flags, value)
         # find_imm may return (ea, n) tuple on some builds
         if isinstance(found, tuple):
@@ -1113,7 +1134,7 @@ def _search_immediate(params: JsonObject) -> JsonObject:
             item["operand"] = operand
         matches.append(item)
         ea = found_ea + 1
-    payload = _page_items(matches, offset, limit)
+    payload = _page_search_window(matches, offset, limit)
     payload["value"] = value
     payload["start"] = start_ea
     payload["end"] = end_ea
