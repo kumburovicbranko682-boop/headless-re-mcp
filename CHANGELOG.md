@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.force_stop` 在 `am` 报错时仍报 `stopped: True`**。假设备
+  `force-stop` 回 `Error: Unknown command: force-stop` 时仍成功。agent
+  会把还在跑的进程当已停。现在 `Error:` / `Exception` 报 `backend_error`。
 - **`device.forward` 在转发被拒绝时仍报成功**。假设备 `forward()` 返回
   `False` 时仍回 `{local, remote}`。agent 会把没建起来的端口当可用。现在
   显式 `False` 报 `backend_error`；`None` 仍算成功。

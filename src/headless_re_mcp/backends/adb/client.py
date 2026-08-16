@@ -372,9 +372,21 @@ class AdbBackend:
             dev = self._device(serial)
             pkg = _check_package(package)
             try:
-                dev.shell(["am", "force-stop", pkg])
+                raw = dev.shell(["am", "force-stop", pkg])
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
+            text = str(raw)
+            # am force-stop writes nothing on success. Measured: an Error:
+            # reply was still {stopped: True}.
+            lowered = text.lower()
+            if "error:" in lowered or "exception" in lowered:
+                raise AdbError(
+                    "backend_error",
+                    "force-stop was refused",
+                    package=pkg,
+                    stopped=False,
+                    detail=text[:500],
+                )
             return {"stopped": True, "package": pkg}
 
         return self._call("force_stop", work)

@@ -1336,6 +1336,40 @@ class TestDeviceLogcatSaysWhenItStopped:
         assert page["has_more"] is False
 
 
+class TestDeviceForceStopDoesNotInventSuccess:
+    """am force-stop writing an error was still reported as stopped.
+
+    Measured: a device whose shell output was
+    ``Error: Unknown command: force-stop`` still answered
+    ``stopped: True``. An unattended agent then talks to a process that
+    never stopped. Empty output is the real success path.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return output
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_an_am_error_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("Error: Unknown command: force-stop").force_stop(
+                "emulator-5554", "com.example.app"
+            )
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("stopped") is False
+
+    def test_empty_output_is_still_success(self) -> None:
+        page = self._backend("").force_stop("emulator-5554", "com.example.app")
+        assert page["stopped"] is True
+
+
 class TestDeviceForwardDoesNotInventSuccess:
     """A refused forward was still reported as a successful tool call.
 
