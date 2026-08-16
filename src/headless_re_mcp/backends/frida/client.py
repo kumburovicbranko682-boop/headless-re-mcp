@@ -15,6 +15,8 @@ T = TypeVar("T")
 # only after 8.000s and was still running at 2s. The deadline lives on this
 # side because a stuck transport cannot be trusted to honour one of its own.
 _FRIDA_TIMEOUT = 30.0
+# Measured: 500 devices came back in one reply with no has_more.
+_MAX_DEVICES = 256
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -428,9 +430,13 @@ class FridaClient:
                 ) from exc
             items = [
                 {"id": str(dev.id), "name": str(dev.name), "type": str(dev.type)}
-                for dev in devices
+                for dev in devices[:_MAX_DEVICES]
             ]
-            return {"devices": items, "count": len(items)}
+            return {
+                "devices": items,
+                "count": len(items),
+                "has_more": len(devices) > len(items),
+            }
 
         return self._call("enumerate_devices", work)
 

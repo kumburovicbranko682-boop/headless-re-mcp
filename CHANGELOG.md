@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.devices` 一次回完整设备表**。500 个设备整包返回，没有
+  `has_more`。现在最多 256，截断时标 `has_more`。
 - **`device.list` 一次回完整设备表**。500 个 serial 整包返回，没有
   `has_more`。现在最多 256，截断时标 `has_more`。
 - **按 `host:port` 解析 Frida 设备时加远程仍会一直挂着**。公开的

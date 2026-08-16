@@ -54,7 +54,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.devices")
     def frida_devices() -> dict[str, Any]:
-        """Enumerate Frida devices (local, USB, remote)."""
+        """Enumerate Frida devices (local, USB, remote).
+
+        Capped. Read `has_more` rather than treating `count` as every
+        device Frida can see.
+        """
         return _dump(analysis.frida_devices())
 
     @tools.tool(name="frida.device.connect")

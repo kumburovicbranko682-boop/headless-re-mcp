@@ -192,6 +192,40 @@ class TestFridaApplicationsHaveADeadline:
         device.release.set()
 
 
+class TestFridaEnumerateDevicesIsCapped:
+    """The Frida device list had no page and no signal that it had stopped.
+
+    Measured: 500 devices came back in one reply, with no has_more.
+    """
+
+    def _client(self, n: int) -> FridaClient:
+        class _Dev:
+            def __init__(self, index: int) -> None:
+                self.id = str(index)
+                self.name = f"dev{index}"
+                self.type = "usb"
+
+        class _Frida:
+            def enumerate_devices(self) -> list[_Dev]:
+                return [_Dev(index) for index in range(n)]
+
+        client = FridaClient(timeout=2.0)
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._client(500).enumerate_devices()
+        assert page["count"] == 256
+        assert page["has_more"] is True
+        assert len(page["devices"]) == 256
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._client(3).enumerate_devices()
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+
 class TestFridaEnumerateDevicesHasADeadline:
     """Listing devices used to park the caller when frida stopped answering.
 
