@@ -181,6 +181,52 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestWebConsoleSaysWhenItStopped:
+    """A console page that hit the cap looks exactly like one that ended.
+
+    ``web.console`` returns the most recent N messages and used to set
+    ``count`` to the page size with no total. Measured: 800 messages in the
+    ring, limit 200, count=200, no has_more -- so the first 600 (often the
+    load-time errors) vanished while the reply looked complete.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from collections import deque
+        from threading import RLock
+
+        from headless_re_mcp.backends.web.client import _MAX_CONSOLE
+
+        class _FakeHandle:
+            def __init__(self) -> None:
+                self.lock = RLock()
+                self.console = deque(maxlen=_MAX_CONSOLE)
+                for index in range(n):
+                    self.console.append({"text": f"msg{index}"})
+
+        backend = WebBackend()
+        handle = _FakeHandle()
+        backend._get = lambda session_id: handle  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(800).console("s", limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 800
+        assert result["has_more"] is True
+        assert result["console"][0]["text"] == "msg600"
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).console("s", limit=200)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(200).console("s", limit=200)
+        assert result["count"] == 200
+        assert result["has_more"] is False
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
