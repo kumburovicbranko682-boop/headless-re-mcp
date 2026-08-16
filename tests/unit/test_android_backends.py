@@ -735,6 +735,76 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceScreenshotIsBounded:
+    """A wedged screencap used to park the tool worker for as long as adb liked.
+
+    Measured: ``dev.screenshot()`` has no timeout argument, so a 2.5s block
+    was waited out in full and still returned a path. The same device with
+    adbutils' 600s shell default would have held the worker for ten minutes.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_screencap_passes_a_deadline(self, tmp_path: Path) -> None:
+        class _Recorder:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def shell(
+                self,
+                cmd: object,
+                timeout: float | None = None,
+                encoding: str | None = "utf-8",
+            ) -> bytes:
+                self.timeouts.append(timeout)
+                return b"\x89PNG\r\n\x1a\n"
+
+        device = _Recorder()
+        result = self._backend(device).screenshot("emulator-5554", tmp_path / "shot.png")
+        assert device.timeouts
+        assert all(t is not None and t > 0 for t in device.timeouts)
+        assert Path(result["path"]).read_bytes().startswith(b"\x89PNG")
+
+    def test_a_blocking_screencap_fails_instead_of_waiting_it_out(
+        self, tmp_path: Path
+    ) -> None:
+        class _Blocker:
+            def shell(
+                self,
+                cmd: object,
+                timeout: float | None = None,
+                encoding: str | None = "utf-8",
+            ) -> bytes:
+                if timeout is None:
+                    raise AssertionError("unbounded screenshot would wait forever")
+                raise TimeoutError(f"adb timed out after {timeout}")
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Blocker()).screenshot("emulator-5554", tmp_path / "shot.png")
+        assert info.value.code == "backend_error"
+        assert "timed out" in info.value.message.lower() or "screenshot" in info.value.message
+
+    def test_empty_output_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        class _Empty:
+            def shell(
+                self,
+                cmd: object,
+                timeout: float | None = None,
+                encoding: str | None = "utf-8",
+            ) -> bytes:
+                return b""
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Empty()).screenshot("emulator-5554", tmp_path / "shot.png")
+        assert info.value.code == "backend_error"
+        assert not (tmp_path / "shot.png").exists()
+
+
 class TestUninstallDoesNotInventSuccess:
     """``uninstalled: True`` used to mean the command returned, not that pm removed it.
 

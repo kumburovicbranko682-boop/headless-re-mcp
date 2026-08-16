@@ -325,11 +325,21 @@ class AdbBackend:
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
         dev = self._device(serial)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        # adbutils.screenshot() calls shell with no timeout (library default
+        # 600s) and, on a bad capture, returns a black image. Measured: a
+        # 2.5s block was waited out in full and still produced a path.
         try:
-            image = dev.screenshot()
-            image.save(str(out_path))
+            raw = dev.shell(["screencap", "-p"], timeout=_SHELL_TIMEOUT, encoding=None)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+        data = bytes(raw) if isinstance(raw, (bytes, bytearray)) else b""
+        if not data.startswith(b"\x89PNG"):
+            raise AdbError(
+                "backend_error",
+                "screenshot returned no image",
+                bytes=len(data),
+            )
+        out_path.write_bytes(data)
         return {"path": str(out_path), "serial": _check_serial(serial)}
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:
