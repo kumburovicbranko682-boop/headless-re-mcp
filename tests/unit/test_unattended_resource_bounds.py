@@ -2971,6 +2971,48 @@ class TestAdbMutationsDoNotInventSuccess:
         assert caught.value.code == "backend_error"
 
 
+class TestAdbInstallDoesNotInventSuccess:
+    """adbutils returns False when pm install failed.
+
+    Measured: that still came back as installed=True. None is the usual
+    success return and must stay successful.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_install_false_is_not_installed(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"MZ")
+
+        class Device:
+            def install(self, *args: object, **kwargs: object) -> bool:
+                del args, kwargs
+                return False
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).install("emulator-5554", str(apk))
+        assert caught.value.code == "backend_error"
+
+    def test_install_none_is_installed(self, tmp_path: Any) -> None:
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"MZ")
+
+        class Device:
+            def install(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+
+        result = self._backend(Device()).install("emulator-5554", str(apk))
+        assert result["installed"] is True
+
+
 class TestAdbConnectDoesNotInventALink:
     """adb connect writes a sentence; the word 'already' is not success.
 

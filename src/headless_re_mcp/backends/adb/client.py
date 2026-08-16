@@ -319,21 +319,25 @@ class AdbBackend:
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
-        def work() -> None:
+        def work() -> object:
             try:
-                dev.install(
+                return dev.install(
                     str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
                 )
             except TypeError:
                 # Older adbutils signatures accept only the path.
-                dev.install(str(path))
+                return dev.install(str(path))
 
         try:
-            _call_bounded(work, timeout=_TRANSFER_TIMEOUT, op="install")
+            outcome = _call_bounded(work, timeout=_TRANSFER_TIMEOUT, op="install")
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
+        # adbutils returns False when pm install failed. Measured: that still
+        # came back as installed=True. None is the usual success return.
+        if outcome is False:
+            raise AdbError("backend_error", "pm install reported failure", path=str(path))
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
