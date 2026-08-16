@@ -484,7 +484,7 @@ class AdbBackend:
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
-            _call_bounded(
+            outcome = _call_bounded(
                 lambda: dev.sync.push(str(path), remote_path),
                 timeout=_TRANSFER_TIMEOUT,
                 op="push",
@@ -493,6 +493,10 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
+        # Measured: push returning False still came back as a local/remote
+        # pair. An overnight agent then treats the file as on the device.
+        if outcome is False:
+            raise AdbError("backend_error", "adb push reported failure", remote=remote_path)
         return {"local": str(path), "remote": remote_path}
 
     def ensure_frida_server(

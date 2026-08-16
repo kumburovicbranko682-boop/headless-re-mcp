@@ -3208,6 +3208,55 @@ class TestAdbForwardDoesNotInventAPort:
         assert result == {"local": "tcp:27042", "remote": "tcp:27042"}
 
 
+class TestAdbPushDoesNotInventSuccess:
+    """adbutils returns False when the push did not land.
+
+    Measured: that still came back as a local/remote pair with no error.
+    """
+
+    def test_push_false_is_not_pushed(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        local = tmp_path / "a.bin"
+        local.write_bytes(b"x")
+
+        class Device:
+            @property
+            def sync(self) -> Device:
+                return self
+
+            def push(self, src: str, remote: str) -> bool:
+                del src, remote
+                return False
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.push("emulator-5554", str(local), "/sdcard/x")
+        assert caught.value.code == "backend_error"
+
+    def test_push_none_is_pushed(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        local = tmp_path / "a.bin"
+        local.write_bytes(b"x")
+
+        class Device:
+            @property
+            def sync(self) -> Device:
+                return self
+
+            def push(self, src: str, remote: str) -> None:
+                del src, remote
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        result = backend.push("emulator-5554", str(local), "/sdcard/x")
+        assert result["remote"] == "/sdcard/x"
+
+
 class TestAdbConnectDoesNotInventALink:
     """adb connect writes a sentence; the word 'already' is not success.
 
