@@ -352,6 +352,16 @@ class AdbBackend:
             dev.sync.pull(remote_path, str(local_path))
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+        # Measured: a pull that wrote nothing still answered
+        # {'remote': ..., 'local': <missing path>}. An agent then treats a
+        # missing file as captured evidence.
+        if not local_path.is_file():
+            raise AdbError(
+                "backend_error",
+                "pull did not write a local file",
+                remote=remote_path,
+                local=str(local_path),
+            )
         return {"remote": remote_path, "local": str(local_path)}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:

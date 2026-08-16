@@ -775,6 +775,49 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestPullDoesNotInventAFile:
+    """A pull that wrote nothing used to return a local path as if it had.
+
+    Measured: ``sync.pull`` returning 0 without creating the destination
+    still answered ``{'remote': ..., 'local': <missing path>}``. An
+    unattended agent then treats a missing file as captured evidence.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_missing_local_file_is_not_a_pull(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, src: str, dst: str) -> int:
+                return 0
+
+        class _Dev:
+            sync = _Sync()
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).pull("emulator-5554", "/sdcard/x.bin", tmp_path / "x.bin")
+        assert info.value.code == "backend_error"
+        assert not (tmp_path / "x.bin").exists()
+
+    def test_a_written_file_is_a_pull(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, src: str, dst: str) -> int:
+                Path(dst).write_bytes(b"data")
+                return 4
+
+        class _Dev:
+            sync = _Sync()
+
+        result = self._backend(_Dev()).pull(
+            "emulator-5554", "/sdcard/x.bin", tmp_path / "x.bin"
+        )
+        assert Path(result["local"]).read_bytes() == b"data"
+
+
 class TestDeviceListDoesNotProbeState:
     """Listing devices used to call get_state once per serial with no deadline.
 
