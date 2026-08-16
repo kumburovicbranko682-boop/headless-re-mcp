@@ -71,9 +71,16 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_console(session_id, limit=limit))
 
     @tools.tool(name="web.scripts")
-    def web_scripts(session_id: str, wasm_only: bool = False) -> dict[str, Any]:
-        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger."""
-        return _dump(analysis.web_scripts(session_id, wasm_only=wasm_only))
+    def web_scripts(
+        session_id: str,
+        wasm_only: bool = False,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List parsed scripts seen by the debugger (check has_more / total)."""
+        return _dump(
+            analysis.web_scripts(session_id, wasm_only=wasm_only, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="web.script.source")
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:

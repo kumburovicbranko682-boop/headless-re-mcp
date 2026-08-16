@@ -103,8 +103,16 @@ class WebAnalysisMixin:
     def web_console(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
         return self._web_wrap(session_id, "console", session_id, limit=limit)
 
-    def web_scripts(self, session_id: str, wasm_only: bool = False) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "scripts", session_id, wasm_only=wasm_only)
+    def web_scripts(
+        self,
+        session_id: str,
+        wasm_only: bool = False,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id, "scripts", session_id, wasm_only=wasm_only, offset=offset, limit=limit
+        )
 
     def web_wasm_list(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "scripts", session_id, wasm_only=True)

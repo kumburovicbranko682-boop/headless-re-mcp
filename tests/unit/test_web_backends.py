@@ -269,6 +269,55 @@ class TestWebConsoleSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebScriptsSayWhenTheyStopped:
+    """A script page that hit the cap looks exactly like one that ended.
+
+    Measured: 2000 parsed scripts, 249 KiB, count=2000, no has_more -- so
+    an unattended caller dumps the whole ring in one tool result and cannot
+    tell whether the page finished or merely stopped.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from collections import OrderedDict
+        from threading import RLock
+
+        class _FakeHandle:
+            def __init__(self) -> None:
+                self.lock = RLock()
+                self.scripts = OrderedDict(
+                    (
+                        str(index),
+                        {
+                            "scriptId": str(index),
+                            "url": f"https://cdn.example.com/chunk-{index}.js",
+                            "language": "JavaScript",
+                        },
+                    )
+                    for index in range(n)
+                )
+
+        backend = WebBackend()
+        handle = _FakeHandle()
+        backend._get = lambda session_id: handle  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(2000).scripts("s", offset=0, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 2000
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).scripts("s", offset=0, limit=200)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(200).scripts("s", offset=0, limit=200)
+        assert result["count"] == 200
+        assert result["has_more"] is False
+
+
 class TestJsUnpackSaysWhenItStopped:
     """A files page that hit the cap looks exactly like one that ended.
 
