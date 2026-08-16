@@ -1074,6 +1074,17 @@ def _name_set(params: JsonObject) -> JsonObject:
             name=name,
         )
     after = idc.get_name(ea) or ""
+    if after == before and after != name:
+        # Measured: set_name returned True while get_name still returned the
+        # old name, and the reply still said ok=True. An agent then treats a
+        # name that never landed as applied.
+        raise WorkerRequestError(
+            "write_failed",
+            f"name set reported success but lookup still found {after!r} at 0x{ea:X}",
+            address=ea,
+            name=name,
+            previous_name=before,
+        )
     return {
         "address": ea,
         "name": after,

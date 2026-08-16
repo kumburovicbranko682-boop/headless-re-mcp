@@ -364,3 +364,77 @@ def test_a_removed_function_is_deleted() -> None:
     assert result["deleted"] is True
     assert result["ok"] is True
     assert result["address"] == 0x1000
+
+
+def _install_fake_names(holder: dict[str, str]) -> None:
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_name = types.ModuleType("ida_name")
+    ida_name.SN_FORCE = 1  # type: ignore[attr-defined]
+    ida_name.set_name = lambda ea, name, flags: True  # type: ignore[attr-defined]
+    sys.modules["ida_name"] = ida_name
+
+    idc = types.ModuleType("idc")
+    idc.get_name = lambda ea: holder["name"]  # type: ignore[attr-defined]
+    sys.modules["idc"] = idc
+
+
+def test_an_unchanged_name_is_not_set() -> None:
+    """set_name True with the old name still present used to say ok=True."""
+    from headless_re_mcp.backends.ida.worker import WorkerRequestError, _name_set
+
+    _install_fake_names({"name": "old_name"})
+    try:
+        _name_set({"address": 0x1000, "name": "new_name"})
+    except WorkerRequestError as exc:
+        assert "still found" in str(exc)
+        return
+    raise AssertionError("an unchanged name was reported set")
+
+
+def test_a_written_name_is_set() -> None:
+    from headless_re_mcp.backends.ida.worker import _name_set
+
+    holder = {"name": "old_name"}
+
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_name = types.ModuleType("ida_name")
+    ida_name.SN_FORCE = 1  # type: ignore[attr-defined]
+
+    def set_name(ea: int, name: str, flags: int) -> bool:
+        holder["name"] = name
+        return True
+
+    ida_name.set_name = set_name  # type: ignore[attr-defined]
+    sys.modules["ida_name"] = ida_name
+
+    idc = types.ModuleType("idc")
+    idc.get_name = lambda ea: holder["name"]  # type: ignore[attr-defined]
+    sys.modules["idc"] = idc
+
+    result = _name_set({"address": 0x1000, "name": "new_name"})
+    assert result["ok"] is True
+    assert result["name"] == "new_name"
+    assert result["previous_name"] == "old_name"
+
+
+def test_setting_the_same_name_again_is_still_ok() -> None:
+    from headless_re_mcp.backends.ida.worker import _name_set
+
+    _install_fake_names({"name": "same_name"})
+    result = _name_set({"address": 0x1000, "name": "same_name"})
+    assert result["ok"] is True
+    assert result["name"] == "same_name"
