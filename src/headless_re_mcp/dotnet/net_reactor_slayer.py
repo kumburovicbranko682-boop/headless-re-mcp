@@ -8,7 +8,6 @@ input and never accept arbitrary flags. Configure via
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from contextlib import suppress
@@ -19,7 +18,7 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
-from headless_re_mcp.dotnet.de4dot import _capture_process
+from headless_re_mcp.dotnet.de4dot import _capture_process, _probe_run
 
 JsonObject = dict[str, Any]
 
@@ -246,26 +245,24 @@ def run_net_reactor_slayer(
 
 
 def probe_net_reactor_slayer(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
-    """Best-effort help probe (tool prints usage when no input is given)."""
+    """Best-effort help probe (tool prints usage when no input is given).
+
+    ``subprocess.run(timeout=...)`` killed only the process it spawned.
+    Measured: a launcher that started a sleeper, timeout 0.4s, left one
+    orphan reparented to pid 1.
+    """
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run([str(exe)], **options)
+        completed = _probe_run([str(exe)], timeout)
     except (OSError, subprocess.TimeoutExpired):
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = (
+        (completed.stdout or b"").decode("utf-8", errors="replace")
+        + "\n"
+        + (completed.stderr or b"").decode("utf-8", errors="replace")
+    ).strip()
     lowered = text.casefold()
     if "netreactorslayer" in lowered or "assemblypath" in lowered or "--no-pause" in lowered:
         return True, text[:2000]
