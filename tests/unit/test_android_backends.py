@@ -1487,6 +1487,30 @@ class TestApktoolBoundaries:
             client.build(source, tmp_path / "out.apk")
         assert info.value.code == "invalid_params"
 
+    def test_a_failed_decode_is_not_success_when_a_manifest_is_left_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """apktool exit 1 still answered decoded_dir if a manifest existed.
+
+        Measured: decode against a leftover AndroidManifest.xml returned
+        the output directory with no error, so an unattended agent would
+        edit a tree apktool refused to decode.
+        """
+        fake_tool = tmp_path / "apktool.jar"
+        fake_tool.write_bytes(b"pk")
+        out = tmp_path / "decoded"
+        out.mkdir()
+        (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.apktool.client._run",
+            lambda cmd, *, timeout, redact_from=None: ("", "ERROR: decode failed", 1),
+        )
+        client = ApktoolClient(fake_tool, None)
+        with pytest.raises(ApktoolError) as info:
+            client.decode(_apk(tmp_path / "a.apk"), out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
     def test_sign_without_apksigner_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
         with pytest.raises(ApktoolError) as info:
