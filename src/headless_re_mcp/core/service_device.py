@@ -7,6 +7,7 @@ operations; there is no raw-shell passthrough by design.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,34 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
 
 JsonObject = dict[str, Any]
+
+# device.screenshot / device.pull write under artifact_root/device/ and never
+# register the file: those tools key by serial, and the artifact table needs a
+# session_id. Retention therefore never sees them. Measured: 80 screenshots of
+# 256 KiB left 20.0 MiB that nothing could reclaim.
+_MAX_DEVICE_ARTIFACTS = 32
+
+
+def prune_device_artifacts(directory: Path, *, keep: int = _MAX_DEVICE_ARTIFACTS) -> None:
+    """Drop the oldest device captures once the directory is full."""
+    try:
+        files = [path for path in directory.iterdir() if path.is_file()]
+    except OSError:
+        return
+    extra = len(files) - max(0, keep)
+    if extra <= 0:
+        return
+
+    def _mtime(path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    files.sort(key=_mtime)
+    for stale in files[:extra]:
+        with suppress(OSError):
+            stale.unlink()
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
@@ -86,11 +115,17 @@ class DeviceAnalysisMixin:
 
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        result = self._adb_wrap("screenshot", serial=serial, out_path=out)
+        if result.ok:
+            prune_device_artifacts(out.parent)
+        return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        if result.ok:
+            prune_device_artifacts(out.parent)
+        return result
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str
