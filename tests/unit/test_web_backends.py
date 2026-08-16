@@ -571,6 +571,36 @@ class TestJsDeobfuscateSaysWhenCodeWasCut:
         assert "truncated" in block
 
 
+class TestJsBeautifySaysWhenCodeWasCut:
+    """Beautify is deobfuscate under another name and used to hide the cut.
+
+    Measured: 500_000 characters came back as 400_000 with truncated=True,
+    while the tool text omitted truncated. An unattended agent that trusted
+    the description treated the fragment as the whole script.
+    """
+
+    def test_a_cut_listing_is_marked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        source = tmp_path / "a.js"
+        source.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout=0: ("y" * 500_000, "", 0))
+        result = JsClient(Path("/bin/true")).beautify(source)
+        assert len(result["code"]) == 400_000
+        assert result["truncated"] is True
+
+    def test_the_tool_description_says_to_read_truncated(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "js_wasm.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def js_beautify(")[1].split("def js_unpack_bundle(")[0]
+        assert "truncated" in block
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
