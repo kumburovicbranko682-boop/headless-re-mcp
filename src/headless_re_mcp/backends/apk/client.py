@@ -171,7 +171,16 @@ class ApkClient:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
+        capped = xml[:200_000]
+        payload: JsonObject = {"package": apk.get_package(), "manifest_xml": capped}
+        if len(xml) > 200_000:
+            # A cut manifest looks like the whole file. An agent that greps
+            # this text for a component that lived past the cap concludes it
+            # was never declared.
+            payload["truncated"] = True
+            payload["manifest_chars"] = len(xml)
+            payload["returned_chars"] = len(capped)
+        return payload
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)

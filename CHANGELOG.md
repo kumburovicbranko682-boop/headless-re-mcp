@@ -131,6 +131,8 @@ until 1.0 the tool surface may still change between minor versions.
   1.7 MiB，COUNT 仍是 80。现在每个 run 只留最近 2000 条。
 - **监督进程重启只杀服务本身**。包装脚本起 sleeper 时，服务已死、子进程仍
   是 S。idalib / 调试目标会在崩溃循环里越积越多。现在对真实子进程杀整树。
+- **APK manifest 超长时被静默切掉**。250_000 字符切成 200_000，回包没有
+  `truncated`。模型会把后半段里的组件当成从未声明。现在标明切过。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

@@ -351,6 +351,34 @@ class TestApktoolBoundaries:
         assert info.value.code == "capability_unavailable"
 
 
+def test_apk_manifest_says_when_the_xml_was_cut() -> None:
+    """A 250_000-character manifest came back as 200_000 with no truncated flag.
+
+    An agent grepping that text for a component past the cap concludes it was
+    never declared.
+    """
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _FakeAxml:
+        def get_xml(self) -> bytes:
+            return b"M" * 250_000
+
+    class _FakeApk:
+        def get_package(self) -> str:
+            return "com.example.app"
+
+        def get_android_manifest_axml(self) -> _FakeAxml:
+            return _FakeAxml()
+
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    got = client.manifest(Path("dummy.apk"))
+    assert len(got["manifest_xml"]) == 200_000
+    assert got["truncated"] is True
+    assert got["manifest_chars"] == 250_000
+
+
 def test_ensure_frida_server_does_not_call_a_missing_process_running() -> None:
     """A successful empty shell was reported as running.
 
