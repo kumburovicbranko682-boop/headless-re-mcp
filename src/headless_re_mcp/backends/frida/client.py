@@ -166,6 +166,21 @@ def _attach(target: Any, pid: int) -> Any:
     return _call_bounded(lambda: target.attach(pid), timeout=_DEVICE_TIMEOUT, op="attach")
 
 
+def _with_script(session: Any, source: str, work: Callable[[Any], T], *, op: str) -> T:
+    """Load a script and run its RPC on a deadline.
+
+    attach is already bounded. script.load and exports_sync are not: measured
+    modules() against a load that never returns was still running after 400ms.
+    """
+
+    def run() -> T:
+        script = session.create_script(source)
+        script.load()
+        return work(script)
+
+    return _call_bounded(run, timeout=_DEVICE_TIMEOUT, op=op)
+
+
 def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
     """Cut a list to the page size, saying whether anything was left out.
 
@@ -237,28 +252,29 @@ class FridaClient:
         self._require(pid, allowed_pid)
         session = _attach(self._frida, pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            mods = list(script.exports_sync.modules())
-            capped = max(1, min(int(limit), 256))
-            page, has_more = _page(mods, capped)
-            items = [
-                {
-                    "name": str(item.get("name", "")),
-                    "base": str(item.get("base", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "path": str(item.get("path", "")),
+            def work(script: Any) -> JsonObject:
+                mods = list(script.exports_sync.modules())
+                capped = max(1, min(int(limit), 256))
+                page, has_more = _page(mods, capped)
+                items = [
+                    {
+                        "name": str(item.get("name", "")),
+                        "base": str(item.get("base", "")),
+                        "size": int(item.get("size", 0) or 0),
+                        "path": str(item.get("path", "")),
+                    }
+                    for item in page
+                ]
+                # Measured: 200 modules came back as count=64, total=200, and no
+                # has_more. exports already carries that flag; modules did not.
+                return {
+                    "modules": items,
+                    "count": len(items),
+                    "total": len(mods),
+                    "has_more": has_more,
                 }
-                for item in page
-            ]
-            # Measured: 200 modules came back as count=64, total=200, and no
-            # has_more. exports already carries that flag; modules did not.
-            return {
-                "modules": items,
-                "count": len(items),
-                "total": len(mods),
-                "has_more": has_more,
-            }
+
+            return _with_script(session, _ENUM_SCRIPT, work, op="script")
         finally:
             session.detach()
 
@@ -276,31 +292,32 @@ class FridaClient:
         capped = max(1, min(int(limit), 512))
         session = _attach(self._frida, pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
-            if not isinstance(raw, dict):
-                raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
-            items = []
-            for item in page:
-                if not isinstance(item, dict):
-                    continue
-                items.append(
-                    {
-                        "name": str(item.get("name", "")),
-                        "address": str(item.get("address", "")),
-                        "type": str(item.get("type", "")),
-                    }
-                )
-            return {
-                "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
-                "base": str(raw.get("base") or ""),
-                "exports": items,
-                "count": len(items),
-                "has_more": has_more,
-            }
+            def work(script: Any) -> JsonObject:
+                raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+                if not isinstance(raw, dict):
+                    raise FridaError("backend_error", "unexpected frida exports payload")
+                page, has_more = _page(list(raw.get("exports") or []), capped)
+                items = []
+                for item in page:
+                    if not isinstance(item, dict):
+                        continue
+                    items.append(
+                        {
+                            "name": str(item.get("name", "")),
+                            "address": str(item.get("address", "")),
+                            "type": str(item.get("type", "")),
+                        }
+                    )
+                return {
+                    "found": bool(raw.get("found")),
+                    "module": str(raw.get("module") or module_name),
+                    "base": str(raw.get("base") or ""),
+                    "exports": items,
+                    "count": len(items),
+                    "has_more": has_more,
+                }
+
+            return _with_script(session, _ENUM_SCRIPT, work, op="script")
         finally:
             session.detach()
 
@@ -312,15 +329,16 @@ class FridaClient:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = _attach(self._frida, pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
-                "address": address,
-                "size": size,
-                "encoding": "hex",
-                "data": data.hex(),
-            }
+            def work(script: Any) -> JsonObject:
+                data = bytes(script.exports_sync.read(int(address), int(size)))
+                return {
+                    "address": address,
+                    "size": size,
+                    "encoding": "hex",
+                    "data": data.hex(),
+                }
+
+            return _with_script(session, _ENUM_SCRIPT, work, op="script")
         finally:
             session.detach()
 
@@ -336,15 +354,18 @@ class FridaClient:
             )
         session = _attach(self._frida, pid)
         try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": "local",
-                **_PROBE_DISCLOSURE,
-            }
+            return _with_script(
+                session,
+                source,
+                lambda _script: {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": "local",
+                    **_PROBE_DISCLOSURE,
+                },
+                op="script",
+            )
         finally:
             session.detach()
 
@@ -511,26 +532,27 @@ class FridaClient:
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:
-            script = session.create_script(_JAVA_SCRIPT)
-            script.load()
-            if mode == "classes":
-                values, has_more = _page(
-                    script.exports_sync.classes(name_filter or "", capped + 1), capped
-                )
-                return {"classes": values, "count": len(values), "has_more": has_more}
-            if mode == "methods":
-                if not class_name:
-                    raise FridaError("invalid_params", "class_name is required")
-                values, has_more = _page(
-                    script.exports_sync.methods(class_name, capped + 1), capped
-                )
-                return {
-                    "class_name": class_name,
-                    "methods": values,
-                    "count": len(values),
-                    "has_more": has_more,
-                }
-            raise FridaError("invalid_params", "mode must be classes or methods")
+            def work(script: Any) -> JsonObject:
+                if mode == "classes":
+                    values, has_more = _page(
+                        script.exports_sync.classes(name_filter or "", capped + 1), capped
+                    )
+                    return {"classes": values, "count": len(values), "has_more": has_more}
+                if mode == "methods":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    values, has_more = _page(
+                        script.exports_sync.methods(class_name, capped + 1), capped
+                    )
+                    return {
+                        "class_name": class_name,
+                        "methods": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                raise FridaError("invalid_params", "mode must be classes or methods")
+
+            return _with_script(session, _JAVA_SCRIPT, work, op="script")
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -563,15 +585,18 @@ class FridaClient:
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": str(device_id or "local"),
-                **_PROBE_DISCLOSURE,
-            }
+            return _with_script(
+                session,
+                source,
+                lambda _script: {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": str(device_id or "local"),
+                    **_PROBE_DISCLOSURE,
+                },
+                op="script",
+            )
         finally:
             session.detach()
 

@@ -535,6 +535,44 @@ class TestFridaDeviceOpsCannotHoldAWorker:
         assert caught.value.details["op"] == "get_local_device"
         assert time.monotonic() - started < 1.0
 
+    def test_a_wedged_script_load_comes_back_as_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
+
+        from headless_re_mcp.backends.frida import client as frida_client
+        from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+        monkeypatch.setattr(frida_client, "_DEVICE_TIMEOUT", 0.05)
+
+        class HungScript:
+            def load(self) -> None:
+                threading.Event().wait()
+
+        class Session:
+            def create_script(self, source: str) -> HungScript:
+                del source
+                return HungScript()
+
+            def detach(self) -> None:
+                return None
+
+        class Frida:
+            def attach(self, pid: int) -> Session:
+                del pid
+                return Session()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = Frida()
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.modules(1, allowed_pid=1, limit=1)
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "script"
+        assert time.monotonic() - started < 1.0
+
 
 class TestApkManifestSaysWhenItStopped:
     """The tool text says this is the decoded manifest.
