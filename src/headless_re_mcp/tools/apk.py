@@ -71,7 +71,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List methods of a class (dotted or Lsmali/form; paginated)."""
+        """List methods of a class (dotted or Lsmali/form).
+
+        Paged; the reply carries total and has_more so a page is not read
+        as every method on the class.
+        """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )

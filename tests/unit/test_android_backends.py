@@ -1200,6 +1200,46 @@ class TestApkClassPaging:
         assert rest["has_more"] is False
 
 
+class TestApkMethodPaging:
+    def test_a_method_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A method page used to look complete even with total > count.
+
+        Measured: 5 methods, limit 2, count=2 total=5, no has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Method:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class _Klass:
+            name = "Lfoo/C;"
+
+            def get_methods(self) -> list[_Method]:
+                return [_Method(f"m{index}") for index in range(5)]
+
+        class _Analysis:
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass()]
+
+        class _Parsed:
+            analysis = _Analysis()
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.methods(apk, "Lfoo/C;", offset=0, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        rest = client.methods(apk, "Lfoo/C;", offset=2, limit=10)
+        assert rest["count"] == 3
+        assert rest["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
