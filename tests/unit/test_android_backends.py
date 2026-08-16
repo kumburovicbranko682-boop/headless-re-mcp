@@ -414,6 +414,56 @@ class TestApkCertificatesSayWhenTheySkipped:
         assert result["truncated"] is False
         assert len(result["certificates"]) == 1
 
+    def test_failed_signature_names_are_not_unsigned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_signature_names(self) -> list[str]:
+                raise RuntimeError("androguard exploded")
+
+            def get_certificates(self) -> list[Any]:
+                return [
+                    type(
+                        "Good",
+                        (),
+                        {
+                            "subject": "CN=ok",
+                            "issuer": "CN=ca",
+                            "serial_number": 1,
+                            "sha256_fingerprint": "aa",
+                        },
+                    )()
+                ]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        result = client.certificates(tmp_path / "app.apk")
+        assert result["v1_signed"] is True
+        assert result["skipped"] == 1
+        assert result["truncated"] is True
+        assert result["signature_files"] == []
+        assert len(result["certificates"]) == 1
+
+    def test_failed_signature_names_with_no_certs_are_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        class FakeApk:
+            def get_signature_names(self) -> list[str]:
+                raise RuntimeError("androguard exploded")
+
+            def get_certificates(self) -> list[Any]:
+                return []
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        with pytest.raises(ApkError) as caught:
+            client.certificates(tmp_path / "app.apk")
+        assert caught.value.code == "backend_error"
+
 
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:

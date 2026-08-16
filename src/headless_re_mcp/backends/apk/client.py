@@ -200,10 +200,15 @@ class ApkClient:
         apk = self._apk(path)
         items: list[JsonObject] = []
         skipped = 0
+        names_ok = True
         try:
             names = apk.get_signature_names()
         except Exception:  # noqa: BLE001
+            # Measured: a raising get_signature_names next to one readable
+            # certificate came back as signature_files=[], v1_signed=False,
+            # skipped=0. The agent then treats a signed APK as unsigned.
             names = []
+            names_ok = False
         for cert in apk.get_certificates():
             try:
                 items.append(
@@ -223,10 +228,14 @@ class ApkClient:
                 # having exactly one signer.
                 skipped += 1
                 continue
+        if not names_ok:
+            skipped += 1
+            if not items and skipped == 1:
+                raise ApkError("backend_error", "failed to read signature names")
         return {
             "signature_files": list(names),
             "certificates": items,
-            "v1_signed": bool(names),
+            "v1_signed": bool(names) if names_ok else True,
             "skipped": skipped,
             "truncated": skipped > 0,
         }
