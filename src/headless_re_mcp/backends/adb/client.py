@@ -219,9 +219,21 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            raw = dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
+        text = str(raw)
+        lowered = text.casefold()
+        # monkey writes this and still exits 0. Treating the shell returning as
+        # launched=True is how an unattended agent then hooks a process that
+        # never started.
+        if "no activities found" in lowered or "monkey aborted" in lowered:
+            raise AdbError(
+                "backend_error",
+                "launch failed: no launcher activity",
+                package=pkg,
+                output=text[:2000],
+            )
         return {"launched": True, "package": pkg}
 
     def force_stop(self, serial: str, package: str) -> JsonObject:

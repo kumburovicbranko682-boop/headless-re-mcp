@@ -350,6 +350,44 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestDeviceLaunchDoesNotInventSuccess:
+    """monkey aborting used to be reported as launched=True.
+
+    Measured: ``** No activities found to run, monkey aborted.`` / Events
+    injected: 0 still produced ``{"launched": true}``. An unattended agent
+    then attaches, screenshots, or traces a process that is not there.
+    """
+
+    def _backend(self, output: str) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_no_launcher_activity_is_a_failure(self) -> None:
+        backend = self._backend(
+            "** No activities found to run, monkey aborted.\nEvents injected: 0\n"
+        )
+        with pytest.raises(AdbError) as info:
+            backend.launch("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+        assert "no launcher activity" in str(info.value)
+        assert "monkey aborted" in str(info.value.details.get("output", "")).casefold()
+
+    def test_a_monkey_that_injected_is_launched(self) -> None:
+        result = self._backend("Events injected: 1\n").launch(
+            "emulator-5554", "com.example.app"
+        )
+        assert result == {"launched": True, "package": "com.example.app"}
+
+
 class TestDevicePackagesAreBounded:
     """An emulator image can carry thousands of packages; the list had no cap."""
 
