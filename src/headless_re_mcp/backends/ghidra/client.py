@@ -173,7 +173,9 @@ class GhidraClient:
             _EXPORT_SCRIPT,
             mode,
             str(out_path),
-            str(capped),
+            # One extra so a full page is distinguishable from the end.
+            # Measured: limit 256, count=256, no has_more -- looked complete.
+            str(capped + 1),
             addr,
         ]
         stdout, stderr, code = self._run_headless(
@@ -206,6 +208,13 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        if mode in {"functions", "symbols", "xrefs"}:
+            items = payload.get("items")
+            if isinstance(items, list):
+                page = items[:capped]
+                payload["items"] = page
+                payload["count"] = len(page)
+                payload["has_more"] = len(items) > capped
         return payload
 
     def _run_headless(
