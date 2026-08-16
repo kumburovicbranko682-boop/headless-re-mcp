@@ -104,6 +104,11 @@ def test_dotnet_deobfuscate_mocked(tmp_path: Path) -> None:
     out = Path(result.data["de4dot"]["output_path"])
     assert out.is_file()
     assert str(artifact_root.resolve()) in str(out.resolve())
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "de4dot_unpacked"
 
     verified = service.dotnet_verify(session_id, str(out))
     assert verified.ok and verified.data is not None
