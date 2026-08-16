@@ -1302,6 +1302,45 @@ class TestApkNativeLibPaging:
         assert complete["has_more"] is False
 
 
+class TestApkComponentPaging:
+    def test_a_component_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A component list used to look complete with no totals.
+
+        Measured: five activities and three services, no total or has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_activities(self) -> list[str]:
+                return [f"a{index}" for index in range(5)]
+
+            def get_services(self) -> list[str]:
+                return [f"s{index}" for index in range(3)]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return ["p0"]
+
+            def get_main_activity(self) -> str:
+                return "a0"
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.components(apk, limit=2)
+        assert result["activities"] == ["a0", "a1"]
+        assert result["services"] == ["s0", "s1"]
+        assert result["totals"]["activities"] == 5
+        assert result["totals"]["services"] == 3
+        assert result["has_more"] is True
+        assert result["main_activity"] == "a0"
+        complete = client.components(apk, limit=5)
+        assert complete["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

@@ -213,14 +213,35 @@ class ApkClient:
             "v1_signed": bool(names),
         }
 
-    def components(self, path: Path) -> JsonObject:
+    def components(self, path: Path, *, limit: int = 200) -> JsonObject:
+        """List manifest components. Each list is capped.
+
+        Measured: five activities and three services came back with no
+        total or has_more. A page looked like every component the APK
+        declared.
+        """
         apk = self._apk(path)
+        activities = sorted(apk.get_activities())
+        services = sorted(apk.get_services())
+        receivers = sorted(apk.get_receivers())
+        providers = sorted(apk.get_providers())
+        capped = max(1, min(int(limit), 2000))
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities[:capped],
+            "services": services[:capped],
+            "receivers": receivers[:capped],
+            "providers": providers[:capped],
             "main_activity": apk.get_main_activity(),
+            "totals": {
+                "activities": len(activities),
+                "services": len(services),
+                "receivers": len(receivers),
+                "providers": len(providers),
+            },
+            "has_more": any(
+                len(items) > capped
+                for items in (activities, services, receivers, providers)
+            ),
         }
 
     def native_libs(self, path: Path, *, limit: int = 200) -> JsonObject:
