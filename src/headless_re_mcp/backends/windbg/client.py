@@ -297,6 +297,15 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        if completed.returncode not in {0, 1}:
+            # Dump analysis used to ignore the exit code. A leftover banner
+            # or even empty stdout still came back as a module/thread list.
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

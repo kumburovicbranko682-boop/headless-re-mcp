@@ -105,6 +105,82 @@ def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch
     assert discovered is None or "windowsapps" not in str(discovered).casefold()
 
 
+class TestWindbgDumpDoesNotSucceedOnFailedCdb:
+    """cdb dump analysis ignored the exit code, so leftover banner was a list.
+
+    Measured: modules() against leftover 'Microsoft (R) Windows Debugger...'
+    with returncode=2 returned that banner as modules, and empty stdout with
+    the same exit still succeeded. An unattended agent would treat a dump it
+    never opened as analysed.
+    """
+
+    def test_exit_2_with_leftover_banner_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        dump = tmp_path / "crash.dmp"
+        dump.write_bytes(b"dump")
+        monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+        monkeypatch.setattr(
+            windbg_module,
+            "run_bounded",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=2,
+                stdout=b"Microsoft (R) Windows Debugger Version 10.0 leftover\n",
+                stderr=b"Could not open dump",
+            ),
+        )
+        with pytest.raises(WindbgError) as info:
+            WindbgClient(cdb).modules(dump)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 2
+
+    def test_exit_2_with_empty_stdout_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        dump = tmp_path / "crash.dmp"
+        dump.write_bytes(b"dump")
+        monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+        monkeypatch.setattr(
+            windbg_module,
+            "run_bounded",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[], returncode=2, stdout=b"", stderr=b"fail"
+            ),
+        )
+        with pytest.raises(WindbgError) as info:
+            WindbgClient(cdb).modules(dump)
+        assert info.value.code == "backend_error"
+
+    def test_exit_0_still_returns_modules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        dump = tmp_path / "crash.dmp"
+        dump.write_bytes(b"dump")
+        monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+        monkeypatch.setattr(
+            windbg_module,
+            "run_bounded",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"start    end      module\n", stderr=b""
+            ),
+        )
+        payload = WindbgClient(cdb).modules(dump)
+        assert "start" in str(payload["modules"])
+
+
 class TestWindbgLiveDoesNotSucceedOnLeftoverBanner:
     """cdb exit 2 still answered attached=True if the banner was in stdout.
 
