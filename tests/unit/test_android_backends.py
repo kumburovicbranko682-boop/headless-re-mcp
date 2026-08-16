@@ -1240,6 +1240,41 @@ class TestApkMethodPaging:
         assert rest["has_more"] is False
 
 
+class TestApkStringPaging:
+    def test_a_string_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A string page used to look complete even with total > count.
+
+        Measured: 5 strings, limit 2, count=2 total=5, no has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Analysis:
+            def get_strings(self) -> list[_Item]:
+                return [_Item(f"s{index}") for index in range(5)]
+
+        class _Parsed:
+            analysis = _Analysis()
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.strings(apk, offset=0, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        rest = client.strings(apk, offset=2, limit=10)
+        assert rest["count"] == 3
+        assert rest["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
