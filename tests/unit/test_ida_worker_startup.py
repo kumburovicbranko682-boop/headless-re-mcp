@@ -438,3 +438,60 @@ def test_setting_the_same_name_again_is_still_ok() -> None:
     result = _name_set({"address": 0x1000, "name": "same_name"})
     assert result["ok"] is True
     assert result["name"] == "same_name"
+
+
+def _install_fake_comments(holder: dict[str, str]) -> None:
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_bytes = types.ModuleType("ida_bytes")
+    ida_bytes.get_cmt = lambda ea, repeatable: holder["comment"]  # type: ignore[attr-defined]
+    ida_bytes.set_cmt = lambda ea, comment, repeatable: True  # type: ignore[attr-defined]
+    sys.modules["ida_bytes"] = ida_bytes
+
+
+def test_an_unchanged_comment_is_not_set() -> None:
+    """set_cmt True with the old comment still present used to say ok=True."""
+    from headless_re_mcp.backends.ida.worker import WorkerRequestError, _comment_set
+
+    _install_fake_comments({"comment": "old comment"})
+    try:
+        _comment_set({"address": 0x1000, "comment": "new comment"})
+    except WorkerRequestError as exc:
+        assert "still found" in str(exc)
+        return
+    raise AssertionError("an unchanged comment was reported set")
+
+
+def test_a_written_comment_is_set() -> None:
+    from headless_re_mcp.backends.ida.worker import _comment_set
+
+    holder = {"comment": "old comment"}
+
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_bytes = types.ModuleType("ida_bytes")
+    ida_bytes.get_cmt = lambda ea, repeatable: holder["comment"]  # type: ignore[attr-defined]
+
+    def set_cmt(ea: int, comment: str, repeatable: bool) -> bool:
+        holder["comment"] = comment
+        return True
+
+    ida_bytes.set_cmt = set_cmt  # type: ignore[attr-defined]
+    sys.modules["ida_bytes"] = ida_bytes
+
+    result = _comment_set({"address": 0x1000, "comment": "new comment"})
+    assert result["ok"] is True
+    assert result["comment"] == "new comment"
+    assert result["previous_comment"] == "old comment"

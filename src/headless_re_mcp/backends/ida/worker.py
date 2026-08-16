@@ -1117,6 +1117,16 @@ def _comment_set(params: JsonObject) -> JsonObject:
             address=ea,
         )
     after = ida_bytes.get_cmt(ea, repeatable) or ""
+    if after == before and after != comment:
+        # Measured: set_cmt returned True while get_cmt still returned the
+        # old comment, and the reply still said ok=True. An agent then
+        # treats a comment that never landed as applied.
+        raise WorkerRequestError(
+            "write_failed",
+            f"comment set reported success but lookup still found {after!r} at 0x{ea:X}",
+            address=ea,
+            previous_comment=before,
+        )
     return {
         "address": ea,
         "comment": after,
