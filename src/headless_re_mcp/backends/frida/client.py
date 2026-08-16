@@ -460,12 +460,20 @@ class FridaClient:
         device = self._resolve_device(device_id)
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
-        try:
-            pid = device.spawn([package.strip()])
-            device.resume(pid)
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
-        return {"package": package.strip(), "pid": int(pid), "device": str(device_id or "local")}
+
+        def work() -> JsonObject:
+            try:
+                pid = device.spawn([package.strip()])
+                device.resume(pid)
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
+            return {
+                "package": package.strip(),
+                "pid": int(pid),
+                "device": str(device_id or "local"),
+            }
+
+        return self._call("spawn", work)
 
     def java_enumerate(
         self,
@@ -481,37 +489,41 @@ class FridaClient:
         self._authorize(pid, allowed_pids)
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
-        try:
-            session = device.attach(pid)
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
-        try:
-            script = session.create_script(_JAVA_SCRIPT)
-            script.load()
-            if mode == "classes":
-                values, has_more = _page(
-                    script.exports_sync.classes(name_filter or "", capped + 1), capped
-                )
-                return {"classes": values, "count": len(values), "has_more": has_more}
-            if mode == "methods":
-                if not class_name:
-                    raise FridaError("invalid_params", "class_name is required")
-                values, has_more = _page(
-                    script.exports_sync.methods(class_name, capped + 1), capped
-                )
-                return {
-                    "class_name": class_name,
-                    "methods": values,
-                    "count": len(values),
-                    "has_more": has_more,
-                }
-            raise FridaError("invalid_params", "mode must be classes or methods")
-        except FridaError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
-        finally:
-            session.detach()
+
+        def work() -> JsonObject:
+            try:
+                session = device.attach(pid)
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            try:
+                script = session.create_script(_JAVA_SCRIPT)
+                script.load()
+                if mode == "classes":
+                    values, has_more = _page(
+                        script.exports_sync.classes(name_filter or "", capped + 1), capped
+                    )
+                    return {"classes": values, "count": len(values), "has_more": has_more}
+                if mode == "methods":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    values, has_more = _page(
+                        script.exports_sync.methods(class_name, capped + 1), capped
+                    )
+                    return {
+                        "class_name": class_name,
+                        "methods": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                raise FridaError("invalid_params", "mode must be classes or methods")
+            except FridaError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
+            finally:
+                session.detach()
+
+        return self._call("java_enumerate", work)
 
     def hook_template_device(
         self,
@@ -531,22 +543,26 @@ class FridaClient:
                 allowed=sorted(_HOOK_TEMPLATES),
             )
         device = self._resolve_device(device_id)
-        try:
-            session = device.attach(pid)
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
-        try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": str(device_id or "local"),
-                **_PROBE_DISCLOSURE,
-            }
-        finally:
-            session.detach()
+
+        def work() -> JsonObject:
+            try:
+                session = device.attach(pid)
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            try:
+                script = session.create_script(source)
+                script.load()
+                return {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": str(device_id or "local"),
+                    **_PROBE_DISCLOSURE,
+                }
+            finally:
+                session.detach()
+
+        return self._call("hook_template_device", work)
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
         if not self._available or self._frida is None:

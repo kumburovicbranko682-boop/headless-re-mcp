@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **设备侧 `frida.java.*` / `hook.template` / `spawn` 在 attach/spawn
+  卡住时仍会一直挂着**。本地路径加截止后，`java_enumerate` 对睡 8s 的
+  `device.attach` 仍要 8.000s 才回；`spawn` 2s 时仍在跑。现在这几条共用
+  同一截止。
 - **本地 `frida.modules` / `exports` / `memory.read` / `hook.template` 在
   attach 卡住时仍会一直挂着**。给 `attach` 加了 30s 截止后，`modules()`
   对睡 8s 的 attach 仍要 8.000s 才回，2s 时仍在跑。现在这几条共用同一

@@ -384,6 +384,69 @@ class TestFridaLocalReadsShareTheAttachDeadline:
             frida.release.set()
 
 
+class _HungFridaDevice:
+    """A device whose attach/spawn never returns."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def attach(self, pid: int) -> object:
+        del pid
+        self.entered.set()
+        self.release.wait()
+        return object()
+
+    def spawn(self, args: object) -> int:
+        del args
+        self.entered.set()
+        self.release.wait()
+        return 1
+
+    def resume(self, pid: int) -> None:
+        del pid
+
+
+class TestFridaDeviceOpsShareTheAttachDeadline:
+    """Device-side attach/spawn still parked after the local path had a deadline.
+
+    Measured: ``java_enumerate`` against a ``device.attach`` that slept 8s
+    returned only after 8.000s. ``spawn`` was still running at 2s.
+    hook_template_device takes the same attach path.
+    """
+
+    def _client(self, device: _HungFridaDevice, *, timeout: float = 0.3) -> FridaClient:
+        class _Frida:
+            def get_usb_device(self, **_: object) -> _HungFridaDevice:
+                return device
+
+        client = FridaClient(timeout=timeout)
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_java_hook_and_spawn_time_out(self) -> None:
+        calls = (
+            lambda client: client.java_enumerate(
+                "usb", 4242, allowed_pids=[4242], mode="classes"
+            ),
+            lambda client: client.hook_template_device(
+                "usb", 4242, "noop", allowed_pids=[4242]
+            ),
+            lambda client: client.spawn("usb", "com.example.app"),
+        )
+        for call in calls:
+            device = _HungFridaDevice()
+            client = self._client(device)
+            started = time.monotonic()
+            with pytest.raises(FridaError) as info:
+                call(client)
+            assert info.value.code == "timeout"
+            assert time.monotonic() - started < 1.0
+            assert device.entered.is_set()
+            device.release.set()
+
+
 class _FakeCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
