@@ -105,6 +105,58 @@ def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch
     assert discovered is None or "windowsapps" not in str(discovered).casefold()
 
 
+class TestWindbgLiveDoesNotSucceedOnLeftoverBanner:
+    """cdb exit 2 still answered attached=True if the banner was in stdout.
+
+    Measured: attach against leftover 'Microsoft (R) Windows Debugger...'
+    with returncode=2 returned attached=True and no error, so an unattended
+    agent would treat a failed probe as a live attach.
+    """
+
+    def test_exit_2_with_leftover_banner_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+        monkeypatch.setattr(
+            windbg_module,
+            "run_bounded",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=2,
+                stdout=b"Microsoft (R) Windows Debugger Version 10.0 leftover\n",
+                stderr=b"Could not attach",
+            ),
+        )
+        with pytest.raises(WindbgError) as info:
+            WindbgClient(cdb).attach(4242, allowed_pid=4242)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 2
+
+    def test_exit_0_still_attaches(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+        monkeypatch.setattr(
+            windbg_module,
+            "run_bounded",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=b"Windows 10 Version 19045\n",
+                stderr=b"",
+            ),
+        )
+        payload = WindbgClient(cdb).attach(4242, allowed_pid=4242)
+        assert payload["attached"] is True
+        assert "Windows 10" in str(payload["output"])
+
+
 def test_launch_failure_becomes_a_structured_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -250,7 +250,10 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
-        if completed.returncode not in {0, 1} and not out:
+        if completed.returncode not in {0, 1}:
+            # A leftover banner in stdout used to make a failed attach look
+            # like a live probe. cdb uses 0/1 for a finished session; anything
+            # else is a failed attach even if the banner is still there.
             raise WindbgError(
                 "backend_error",
                 "cdb user-mode probe failed",
