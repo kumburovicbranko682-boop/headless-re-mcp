@@ -328,13 +328,25 @@ class AdbBackend:
         }
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
+        """Capture the framebuffer. The screencap hop is bounded.
+
+        adbutils ``screenshot()`` used to run with the library's 600s
+        socket default. A wedged adb held the worker; we do not need the
+        PIL round-trip to write the PNG the caller asked for.
+        """
         dev = self._device(serial)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            image = dev.screenshot()
-            image.save(str(out_path))
+            try:
+                raw = dev.shell(["screencap", "-p"], timeout=20.0, encoding=None)
+            except TypeError:
+                raw = dev.shell(["screencap", "-p"], timeout=20.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+        data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("latin-1")
+        if not data.startswith(b"\x89PNG") and b"\x89PNG" in data[:16]:
+            data = data.replace(b"\r\n", b"\n")
+        out_path.write_bytes(bytes(data))
         return {"path": str(out_path), "serial": _check_serial(serial)}
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:

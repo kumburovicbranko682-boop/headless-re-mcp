@@ -273,6 +273,45 @@ class TestAdbArgumentValidation:
         assert injected["launched"] is True
         assert "note" not in injected
 
+    def test_screenshot_does_not_wait_on_adb_forever(self, tmp_path: Path) -> None:
+        """adbutils screenshot used to run with no deadline.
+
+        Measured: screenshot() was invoked with no timeout. A wedged adb
+        held the worker for the life of the process.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+
+            def shell(
+                self, cmd: object, timeout: object = None, encoding: object = "utf-8"
+            ) -> bytes:
+                self.timeout = timeout
+                self.encoding = encoding
+                return b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+
+            def screenshot(self) -> object:
+                raise AssertionError("unbounded screenshot")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        out = tmp_path / "shot.png"
+        result = _Backend(device).screenshot("emulator-5554", out)
+        assert device.timeout == 20.0
+        assert out.is_file()
+        assert out.read_bytes().startswith(b"\x89PNG")
+        assert result["path"] == str(out)
+
     def test_uninstall_does_not_wait_on_adb_forever(self) -> None:
         """adbutils uninstall used to run with no deadline.
 
