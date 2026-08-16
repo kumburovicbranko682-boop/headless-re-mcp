@@ -95,6 +95,17 @@ class ApktoolClient:
                 stderr=stderr[:_MAX_STDERR],
             )
         manifest = out_dir / "AndroidManifest.xml"
+        # Measured: exit 0 with no AndroidManifest.xml still returned
+        # decoded_dir, so an unattended agent then edited and rebuilt an
+        # empty tree. build() already refuses a directory without one.
+        if not manifest.is_file():
+            raise ApktoolError(
+                "backend_error",
+                "apktool decode produced no AndroidManifest.xml",
+                exit_code=code,
+                decoded_dir=str(out_dir),
+                stderr=stderr[:_MAX_STDERR],
+            )
         smali_dirs = sorted(str(p.name) for p in out_dir.glob("smali*") if p.is_dir())
         return {
             "decoded_dir": str(out_dir),
