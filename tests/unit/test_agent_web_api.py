@@ -223,6 +223,24 @@ def test_an_event_history_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatc
         )
 
 
+def test_a_watchdog_page_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        for index in range(5):
+            app.state.watchdog._alert("backend_dead", session_id=f"s{index}")
+        listed = client.get("/api/agent/watchdog?limit=2", headers=headers).json()
+        assert listed["count"] == 2
+        assert listed["alerts_total"] == 5
+        assert listed["has_more"] is True
+        full = client.get("/api/agent/watchdog?limit=128", headers=headers).json()
+        assert full["count"] == 5
+        assert full["has_more"] is False
+
+
 def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = replace(

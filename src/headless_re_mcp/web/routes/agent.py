@@ -388,6 +388,7 @@ def register_agent_routes(
     ) -> JSONResponse:
         """Recent alerts and what the watchdog is permitted to fix by itself."""
         authorize(authorization)
+        alerts = watchdog.recent_alerts(limit)
         return JSONResponse(
             {
                 "ok": True,
@@ -398,7 +399,10 @@ def register_agent_routes(
                 },
                 "recovered_total": watchdog.recovered,
                 "alerts_total": watchdog.raised,
-                "alerts": watchdog.recent_alerts(limit),
+                "count": len(alerts),
+                "limit": limit,
+                "has_more": watchdog.raised > len(alerts),
+                "alerts": alerts,
             }
         )
 
