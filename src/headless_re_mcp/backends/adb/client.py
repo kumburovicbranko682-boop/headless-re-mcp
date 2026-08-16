@@ -31,6 +31,7 @@ _INFO_TIMEOUT = 15.0
 _PROPERTIES_TIMEOUT = 15.0
 _PACKAGES_TIMEOUT = 15.0
 _LOGCAT_TIMEOUT = 15.0
+_FORCE_STOP_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -452,10 +453,19 @@ class AdbBackend:
         }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        """Stop a package. The hop is bounded.
+
+        adbutils ``shell(timeout=15)`` still opened the transport with a
+        600s default. Measured on info: a wedged adb held the connect,
+        not the command.
+        """
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         pkg = _check_package(package)
         try:
-            dev.shell(["am", "force-stop", pkg], timeout=15.0)
+            self._adb_shell(serial, f"am force-stop {pkg}", timeout=_FORCE_STOP_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
         return {"stopped": True, "package": pkg}

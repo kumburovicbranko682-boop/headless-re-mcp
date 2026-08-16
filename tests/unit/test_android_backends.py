@@ -620,35 +620,53 @@ class TestAdbArgumentValidation:
         assert device.cmd == ["pm", "uninstall", "com.example.app"]
         assert result["uninstalled"] is True
 
-    def test_force_stop_does_not_wait_on_adb_forever(self) -> None:
-        """am force-stop used to be invoked with no deadline.
+    def test_force_stop_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """force-stop used adbutils shell, which connects with a 600s default.
 
-        Measured: timeout=None. A wedged adb held the worker for the
-        life of the process. The command itself is short; the wait is not.
+        Measured on info: shell(timeout=15) opened the transport with the
+        library default first. The command itself is short; the wait is not.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeout = timeout
-                return ""
+        monkeypatch.setattr(adb_client, "_FORCE_STOP_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).force_stop("emulator-5554", "com.example.app")
-        assert device.timeout == 15.0
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).force_stop("emulator-5554", "com.example.app")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
+
+    def test_force_stop_uses_bounded_adb_shell(self, tmp_path: Path) -> None:
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\n")
+        adb.chmod(0o755)
+        result = _Backend(adb).force_stop("emulator-5554", "com.example.app")
         assert result["stopped"] is True
+        assert result["package"] == "com.example.app"
 
     def test_current_activity_does_not_wait_on_adb_forever(self) -> None:
         """app_current used three dumpsys calls with no deadline.
