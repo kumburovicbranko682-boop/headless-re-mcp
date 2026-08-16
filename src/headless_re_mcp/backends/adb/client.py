@@ -282,17 +282,17 @@ class AdbBackend:
         Idempotent-ish: if a frida-server process is already running it does
         nothing. Requires root (su) on the device; failures surface as
         structured errors rather than exceptions.
+
+        ``running`` is True only when the process is visible in ``ps``
+        afterwards. The launch command coming back is not enough: a missing
+        binary, a refused su, or a nohup that dies all look like success
+        from the shell, and reporting them as running left an unattended
+        agent waiting for hooks that never appear.
         """
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        if self._frida_server_visible(dev):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -301,10 +301,11 @@ class AdbBackend:
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
                 dev.sync.push(str(path), remote_path)
-                dev.shell(["chmod", "755", remote_path])
+                dev.shell(["chmod", "755", remote_path], timeout=8.0)
                 pushed = True
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
+        launch_note = ""
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             dev.shell(
@@ -312,13 +313,31 @@ class AdbBackend:
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
-            return {
-                "running": None,
-                "pushed": pushed,
-                "port": port,
-                "note": f"launch attempted; verify manually ({exc})",
-            }
-        return {"running": True, "pushed": pushed, "port": port}
+            launch_note = f"launch attempted; verify manually ({exc})"
+        if self._frida_server_visible(dev):
+            result: JsonObject = {"running": True, "pushed": pushed, "port": port}
+            if launch_note:
+                result["note"] = launch_note
+            return result
+        return {
+            "running": False,
+            "pushed": pushed,
+            "port": port,
+            "note": launch_note
+            or "launch command returned but frida-server is not in the process list",
+        }
+
+    @staticmethod
+    def _frida_server_visible(dev: Any) -> bool:
+        """True only when ps lists a frida-server process, not when a command ran."""
+        for command in ("ps -A", "ps"):
+            try:
+                listing = str(dev.shell(command, timeout=5.0))
+            except Exception:  # noqa: BLE001
+                continue
+            if "frida-server" in listing:
+                return True
+        return False
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)

@@ -106,7 +106,15 @@ class FridaDeviceMixin:
             )
             data = backend.ensure_frida_server(serial, server_binary=binary, port=port)
             _timeline_append(
-                self, session_id, "frida.server.ensure", "frida-server ensured", serial=serial
+                self,
+                session_id,
+                "frida.server.ensure",
+                (
+                    "frida-server ensured"
+                    if data.get("running") is True
+                    else "frida-server was not running after ensure"
+                ),
+                serial=serial,
             )
             return _success(data, session_id=session_id, backend="frida")
         except (FridaError, AdbError) as exc:

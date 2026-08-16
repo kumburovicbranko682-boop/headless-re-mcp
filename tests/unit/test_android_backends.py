@@ -349,3 +349,81 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class _PsThenLaunchDevice:
+    """An adb device whose process list never contains frida-server."""
+
+    def __init__(self, *, after_launch: str = "init\n  1 root  /init\n") -> None:
+        self.calls: list[tuple[object, object]] = []
+        self._after_launch = after_launch
+        self._launched = False
+
+    def shell(self, cmd: object, timeout: object = None) -> str:
+        self.calls.append((cmd, timeout))
+        text = cmd if isinstance(cmd, str) else " ".join(str(part) for part in cmd)
+        if "su" in text or "nohup" in text:
+            self._launched = True
+            return ""
+        if "ps" in text:
+            if self._launched:
+                return self._after_launch
+            return "init\n  1 root  /init\n"
+        return ""
+
+
+class _EnsureBackend(AdbBackend):
+    def __init__(self, device: _PsThenLaunchDevice) -> None:
+        self._adbutils = object()
+        self._available = True
+        self._adb_path = None
+        self.device = device
+
+    def _device(self, serial: str) -> _PsThenLaunchDevice:
+        assert serial
+        return self.device
+
+
+class TestFridaServerEnsureIsHonest:
+    def test_a_launch_that_leaves_no_process_is_not_reported_running(self) -> None:
+        """ensure used to return running=True after the su command came back.
+
+        The process list was only consulted before the launch. A su that
+        printed nothing -- no binary, no root, a nohup that died -- still
+        answered running=True. Measured here: ps never listed frida-server,
+        and the reply still claimed it was up. An unattended agent then
+        waits for hooks that will never appear.
+        """
+        device = _PsThenLaunchDevice()
+        result = _EnsureBackend(device).ensure_frida_server("emulator-5554")
+
+        assert result["running"] is False
+        texts = [
+            cmd if isinstance(cmd, str) else " ".join(str(part) for part in cmd)
+            for cmd, _timeout in device.calls
+        ]
+        launch_at = next(i for i, text in enumerate(texts) if "nohup" in text)
+        assert any("ps" in text for text in texts[launch_at + 1 :]), (
+            "the process list has to be read after the launch, not only before it"
+        )
+
+    def test_a_process_that_is_already_there_is_still_reported_running(self) -> None:
+        device = _PsThenLaunchDevice()
+
+        def already_running(cmd: object, timeout: object = None) -> str:
+            device.calls.append((cmd, timeout))
+            return "root  99  1  /data/local/tmp/frida-server -l 0.0.0.0:27042\n"
+
+        device.shell = already_running  # type: ignore[method-assign]
+        result = _EnsureBackend(device).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+        assert result["pushed"] is False
+        assert not any("nohup" in str(cmd) for cmd, _timeout in device.calls)
+
+    def test_a_launch_that_really_starts_the_process_is_reported_running(self) -> None:
+        device = _PsThenLaunchDevice(
+            after_launch="root  99  1  /data/local/tmp/frida-server -l 0.0.0.0:27042\n"
+        )
+        result = _EnsureBackend(device).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+        assert result["pushed"] is False

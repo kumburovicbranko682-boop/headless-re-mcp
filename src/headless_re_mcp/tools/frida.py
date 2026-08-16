@@ -68,7 +68,12 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         server_binary: str = "",
         port: Annotated[int, Field(ge=1, le=65535)] = 27042,
     ) -> dict[str, Any]:
-        """Push and start frida-server on a rooted device/emulator via adb (best-effort)."""
+        """Push and start frida-server on a rooted device/emulator via adb.
+
+        running is True only when the process is visible in ps afterwards. A
+        su command that returns is not enough: missing binary, refused root,
+        or a nohup that died all used to be reported as running.
+        """
         return _dump(
             analysis.frida_server_ensure(session_id, serial, server_binary=server_binary, port=port)
         )
