@@ -11,10 +11,15 @@ package name or serial can never smuggle extra arguments.
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
 
 # A serial is either an emulator/host:port endpoint or a device id. Both are
 # constrained so nothing that reaches a shell command can carry metacharacters.
@@ -29,6 +34,10 @@ _MAX_LOGCAT_LINES = 5000
 # the server stops answering. 30s is long enough for a slow emulator and short
 # enough that a stuck pool recovers in minutes, not in the morning.
 _SHELL_TIMEOUT = 30.0
+# install / pull / push have no timeout argument on the adbutils methods we
+# call. A large APK can legitimately outlast a shell snapshot; it cannot
+# legitimately last the night.
+_TRANSFER_TIMEOUT = 120.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -70,6 +79,37 @@ def _is_timeout(exc: BaseException) -> bool:
     if "timeout" in type(exc).__name__.lower():
         return True
     return "timed out" in str(exc).lower()
+
+
+def _call_bounded(work: Callable[[], T], *, timeout: float, op: str) -> T:
+    """Bound an adbutils call that has no timeout of its own.
+
+    screenshot / install / pull / push / uninstall / app_current / forward
+    wait forever when the device is wedged. Measured: each was still running
+    after 400ms against a device that never answers. The thread started here
+    is a daemon -- we cannot interrupt the socket -- but the tool-pool slot
+    is freed, which is what keeps the rest of the server answering.
+    """
+    future: Future[T] = Future()
+
+    def run() -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(work())
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name=f"adb-{op}", daemon=True).start()
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeout as exc:
+        raise AdbError(
+            "timeout",
+            f"adb {op} timed out after {timeout:g}s",
+            timeout=timeout,
+            op=op,
+        ) from exc
 
 
 def _shell(dev: Any, cmd: str | list[str], *, timeout: float = _SHELL_TIMEOUT) -> Any:
@@ -227,13 +267,19 @@ class AdbBackend:
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        def work() -> None:
+            try:
+                dev.install(
+                    str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
+                )
+            except TypeError:
+                # Older adbutils signatures accept only the path.
+                dev.install(str(path))
+
         try:
-            dev.install(
-                str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
-            )
-        except TypeError:
-            # Older adbutils signatures accept only the path.
-            dev.install(str(path))
+            _call_bounded(work, timeout=_TRANSFER_TIMEOUT, op="install")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
@@ -242,7 +288,9 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.uninstall(pkg)
+            _call_bounded(lambda: dev.uninstall(pkg), timeout=_SHELL_TIMEOUT, op="uninstall")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
         return {"uninstalled": True, "package": pkg}
@@ -272,7 +320,9 @@ class AdbBackend:
     def current_activity(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
-            current = dev.app_current()
+            current = _call_bounded(dev.app_current, timeout=_SHELL_TIMEOUT, op="current_activity")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
         return {
@@ -295,9 +345,14 @@ class AdbBackend:
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
         dev = self._device(serial)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+        def work() -> None:
             image = dev.screenshot()
             image.save(str(out_path))
+
+        try:
+            _call_bounded(work, timeout=_SHELL_TIMEOUT, op="screenshot")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
         return {"path": str(out_path), "serial": _check_serial(serial)}
@@ -306,7 +361,13 @@ class AdbBackend:
         dev = self._device(serial)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dev.sync.pull(remote_path, str(local_path))
+            _call_bounded(
+                lambda: dev.sync.pull(remote_path, str(local_path)),
+                timeout=_TRANSFER_TIMEOUT,
+                op="pull",
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
         return {"remote": remote_path, "local": str(local_path)}
@@ -317,7 +378,13 @@ class AdbBackend:
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
-            dev.sync.push(str(path), remote_path)
+            _call_bounded(
+                lambda: dev.sync.push(str(path), remote_path),
+                timeout=_TRANSFER_TIMEOUT,
+                op="push",
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
         return {"local": str(path), "remote": remote_path}
@@ -347,7 +414,11 @@ class AdbBackend:
             if not path.is_file():
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
-                dev.sync.push(str(path), remote_path)
+                _call_bounded(
+                    lambda: dev.sync.push(str(path), remote_path),
+                    timeout=_TRANSFER_TIMEOUT,
+                    op="push",
+                )
                 _shell(dev, ["chmod", "755", remote_path])
                 pushed = True
             except AdbError:
@@ -388,7 +459,11 @@ class AdbBackend:
         if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
             raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
         try:
-            dev.forward(local, remote)
+            _call_bounded(
+                lambda: dev.forward(local, remote), timeout=_SHELL_TIMEOUT, op="forward"
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
         return {"local": local, "remote": remote}

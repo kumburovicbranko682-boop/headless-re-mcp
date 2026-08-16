@@ -2356,6 +2356,125 @@ class TestAdbShellCannotHoldAWorker:
         assert caught.value.details["timeout"] == _SHELL_TIMEOUT
 
 
+class TestAdbOpsCannotHoldAWorker:
+    """adbutils methods that are not shell() also wait forever.
+
+    Measured: screenshot, install, pull, push, uninstall, current_activity
+    and forward were all still running after 400ms against a device that
+    never answers. Those calls have no timeout argument, so the bound is
+    an outer wait that frees the tool-pool slot.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_wedged_screenshot_comes_back_as_timeout(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class Hung:
+            def screenshot(self) -> None:
+                threading.Event().wait()
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            self._backend(Hung()).screenshot("emulator-5554", tmp_path / "s.png")
+        elapsed = time.monotonic() - started
+
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "screenshot"
+        assert elapsed < 1.0
+
+    def test_every_non_shell_op_is_bounded(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+        monkeypatch.setattr(adb_client, "_TRANSFER_TIMEOUT", 0.05)
+
+        class Hung:
+            def screenshot(self) -> None:
+                threading.Event().wait()
+
+            def install(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+                threading.Event().wait()
+
+            def uninstall(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+                threading.Event().wait()
+
+            def app_current(self) -> None:
+                threading.Event().wait()
+
+            def forward(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+                threading.Event().wait()
+
+            @property
+            def sync(self) -> Hung:
+                return self
+
+            def pull(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+                threading.Event().wait()
+
+            def push(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+                threading.Event().wait()
+
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"MZ")
+        backend = self._backend(Hung())
+        calls = [
+            ("screenshot", lambda: backend.screenshot("emulator-5554", tmp_path / "s.png")),
+            ("install", lambda: backend.install("emulator-5554", str(apk))),
+            ("pull", lambda: backend.pull("emulator-5554", "/r", tmp_path / "p.bin")),
+            ("push", lambda: backend.push("emulator-5554", str(apk), "/r")),
+            ("uninstall", lambda: backend.uninstall("emulator-5554", "com.example.app")),
+            ("current_activity", lambda: backend.current_activity("emulator-5554")),
+            ("forward", lambda: backend.forward("emulator-5554", "tcp:1", "tcp:2")),
+        ]
+        for op, fn in calls:
+            started = time.monotonic()
+            with pytest.raises(AdbError) as caught:
+                fn()
+            assert caught.value.code == "timeout", op
+            assert caught.value.details["op"] == op
+            assert time.monotonic() - started < 1.0, op
+
+    def test_a_screenshot_that_finishes_is_untouched(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        class Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"PNG")
+
+        class Device:
+            def screenshot(self) -> Image:
+                return Image()
+
+        out = tmp_path / "s.png"
+        result = self._backend(Device()).screenshot("emulator-5554", out)
+        assert result["path"] == str(out)
+        assert out.is_file()
+
+
 class TestFridaServerEnsureDoesNotInventAProcess:
     """The launch command returning is not the process existing.
 
