@@ -310,6 +310,33 @@ def test_watchdog_alerts_say_when_they_stopped(tmp_path: Path, monkeypatch) -> N
     assert len(complete["alerts"]) == 80
 
 
+def test_mission_create_does_not_cut_the_thread_title_below_the_store_cap(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """Auto-created threads sliced the title at 80, below the store cap.
+
+    Measured: a 120-character objective became an 80-character thread
+    title with no truncated on the create reply, so an unattended list
+    treated a cut name as the whole overnight thread.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        body = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            json={"objective": "T" * 120},
+        ).json()
+    assert body["ok"] is True
+    thread = app.state.agent_store.get_thread(body["mission"]["thread_id"])
+    assert thread is not None
+    assert thread.title == "T" * 120
+
+
 def test_mission_create_says_when_the_objective_was_cut(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]

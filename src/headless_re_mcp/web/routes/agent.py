@@ -319,7 +319,10 @@ def register_agent_routes(
         if thread_id is not None and not isinstance(thread_id, str):
             raise HTTPException(status_code=400, detail="invalid_thread_id")
         if thread_id is None:
-            thread_id = store.create_thread(title=objective.strip()[:80]).id
+            # Measured: a 120-character objective became an 80-character
+            # thread title, below the store's 200 cap and with no signal
+            # on the create reply, so an overnight list showed a cut name.
+            thread_id = store.create_thread(title=objective.strip()[:200]).id
         try:
             mission = store.create_mission(
                 thread_id,

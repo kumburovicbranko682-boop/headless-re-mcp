@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **自动创建的任务线程标题被额外切到 80 且无信号**。120 字符的
+  objective 变成 80 字符标题，低于 store 的 200 上限。过夜任务列表
+  显示被切掉的名字。现在与 store 上限对齐。
 - **`proxy.stop` 在线程还活着时仍报 `stopped: True`**。join 超时后
   仍成功，并且实例已从登记表摘掉。过夜监听端口泄漏且无法再停。现在
   线程未退出时报 `timeout`，并把实例放回。
