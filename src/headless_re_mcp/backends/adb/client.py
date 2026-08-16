@@ -169,16 +169,21 @@ class AdbBackend:
 
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
+        # adbutils getprop / prop.* call shell with no timeout. Measured:
+        # those reads waited out 2.4s of blocks in full. They now use
+        # _shell. get_state is a host command and stays as-is.
         try:
             return {
                 "serial": _check_serial(serial),
-                "state": dev.get_state(),
-                "model": dev.prop.model,
-                "device": dev.prop.device,
-                "sdk": dev.getprop("ro.build.version.sdk"),
-                "release": dev.getprop("ro.build.version.release"),
-                "abi": dev.getprop("ro.product.cpu.abi"),
+                "state": str(dev.get_state()),
+                "model": _shell(dev, ["getprop", "ro.product.model"]).strip(),
+                "device": _shell(dev, ["getprop", "ro.product.device"]).strip(),
+                "sdk": _shell(dev, ["getprop", "ro.build.version.sdk"]).strip(),
+                "release": _shell(dev, ["getprop", "ro.build.version.release"]).strip(),
+                "abi": _shell(dev, ["getprop", "ro.product.cpu.abi"]).strip(),
             }
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 

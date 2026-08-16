@@ -775,6 +775,55 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceInfoIsBounded:
+    """device.info used to read properties through adbutils getprop with no deadline.
+
+    Measured: six untimed property reads waited out 2.4s of blocks in full.
+    The same device with adbutils' 600s shell default would have held the
+    worker for each field.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_property_reads_pass_a_deadline(self) -> None:
+        class _Recorder:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def get_state(self) -> str:
+                return "device"
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                self.timeouts.append(timeout)
+                return "value"
+
+        device = _Recorder()
+        result = self._backend(device).info("emulator-5554")
+        assert result["model"] == "value"
+        assert device.timeouts
+        assert all(t is not None and t > 0 for t in device.timeouts)
+
+    def test_a_blocking_getprop_fails_instead_of_waiting_it_out(self) -> None:
+        class _Blocker:
+            def get_state(self) -> str:
+                return "device"
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                if timeout is None:
+                    raise AssertionError("unbounded getprop would wait forever")
+                raise TimeoutError(f"adb timed out after {timeout}")
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Blocker()).info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "timed out" in info.value.message.lower() or "info" in info.value.message
+
+
 class TestDeviceScreenshotIsBounded:
     """A wedged screencap used to park the tool worker for as long as adb liked.
 
