@@ -152,14 +152,19 @@ class AdbBackend:
             raw = dev.shell("getprop")
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
-        props: dict[str, str] = {}
+        parsed: list[tuple[str, str]] = []
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if match:
-                props[match.group(1)] = match.group(2)
-            if len(props) >= limit:
-                break
-        return {"properties": props, "count": len(props)}
+                parsed.append((match.group(1), match.group(2)))
+        window = parsed[: max(1, int(limit))]
+        props = dict(window)
+        return {
+            "properties": props,
+            "count": len(props),
+            "total": len(parsed),
+            "has_more": len(parsed) > len(props),
+        }
 
     def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
         dev = self._device(serial)

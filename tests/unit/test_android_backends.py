@@ -351,6 +351,27 @@ class TestApktoolBoundaries:
         assert info.value.code == "capability_unavailable"
 
 
+def test_device_properties_says_when_the_page_is_not_the_whole_set() -> None:
+    """The cap was applied; the reply looked like the whole getprop.
+
+    Measured: 600 properties with limit=500 returned count=500 and only the
+    keys properties/count. A model that stopped there missed the rest.
+    """
+    from headless_re_mcp.backends.adb.client import AdbBackend
+
+    class _FakeDev:
+        def shell(self, _cmd: str) -> str:
+            return "\n".join(f"[k{i}]: [v{i}]" for i in range(600))
+
+    backend = AdbBackend()
+    backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+    got = backend.properties("emulator-5554", limit=500)
+    assert got["count"] == 500
+    assert got["total"] == 600
+    assert got["has_more"] is True
+    assert len(got["properties"]) == 500
+
+
 def test_device_file_tools_do_not_call_the_path_an_artifact(tmp_path: Path) -> None:
     """The docs said artifact; artifacts.list did not have the file.
 
