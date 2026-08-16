@@ -253,13 +253,22 @@ class ApkClient:
             ),
         }
 
-    def native_libs(self, path: Path) -> JsonObject:
+    def native_libs(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
         libs = sorted(name for name in apk.get_files() if name.startswith("lib/"))
         abis = sorted(
             {name.split("/")[1] for name in libs if len(name.split("/")) >= 3}
         )
-        return {"native_libs": libs, "abis": abis, "count": len(libs)}
+        capped = max(1, min(int(limit), 2000))
+        page = libs[:capped]
+        return {
+            "native_libs": page,
+            "abis": abis,
+            "count": len(page),
+            "total": len(libs),
+            "limit": capped,
+            "has_more": len(libs) > len(page),
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
