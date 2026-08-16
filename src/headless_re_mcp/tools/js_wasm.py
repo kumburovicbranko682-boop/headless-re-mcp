@@ -39,7 +39,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_unpack_bundle(
         path: str, timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0
     ) -> dict[str, Any]:
-        """Unpack a webpack/browserify bundle into module files (check has_more)."""
+        """Unpack a webpack/browserify bundle into module files.
+
+        Check has_more on the name list, and artifact_ids to read files back.
+        A bare output_dir is not readable from the tool surface.
+        """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
     @tools.tool(name="wasm.wat")

@@ -404,6 +404,28 @@ class TestJsUnpackSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestJsUnpackDescriptionMatchesTheArtifacts:
+    """js.unpack_bundle now registers files, but the tool text hid that.
+
+    Measured: payload carries artifact_ids, while the description only
+    mentioned has_more -- so a model pages names and still cannot read a
+    module back.
+    """
+
+    def test_the_tool_text_says_to_use_artifact_ids(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_js_wasm_tools(service)}
+            doc = tools["js.unpack_bundle"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "artifact_ids" in doc
+        assert "has_more" in doc
+
+
 class TestJsUnpackDoesNotTrustLeftovers:
     """A failed webcrack used to succeed if the last unpack left files behind.
 
