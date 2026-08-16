@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from headless_re_mcp.core.models import Result, RpcError
+from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
 from headless_re_mcp.detection import (
     DetectionSource,
     FindingCategory,
@@ -110,6 +110,14 @@ class DetectAnalysisMixin:
         """Run built-in PE detection plus optional DIE / Exeinfo PE second opinions."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"detect.scan cannot run in {session.state.value} state"
+                )
             parsed_mode = ScanMode(mode)
             bounded_timeout = _detection_timeout(timeout)
             if type(use_die) is not bool:
@@ -271,6 +279,15 @@ class DetectAnalysisMixin:
                     "warnings": tuple(warnings),
                 }
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"detect.scan cannot run in {session.state.value} state"
+                )
             return _success(
                 {
                     "report": merged.to_dict(),
