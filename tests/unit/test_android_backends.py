@@ -318,6 +318,27 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaAttachDescriptionMatchesDetach:
+    """frida.attach reports attached=true then immediately detaches.
+
+    Measured: payload is attached=true with note "detached immediately",
+    while the handler docstring was empty -- so a model that only sees the
+    name treats the probe as a live session.
+    """
+
+    def test_the_tool_text_says_the_attach_does_not_persist(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.attach"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "detach" in doc
+
+
 class TestFridaHookTemplateDescriptionMatchesDetach:
     """frida.hook.template reports loaded=true then immediately destroys the hook.
 
