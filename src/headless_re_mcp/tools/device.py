@@ -147,7 +147,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.forward")
     def device_forward(serial: str, local: str, remote: str) -> dict[str, Any]:
-        """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server)."""
+        """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
+
+        The write is checked on the way out: a forward that did not appear in
+        the device list is an error, not a tunnel.
+        """
         return _dump(analysis.device_forward(serial, local, remote))
 
     return tools.bindings

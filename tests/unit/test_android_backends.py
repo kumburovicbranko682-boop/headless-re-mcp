@@ -1858,3 +1858,18 @@ class TestDeviceForwardDoesNotReportAGhost:
                 return [_Item()]
 
         assert self._forward(_Dev()) == {"local": "tcp:27042", "remote": "tcp:27042"}
+
+    def test_the_tool_description_names_a_missing_tunnel(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_forward"]
+        assert "device list" in docs["device_forward"]
