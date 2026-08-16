@@ -65,7 +65,7 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: str,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """Ghidra's decompilation of the function at address.
+        """Ghidra's decompilation of the function at address; empty is not success.
 
         A second reading of code IDA decompiled differently, or of code it
         could not.

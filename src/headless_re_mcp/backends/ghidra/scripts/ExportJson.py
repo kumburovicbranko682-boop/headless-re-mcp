@@ -107,6 +107,11 @@ elif mode == "decompile":
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
     payload["decompiled"] = text[:200000]
+    # Empty used to look like a finished decompile. The Python client
+    # forwards this JSON, so a missing function or a failed decompile
+    # answered with decompiled="" and no error.
+    if not text:
+        payload["error"] = "decompile produced no code"
 else:
     payload["error"] = "unknown mode"
 

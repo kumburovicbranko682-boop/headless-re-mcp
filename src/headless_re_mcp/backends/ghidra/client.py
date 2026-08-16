@@ -204,6 +204,23 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        # The postScript writes error / empty decompiled on failure and still
+        # exits 0. Measured: {"mode": "decompile", "decompiled": ""} and
+        # {"error": "unknown mode"} were forwarded as success, so an agent
+        # treated a failed export as the answer.
+        err = payload.get("error")
+        if isinstance(err, str) and err.strip():
+            raise GhidraError(
+                "backend_error",
+                err.strip(),
+                mode=str(payload.get("mode") or mode),
+            )
+        if mode == "decompile" and not str(payload.get("decompiled") or "").strip():
+            raise GhidraError(
+                "backend_error",
+                "decompile produced no code",
+                address=addr or None,
+            )
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
