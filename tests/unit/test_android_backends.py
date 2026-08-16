@@ -421,6 +421,33 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_strings_says_when_the_page_is_not_the_whole_set() -> None:
+    """500 strings, limit=200 returned count=200 and total=500 but no has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _Str:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def get_value(self) -> str:
+            return self._value
+
+    class _Analysis:
+        def get_strings(self) -> list[_Str]:
+            return [_Str(f"s{i}") for i in range(500)]
+
+    class _Parsed:
+        analysis = _Analysis()
+
+    client = ApkClient()
+    client._available = True
+    client._parsed = lambda _path: _Parsed()  # type: ignore[method-assign]
+    got = client.strings(Path("dummy.apk"), limit=200)
+    assert got["count"] == 200
+    assert got["total"] == 500
+    assert got["has_more"] is True
+
+
 def test_apk_methods_says_when_the_page_is_not_the_whole_set() -> None:
     """180 methods, limit=100 returned count=100 and total=180 but no has_more."""
     from headless_re_mcp.backends.apk.client import ApkClient

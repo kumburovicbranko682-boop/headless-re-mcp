@@ -145,6 +145,8 @@ until 1.0 the tool surface may still change between minor versions.
   `has_more`。现在带上。
 - **`apk.methods` 停在上限却不说还有**。180 个方法、limit=100 时有 total
   没有 `has_more`。现在带上。
+- **`apk.strings` 停在上限却不说还有**。500 个字符串、limit=200 时有 total
+  没有 `has_more`。现在带上。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
