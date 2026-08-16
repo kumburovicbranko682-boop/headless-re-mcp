@@ -174,6 +174,11 @@ def test_unpack_xvlkc_mocked(tmp_path: Path) -> None:
     assert result.data["claims_universal_unpack"] is False
     assert result.data["input_unchanged"] is True
     assert Path(result.data["output_path"]).is_file()
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "xvlkc_unpacked"
 
 
 def test_unpack_vmp_dump_mocked(tmp_path: Path) -> None:
