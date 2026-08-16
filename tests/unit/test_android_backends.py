@@ -575,6 +575,42 @@ class TestApkComponentsArePaged:
         assert len(result["activities"]) == 2
 
 
+class TestApkNativeLibsArePaged:
+    """A fat APK can ship thousands of .so paths in one reply.
+
+    Measured: 2500 lib/ entries came back as count=2500 with no has_more.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{index}.so" for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        return client
+
+    def test_a_long_list_says_what_was_left_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 2500).native_libs(tmp_path / "app.apk", limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 2500
+        assert result["has_more"] is True
+        assert len(result["native_libs"]) == 500
+        assert result["abis"] == ["arm64-v8a"]
+
+    def test_a_short_list_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 2).native_libs(tmp_path / "app.apk", limit=500)
+        assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

@@ -68,9 +68,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_components(session_id, limit=limit))
 
     @tools.tool(name="apk.native_libs")
-    def apk_native_libs(session_id: str) -> dict[str, Any]:
-        """List bundled native libraries and their ABIs."""
-        return _dump(analysis.apk_native_libs(session_id))
+    def apk_native_libs(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+    ) -> dict[str, Any]:
+        """List bundled native libraries and their ABIs.
+
+        Read `total` and `has_more` rather than assuming the list is complete.
+        """
+        return _dump(analysis.apk_native_libs(session_id, limit=limit))
 
     @tools.tool(name="apk.classes")
     def apk_classes(
