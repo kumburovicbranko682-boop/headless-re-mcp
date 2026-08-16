@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.screenshot` 把裸路径说成 artifact**。文档写 “PNG artifact”，回包
+  只有 `path` / `serial`，没有登记。agent 会拿去 `artifacts.read` 并当成已纳入
+  回收。现在写明这是本地路径，不是登记产物。
 - **`apk.methods` 停在一页时看起来像完整方法表**。80 个方法、limit=10 时回
   `count=10` / `total=80`，没有 `has_more`。只看列表的 agent 会停在第一页。
   现在截断时标 `has_more`。

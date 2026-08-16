@@ -106,7 +106,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:
-        """Capture a device screenshot to a PNG artifact."""
+        """Capture a device screenshot to a PNG under artifact_root/device/.
+
+        The reply is a local `path`, not a registered artifact.
+        artifacts.list / artifacts.read / artifacts.gc will not see it.
+        """
         return _dump(analysis.device_screenshot(serial))
 
     @tools.tool(name="device.pull")

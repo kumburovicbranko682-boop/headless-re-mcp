@@ -22,6 +22,7 @@ from headless_re_mcp.backends.jadx.client import JadxClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.session import classify_target, describe_apk
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
+from headless_re_mcp.tools.device import build_device_tools
 
 
 def _apk(path: Path) -> Path:
@@ -1070,3 +1071,38 @@ class TestDeviceUninstallDoesNotInventSuccess:
     def test_a_true_return_is_still_success(self) -> None:
         page = self._backend(True).uninstall("emulator-5554", "com.example.app")
         assert page["uninstalled"] is True
+
+
+class TestDeviceScreenshotDoesNotClaimAnArtifact:
+    """The tool described a registered artifact and returned a bare path.
+
+    Measured: the docstring said "PNG artifact"; the reply keys were path
+    and serial, with no artifact_id. An unattended agent then called
+    artifacts.read on a file the store cannot see.
+    """
+
+    def test_the_reply_is_a_path(self, tmp_path: Path) -> None:
+        class _Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"PNG")
+
+        class _Dev:
+            def screenshot(self) -> _Image:
+                return _Image()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        page = backend.screenshot("emulator-5554", tmp_path / "shot.png")
+        assert page["path"] == str(tmp_path / "shot.png")
+        assert "artifact_id" not in page
+
+    def test_the_tool_doc_says_it_is_not_registered(self) -> None:
+        docs = {
+            binding.name: binding.handler.__doc__ or ""
+            for binding in build_device_tools(object())  # type: ignore[arg-type]
+        }
+        doc = docs["device.screenshot"]
+        assert "not a registered artifact" in doc
+        assert "PNG artifact" not in doc
