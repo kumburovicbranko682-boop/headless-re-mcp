@@ -170,6 +170,10 @@ class AgentMission:
         # overnight cause. The store cap is 1000; a full page is the
         # only surviving evidence that the cut happened.
         value["error_truncated"] = self.error is not None and len(self.error) >= 1000
+        # Measured: a 9000-character objective was stored as 8000 with
+        # truncated only on create, so GET /missions/{id} looked like
+        # the whole overnight brief.
+        value["objective_truncated"] = len(self.objective) >= 8000
         return value
 
     @property

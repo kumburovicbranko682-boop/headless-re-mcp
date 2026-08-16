@@ -409,6 +409,34 @@ def test_run_get_says_when_the_error_was_cut(
     assert intact_body["run"]["error"] == "provider exploded"
 
 
+def test_mission_get_says_when_the_objective_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """create_mission sliced the objective at 8000 and GET said nothing.
+
+    Measured: a 9000-character objective was stored as 8000 with no
+    objective_truncated on GET, so an unattended GET treated a cut
+    brief as the whole overnight job.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    cut = store.create_mission(thread.id, "O" * 9000)
+    intact = store.create_mission(thread.id, "short job")
+
+    with TestClient(app) as client:
+        cut_body = client.get(f"/api/agent/missions/{cut.id}", headers=headers).json()
+        intact_body = client.get(f"/api/agent/missions/{intact.id}", headers=headers).json()
+    assert cut_body["ok"] is True
+    assert len(cut_body["mission"]["objective"]) == 8000
+    assert cut_body["mission"]["objective_truncated"] is True
+    assert intact_body["mission"]["objective_truncated"] is False
+
+
 def test_mission_get_says_when_the_error_was_cut(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]

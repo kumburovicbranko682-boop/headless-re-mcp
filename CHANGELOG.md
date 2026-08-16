@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 任务目标在 GET 时截断后看起来仍是完整目标**。9000 字符
+  objective 存成 8000，创建回包有 `truncated`，但 GET 没有。过夜
+  GET 会把被切掉的简报当全目标。现在满页 objective 标
+  `objective_truncated`。
 - **agent 线程标题在 GET 时截断后看起来仍是完整标题**。250 字符
   title 存成 200，创建回包有 `truncated`，但 GET/列表没有。过夜任务
   列表会把被切掉的名字当全名。现在满页 title 标 `title_truncated`。
