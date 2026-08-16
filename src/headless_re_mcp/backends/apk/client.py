@@ -203,6 +203,7 @@ class ApkClient:
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         items: list[JsonObject] = []
+        skipped = 0
         try:
             names = apk.get_signature_names()
         except Exception:  # noqa: BLE001
@@ -220,10 +221,14 @@ class ApkClient:
                     }
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
-                continue
+                # Measured: 2 of 5 certs raising still came back as 3 items
+                # with no mark, so the broken ones disappeared.
+                skipped += 1
         return {
             "signature_files": list(names),
             "certificates": items,
+            "count": len(items),
+            "skipped": skipped,
             "v1_signed": bool(names),
         }
 

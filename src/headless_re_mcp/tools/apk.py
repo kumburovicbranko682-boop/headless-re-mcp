@@ -49,7 +49,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files."""
+        """List signing certificates and v1 signature files.
+
+        Read skipped. A non-zero skipped means some certificates could not be
+        described and are not in the list.
+        """
         return _dump(analysis.apk_certificates(session_id))
 
     @tools.tool(name="apk.components")

@@ -277,6 +277,50 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkCertificatesSayWhenSomeWereSkipped:
+    """5 certificates with 2 raising used to come back as 3 items, unmarked.
+
+    The parse errors were swallowed. An unattended agent treats those 3 as
+    every signer and never notices the broken ones.
+    """
+
+    def _certs(self, *, good: int, bad: int) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Good:
+            subject = "CN=Good"
+            issuer = "CN=CA"
+            serial_number = 1
+            sha256_fingerprint = "aa"
+
+        class _Bad:
+            @property
+            def subject(self) -> str:
+                raise RuntimeError("broken cert")
+
+        class _FakeApk:
+            def get_signature_names(self) -> list[str]:
+                return ["META-INF/CERT.RSA"]
+
+            def get_certificates(self) -> list[object]:
+                return [_Good()] * good + [_Bad()] * bad
+
+        client = ApkClient()
+        client._apk = lambda path: _FakeApk()  # type: ignore[method-assign]
+        return client.certificates(Path("app.apk"))
+
+    def test_skipped_certificates_are_counted(self) -> None:
+        result = self._certs(good=3, bad=2)
+        assert result["count"] == 3
+        assert result["skipped"] == 2
+        assert len(result["certificates"]) == 3
+
+    def test_a_complete_read_is_not_labelled_partial(self) -> None:
+        result = self._certs(good=2, bad=0)
+        assert result["count"] == 2
+        assert result["skipped"] == 0
+
+
 class TestApkNativeLibsSayWhenTheyStopped:
     """3000 native libs used to come back as count=3000 with no has_more."""
 
