@@ -327,7 +327,7 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
-        session = self._frida.attach(pid)
+        session = self._attach_with_deadline(pid)
         try:
             script = session.create_script(source)
             script.load()
