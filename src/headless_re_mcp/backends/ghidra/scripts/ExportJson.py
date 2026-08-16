@@ -71,11 +71,15 @@ elif mode == "symbols":
     payload["has_more"] = has_more
 elif mode == "xrefs":
     items = []
+    has_more = False
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
             for ref in refmgr.getReferencesTo(addr):
                 if len(items) >= limit:
+                    # Same silent cut as functions/symbols: a 256-item
+                    # export with only count looked like every reference.
+                    has_more = True
                     break
                 items.append(
                     {
@@ -85,6 +89,7 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "decompile":
     text = ""
     if address_arg:

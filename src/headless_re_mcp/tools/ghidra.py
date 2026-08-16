@@ -56,7 +56,7 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """References to and from address, as Ghidra resolved them."""
+        """References to and from address; read has_more when the page is full."""
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
     @tools.tool(name="ghidra.decompile")

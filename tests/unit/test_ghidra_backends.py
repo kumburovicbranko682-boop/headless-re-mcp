@@ -138,3 +138,54 @@ class TestGhidraSymbolsSaysWhenItWasCut:
         result = _Client().symbols(binary, project, limit=256)
         assert result["count"] == 256
         assert result["has_more"] is True
+
+
+class TestGhidraXrefsSaysWhenItWasCut:
+    """An xref page that hit the cap used to look like every reference.
+
+    Measured: an export of 256 items (13 KiB) came back as count=256 with
+    no has_more and no total, so an agent treated the page as the set.
+    """
+
+    def test_the_export_script_sets_has_more_on_a_full_page(self) -> None:
+        source = _SCRIPT.read_text(encoding="utf-8")
+        xrefs_block = source.split('elif mode == "decompile"')[0].split(
+            'elif mode == "xrefs"'
+        )[1]
+        assert "has_more = True" in xrefs_block
+        assert 'payload["has_more"]' in xrefs_block
+
+    def test_the_client_forwards_has_more(self, tmp_path: Path) -> None:
+        class _Client(GhidraClient):
+            def __init__(self) -> None:
+                self.home = tmp_path
+                self.java = tmp_path
+                self.analyze = tmp_path / "analyzeHeadless"
+                self.analyze.write_text("", encoding="utf-8")
+
+            def _run_headless(self, project_dir: Path, **_: object) -> tuple[str, str, int]:
+                items = [
+                    {"from": hex(index), "to": "0x1000", "type": "UNCONDITIONAL_CALL"}
+                    for index in range(256)
+                ]
+                out_path = project_dir / "export_xrefs.json"
+                out_path.write_text(
+                    json.dumps(
+                        {
+                            "mode": "xrefs",
+                            "items": items,
+                            "count": 256,
+                            "has_more": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return "", "", 0
+
+        binary = tmp_path / "app.bin"
+        binary.write_bytes(b"MZ")
+        project = tmp_path / "proj"
+        project.mkdir()
+        result = _Client().xrefs(binary, project, "0x1000", limit=256)
+        assert result["count"] == 256
+        assert result["has_more"] is True
