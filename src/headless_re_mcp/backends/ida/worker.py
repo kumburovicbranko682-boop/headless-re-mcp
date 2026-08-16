@@ -1151,6 +1151,15 @@ def _type_apply(params: JsonObject) -> JsonObject:
             type=type_str,
         )
     after = idc.get_type(ea) or ""
+    # Measured: SetType True, readback still the old type, ok=true --
+    # so a caller treats a no-op as the requested type landing.
+    if after == before and after != type_str:
+        raise WorkerRequestError(
+            "write_failed",
+            f"type apply reported success but readback is still {after!r}",
+            address=ea,
+            type=type_str,
+        )
     return {
         "address": ea,
         "type": after,
