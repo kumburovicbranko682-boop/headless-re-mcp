@@ -1179,6 +1179,58 @@ class TestJadxExportSaysWhenTheFileListWasCut:
             "sources/C2.java",
         ]
         assert result["has_more"] is False
+        assert result["partial"] is False
+        assert result["exit_code"] == 0
+
+
+class TestJadxSaysWhenTheDecompileWasPartial:
+    """jadx exit 1 with sources on disk used to come back as a clean tree.
+
+    The comment already knew this is a partial failure. The reply did not, so
+    an agent treated two classes as the whole program.
+    """
+
+    def _client(self, tmp_path: Path, *, code: int, stderr: str = "") -> Any:
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        exe = tmp_path / "jadx"
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        out = tmp_path / "out"
+        sources = out / "sources"
+        sources.mkdir(parents=True)
+        (sources / "A.java").write_text("class A {}", encoding="utf-8")
+        (sources / "B.java").write_text("class B {}", encoding="utf-8")
+        client = JadxClient(exe)
+        client._run = lambda *args, **kwargs: ("", stderr, code)  # type: ignore[method-assign]
+        return client, apk, out
+
+    def test_a_nonzero_exit_with_sources_is_partial(self, tmp_path: Path) -> None:
+        client, apk, out = self._client(
+            tmp_path, code=1, stderr="ERROR - finished with errors\n"
+        )
+        result = client.export_sources(apk, out)
+        assert result["java_file_count"] == 2
+        assert result["partial"] is True
+        assert result["exit_code"] == 1
+        assert "missing or broken" in str(result["note"])
+        assert "finished with errors" in str(result["stderr"])
+
+    def test_a_clean_exit_is_not_partial(self, tmp_path: Path) -> None:
+        client, apk, out = self._client(tmp_path, code=0)
+        result = client.export_sources(apk, out)
+        assert result["partial"] is False
+        assert result["exit_code"] == 0
+        assert "note" not in result
+        assert "stderr" not in result
+
+    def test_one_class_carries_the_partial_mark(self, tmp_path: Path) -> None:
+        client, apk, out = self._client(tmp_path, code=1, stderr="ERROR\n")
+        result = client.decompile(apk, out, "A")
+        assert result["partial"] is True
+        assert result["exit_code"] == 1
+        assert "class A" in result["source"]
 
 
 class TestApktoolBoundaries:

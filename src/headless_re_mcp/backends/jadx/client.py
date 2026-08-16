@@ -46,7 +46,7 @@ class JadxClient:
         no_imports: bool = False,
     ) -> JsonObject:
         """Decompile the whole APK into ``out_dir`` and summarise the tree."""
-        self._run(
+        _, stderr, code = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
             out_dir,
@@ -59,14 +59,27 @@ class JadxClient:
             else []
         )
         total = len(java_files)
-        return {
+        # jadx exits 1 after writing a usable-but-incomplete tree. Measured:
+        # that still came back as java_file_count=2 with no mark, so an agent
+        # treated a failed decompile as the whole program.
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": total,
             "java_files": java_files[:_MAX_FILE_LIST],
             "limit": _MAX_FILE_LIST,
             "has_more": total > _MAX_FILE_LIST,
+            "exit_code": code,
+            "partial": code != 0,
         }
+        if code != 0:
+            result["note"] = (
+                "jadx exited non-zero; some classes may be missing or broken"
+            )
+            snippet = stderr.strip()
+            if snippet:
+                result["stderr"] = snippet[:_MAX_STDERR]
+        return result
 
     def decompile(
         self,
@@ -80,7 +93,7 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        self.export_sources(apk, out_dir, timeout=timeout)
+        exported = self.export_sources(apk, out_dir, timeout=timeout)
         rel = _class_to_java_path(target)
         candidate = out_dir / "sources" / rel
         if not candidate.is_file():
@@ -98,12 +111,19 @@ class JadxClient:
                 )
             candidate = matches[0]
         source = candidate.read_text(encoding="utf-8", errors="replace")
-        return {
+        result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source[:_MAX_SOURCE_BYTES],
             "truncated": len(source) > _MAX_SOURCE_BYTES,
+            "exit_code": exported.get("exit_code", 0),
+            "partial": bool(exported.get("partial")),
         }
+        if result["partial"]:
+            result["note"] = exported.get("note")
+            if "stderr" in exported:
+                result["stderr"] = exported["stderr"]
+        return result
 
     def _run(
         self,
