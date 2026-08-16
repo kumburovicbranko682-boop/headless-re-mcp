@@ -1502,6 +1502,49 @@ class TestUninstallDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceUninstallIsBounded:
+    """A wedged adbutils.uninstall used to park the tool worker with no deadline.
+
+    Measured: device.uninstall called uninstall() with no timeout, so a 2.5s
+    block was waited out in full and still answered uninstalled=True.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_blocking_uninstall_fails_instead_of_waiting_it_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_UNINSTALL_TIMEOUT", 0.2)
+
+        class _Dev:
+            def uninstall(self, package: str) -> str:
+                time.sleep(5)
+                return "Success"
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).uninstall("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_uninstall_is_success(self) -> None:
+        class _Dev:
+            def uninstall(self, package: str) -> str:
+                return "Success"
+
+        result = self._backend(_Dev()).uninstall("emulator-5554", "com.example.app")
+        assert result["uninstalled"] is True
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

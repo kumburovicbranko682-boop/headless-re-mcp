@@ -42,6 +42,10 @@ _PULL_TIMEOUT = 60.0
 # installed=True. Three minutes is longer than a normal APK install and
 # shorter than an unattended worker parked until the process dies.
 _INSTALL_TIMEOUT = 180.0
+# adbutils.uninstall has no timeout either. Measured: a 2.5s block was
+# waited out in full and still answered uninstalled=True. Sixty seconds
+# is longer than a normal pm uninstall and shorter than a parked worker.
+_UNINSTALL_TIMEOUT = 60.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -300,7 +304,12 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            raw = dev.uninstall(pkg)
+            # Measured: a 2.5s block in uninstall() was waited out in full
+            # and still answered uninstalled=True. The library call has no
+            # timeout argument.
+            raw = _deadline(lambda: dev.uninstall(pkg), timeout=_UNINSTALL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
         # adbutils.uninstall returns the `pm uninstall` text, not a bool.
