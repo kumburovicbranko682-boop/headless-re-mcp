@@ -861,13 +861,21 @@ def _bytes_read(params: JsonObject) -> JsonObject:
             size=size,
         )
     data = bytes(raw)
-    return {
+    short = len(data) != size
+    result: JsonObject = {
         "address": address,
         "size": len(data),
+        "requested": size,
         "hex": data.hex(),
         "base64": base64.b64encode(data).decode("ascii"),
-        "truncated": False,
+        "truncated": short,
     }
+    if short:
+        # Measured: get_bytes returned 4 bytes of a 16-byte request and
+        # truncated was still False, so an agent treated a short buffer as
+        # the whole read.
+        result["note"] = "read returned fewer bytes than requested"
+    return result
 
 
 def _normalize_bin_pattern(pattern: str) -> str:

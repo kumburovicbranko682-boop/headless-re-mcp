@@ -110,3 +110,39 @@ def test_a_short_disassembly_line_is_complete() -> None:
     rendered, cut = _bound_insn_text("mov rax, rbx")
     assert cut is False
     assert rendered == "mov rax, rbx"
+
+
+def test_a_short_bytes_read_is_not_labelled_complete() -> None:
+    """get_bytes returning 4 of 16 used to come back truncated=False."""
+    import sys
+    import types
+
+    from headless_re_mcp.backends.ida.worker import _bytes_read
+
+    ida = types.ModuleType("ida_bytes")
+    ida.is_loaded = lambda address: True  # type: ignore[attr-defined]
+    ida.get_bytes = lambda address, size: b"ABCD"  # type: ignore[attr-defined]
+    sys.modules["ida_bytes"] = ida
+    result = _bytes_read({"address": 0x1000, "size": 16})
+    assert result["size"] == 4
+    assert result["requested"] == 16
+    assert result["hex"] == "41424344"
+    assert result["truncated"] is True
+    assert "fewer bytes" in str(result["note"])
+
+
+def test_a_full_bytes_read_is_not_labelled_truncated() -> None:
+    import sys
+    import types
+
+    from headless_re_mcp.backends.ida.worker import _bytes_read
+
+    ida = types.ModuleType("ida_bytes")
+    ida.is_loaded = lambda address: True  # type: ignore[attr-defined]
+    ida.get_bytes = lambda address, size: b"ABCD"  # type: ignore[attr-defined]
+    sys.modules["ida_bytes"] = ida
+    result = _bytes_read({"address": 0x1000, "size": 4})
+    assert result["size"] == 4
+    assert result["requested"] == 4
+    assert result["truncated"] is False
+    assert "note" not in result
