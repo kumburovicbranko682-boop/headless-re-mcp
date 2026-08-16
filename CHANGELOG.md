@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **过大的失败回包会被截成成功**。工具结果超限时，截断信封丢掉 `ok` 和 `error`，而编排器把缺
+  少 `ok` 当成 True：一次 10 KiB 的 `backend_error` 在 512 字节上限下，模型看到的是成功、库里
+  记成 completed。现在截断后仍保留 `ok` 与错误码。
+
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在

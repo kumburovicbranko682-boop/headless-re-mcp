@@ -75,9 +75,21 @@ def bounded_tool_result(value: Any, *, max_bytes: int = 262_144) -> tuple[JsonOb
     encoded = json.dumps(normalized, ensure_ascii=False, default=str).encode("utf-8")
     if len(encoded) <= max_bytes:
         return normalized, False
-    return {
+    # The cut used to drop every field. The orchestrator treats a missing ok as
+    # True, so a failed call that overflowed the cap was stored as completed and
+    # handed back to the model as if the tool had worked. Keep the verdict and
+    # the error code; the body is what the summary is for.
+    truncated: JsonObject = {
         "truncated": True,
         "untrusted_tool_output": True,
         "original_bytes": len(encoded),
         "summary": encoded[: min(16_384, max_bytes // 2)].decode("utf-8", errors="replace"),
-    }, True
+    }
+    if "ok" in normalized:
+        truncated["ok"] = bool(normalized["ok"])
+    error = normalized.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        if isinstance(code, str) and code:
+            truncated["error"] = {"code": code, "truncated": True}
+    return truncated, True

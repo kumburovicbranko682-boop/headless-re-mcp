@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -12,7 +13,7 @@ import pytest
 
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
-from headless_re_mcp.agent.context import compact_messages
+from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import RunStatus
 from headless_re_mcp.agent.orchestrator import AgentOrchestrator
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
@@ -519,6 +520,70 @@ async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) 
     )
     assert '"truncated": true' in tool_message.content
     assert len(tool_message.content.encode("utf-8")) < 1000
+
+
+def test_truncating_a_failure_keeps_it_a_failure() -> None:
+    """A cut that drops ok turns the failure into a success.
+
+    The orchestrator treats a missing ok as True, so the model continues as if
+    the tool worked and the store records the call as completed. Measured: a
+    10 KiB backend_error under a 512-byte cap lost both ok and error, and
+    bool(result.get("ok", True)) became True.
+    """
+    failed = {
+        "ok": False,
+        "error": {"code": "backend_error", "message": "worker died while dumping"},
+        "data": {"blob": "x" * 10_000},
+    }
+    bounded, truncated = bounded_tool_result(failed, max_bytes=512)
+    assert truncated is True
+    assert bounded["ok"] is False
+    assert bool(bounded.get("ok", True)) is False
+    assert bounded["error"]["code"] == "backend_error"
+
+    small, small_truncated = bounded_tool_result(
+        {"ok": False, "error": {"code": "backend_error", "message": "worker died"}},
+        max_bytes=512,
+    )
+    assert small_truncated is False
+    assert small["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_failure_is_recorded_as_failed(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "fail-trunc.db")
+    thread = store.create_thread()
+    provider = FakeProvider([(ProviderToolCall("large-fail", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog(
+            [
+                _single_spec(
+                    lambda: {
+                        "ok": False,
+                        "error": {"code": "backend_error", "message": "worker died"},
+                        "data": {"blob": "x" * 10_000},
+                    },
+                    max_result_bytes=512,
+                )
+            ]
+        ),
+        _configs(tmp_path / "fail-trunc-config"),
+        provider_factory=lambda _: provider,
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is (
+        RunStatus.COMPLETED
+    )
+    tool_message = next(
+        message for message in store.list_messages(thread.id) if message.role == "tool"
+    )
+    payload = json.loads(tool_message.content)
+    assert payload["ok"] is False
+    assert payload["truncated"] is True
+    assert payload["error"]["code"] == "backend_error"
+    call = store.get_tool_call(run["id"], "large-fail")
+    assert call["status"] == "failed"
 
 
 def test_context_compaction_and_nested_redaction() -> None:
