@@ -203,6 +203,46 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestJsUnpackSaysWhenTheFileListWasCut:
+    """file_count said 2500 while files held 2000, with no has_more."""
+
+    def _unpack(self, tmp_path: Path, n: int, monkeypatch: pytest.MonkeyPatch) -> dict:  # type: ignore[type-arg]
+        from headless_re_mcp.backends.jsre.client import JsClient
+
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        for index in range(n):
+            (out / f"m{index}.js").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._run",
+            lambda *args, **kwargs: ("", "", 0),
+        )
+        return JsClient(exe).unpack_bundle(source, out)
+
+    def test_a_tree_past_the_cap_reports_more(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre.client import _MAX_FILE_LIST
+
+        result = self._unpack(tmp_path, _MAX_FILE_LIST + 5, monkeypatch)
+        assert result["file_count"] == _MAX_FILE_LIST + 5
+        assert len(result["files"]) == _MAX_FILE_LIST
+        assert result["limit"] == _MAX_FILE_LIST
+        assert result["has_more"] is True
+
+    def test_a_tree_that_fits_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._unpack(tmp_path, 3, monkeypatch)
+        assert result["file_count"] == 3
+        assert result["has_more"] is False
+        assert len(result["files"]) == 3
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()

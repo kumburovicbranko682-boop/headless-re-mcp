@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
+_MAX_FILE_LIST = 2000
 
 
 class JsReError(RuntimeError):
@@ -100,7 +101,14 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        total = len(files)
+        return {
+            "output_dir": str(out_dir),
+            "file_count": total,
+            "files": files[:_MAX_FILE_LIST],
+            "limit": _MAX_FILE_LIST,
+            "has_more": total > _MAX_FILE_LIST,
+        }
 
 
 class WasmClient:
