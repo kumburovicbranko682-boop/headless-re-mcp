@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`ui.process_tree` 调试目标窗口一次回完整表**。给子进程窗口加
+  `has_more` 后，`debuggee_windows` 仍整包返回。500 个窗口没有截断信号。
+  现在最多 256，截断时标 `has_more`。
 - **解析 local / 具名 Frida 设备时仍会一直挂着**。USB 路径加截止后，
   `get_local_device` 与 `get_device(..., timeout=5)` 睡 8s 仍要 8.000s
   才回。现在共用同一截止。

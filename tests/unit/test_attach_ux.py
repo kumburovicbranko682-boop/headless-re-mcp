@@ -83,6 +83,16 @@ class TestUiProcessTreeSaysWhenWindowsStopped:
         assert len(page) == 2
         assert has_more is False
 
+    def test_the_debuggee_list_cap_is_reported(self) -> None:
+        from headless_re_mcp.core.service_ui import _MAX_WINDOWS_LIST, _page_windows
+
+        page, has_more = _page_windows(
+            [{"hwnd": index} for index in range(500)],
+            limit=_MAX_WINDOWS_LIST,
+        )
+        assert len(page) == 256
+        assert has_more is True
+
 
 class TestUiWindowsListIsCapped:
     """The debuggee window list had no page and no signal that it had stopped.

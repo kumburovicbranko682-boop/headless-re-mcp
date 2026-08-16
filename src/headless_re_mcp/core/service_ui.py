@@ -379,11 +379,16 @@ class UiAutomationMixin:
                         "has_more": has_more,
                     }
                 )
+            debuggee_windows, debuggee_has_more = _page_windows(
+                list_windows_for_pids([debuggee_pid]),
+                limit=_MAX_WINDOWS_LIST,
+            )
             return {
                 "debuggee_pid": debuggee_pid,
                 "debugger_pid": ctx["debugger_pid"],
                 "debuggee_image": process_image_path(debuggee_pid),
-                "debuggee_windows": list_windows_for_pids([debuggee_pid]),
+                "debuggee_windows": debuggee_windows,
+                "has_more": debuggee_has_more,
                 "children": child_rows,
                 "child_candidates": probe_child_window_candidates(
                     debuggee_pid, list_windows_fn=None
