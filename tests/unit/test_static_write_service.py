@@ -524,3 +524,24 @@ def test_the_bytes_read_tool_names_a_short_buffer() -> None:
     assert docs["static_bytes_read"]
     assert "truncated" in docs["static_bytes_read"]
     assert "requested" in docs["static_bytes_read"]
+
+
+def test_the_search_bytes_tool_says_a_page_is_only_a_page() -> None:
+    """The worker already set has_more; the description did not.
+
+    An agent that only reads the tool text treats one page as every byte
+    match in the database.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_search_bytes"]
+    assert "has_more" in docs["static_search_bytes"]
