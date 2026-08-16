@@ -160,6 +160,27 @@ def test_the_r2_list_tools_name_the_item_cap() -> None:
         assert "items_truncated" in docs[name], name
 
 
+def test_the_disasm_tool_names_the_output_cut() -> None:
+    """run() already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut pdj listing as the
+    whole decode.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import r2 as r2_mod
+
+    tree = ast.parse(inspect.getsource(r2_mod.build_r2_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["r2_disasm"]
+    assert "truncated" in docs["r2_disasm"]
+
+
 def test_parse_r2_json_trailing_array() -> None:
     raw = "warning stuff\n" + json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 16}])
     parsed = parse_r2_json(raw)

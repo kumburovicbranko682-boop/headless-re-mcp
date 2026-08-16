@@ -94,7 +94,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         count: Annotated[int, Field(ge=1, le=512)] = 32,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disassemble count instructions at address, as radare2 decodes them."""
+        """Disassemble count instructions at address, as radare2 decodes them.
+
+        Oversized r2 output is cut and marked truncated. Read that flag
+        rather than treating the listing as the whole decode.
+        """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
     @tools.tool(name="r2.xrefs")
