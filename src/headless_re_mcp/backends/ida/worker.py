@@ -860,12 +860,14 @@ def _bytes_read(params: JsonObject) -> JsonObject:
             size=size,
         )
     data = bytes(raw)
+    # Measured: a 64-byte request that got 16 bytes still answered
+    # truncated=False, so an agent treated a short read as the range.
     return {
         "address": address,
         "size": len(data),
         "hex": data.hex(),
         "base64": base64.b64encode(data).decode("ascii"),
-        "truncated": False,
+        "truncated": len(data) < size,
     }
 
 

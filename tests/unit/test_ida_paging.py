@@ -149,3 +149,40 @@ class TestIdaStringsSaysWhenItWasCut:
         page = worker._strings({"offset": 0, "limit": 100})
         assert page["has_more"] is False
         assert page["total"] == 100
+
+
+class TestIdaBytesReadSaysWhenItWasShort:
+    """A short get_bytes used to look like the requested range.
+
+    Measured: size=64, 16 bytes returned, truncated=False.
+    """
+
+    def test_a_short_read_is_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        ida_bytes = types.ModuleType("ida_bytes")
+        ida_bytes.is_loaded = lambda address: True  # type: ignore[attr-defined]
+        ida_bytes.get_bytes = lambda address, size: b"\x90" * 16  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+        result = worker._bytes_read({"address": 0x1000, "size": 64})
+        assert result["size"] == 16
+        assert result["truncated"] is True
+
+    def test_a_full_read_is_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        ida_bytes = types.ModuleType("ida_bytes")
+        ida_bytes.is_loaded = lambda address: True  # type: ignore[attr-defined]
+        ida_bytes.get_bytes = lambda address, size: b"\x90" * size  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+        result = worker._bytes_read({"address": 0x1000, "size": 64})
+        assert result["size"] == 64
+        assert result["truncated"] is False
