@@ -322,6 +322,15 @@ class ApkAnalysisMixin:
         timeout: float = 300.0,
     ) -> Result[JsonObject]:
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.sign cannot run in {session.state.value} state"
+                )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
@@ -342,6 +351,23 @@ class ApkAnalysisMixin:
                 key_alias=key_alias,
                 timeout=timeout,
             )
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.sign cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a signed APK
+                # written after that is invisible to the next close and to
+                # artifacts.gc.
+                with suppress(OSError):
+                    shutil.rmtree(root)
+                raise
             _timeline_append(self, session_id, "apk.sign", "apksigner signed apk")
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
