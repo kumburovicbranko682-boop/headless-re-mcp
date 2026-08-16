@@ -3523,3 +3523,66 @@ class TestDeviceLogcatSaysWhenItStopped:
         assert result["has_more"] is False
         assert result["lines"] == ["a", "b"]
 
+
+class TestGhidraExportSaysWhenItStopped:
+    """A full Ghidra window looked like the whole program.
+
+    Measured: functions(limit=256) came back as count=256, items=256, and
+    no has_more. The tool text said these were the functions Ghidra found.
+    """
+
+    def _client(self, tmp_path: Any, *, count: int, has_more: bool | None) -> Any:
+        import json
+        from pathlib import Path
+
+        from headless_re_mcp.backends.ghidra.client import _EXPORT_SCRIPT, GhidraClient
+
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        client = GhidraClient()
+        client.analyze = binary
+        client.java = binary
+
+        def fake_run(
+            project_dir: Path,
+            *,
+            binary: Path,
+            extra: list[str],
+            timeout: float,
+            max_heap: str,
+            delete_project: bool,
+        ) -> tuple[str, str, int]:
+            del project_dir, binary, timeout, max_heap, delete_project
+            idx = extra.index(_EXPORT_SCRIPT)
+            mode = extra[idx + 1]
+            out_path = Path(extra[idx + 2])
+            payload: dict[str, Any] = {
+                "mode": mode,
+                "items": [{"name": f"f{index}"} for index in range(count)],
+                "count": count,
+            }
+            if has_more is not None:
+                payload["has_more"] = has_more
+            out_path.write_text(json.dumps(payload), encoding="utf-8")
+            return "", "", 0
+
+        client._run_headless = fake_run  # type: ignore[method-assign]
+        return client, binary
+
+    def test_a_full_window_without_the_flag_is_not_complete(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, count=256, has_more=None)
+        result = client.functions(binary, tmp_path / "proj", limit=256)
+        assert result["count"] == 256
+        assert result["has_more"] is True
+
+    def test_the_script_flag_is_kept(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, count=256, has_more=False)
+        result = client.functions(binary, tmp_path / "proj", limit=256)
+        assert result["has_more"] is False
+
+    def test_a_short_list_is_complete(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, count=3, has_more=None)
+        result = client.functions(binary, tmp_path / "proj", limit=256)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+

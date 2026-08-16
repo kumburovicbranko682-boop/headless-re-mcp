@@ -204,6 +204,17 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        # ExportJson.py cuts at `limit`. Measured: 256 items came back as
+        # count=256 with no has_more, so a full window looked like the
+        # whole program. Prefer the script's flag; if an older script
+        # omitted it, a full window is the honest default.
+        items = payload.get("items")
+        if (
+            mode in {"functions", "symbols", "xrefs"}
+            and isinstance(items, list)
+            and "has_more" not in payload
+        ):
+            payload["has_more"] = len(items) >= capped
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
