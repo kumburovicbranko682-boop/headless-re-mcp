@@ -294,6 +294,17 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        # Live attach already refuses a non-0/1 exit with no stdout.
+        # Measured: dump analysis with exit 2 and empty stdout still
+        # answered modules="", so an agent treated a failed cdb as an
+        # empty module list.
+        if completed.returncode not in {0, 1} and not out:
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

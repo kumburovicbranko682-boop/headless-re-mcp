@@ -126,3 +126,32 @@ def test_launch_failure_becomes_a_structured_error(
     assert exc.value.code == "backend_error"
     assert "could not be launched" in exc.value.message
     assert exc.value.details["cdb"] == str(cdb)
+
+
+def test_a_failed_dump_is_not_an_empty_module_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cdb that could not open the dump used to look like an empty listing.
+
+    Measured: exit 2 and empty stdout still answered modules="", so an
+    unattended agent treated a failed analysis as a dump with no modules.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def failed(*_args: Any, **_kwargs: Any) -> Completed:
+        return Completed(2, b"", b"Could not open dump file")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", failed)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    with pytest.raises(WindbgError) as exc:
+        WindbgClient(cdb).modules(dump)
+    assert exc.value.code == "backend_error"
+    assert "dump analysis failed" in exc.value.message
+    assert exc.value.details.get("exit_code") == 2
