@@ -130,6 +130,41 @@ def test_open_tool_description_says_to_read_truncated() -> None:
     assert "truncated" in block
 
 
+def test_open_tool_description_does_not_claim_an_analysis_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool text used to say analysis ran and later tools reuse it.
+
+    Measured: r2.open invoked ``-c i\\nq`` (info only) and the client note
+    says subsequent tools reopen the binary, while the description said
+    ``run its own analysis pass`` and ``the other r2 tools read what this
+    produced``. An unattended agent then skips ``aa`` and treats later
+    listings as already analysed.
+    """
+    seen: list[list[str]] = []
+
+    def capture(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"arch", stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", capture)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    client.open(_minimal_pe(tmp_path))
+    assert seen, "open must invoke r2"
+    script = seen[0][seen[0].index("-c") + 1]
+    assert script.split()[0] == "i"
+    assert "aa" not in script
+
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "r2.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def r2_open(")[1].split("def r2_functions(")[0]
+    assert "analysis pass" not in block
+    assert "read what this produced" not in block
+    assert "reopen" in block
+
+
 def test_output_that_fits_is_not_labelled_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
