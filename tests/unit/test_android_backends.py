@@ -491,6 +491,39 @@ class TestEnsureFridaServerDoesNotInventARunningProcess:
             service.close_all()
 
 
+class TestDevicePackagesAreBounded:
+    """A device image can list thousands of packages; the reply used to be all of them."""
+
+    def _backend(self, count: int) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return "\n".join(f"package:com.example.app{index}" for index in range(count))
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_full_device_is_not_returned_as_one_page(self) -> None:
+        result = self._backend(8000).packages("emulator-5554", limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 8000
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 500
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).packages("emulator-5554", limit=500)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_page_that_exactly_fills_is_complete(self) -> None:
+        result = self._backend(500).packages("emulator-5554", limit=500)
+        assert result["count"] == 500
+        assert result["has_more"] is False
+
+
 class TestDeviceShellCallsAreBounded:
     """A wedged adb used to park the tool worker for as long as it liked.
 

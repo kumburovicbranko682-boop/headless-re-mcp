@@ -22,6 +22,7 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+_MAX_PACKAGES = 5000
 # adbutils.shell has no default deadline. A wedged adb server then parks the
 # tool worker until the process dies -- measured: logcat / getprop / pm list
 # all passed timeout=None and waited out a 2.5s block in full. Twenty seconds
@@ -196,7 +197,9 @@ class AdbBackend:
                 break
         return {"properties": props, "count": len(props)}
 
-    def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
+    def packages(
+        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+    ) -> JsonObject:
         dev = self._device(serial)
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
@@ -208,7 +211,17 @@ class AdbBackend:
             for line in str(raw).splitlines()
             if line.startswith("package:")
         )
-        return {"packages": pkgs, "count": len(pkgs), "third_party_only": third_party_only}
+        capped = max(1, min(int(limit), _MAX_PACKAGES))
+        # A full device image can list thousands of packages. Returning all of
+        # them looked like "that is every package" and blew the tool result
+        # budget. Measured: 8000 names, no cap, no has_more.
+        return {
+            "packages": pkgs[:capped],
+            "count": min(len(pkgs), capped),
+            "total": len(pkgs),
+            "has_more": len(pkgs) > capped,
+            "third_party_only": third_party_only,
+        }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)
