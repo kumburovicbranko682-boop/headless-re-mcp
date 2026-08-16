@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 线程 GET 停在最近 500 条消息时看起来像完整对话**。600 条消息回最近
+  500 条（从 m100 开始），没有 `has_more`。过夜长对话会被当成从中间开始。
+  现在截断时标 `has_more`。
 - **agent 事件 history 停在 1000 条时看起来像完整时间线**。1500 条事件回 1000
   条且 `ok=True`，没有 `has_more`。过夜 run 后面的 `tool.completed` 会消失。
   现在截断时标 `has_more`。

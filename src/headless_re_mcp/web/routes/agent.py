@@ -137,7 +137,21 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
-        return JSONResponse({"ok": True, "thread": item.dump(), "messages": [message.dump() for message in store.list_messages(thread_id)]})
+        # list_messages keeps the recent 500. Measured: a 600-message thread
+        # came back as 500 (m100..m599) with no has_more, so an overnight
+        # conversation looked like it started in the middle.
+        probe = store.list_messages(thread_id, limit=501)
+        has_more = len(probe) > 500
+        messages = probe[1:] if has_more else probe
+        return JSONResponse(
+            {
+                "ok": True,
+                "thread": item.dump(),
+                "messages": [message.dump() for message in messages],
+                "count": len(messages),
+                "has_more": has_more,
+            }
+        )
 
     @app.post("/api/agent/threads/{thread_id}/messages", status_code=201)
     def add_message(thread_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:

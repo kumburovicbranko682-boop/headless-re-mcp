@@ -171,3 +171,30 @@ def test_event_history_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None
         assert tail["has_more"] is False
         assert tail["count"] >= 1
         assert tail["events"][0]["seq"] == 1001
+
+
+def test_a_long_thread_says_when_older_messages_were_dropped(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """GET thread returned the recent 500 messages as if that was the whole chat.
+
+    Measured: 600 messages came back as 500 (starting at m100) with no
+    has_more, so an overnight conversation looked like it started mid-thread.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    for index in range(600):
+        store.add_message(thread.id, "user", f"m{index}")
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/agent/threads/{thread.id}", headers=headers).json()
+    assert body["ok"] is True
+    assert body["count"] == 500
+    assert body["has_more"] is True
+    assert body["messages"][0]["content"] == "m100"
+    assert body["messages"][-1]["content"] == "m599"
