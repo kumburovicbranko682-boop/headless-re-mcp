@@ -105,6 +105,11 @@ def test_dotnet_reactor_unpack_mocked(tmp_path: Path) -> None:
     out = Path(result.data["net_reactor_slayer"]["output_path"])
     assert out.is_file()
     assert file_sha256(binary) == result.data["net_reactor_slayer"]["input_sha256"]
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "nrs_unpacked"
 
 
 def test_doctor_reports_net_reactor_slayer_missing(tmp_path: Path) -> None:

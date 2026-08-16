@@ -228,32 +228,38 @@ class DotnetAnalysisMixin:
                 timeout=_detection_timeout(timeout),
             )
             after = inspect_dotnet(result.output_path, require_verified=True)
-            return _success(
-                {
-                    "net_reactor_slayer": result.to_dict(),
-                    "before": inspect.to_dict(),
-                    "after": after.to_dict(),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
-                    "claims_universal_unpack": False,
-                    "authorized_samples_only": True,
-                    "stats": {
-                        "before": (
-                            inspect.metadata_stats.to_dict()
-                            if inspect.metadata_stats is not None
-                            else None
-                        ),
-                        "after": (
-                            after.metadata_stats.to_dict()
-                            if after.metadata_stats is not None
-                            else None
-                        ),
-                        "before_kind": inspect.kind.value,
-                        "after_kind": after.kind.value,
-                    },
+            payload = {
+                "net_reactor_slayer": result.to_dict(),
+                "before": inspect.to_dict(),
+                "after": after.to_dict(),
+                "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                "claims_universal_unpack": False,
+                "authorized_samples_only": True,
+                "stats": {
+                    "before": (
+                        inspect.metadata_stats.to_dict()
+                        if inspect.metadata_stats is not None
+                        else None
+                    ),
+                    "after": (
+                        after.metadata_stats.to_dict()
+                        if after.metadata_stats is not None
+                        else None
+                    ),
+                    "before_kind": inspect.kind.value,
+                    "after_kind": after.kind.value,
                 },
-                session_id=session_id,
-                backend="dotnet",
+            }
+            # Measured: 5 unpacks, 5 files / 10240 bytes, 0 artifact rows.
+            payload = _register_capture(
+                self,
+                session_id,
+                Path(result.output_path),
+                kind="nrs_unpacked",
+                source="dotnet.reactor.unpack",
+                payload=payload,
             )
+            return _success(payload, session_id=session_id, backend="dotnet")
         except (DotnetInspectError, NetReactorSlayerError) as exc:
             code = getattr(exc, "code", "dotnet_failed")
             details = getattr(exc, "details", {}) or {}
