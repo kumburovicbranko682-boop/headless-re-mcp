@@ -334,13 +334,12 @@ class ApkClient:
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        values = sorted(
-            {
-                str(item.get_value())[:_MAX_STRING_LEN]
-                for item in parsed.analysis.get_strings()
-            }
-        )
-        window = values[offset : offset + limit]
+        values = sorted({str(item.get_value()) for item in parsed.analysis.get_strings()})
+        # Slice after dedup. Measured: two 2000+ character strings that
+        # differed only past the cut collapsed into one, so total under-counted
+        # the DEX and the later unique suffix disappeared.
+        cut = sum(1 for value in values if len(value) > _MAX_STRING_LEN)
+        window = [value[:_MAX_STRING_LEN] for value in values[offset : offset + limit]]
         return {
             "strings": window,
             "count": len(window),
@@ -348,6 +347,7 @@ class ApkClient:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(window) < len(values),
+            "truncated_values": cut,
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

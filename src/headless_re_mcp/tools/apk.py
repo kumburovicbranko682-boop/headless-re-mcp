@@ -118,7 +118,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List distinct DEX string constants with pagination.
 
         Read has_more and total rather than treating count as every string
-        in the DEX.
+        in the DEX. truncated_values is how many distinct strings were longer
+        than the inline cap; they are still counted, then cut for display.
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 

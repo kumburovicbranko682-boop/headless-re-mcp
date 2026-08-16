@@ -445,6 +445,45 @@ class TestApkPermissionsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkStringsDoNotCollapseAfterTheCut:
+    """Two long strings that differed only past the cap used to become one.
+
+    Measured: prefixes of 2000 characters plus distinct suffixes A and B
+    came back as total=2 (the short one plus one cut prefix). The later
+    unique suffix disappeared, so an unattended agent thinks the DEX has
+    fewer constants than it does.
+    """
+
+    def test_distinct_strings_survive_the_inline_cap(self) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_STRING_LEN, ApkClient
+
+        class _Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_strings(self) -> list[_Item]:
+                return [
+                    _Item(("x" * _MAX_STRING_LEN) + "A"),
+                    _Item(("x" * _MAX_STRING_LEN) + "B"),
+                    _Item("short"),
+                ]
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        result = client.strings(Path("app.apk"), limit=10)
+        assert result["total"] == 3
+        assert result["count"] == 3
+        assert result["truncated_values"] == 2
+        assert result["has_more"] is False
+
+
 class TestApkStringsSayWhenTheyStopped:
     """250 strings with limit=200 used to come back as count=200, no has_more."""
 
