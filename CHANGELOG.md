@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`proxy.stop` 在线程还活着时仍报 `stopped: True`**。join 超时后
+  仍成功，并且实例已从登记表摘掉。过夜监听端口泄漏且无法再停。现在
+  线程未退出时报 `timeout`，并把实例放回。
 - **agent 任务列表在 limit=500 时不标 `has_more`**。600 条任务
   `limit=500` 回 500 且 `has_more=False`。store 上限和 peek 是同一个数。
   过夜队列看起来已经列完。现在能 peek 第 501 条。

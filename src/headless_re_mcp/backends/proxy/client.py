@@ -306,6 +306,18 @@ class ProxyBackend:
         if inst is None:
             return {"stopped": False, "note": "no proxy was running"}
         inst.stop()
+        # Measured: a thread that ignored join(0.3) still answered
+        # {stopped: True} and the instance was already dropped, so the
+        # next stop said nothing was running while the listener leaked.
+        alive = inst._thread is not None and inst._thread.is_alive()
+        if alive:
+            with self._lock:
+                self._instances.setdefault(session_id, inst)
+            raise ProxyError(
+                "timeout",
+                "proxy thread did not stop",
+                session_id=session_id,
+            )
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:

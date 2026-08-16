@@ -501,6 +501,53 @@ class TestProxyScoping:
         assert info.value.code == "invalid_params"
 
 
+class TestProxyStopDoesNotSucceedWhileTheThreadIsAlive:
+    """stop() answered stopped:True after join gave up on a live thread.
+
+    Measured: a thread that ignored join(0.3) still returned
+    {stopped: True} and the instance was already dropped, so the next
+    stop said nothing was running while the listener leaked.
+    """
+
+    def test_a_wedged_thread_is_a_timeout_and_stays_registered(self) -> None:
+        class _Inst:
+            def __init__(self) -> None:
+                self.release = threading.Event()
+                self._thread = threading.Thread(
+                    target=self.release.wait, daemon=True, name="hung-proxy"
+                )
+                self._thread.start()
+
+            def stop(self) -> None:
+                self._thread.join(timeout=0.3)
+
+        backend = ProxyBackend()
+        inst = _Inst()
+        backend._instances["s"] = inst  # type: ignore[assignment]
+        with pytest.raises(ProxyError) as info:
+            backend.stop("s")
+        assert info.value.code == "timeout"
+        assert inst._thread.is_alive()
+        assert backend._instances.get("s") is inst
+        inst.release.set()
+        inst._thread.join(timeout=1.0)
+
+    def test_a_thread_that_exits_is_stopped(self) -> None:
+        class _Inst:
+            def __init__(self) -> None:
+                self._thread = threading.Thread(target=lambda: None, daemon=True)
+                self._thread.start()
+                self._thread.join(timeout=1.0)
+
+            def stop(self) -> None:
+                return None
+
+        backend = ProxyBackend()
+        backend._instances["s"] = _Inst()  # type: ignore[assignment]
+        assert backend.stop("s") == {"stopped": True}
+        assert "s" not in backend._instances
+
+
 class TestProxyReplayDoesNotSucceedBeforeTheCommandRuns:
     """replay() answered replayed:True after only scheduling the command.
 
