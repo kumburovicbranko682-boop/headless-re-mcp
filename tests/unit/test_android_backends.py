@@ -432,6 +432,41 @@ class TestFridaServerEnsureDoesNotReportAGhost:
         assert result == {"running": True, "pushed": False, "port": 27042}
 
 
+class TestDeviceLaunchDoesNotReportAGhost:
+    """A monkey abort used to be reported as launched=True.
+
+    Measured: 'No activities found to run, monkey aborted.' came back
+    launched=True. An unattended agent then talks to an activity that never
+    came up and burns the mission on a package that is not in the foreground.
+    """
+
+    def _launch(self, message: str) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object) -> str:
+                return message
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.launch("emulator-5554", "com.example.app")
+
+    def test_an_abort_is_not_launched(self) -> None:
+        result = self._launch("** No activities found to run, monkey aborted.")
+        assert result["launched"] is False
+        assert "not inject" in result["note"]
+        assert "monkey aborted" in result["result"]
+
+    def test_empty_output_is_not_launched(self) -> None:
+        result = self._launch("")
+        assert result["launched"] is False
+        assert "result" not in result
+
+    def test_events_injected_is_launched(self) -> None:
+        result = self._launch("Events injected: 1\n## Network stats: elapsed time=12ms")
+        assert result == {"launched": True, "package": "com.example.app"}
+
+
 class TestDeviceConnectDoesNotReportAGhost:
     """A refusal whose text mentioned 'connected' used to be connected=True.
 

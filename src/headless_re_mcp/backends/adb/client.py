@@ -57,6 +57,19 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _monkey_launched(message: object) -> bool:
+    """monkey prints 'Events injected: N' when it actually started something.
+
+    A successful empty shell, or 'No activities found to run, monkey aborted.',
+    used to be reported as launched=True. An unattended agent then talks to an
+    activity that never came up.
+    """
+    text = str(message).lower()
+    if "monkey aborted" in text or "no activities found" in text:
+        return False
+    return "events injected" in text
+
+
 def _adb_connect_succeeded(message: object) -> bool:
     """adb prints 'connected to HOST:PORT' or 'already connected to HOST:PORT'.
 
@@ -237,10 +250,21 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            raw = dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
-        return {"launched": True, "package": pkg}
+        text = str(raw)
+        launched = _monkey_launched(text)
+        result: JsonObject = {"launched": launched, "package": pkg}
+        if not launched:
+            # The command returning is not the same as an activity starting.
+            # Measured: "No activities found to run, monkey aborted." still
+            # reported launched=True.
+            result["note"] = "monkey did not inject events"
+            snippet = text.strip()
+            if snippet:
+                result["result"] = snippet[:500]
+        return result
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)
