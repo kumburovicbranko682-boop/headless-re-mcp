@@ -275,6 +275,15 @@ class AdbBackend:
             raw = _shell(dev, args)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pm list failed: {exc}") from exc
+        text = str(raw)
+        # Same host-error leak as logcat. Measured: "error: device offline"
+        # still answered {'packages': [], 'total': 0}, so an agent treated a
+        # dead device as having no apps.
+        captured = [line for line in text.splitlines() if line.strip()]
+        if captured and all(
+            line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+        ):
+            raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs = sorted(
             line.split(":", 1)[1].strip()
             for line in str(raw).splitlines()

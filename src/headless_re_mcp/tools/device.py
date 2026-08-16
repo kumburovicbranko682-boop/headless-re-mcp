@@ -57,7 +57,7 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         third_party_only: bool = False,
         limit: Annotated[int, Field(ge=1, le=5000)] = 500,
     ) -> dict[str, Any]:
-        """List installed package names; read has_more / total when the page is full."""
+        """List installed package names; an adb error line is not an empty device."""
         return _dump(
             analysis.device_packages(serial, third_party_only=third_party_only, limit=limit)
         )
