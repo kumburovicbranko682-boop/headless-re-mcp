@@ -306,12 +306,15 @@ class ApkClient:
                 for item in parsed.analysis.get_strings()
             }
         )
-        window = values[offset : offset + limit]
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        window = values[start : start + cap]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
+            "offset": start,
+            "has_more": start + len(window) < len(values),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
