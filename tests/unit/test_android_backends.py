@@ -273,6 +273,42 @@ class TestAdbArgumentValidation:
         assert injected["launched"] is True
         assert "note" not in injected
 
+    def test_uninstall_does_not_wait_on_adb_forever(self) -> None:
+        """adbutils uninstall used to run with no deadline.
+
+        Measured: uninstall(pkg) was invoked with no timeout. A wedged
+        adb held the worker for the life of the process.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+                self.cmd: object = None
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.cmd = cmd
+                self.timeout = timeout
+                return "Success"
+
+            def uninstall(self, pkg: str) -> None:
+                raise AssertionError("unbounded uninstall")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).uninstall("emulator-5554", "com.example.app")
+        assert device.timeout == 30.0
+        assert device.cmd == ["pm", "uninstall", "com.example.app"]
+        assert result["uninstalled"] is True
+
     def test_force_stop_does_not_wait_on_adb_forever(self) -> None:
         """am force-stop used to be invoked with no deadline.
 

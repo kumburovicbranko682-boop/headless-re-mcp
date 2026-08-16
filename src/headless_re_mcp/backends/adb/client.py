@@ -238,7 +238,9 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.uninstall(pkg)
+            # adbutils uninstall() has no deadline. pm uninstall is the same
+            # operation and accepts the timeout the library's shell already has.
+            dev.shell(["pm", "uninstall", pkg], timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
         return {"uninstalled": True, "package": pkg}
