@@ -20,6 +20,12 @@ _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# Output is already sliced. The child still has to load the file, and an
+# unattended pass that pointed js.deobfuscate at a captured bundle started
+# node on whatever sat on disk -- measured 2,097,152 bytes still reached
+# run_bounded. Sixteen mebibytes is enough for a real module and not enough
+# to keep a core busy for the rest of the timeout.
+_MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -49,6 +55,27 @@ class JsReError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_existing_file(path: Path, *, missing: str) -> Path:
+    """Resolve a regular file, or refuse one that would bind the child unbounded."""
+    resolved = path.expanduser()
+    if not resolved.is_file():
+        raise JsReError("not_found", missing, path=str(resolved))
+    try:
+        size = int(resolved.stat().st_size)
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    cap = _MAX_INPUT_BYTES
+    if size > cap:
+        raise JsReError(
+            "too_large",
+            f"input exceeds the {cap}-byte tool limit",
+            path=str(resolved),
+            size=size,
+            max_file_size=cap,
+        )
+    return resolved
 
 
 def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
@@ -83,10 +110,7 @@ class JsClient:
             raise JsReError(
                 "capability_unavailable", "webcrack is not configured (needs Node 22/24)"
             )
-        resolved = path.expanduser()
-        if not resolved.is_file():
-            raise JsReError("not_found", "input file not found", path=str(resolved))
-        return resolved
+        return _require_existing_file(path, missing="input file not found")
 
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
@@ -141,10 +165,7 @@ class WasmClient:
     def _require_input(self, path: Path, tool: Path | None, name: str) -> Path:
         if tool is None:
             raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
-        resolved = path.expanduser()
-        if not resolved.is_file():
-            raise JsReError("not_found", "wasm file not found", path=str(resolved))
-        return resolved
+        return _require_existing_file(path, missing="wasm file not found")
 
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")

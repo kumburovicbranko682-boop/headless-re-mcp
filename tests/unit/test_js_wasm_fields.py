@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from headless_re_mcp.backends.common.bounded_run import Completed
-from headless_re_mcp.backends.jsre.client import WasmClient
+from headless_re_mcp.backends.jsre.client import JsClient, JsReError, WasmClient
 from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
 
 
@@ -150,6 +152,9 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+    assert "too_large" in _tool_docstring("js.deobfuscate")
+    assert "too_large" in _tool_docstring("js.unpack_bundle")
+    assert "too_large" in _tool_docstring("wasm.info")
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
@@ -183,3 +188,74 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert len(payload["files"]) == 3
     assert payload["has_more"] is True
     assert "has_more" in _tool_docstring("js.unpack_bundle")
+
+
+def test_js_deobfuscate_refuses_an_oversized_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """js.deobfuscate used to hand the file to webcrack with no size check.
+
+    Measured: a 2,097,152-byte file still reached run_bounded (1 launch) and
+    came back as code/truncated/bytes. An unattended pass that pointed this
+    at a captured bundle would start node on hundreds of megabytes; only the
+    stdout cap would hold, and the child would keep a core for the timeout.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INPUT_BYTES", 1024)
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"ok", b"")
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_bytes(b"x" * 2048)
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        JsClient(tool).deobfuscate(src)
+
+    assert caught.value.code == "too_large"
+    assert caught.value.details.get("size") == 2048
+    assert caught.value.details.get("max_file_size") == 1024
+    assert launched == []
+    assert "too_large" in _tool_docstring("js.deobfuscate")
+
+
+def test_wasm_wat_refuses_an_oversized_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wasm.wat used the same unbounded path as js.deobfuscate.
+
+    Measured: a 2,097,152-byte module still reached run_bounded. The output
+    cap does not bind the child that has to load the file.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INPUT_BYTES", 1024)
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"(module)", b"")
+
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"x" * 2048)
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).wat(module)
+
+    assert caught.value.code == "too_large"
+    assert caught.value.details.get("size") == 2048
+    assert launched == []
+    assert "too_large" in _tool_docstring("wasm.wat")
