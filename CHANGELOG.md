@@ -90,6 +90,9 @@ until 1.0 the tool surface may still change between minor versions.
   仍是 S。现在走有界执行。
 - **Scylla 探针超时仍留下 GUI 子进程**。GUI 构建允许超时并报 startability 成功，但包装
   脚本起 sleeper 时子进程仍是 S。现在走有界执行，语义不变。
+- **`r2.pipe` 能力摘要仍声称有常驻管道**。`capabilities.describe` 回
+  `radare2/rizin whitelist pipe`，而每个 `r2.*` 都是新进程。摘要改为 one-shot
+  whitelist commands。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

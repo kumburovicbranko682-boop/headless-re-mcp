@@ -162,6 +162,23 @@ def test_r2_open_description_does_not_promise_a_kept_analysis() -> None:
     assert "analysis pass" not in lowered
 
 
+def test_r2_capability_does_not_promise_a_kept_pipe() -> None:
+    """capabilities.describe still called this a pipe after r2.open stopped being one.
+
+    Measured: describe_capability('r2.pipe')['summary'] was
+    'radare2/rizin whitelist pipe'. Each r2.* starts a new process; a model that
+    spent a timeout on open expecting a kept pipe then skipped the later
+    analysis paid twice and read a lie.
+    """
+    from headless_re_mcp.core.capabilities_catalog import describe_capability
+
+    item = describe_capability("r2.pipe")
+    assert item is not None
+    summary = str(item["summary"]).casefold()
+    assert "pipe" not in summary
+    assert "one-shot" in summary
+
+
 def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     raw = json.dumps([{"offset": 0x140001000, "opcode": "nop"}])

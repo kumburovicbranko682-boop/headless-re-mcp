@@ -66,7 +66,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "backend": "radare2",
         "status_probe": "radare2",
         "tools": ["r2.open", "r2.info", "r2.functions", "r2.strings", "r2.imports", "r2.exports", "r2.disasm", "r2.xrefs"],
-        "summary": "radare2/rizin whitelist pipe",
+        "summary": "radare2/rizin one-shot whitelist commands",
         "optional": True,
     },
     {
