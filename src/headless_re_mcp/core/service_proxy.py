@@ -24,7 +24,9 @@ JsonObject = dict[str, Any]
 
 
 def _as_rpc(exc: ProxyError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return XdbgRpcError(
+        exc.code, exc.message, details=dict(exc.details), retryable=exc.code == "timeout"
+    )
 
 
 class ProxyAnalysisMixin:

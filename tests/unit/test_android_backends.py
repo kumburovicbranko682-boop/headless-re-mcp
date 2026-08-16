@@ -6,6 +6,8 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -349,3 +351,98 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class _HungDevice:
+    """A device whose shell never returns — the adb-server-wedged case."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def shell(self, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        self.entered.set()
+        self.release.wait()
+        return ""
+
+
+class TestAdbCallsHaveADeadline:
+    """A wedged adb server used to park the caller for as long as it stayed wedged.
+
+    Measured here: ``properties()`` against a ``shell()`` that slept 8s returned
+    only after 8.000s, and was still running at 2s. ``connect`` already had a
+    timeout; the other named operations did not. An unattended agent that hits
+    a device which stopped answering then holds a worker until the process dies.
+    """
+
+    def _backend(self, device: _HungDevice, *, timeout: float = 0.3) -> AdbBackend:
+        backend = AdbBackend(timeout=timeout)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_hung_shell_returns_timeout_instead_of_blocking(self) -> None:
+        device = _HungDevice()
+        backend = self._backend(device)
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            backend.properties("emulator-5554", limit=10)
+        elapsed = time.monotonic() - started
+
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert device.entered.is_set()
+        device.release.set()
+
+    def test_logcat_and_packages_share_the_same_deadline(self) -> None:
+        for op in ("logcat", "packages"):
+            device = _HungDevice()
+            backend = self._backend(device)
+            started = time.monotonic()
+            with pytest.raises(AdbError) as info:
+                getattr(backend, op)("emulator-5554")
+            assert info.value.code == "timeout", op
+            assert time.monotonic() - started < 1.0, op
+            device.release.set()
+
+    def test_the_tool_envelope_names_timeout_and_is_retryable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.core.service_device import DeviceAnalysisMixin
+
+        device = _HungDevice()
+        backend = self._backend(device)
+        monkeypatch.setattr(DeviceAnalysisMixin, "_backend", lambda self: backend)
+
+        class _Svc(DeviceAnalysisMixin):
+            settings = SimpleNamespace(adb=None)
+
+        started = time.monotonic()
+        result = _Svc().device_properties("emulator-5554")
+        elapsed = time.monotonic() - started
+        device.release.set()
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+        assert elapsed < 1.0
+
+    def test_a_live_device_is_not_slowed_down_by_the_deadline(self) -> None:
+        class _Live:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return "[ro.build.version.sdk]: [34]\n"
+
+        backend = AdbBackend(timeout=0.3)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Live()  # type: ignore[method-assign]
+        started = time.monotonic()
+        payload = backend.properties("emulator-5554", limit=10)
+        assert payload["count"] == 1
+        assert time.monotonic() - started < 0.3

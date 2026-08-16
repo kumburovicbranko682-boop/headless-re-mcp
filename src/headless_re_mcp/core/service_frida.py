@@ -28,7 +28,9 @@ _MAX_AUTHORIZED = 64
 
 
 def _as_rpc(exc: FridaError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return XdbgRpcError(
+        exc.code, exc.message, details=dict(exc.details), retryable=exc.code == "timeout"
+    )
 
 
 class FridaDeviceMixin:
