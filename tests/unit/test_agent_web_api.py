@@ -152,6 +152,35 @@ def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) 
     assert "dynamic.launch" in body["auto_executable_writes"]
 
 
+def test_watchdog_alert_page_says_when_more_are_retained(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A 50-alert page used to look like the whole ring.
+
+    Measured: 80 alerts in the ring, recent_alerts(50) returned 50 and
+    the HTTP body had only the array plus lifetime alerts_total. The
+    other 30 looked like they were never raised.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        watchdog = app.state.watchdog
+        for index in range(80):
+            watchdog.alerts.append({"kind": "x", "n": index})
+            watchdog.raised += 1
+        page = client.get("/api/agent/watchdog?limit=50", headers=headers).json()
+        assert page["count"] == 50
+        assert page["retained"] == 80
+        assert page["has_more"] is True
+        assert page["alerts"][0]["n"] == 79
+        full = client.get("/api/agent/watchdog?limit=128", headers=headers).json()
+        assert full["has_more"] is False
+        assert full["count"] == 80
+
+
 def test_a_thread_page_says_when_more_messages_exist(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """GET /threads/{id} used to return a 500-message array and nothing else.
 
