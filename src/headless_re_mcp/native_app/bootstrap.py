@@ -6,12 +6,14 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 
 JsonObject = dict[str, Any]
+_PIP_INSTALL_TIMEOUT = 600.0
 
 
 def ensure_repo_on_path() -> Path:
@@ -152,13 +154,30 @@ def run_doctor_summary() -> JsonObject:
 
 
 def pip_install_editable(repo_root: Path, extras: str = ".[dev,ida,pe,web]") -> int:
+    """Install the package editable. The pip hop is bounded.
+
+    ``subprocess.run`` had no timeout. Measured: a 0.8s sleep in run held
+    the installer 0.8s. A wedged pip held the GUI/setup forever, and
+    ``timeout=`` on run would still leave children pip started.
+    """
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
     cmd = [sys.executable, "-m", "pip", "install", "-e", extras]
-    # Inherited stdout still reaches an existing console, so pip's progress is
-    # not lost; this only stops a fresh window when the parent is the GUI.
-    completed = subprocess.run(
-        cmd, cwd=str(repo_root), check=False, **no_window_popen_kwargs()
-    )
-    return int(completed.returncode)
+    kwargs = no_window_popen_kwargs()
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    with subprocess.Popen(cmd, cwd=str(repo_root), **kwargs) as process:
+        try:
+            process.communicate(timeout=_PIP_INSTALL_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(process)
+            if os.name != "nt" and isinstance(process.pid, int) and process.pid > 0:
+                with suppress(OSError, ProcessLookupError):
+                    os.killpg(process.pid, 9)
+            with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+                process.communicate(timeout=2.0)
+            return 124
+        return int(process.returncode or 0)
 
 
 def start_mcp_serve() -> subprocess.Popen[Any]:
