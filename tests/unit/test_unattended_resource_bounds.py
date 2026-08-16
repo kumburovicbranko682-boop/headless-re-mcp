@@ -3372,7 +3372,8 @@ class TestAdbCurrentActivityDoesNotInventAForeground:
     """app_current returning None used to look like an empty desktop.
 
     Measured: None came back as package=None, activity=None, no error.
-    The tool is the current foreground.
+    An object with both fields None did the same. The tool is the current
+    foreground.
     """
 
     def _backend(self, device: Any) -> Any:
@@ -3405,6 +3406,21 @@ class TestAdbCurrentActivityDoesNotInventAForeground:
 
         result = self._backend(Device()).current_activity("emulator-5554")
         assert result == {"package": "com.example.app", "activity": ".Main"}
+
+    def test_an_empty_object_is_not_a_foreground(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Current:
+            package = None
+            activity = None
+
+        class Device:
+            def app_current(self) -> Current:
+                return Current()
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).current_activity("emulator-5554")
+        assert caught.value.code == "backend_error"
 
 
 class TestAdbInstallDoesNotInventSuccess:

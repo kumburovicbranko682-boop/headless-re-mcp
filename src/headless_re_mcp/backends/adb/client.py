@@ -420,9 +420,20 @@ class AdbBackend:
                 "adb reported no current activity",
                 serial=_check_serial(serial),
             )
+        package = getattr(current, "package", None)
+        activity = getattr(current, "activity", None)
+        # Measured: an object with package=None and activity=None still
+        # came back as a success. Same lie as None — the tool is the
+        # current foreground, not an empty desktop.
+        if not package and not activity:
+            raise AdbError(
+                "backend_error",
+                "adb reported no current activity",
+                serial=_check_serial(serial),
+            )
         return {
-            "package": getattr(current, "package", None),
-            "activity": getattr(current, "activity", None),
+            "package": package,
+            "activity": activity,
         }
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:

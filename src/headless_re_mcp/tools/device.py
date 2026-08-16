@@ -92,7 +92,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.current_activity")
     def device_current_activity(serial: str) -> dict[str, Any]:
-        """Return the current foreground package and activity."""
+        """Return the current foreground package and activity.
+
+        Missing or empty package and activity is an error, not an empty desktop.
+        """
         return _dump(analysis.device_current_activity(serial))
 
     @tools.tool(name="device.logcat")
