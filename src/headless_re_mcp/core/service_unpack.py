@@ -22,6 +22,7 @@ from headless_re_mcp.core.limits import rebuild_would_exhaust_memory
 from headless_re_mcp.core.models import BackendKind, Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_detect import _detection_timeout
+from headless_re_mcp.core.service_ext import _register_capture
 from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
 from headless_re_mcp.core.windows import list_process_windows
 from headless_re_mcp.detection import PeFormatError, ScanMode, scan_pe
@@ -792,6 +793,17 @@ class UnpackMixin:
             }
             if import_report is not None:
                 payload["import_report"] = import_report.to_dict()
+            # Retention and artifacts.gc only see registered rows. Measured:
+            # a 1024-byte pe-rebuilt-*.exe listed total=0, gc removed=0,
+            # and survived close_session and close_all.
+            payload = _register_capture(
+                self,
+                session_id,
+                out_path,
+                kind="pe_rebuilt",
+                source="unpack.pe.rebuild",
+                payload=payload,
+            )
             # Structural verify with built-in parser.
             try:
                 verified = scan_pe(out_path)

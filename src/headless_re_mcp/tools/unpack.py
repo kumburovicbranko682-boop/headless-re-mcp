@@ -418,8 +418,10 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Remap a runtime dump to file layout and optionally rebuild imports.
 
-        Answers with output_path, input_path, sha256, report, pe_verify, and
-        claims_universal_unpack false. There is no rebuilt field.
+        Answers with output_path, input_path, sha256, report, pe_verify,
+        artifact_id, and claims_universal_unpack false. There is no rebuilt
+        field. artifact_id is the artifacts table row; without it the image
+        is invisible to artifacts.gc.
         """
         return _dump(
             analysis.unpack_pe_rebuild(
