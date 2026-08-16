@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **按 `host:port` 解析 Frida 设备时加远程仍会一直挂着**。公开的
+  `add_remote_device` 加截止后，`_resolve_device("127.0.0.1:27042")` 对
+  睡 8s 的 `add_remote_device` 仍要 8.000s 才回。现在共用同一截止。
 - **IDA gate 反编译预览截断后看起来仍是完整函数**。1500 字符被切成
   1000 且没有 `truncated`。agent 会把切掉的函数体当成整段。现在带回
   `truncated` 和 `bytes`。

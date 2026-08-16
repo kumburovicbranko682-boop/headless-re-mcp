@@ -403,7 +403,11 @@ class FridaClient:
                 mgr = frida.get_device_manager()
                 with contextlib.suppress(Exception):
                     return mgr.get_device(device_id, timeout=1)
-                return mgr.add_remote_device(device_id)
+                # Measured: add_remote_device sleeping 8s still returned
+                # only after 8.000s even after the public add had a deadline.
+                return self._call(
+                    "resolve_remote", lambda: mgr.add_remote_device(device_id)
+                )
             return frida.get_device(device_id, timeout=5)
         except FridaError:
             raise
