@@ -215,6 +215,51 @@ class TestWebConsoleSaysWhenItWasCut:
         assert result["has_more"] is False
 
 
+class TestWebScriptsSayWhenTheyWereCut:
+    """A script list that filled the debugger buffer used to look like every script."""
+
+    def _backend(self, n: int) -> WebBackend:
+        import threading
+        from collections import OrderedDict
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.scripts = OrderedDict(
+                    (
+                        str(index),
+                        {
+                            "scriptId": str(index),
+                            "url": f"https://ex/{index}.js",
+                            "language": "JavaScript",
+                        },
+                    )
+                    for index in range(n)
+                )
+                self.runner = object()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_full_buffer_is_not_returned_as_one_page(self) -> None:
+        result = self._backend(2000).scripts("s", limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 2000
+        assert result["has_more"] is True
+        assert len(result["scripts"]) == 200
+
+    def test_a_short_buffer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).scripts("s", limit=200)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_page_that_exactly_fills_is_complete(self) -> None:
+        result = self._backend(200).scripts("s", limit=200)
+        assert result["count"] == 200
+        assert result["has_more"] is False
+
+
 class TestJsUnpackSaysWhenTheFileListWasCut:
     """file_count used to be the whole tree while the list silently stopped at 2000."""
 

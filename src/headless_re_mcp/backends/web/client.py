@@ -372,13 +372,25 @@ class WebBackend:
             "has_more": len(items) > capped,
         }
 
-    def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
+    def scripts(
+        self, session_id: str, *, wasm_only: bool = False, limit: int = 200
+    ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        capped = max(1, min(int(limit), _MAX_SCRIPTS))
+        window = values[:capped]
+        # A full debugger buffer used to look like every script. Measured:
+        # 2000 parsed scripts came back as one 151 KiB object with no
+        # has_more, so an agent treated the buffer as the complete set.
+        return {
+            "scripts": window,
+            "count": len(window),
+            "total": len(values),
+            "has_more": len(values) > capped,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
