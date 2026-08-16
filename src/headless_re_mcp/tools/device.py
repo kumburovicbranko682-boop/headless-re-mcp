@@ -41,7 +41,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         host: str = "127.0.0.1",
         port: Annotated[int, Field(ge=1, le=65535)] = 5555,
     ) -> dict[str, Any]:
-        """Connect to an emulator over TCP (LDPlayer 5555, MuMu 7555, Nox 62001)."""
+        """Connect to an emulator over TCP (LDPlayer 5555, MuMu 7555, Nox 62001).
+
+        Answers with endpoint, result and connected. connected is true only
+        when adb reported a connection. There is no ok, serial or host field.
+        A refused TCP connect is an envelope failure, not connected false.
+        """
         return _dump(analysis.device_connect(host=host, port=port))
 
     @tools.tool(name="device.info")

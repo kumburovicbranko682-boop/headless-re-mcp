@@ -62,7 +62,26 @@ class DeviceAnalysisMixin:
         return self._adb_wrap("list_devices")
 
     def device_connect(self, host: str = "127.0.0.1", port: int = 5555) -> Result[JsonObject]:
-        return self._adb_wrap("connect", host=host, port=port)
+        result = self._adb_wrap("connect", host=host, port=port)
+        if result.ok:
+            data = result.data if isinstance(result.data, dict) else {}
+            if not data.get("connected"):
+                # adbutils returns a status string and does not raise. The
+                # client used to pass that through as an ok envelope with
+                # connected false, so a caller that only reads ok then
+                # installed onto a device that was never there.
+                detail = data.get("result") or "adb reported no connection"
+                return _failure(
+                    _as_rpc(
+                        AdbError(
+                            "backend_error",
+                            f"connect failed: {detail}",
+                            endpoint=data.get("endpoint") or f"{host}:{port}",
+                            result=data.get("result"),
+                        )
+                    )
+                )
+        return result
 
     def device_info(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("info", serial=serial)
