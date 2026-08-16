@@ -207,13 +207,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def terminate(self) -> None:
         self._closed = True
-        if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=5)
+        # process.kill() left the worker's child running. Measured: after
+        # terminate() the parent was gone and the sleeper it started was
+        # still alive. An unattended close then leaked the idalib process
+        # and its database lock.
+        from headless_re_mcp.core.process_tree import terminate_process_tree
+
+        terminate_process_tree(self._process)
 
     def _read_stdout(self, stream: TextIO) -> None:
         try:
