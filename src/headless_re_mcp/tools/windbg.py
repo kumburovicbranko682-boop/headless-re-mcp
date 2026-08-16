@@ -47,7 +47,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_modules(
         dump_path: str, timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0
     ) -> dict[str, Any]:
-        """Loaded module list of a crash dump; a failed cdb is not an empty list."""
+        """Loaded module list of a crash dump; a failed cdb is not an empty list.
+
+        Read truncated when the listing was cut.
+        """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
     @tools.tool(name="windbg.disasm")

@@ -71,6 +71,14 @@ def test_a_dump_analysis_cut_at_the_cap_says_it_was_cut(
     assert "truncated" not in {key for key in payload if key == "raw"}
 
 
+def test_modules_tool_description_says_to_read_truncated() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "windbg.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def windbg_modules(")[1].split("def windbg_disasm(")[0]
+    assert "truncated" in block
+
+
 def test_a_cut_thread_list_says_it_was_cut(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
