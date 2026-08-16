@@ -231,7 +231,7 @@ class FridaClient:
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
-        session = self._frida.attach(pid)
+        session = self._attach_with_deadline(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
