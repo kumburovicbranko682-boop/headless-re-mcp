@@ -35,3 +35,24 @@ def test_windows_ocr_available_probe() -> None:
     from headless_re_mcp.core.ui_ocr import windows_ocr_available
 
     assert isinstance(windows_ocr_available(), bool)
+
+
+def test_the_tree_tool_names_a_cut_walk() -> None:
+    """The walk already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a max_nodes stop as the
+    whole window tree.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import ui as ui_tools
+
+    tree = ast.parse(inspect.getsource(ui_tools.build_ui_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["ui_tree"]
+    assert "truncated" in docs["ui_tree"]
