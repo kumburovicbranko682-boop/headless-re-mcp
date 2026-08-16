@@ -40,6 +40,24 @@ def _bounded(raw: bytes, limit: int) -> tuple[str, dict[str, object]]:
     }
 
 
+def _stream_notice(completed: Any, out: str, cut: dict[str, object]) -> dict[str, object]:
+    """Prefer the bytes run_bounded counted, not the length of the keep.
+
+    Measured: 5 MiB cdb session, keep 1 MiB, output_chars 1000000 -- the
+    keep hid how much cdb actually printed.
+    """
+    produced = getattr(completed, "stdout_bytes", None)
+    if produced is None:
+        return cut
+    if int(produced) > _MAX_OUTPUT or getattr(completed, "truncated", False):
+        return {
+            "truncated": True,
+            "output_chars": int(produced),
+            "returned_chars": len(out),
+        }
+    return cut
+
+
 def _summarised(text: str, limit: int) -> dict[str, object]:
     """The ``output`` field for a payload that carries nothing else to cut."""
     if len(text) <= limit:
@@ -250,6 +268,7 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        cut = _stream_notice(completed, out, cut)
         # Measured: exit 2 with stdout "Could not attach\n" still became
         # attached=True / threads="Could not attach", so an unattended
         # agent treats the error text as a live probe.
@@ -297,6 +316,7 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        cut = _stream_notice(completed, out, cut)
         # Measured: exit 2 with stdout "Could not open dump\n" still became
         # threads="Could not open dump\n", so an unattended agent treats the
         # error text as the thread list.

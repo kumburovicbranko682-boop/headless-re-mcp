@@ -95,6 +95,38 @@ def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
     assert payload["modules"] == "ok"
 
 
+def test_a_dump_analysis_reports_the_stream_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 1 MiB run_bounded keep used to hide how much cdb printed.
+
+    Measured: 5000000-byte stdout, keep 1 MiB, output_chars 1000000 --
+    so a caller reading output_chars thinks the session ended at the keep.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(
+        windbg_module,
+        "run_bounded",
+        lambda *args, **kwargs: Completed(
+            0, b"A" * 1_000_000, b"", stdout_bytes=5_000_000, truncated=True
+        ),
+    )
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    payload = WindbgClient(cdb).modules(dump)
+
+    assert payload["truncated"] is True
+    assert payload["output_chars"] == 5_000_000
+    assert payload["returned_chars"] == 500_000
+    assert len(str(payload["modules"])) == 500_000
+
+
 def test_a_failed_dump_is_not_saved_by_error_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
