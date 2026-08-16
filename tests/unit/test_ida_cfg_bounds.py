@@ -82,3 +82,24 @@ class TestIdaCfgSaysWhenItStopped:
         result = _cfg({"address": 0x1000})
         assert result["node_count"] == 1024
         assert result["truncated"] is False
+
+
+class TestStaticCfgDescriptionMatchesTheCut:
+    """static.cfg now cuts at 1024 nodes, but the tool text hid that.
+
+    Measured: 5000 blocks, node_count=1024, truncated=true, while the
+    description said "return function-local CFG" -- so a model treats the
+    slice as the whole graph.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.core import build_static_extended_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_static_extended_tools(service)}
+            doc = tools["static.cfg"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
