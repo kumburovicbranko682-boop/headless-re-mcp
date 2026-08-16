@@ -224,9 +224,22 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            raw = dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
+        text = str(raw)
+        lowered = text.lower()
+        # monkey prints "Events injected: N" on success and "Error" / "aborted"
+        # on failure, then returns. Treating a return as launched=True made a
+        # missing package look like a running one.
+        if "error" in lowered or "aborted" in lowered or "injected" not in lowered:
+            raise AdbError(
+                "backend_error",
+                "launch did not start the package",
+                package=pkg,
+                launched=False,
+                output=text[:800],
+            )
         return {"launched": True, "package": pkg}
 
     def force_stop(self, serial: str, package: str) -> JsonObject:

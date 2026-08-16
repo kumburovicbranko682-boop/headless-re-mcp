@@ -438,6 +438,54 @@ class TestEnsureFridaServerDoesNotInventARunningProcess:
             service.close_all()
 
 
+class TestLaunchDoesNotInventSuccess:
+    """``launched: True`` used to mean the monkey command returned, not that it started.
+
+    Measured: a device whose monkey printed
+    ``No activities found to run, monkey aborted`` still answered
+    ``{'launched': True, 'package': 'com.missing.app'}``. An unattended agent
+    then waits for an activity that was never in the foreground.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_monkey_abort_is_not_launched(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend(
+                "** Error: monkey aborted\nNo activities found to run, monkey aborted."
+            ).launch("emulator-5554", "com.missing.app")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("launched") is not True
+
+    def test_an_unknown_package_is_not_launched(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("** Error: Unknown package: com.missing.app").launch(
+                "emulator-5554", "com.missing.app"
+            )
+        assert info.value.code == "backend_error"
+
+    def test_empty_output_is_not_evidence_of_a_launch(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("").launch("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+
+    def test_an_injection_confirmation_is_launched(self) -> None:
+        result = self._backend("Events injected: 1\n## Network stats: elapsed time=12ms").launch(
+            "emulator-5554", "com.example.app"
+        )
+        assert result["launched"] is True
+        assert result["package"] == "com.example.app"
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
