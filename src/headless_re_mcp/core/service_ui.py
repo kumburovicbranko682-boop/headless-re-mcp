@@ -58,6 +58,18 @@ if TYPE_CHECKING:
 
 JsonObject = dict[str, Any]
 
+# Measured: 40 child windows came back as 16 with no has_more.
+_MAX_CHILD_WINDOWS = 16
+
+
+def _page_windows(
+    wins: list[Any], *, limit: int = _MAX_CHILD_WINDOWS
+) -> tuple[list[Any], bool]:
+    items = list(wins)
+    if len(items) > limit:
+        return items[:limit], True
+    return items, False
+
 
 def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None]:
     """Resolve a bounded target process set for passive desktop monitoring."""
@@ -346,12 +358,14 @@ class UiAutomationMixin:
             child_rows = []
             for child in children:
                 wins = list_windows_for_pids([child])
+                windows, has_more = _page_windows(wins)
                 child_rows.append(
                     {
                         "pid": child,
                         "image": process_image_path(child),
                         "alive": is_pid_alive(child),
-                        "top_level_windows": wins[:16],
+                        "top_level_windows": windows,
+                        "has_more": has_more,
                     }
                 )
             return {

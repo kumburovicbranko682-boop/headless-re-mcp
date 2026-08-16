@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`ui.process_tree` 子进程窗口停在 16 个时看起来像完整列表**。40 个
+  窗口回 16 个，没有 `has_more`。agent 会漏掉过夜弹窗。现在截断时标
+  `has_more`。
 - **watchdog 告警列表停在一页时看起来像完整历史**。80 条告警、limit=50
   时回 50 条且 `alerts_total=80`，没有 `has_more`。只读列表的 agent
   会漏掉过夜告警。现在截断时标 `has_more`。

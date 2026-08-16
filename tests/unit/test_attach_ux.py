@@ -60,3 +60,25 @@ def test_an_empty_window_list_on_a_hidden_desktop_says_why() -> None:
     )
     assert found["count"] == 1
     assert "hint" not in found, "the hint is for the empty case only"
+
+
+class TestUiProcessTreeSaysWhenWindowsStopped:
+    """Child window lists were sliced at 16 and said nothing.
+
+    Measured: 40 windows came back as 16 with no has_more, so a caller
+    would treat a page as every top-level window on that child.
+    """
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        from headless_re_mcp.core.service_ui import _page_windows
+
+        page, has_more = _page_windows([{"hwnd": index} for index in range(40)])
+        assert len(page) == 16
+        assert has_more is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        from headless_re_mcp.core.service_ui import _page_windows
+
+        page, has_more = _page_windows([{"hwnd": 1}, {"hwnd": 2}])
+        assert len(page) == 2
+        assert has_more is False
