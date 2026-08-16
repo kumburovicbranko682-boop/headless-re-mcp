@@ -165,6 +165,47 @@ class TestScreenshotDoesNotInventAFile:
         assert out.is_file()
 
 
+class TestScreenshotDoesNotInventAnEmptyImage:
+    """A 0-byte screenshot file used to look like a captured image.
+
+    Measured: page.screenshot writing an empty file still answered
+    ``{'path': <empty>}``. An unattended agent then treats a blank
+    capture as evidence.
+    """
+
+    def _backend(self, payload: bytes) -> WebBackend:
+        class _Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                Path(path).write_bytes(payload)
+
+        class _Runner:
+            def call(self, work: object, timeout: float = 60.0) -> object:
+                return work()  # type: ignore[operator]
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.page = _Page()
+                self.runner = _Runner()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_an_empty_file_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        out = tmp_path / "shot.png"
+        with pytest.raises(WebError) as info:
+            self._backend(b"").screenshot("s", out)
+        assert info.value.code == "backend_error"
+        assert "did not write" in info.value.message
+        assert info.value.details.get("bytes") == 0
+
+    def test_a_non_empty_file_is_a_screenshot(self, tmp_path: Path) -> None:
+        out = tmp_path / "shot.png"
+        result = self._backend(b"\x89PNG\r\n\x1a\n").screenshot("s", out)
+        assert result["path"] == str(out)
+        assert out.stat().st_size > 0
+
+
 class TestWebTargetClassification:
     def test_urls_and_web_assets_classify_as_web(self, tmp_path: Path) -> None:
         assert classify_target("https://example.com/app") is TargetKind.WEB

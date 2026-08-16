@@ -471,6 +471,17 @@ class WebBackend:
                     "screenshot did not write an image",
                     path=str(out_path),
                 )
+            # Measured: a screenshot() that wrote a 0-byte file still
+            # answered {'path': <empty file>}. An agent then treats an
+            # empty capture as evidence.
+            size = out_path.stat().st_size
+            if size == 0:
+                raise WebError(
+                    "backend_error",
+                    "screenshot did not write an image",
+                    path=str(out_path),
+                    bytes=0,
+                )
             return {"path": str(out_path)}
 
         return self._runner(handle).call(work)
