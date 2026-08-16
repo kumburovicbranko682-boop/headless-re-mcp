@@ -128,13 +128,18 @@ class R2Client:
             raise R2Error("timeout", "r2 timed out", timeout=timeout) from exc
         produced = len(completed.stdout)
         out = completed.stdout[:_MAX_OUTPUT]
-        err = completed.stderr[:_MAX_OUTPUT]
+        err_bytes = completed.stderr
+        if len(err_bytes) > _MAX_OUTPUT:
+            err_bytes = err_bytes[-_MAX_OUTPUT:]
         if completed.returncode != 0:
             raise R2Error(
                 "backend_error",
                 "r2 exited non-zero",
                 exit_code=completed.returncode,
-                stderr=err.decode("utf-8", errors="replace")[:2000],
+                # The failure reason is at the end. Measured: 5000 leading I's
+                # plus 'ERROR cannot open' still raised with 2000 I's, so the
+                # ERROR line was gone.
+                stderr=err_bytes.decode("utf-8", errors="replace")[-2000:],
             )
         payload: JsonObject = {
             "raw": out.decode("utf-8", errors="replace"),

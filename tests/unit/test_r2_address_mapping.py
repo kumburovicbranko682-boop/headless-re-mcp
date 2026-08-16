@@ -215,3 +215,24 @@ def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     assert enriched["address"]["rva"] == 0x1000
     assert enriched["address_va"] == 0x140001000
     assert enriched["items"][0]["address"]["module"] == binary.name
+
+
+def test_a_failed_run_keeps_the_error_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """5000 leading I's plus ERROR used to raise with 2000 I's and no ERROR."""
+    binary = _minimal_pe(tmp_path)
+    body = (b"I" * 5000) + b"ERROR cannot open\n"
+
+    def boom(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=body)
+
+    monkeypatch.setattr(r2_client.subprocess, "run", boom)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    with pytest.raises(r2_client.R2Error) as caught:
+        client.run(binary, ["i"])
+    assert caught.value.code == "backend_error"
+    err = str(caught.value.details.get("stderr") or "")
+    assert "ERROR cannot open" in err
+    assert len(err) == 2000
