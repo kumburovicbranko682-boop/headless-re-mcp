@@ -39,6 +39,7 @@ _UNINSTALL_TIMEOUT = 30.0
 _SCREENSHOT_TIMEOUT = 20.0
 _FRIDA_PS_TIMEOUT = 5.0
 _FRIDA_CHMOD_TIMEOUT = 8.0
+_FRIDA_LAUNCH_TIMEOUT = 8.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -696,10 +697,15 @@ class AdbBackend:
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
         launch_note = ""
         try:
-            # Launch detached under root; bounded so a blocking su prompt cannot hang.
-            self._device(serial).shell(
+            # Launch detached under root. adbutils shell(timeout=8) still
+            # opens the transport with a 600s default. Measured: a 0.8s
+            # sleep in that hop held ensure_frida_server 1.07s after ps
+            # already returned. A timeout here is not "running": ps is
+            # checked afterwards.
+            self._adb_shell(
+                serial,
                 f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
-                timeout=8.0,
+                timeout=_FRIDA_LAUNCH_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
             launch_note = f"launch attempted; verify manually ({exc})"

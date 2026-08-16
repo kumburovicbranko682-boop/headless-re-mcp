@@ -1914,3 +1914,51 @@ class TestFridaServerEnsureIsHonest:
         elapsed = time.monotonic() - t0
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
+
+    def test_ensure_does_not_wait_on_launch_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ensure used adbutils shell for su/nohup, which connects with a 600s default.
+
+        Measured: a 0.8s sleep in device.shell held ensure 1.07s on launch
+        after ps already returned. shell(timeout=8) still opened the
+        transport with the library default first.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_FRIDA_LAUNCH_TIMEOUT", 0.4)
+
+        class _Dev:
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                time.sleep(30)
+                return ""
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "import time\n"
+            "joined = ' '.join(sys.argv)\n"
+            "if 'nohup' in joined or 'su -c' in joined:\n"
+            "    time.sleep(30)\n"
+            "if 'shell' in sys.argv:\n"
+            "    print('init')\n"
+            "    raise SystemExit(0)\n"
+            "time.sleep(30)\n"
+        )
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        result = _Backend(_Dev(), adb).ensure_frida_server("emulator-5554")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert result["running"] is False
