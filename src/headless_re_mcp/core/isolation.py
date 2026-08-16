@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
@@ -70,12 +71,42 @@ class IsolationError(RuntimeError):
         self.detail = detail or {}
 
 
+def _run_isolation_command(
+    command: list[str],
+    *,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    creationflags: int = 0,
+    **_kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run the operator command with the same tree-killing deadline as CLI tools.
+
+    Isolation used ``subprocess.run(timeout=...)``. That kills the process it
+    spawned and nothing else, then on Windows drains the pipes with no
+    timeout. The command is supplied by the operator -- typically a script
+    that starts a hypervisor tool -- so a timeout left the real work running
+    and, on Windows, could hang the scheduler thread that is waiting for it.
+    Measured: a launcher that started a sleeper, timeout 0.8s, returned in
+    0.8s while the sleeper was reparented to pid 1 and kept running.
+    """
+    finished = run_bounded(
+        command,
+        timeout=timeout,
+        creationflags=creationflags,
+    )
+    return subprocess.CompletedProcess(
+        command,
+        finished.returncode,
+        stdout=finished.stdout.decode("utf-8", errors="replace"),
+        stderr=finished.stderr.decode("utf-8", errors="replace"),
+    )
+
+
 @dataclass(slots=True)
 class IsolationRunner:
     """Invoke the configured isolation command and report honestly."""
 
     policy: IsolationPolicy = field(default_factory=IsolationPolicy)
-    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
+    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=_run_isolation_command)
     clock: Callable[[], float] = time.monotonic
 
     def rotate(self, *, reason: str = "next_sample") -> JsonObject:
@@ -101,6 +132,14 @@ class IsolationRunner:
                 # Runs once per sample on an unattended box; a console window
                 # per rotation would pile up on the desktop.
                 **no_window_popen_kwargs(),
+            )
+        except TimedOut as exc:
+            return self._failed(
+                f"timed out after {exc.timeout:g}s",
+                command=command,
+                elapsed=self.clock() - started,
+                reason=reason,
+                killed=list(exc.killed),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._failed(
@@ -136,6 +175,7 @@ class IsolationRunner:
         elapsed: float,
         reason: str,
         stderr: str = "",
+        killed: list[int] | None = None,
     ) -> JsonObject:
         payload: JsonObject = {
             "ok": False,
@@ -147,6 +187,8 @@ class IsolationRunner:
         }
         if stderr:
             payload["stderr"] = stderr
+        if killed:
+            payload["killed"] = killed
         record_alert("isolation_failed", fields={"detail": detail, "reason": reason})
         if self.policy.required:
             raise IsolationError(

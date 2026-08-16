@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+import time
 from typing import Any
 
 import pytest
@@ -115,6 +118,48 @@ def test_policy_reads_a_string_command_as_a_shell_style_argv(tmp_path) -> None: 
 
     assert policy.command == ("pwsh", "-File", "C:/vm/revert.ps1")
     assert policy.configured is True
+
+
+def test_a_timeout_kills_what_the_isolation_script_started(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """subprocess.run killed the launcher and left the work running.
+
+    Measured: IsolationRunner with a 0.8s deadline returned in 0.8s while
+    the process the launcher started was reparented to pid 1 and still
+    alive. Isolation is the operator's VM rollback, often a script, and
+    it sits on the scheduler's only serial slot -- an orphan or a hung
+    drain stops every later sample.
+    """
+    pid_path = tmp_path / "child.pid"
+    launcher = (
+        "import subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
+        "while True: time.sleep(0.2)\n"
+    )
+    runner = IsolationRunner(
+        IsolationPolicy(command=(sys.executable, "-c", launcher), timeout_s=0.8, required=False)
+    )
+    started = time.monotonic()
+    outcome = runner.rotate(reason="test")
+    elapsed = time.monotonic() - started
+
+    assert outcome["ok"] is False
+    assert elapsed < 5.0
+    assert "timed out" in str(outcome["detail"])
+    assert pid_path.is_file()
+    child = int(pid_path.read_text())
+    deadline = time.monotonic() + 2.0
+    alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except OSError:
+            alive = False
+            break
+        time.sleep(0.05)
+    assert alive is False, "the isolation script's child outlived the timeout"
+    assert child in (outcome.get("killed") or [])
 
 
 def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]
