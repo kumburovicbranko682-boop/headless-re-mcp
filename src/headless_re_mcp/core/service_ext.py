@@ -201,8 +201,13 @@ def _note_failed(action: str, exc: BaseException, result: Result[JsonObject]) ->
     with suppress(BaseException):
         record_exception(exc, context=f"bookkeeping:{action}")
     with suppress(BaseException):
+        # Measured: a 309-character OSError was stored as 200 with no
+        # persist_error_truncated, so an overnight close looked like the
+        # whole bookkeeping failure.
+        text = f"{type(exc).__name__}: {exc}"
         result.meta["persisted"] = False
-        result.meta["persist_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        result.meta["persist_error"] = text[:200]
+        result.meta["persist_error_truncated"] = len(text) > 200
 
 
 def note_session_created(service: Any, binary: str, result: Result[JsonObject]) -> None:

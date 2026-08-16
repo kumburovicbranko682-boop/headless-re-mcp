@@ -996,8 +996,27 @@ class TestTheArtifactRootCanDisappearUnderTheService:
             # quietly stopped is the other way this goes wrong.
             assert closed.meta["persisted"] is False
             assert "unable to open database file" in str(closed.meta["persist_error"])
+            assert closed.meta["persist_error_truncated"] is False
         finally:
             service.close_all()
+
+    def test_a_cut_persist_error_says_it_was_cut(self) -> None:
+        """_note_failed sliced persist_error at 200 and said nothing.
+
+        Measured: a 309-character OSError was stored as 200 with no
+        persist_error_truncated, so an unattended close treated a cut
+        bookkeeping failure as the whole cause.
+        """
+        from headless_re_mcp.core.models import Result
+        from headless_re_mcp.core.service_ext import _note_failed
+
+        cut = Result[dict](ok=True, data={"closed": True})
+        intact = Result[dict](ok=True, data={"closed": True})
+        _note_failed("session.closed", OSError("X" * 300), cut)
+        _note_failed("session.closed", OSError("disk full"), intact)
+        assert len(str(cut.meta["persist_error"])) == 200
+        assert cut.meta["persist_error_truncated"] is True
+        assert intact.meta["persist_error_truncated"] is False
 
 
 class TestAStoreThatCanBeReadButNotWritten:

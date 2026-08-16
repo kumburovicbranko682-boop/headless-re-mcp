@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **会话关闭记账失败原因截断后看起来仍是完整原因**。309 字符的
+  persist_error 存成 200 且没有 `persist_error_truncated`。过夜 close
+  会把被切掉的磁盘错误当全因。现在满页标截断。
 - **`r2.*` 超时后仍留下它拉起的子进程**。假 r2 先 `sleep 60 &` 再
   自己睡，`subprocess.run` 0.4s 超时后子进程还在。过夜分析会占着核。
   现在用 `run_bounded` 杀掉整棵树。
