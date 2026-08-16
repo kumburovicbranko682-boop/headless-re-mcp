@@ -108,7 +108,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_logcat(
         serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200
     ) -> dict[str, Any]:
-        """Return the last N lines of logcat (non-streaming snapshot)."""
+        """Return the last N lines of logcat (non-streaming snapshot).
+
+        Capped; the reply carries total and has_more so a page is not read
+        as the whole dump when adb returned more lines than requested.
+        """
         return _dump(analysis.device_logcat(serial, lines=lines))
 
     @tools.tool(name="device.screenshot")

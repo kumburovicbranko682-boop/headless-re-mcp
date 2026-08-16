@@ -315,8 +315,15 @@ class AdbBackend:
             raw = dev.shell(["logcat", "-d", "-t", str(capped)], timeout=15.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
-        text = str(raw)
-        return {"lines": text.splitlines()[-capped:], "requested": capped}
+        dumped = str(raw).splitlines()
+        page = dumped[-capped:]
+        return {
+            "lines": page,
+            "requested": capped,
+            "count": len(page),
+            "total": len(dumped),
+            "has_more": len(dumped) > len(page),
+        }
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
         dev = self._device(serial)

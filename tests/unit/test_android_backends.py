@@ -172,6 +172,37 @@ class TestAdbArgumentValidation:
         assert device.timeout == 15.0
         assert result["requested"] == 10
 
+    def test_logcat_says_when_the_dump_was_cut(self) -> None:
+        """A 5-line page used to look like the whole dump.
+
+        Measured: 20 dumped lines, lines=5, reply had 5 lines and only
+        requested. The other 15 looked like they were never logged.
+        """
+
+        class _Dev:
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                return "\n".join(f"line {index}" for index in range(20))
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        result = _Backend(_Dev()).logcat("emulator-5554", lines=5)
+        assert result["count"] == 5
+        assert result["total"] == 20
+        assert result["has_more"] is True
+        assert result["lines"][0] == "line 15"
+
+        complete = _Backend(_Dev()).logcat("emulator-5554", lines=20)
+        assert complete["has_more"] is False
+        assert complete["total"] == 20
+
     def test_launch_does_not_wait_on_adb_forever(self) -> None:
         """monkey used to be invoked with no deadline.
 
