@@ -133,6 +133,11 @@ class AgentRun:
     def dump(self) -> dict[str, Any]:
         value = asdict(self)
         value["status"] = self.status.value
+        # Measured: a 1500-character failure reason was stored as 1000
+        # with no signal, so GET /runs/{id} looked like the whole
+        # overnight cause. The orchestrator cap is 1000; a full page is
+        # the only surviving evidence that the cut happened.
+        value["error_truncated"] = self.error is not None and len(self.error) >= 1000
         return value
 
 

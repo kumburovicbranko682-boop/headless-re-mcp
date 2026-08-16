@@ -315,6 +315,44 @@ def test_mission_create_says_when_the_objective_was_cut(
     assert intact["mission"]["truncated"] is False
 
 
+def test_run_get_says_when_the_error_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """_finish_failure sliced the error at 1000 and said nothing.
+
+    Measured: a 1500-character failure reason was stored as 1000 with
+    no error_truncated, so an unattended GET treated a cut cause as
+    the whole overnight failure.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    orch = app.state.agent_orchestrator
+    thread = store.create_thread(session_id="analysis-session")
+    cut = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    intact = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    asyncio.run(orch._finish_failure(cut.id, "R" * 1500, event="run.failed"))
+    asyncio.run(orch._finish_failure(intact.id, "provider exploded", event="run.failed"))
+
+    with TestClient(app) as client:
+        cut_body = client.get(f"/api/agent/runs/{cut.id}", headers=headers).json()
+        intact_body = client.get(f"/api/agent/runs/{intact.id}", headers=headers).json()
+    assert cut_body["ok"] is True
+    assert len(cut_body["run"]["error"]) == 1000
+    assert cut_body["run"]["error_truncated"] is True
+    assert intact_body["run"]["error_truncated"] is False
+    assert intact_body["run"]["error"] == "provider exploded"
+
+
 def test_mission_get_says_when_the_error_was_cut(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]

@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 运行失败原因截断后看起来仍是完整原因**。1500 字符的 error
+  存成 1000 且没有 `error_truncated`。过夜 GET 会把被切掉的失败当全因。
+  现在满页 error 标 `error_truncated`。
 - **agent 任务失败原因截断后看起来仍是完整原因**。1500 字符的 error
   存成 1000 且没有 `error_truncated`。过夜 GET 会把被切掉的失败当全因。
   现在满页 error 标 `error_truncated`。
