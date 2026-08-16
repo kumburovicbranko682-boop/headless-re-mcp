@@ -366,6 +366,24 @@ class AdbBackend:
             dev.sync.push(str(path), remote_path)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
+        # Measured: FakeDev.sync.push wrote nothing, push() still returned
+        # remote -- so a caller treats a missing remote as an uploaded file.
+        try:
+            info = dev.sync.stat(remote_path)
+        except Exception as exc:  # noqa: BLE001
+            raise AdbError(
+                "backend_error",
+                "push produced no remote file",
+                local=str(path),
+                remote=remote_path,
+            ) from exc
+        if info is None:
+            raise AdbError(
+                "backend_error",
+                "push produced no remote file",
+                local=str(path),
+                remote=remote_path,
+            )
         return {"local": str(path), "remote": remote_path}
 
     def ensure_frida_server(
