@@ -157,7 +157,10 @@ class JadxClient:
                 "backend_error",
                 "jadx produced no sources",
                 exit_code=int(completed.returncode),
-                stderr=stderr[:_MAX_STDERR],
+                # The failure reason is at the end. Measured: 10019 characters
+                # of stderr still came back as 8000 leading I's, so 'ERROR no
+                # dex files' was gone.
+                stderr=stderr[-_MAX_STDERR:],
             )
         return stdout, stderr, int(completed.returncode)
 

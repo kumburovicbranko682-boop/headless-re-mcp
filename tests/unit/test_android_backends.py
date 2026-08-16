@@ -1343,6 +1343,40 @@ class TestJadxSaysWhenTheDecompileWasPartial:
         assert "class A" in result["source"]
 
 
+class TestJadxKeepsTheHardFailErrorTail:
+    """A long jadx failure used to come back as the opening 8000 characters.
+
+    Measured: 10019 characters of stderr ending in 'ERROR no dex files' still
+    raised with 8000 leading I's. The ERROR line was gone, so an agent retried
+    a decompile it could not see.
+    """
+
+    def test_a_hard_fail_keeps_the_error_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import _MAX_STDERR, JadxClient, JadxError
+
+        body = ("I" * 10_000) + "ERROR no dex files\n"
+
+        def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+            return Completed(1, b"", body.encode("utf-8"))
+
+        monkeypatch.setattr(jadx_mod, "run_bounded", fake_bounded)
+        exe = tmp_path / "jadx"
+        exe.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        client = JadxClient(exe)
+        with pytest.raises(JadxError) as caught:
+            client.export_sources(apk, tmp_path / "out")
+        assert caught.value.code == "backend_error"
+        err = str(caught.value.details.get("stderr") or "")
+        assert "ERROR no dex files" in err
+        assert len(err) == _MAX_STDERR
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
