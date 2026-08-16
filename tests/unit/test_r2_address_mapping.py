@@ -179,6 +179,23 @@ def test_r2_capability_does_not_promise_a_kept_pipe() -> None:
     assert "one-shot" in summary
 
 
+def test_frida_capability_does_not_promise_resident_hooks() -> None:
+    """capabilities.describe called this session-bound hooks after every call detached.
+
+    Measured: describe_capability('frida.session')['summary'] was
+    'Session-bound Frida hooks', while attach returns
+    'probe attach; detached immediately' and hook.template sets persisted False.
+    A model that injected a hook and then waited for it was watching nothing.
+    """
+    from headless_re_mcp.core.capabilities_catalog import describe_capability
+
+    item = describe_capability("frida.session")
+    assert item is not None
+    summary = str(item["summary"]).casefold()
+    assert "session-bound" not in summary
+    assert "one-shot" in summary or "do not stay" in summary
+
+
 def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     raw = json.dumps([{"offset": 0x140001000, "opcode": "nop"}])

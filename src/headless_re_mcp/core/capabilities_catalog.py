@@ -82,7 +82,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "backend": "frida",
         "status_probe": "frida",
         "tools": ["frida.attach", "frida.modules", "frida.exports", "frida.memory.read", "frida.hook.template"],
-        "summary": "Session-bound Frida hooks",
+        "summary": "One-shot Frida probes; hooks do not stay in the target",
         "optional": True,
     },
     {

@@ -102,6 +102,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **`ghidra.analyze` 的描述说后续工具会读它的分析结果**。实现是一次性
   import/analyze 且 `delete_project=True`，每个 `ghidra.*` 都重新 `-import`。
   模型因此把长超时花在 analyze 上，再付一次分析。描述改为与实现一致。
+- **`frida.session` 能力摘要声称钩子常驻**。`capabilities.describe` 回
+  `Session-bound Frida hooks`，而每次调用都是 attach 完立刻 detach，hook 回包
+  已是 `persisted: False`。摘要改为 one-shot，钩子不会留在目标里。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
