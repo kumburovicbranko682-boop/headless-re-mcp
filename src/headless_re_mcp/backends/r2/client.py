@@ -51,12 +51,21 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         data = self.run(binary, ["i"], timeout=timeout)
-        return {
+        raw = str(data.get("raw", ""))
+        # Measured: 20000-char identity, info length 8000, no truncated --
+        # a caller reading info thinks the identity ended.
+        info = raw[:8000]
+        payload: JsonObject = {
             "opened": True,
             "binary": str(binary),
-            "info": data.get("raw", "")[:8000],
+            "info": info,
             "note": "r2.open is one-shot validation; subsequent tools reopen the binary",
         }
+        if len(raw) > 8000 or data.get("truncated"):
+            payload["truncated"] = True
+            payload["output_chars"] = int(data.get("output_bytes") or len(raw))
+            payload["returned_chars"] = len(info)
+        return payload
 
     def disasm(
         self,
