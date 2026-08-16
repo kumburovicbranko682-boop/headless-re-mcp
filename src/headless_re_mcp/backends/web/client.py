@@ -368,13 +368,21 @@ class WebBackend:
             "has_more": total > len(items),
         }
 
-    def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
+    def scripts(
+        self, session_id: str, *, wasm_only: bool = False, limit: int = 200
+    ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        cap = max(1, int(limit))
+        return {
+            "scripts": values[:cap],
+            "count": min(len(values), cap),
+            "total": len(values),
+            "has_more": len(values) > cap,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

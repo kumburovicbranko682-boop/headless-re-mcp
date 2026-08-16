@@ -237,6 +237,44 @@ class TestWebConsoleSaysWhenItStopped:
         assert page["has_more"] is False
 
 
+class TestWebScriptsAreCapped:
+    """The script list had no page and no signal that it had stopped.
+
+    Measured: 800 parsed scripts came back in one 59 KiB reply, with no
+    has_more.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from collections import OrderedDict
+
+        from headless_re_mcp.backends.web.client import _WebSession
+
+        handle = object.__new__(_WebSession)
+        handle.scripts = OrderedDict(
+            (
+                str(index),
+                {"scriptId": str(index), "url": f"https://x/{index}.js", "language": "JavaScript"},
+            )
+            for index in range(n)
+        )
+        handle.lock = threading.RLock()
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(800).scripts("s", limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 800
+        assert page["has_more"] is True
+        assert len(page["scripts"]) == 20
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).scripts("s", limit=20)
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
