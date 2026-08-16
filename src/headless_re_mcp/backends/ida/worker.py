@@ -1075,6 +1075,15 @@ def _name_set(params: JsonObject) -> JsonObject:
             name=name,
         )
     after = idc.get_name(ea) or ""
+    # Measured: set_name True, readback still the old name, ok=true --
+    # so a caller treats a no-op as the requested name landing.
+    if after == before and after != name:
+        raise WorkerRequestError(
+            "write_failed",
+            f"name set reported success but readback is still {after!r}",
+            address=ea,
+            name=name,
+        )
     return {
         "address": ea,
         "name": after,
