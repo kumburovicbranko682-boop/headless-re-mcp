@@ -286,13 +286,15 @@ class AdbBackend:
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        def _is_running() -> bool:
+            try:
+                return "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
+                    dev.shell("ps")
+                )
+            except Exception:  # noqa: BLE001
+                return False
+
+        if _is_running():
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -305,6 +307,7 @@ class AdbBackend:
                 pushed = True
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
+        launch_note = ""
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             dev.shell(
@@ -312,13 +315,18 @@ class AdbBackend:
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
-            return {
-                "running": None,
-                "pushed": pushed,
-                "port": port,
-                "note": f"launch attempted; verify manually ({exc})",
-            }
-        return {"running": True, "pushed": pushed, "port": port}
+            launch_note = f"launch attempted; verify manually ({exc})"
+        # su returning 0 means the shell accepted the line, not that a server
+        # is listening. Measured: ps showed only init and the payload still
+        # said running=True.
+        if _is_running():
+            return {"running": True, "pushed": pushed, "port": port}
+        return {
+            "running": False,
+            "pushed": pushed,
+            "port": port,
+            "note": launch_note or "frida-server did not appear in ps after launch",
+        }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)

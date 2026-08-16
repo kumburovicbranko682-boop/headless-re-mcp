@@ -350,6 +350,72 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestFridaServerEnsureDoesNotInventARunningServer:
+    """A launch that returned 0 used to be reported as running=True.
+
+    ``su -c 'nohup frida-server &'`` succeeding means the shell accepted the
+    line, not that a server is listening. Measured: ps showed only init, the
+    launch returned empty, and the payload still said running=True -- so an
+    unattended agent would attach to a server that is not there.
+    """
+
+    def _backend(self, *, ps_output: str, launch_output: str = "") -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def __init__(self) -> None:
+                self.shells: list[object] = []
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                self.shells.append(cmd)
+                if isinstance(cmd, str) and cmd.startswith("ps"):
+                    return ps_output
+                if isinstance(cmd, str) and cmd.startswith("su"):
+                    return launch_output
+                return ""
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        fake = _FakeDev()
+        backend._device = lambda serial: fake  # type: ignore[method-assign]
+        return backend, fake
+
+    def test_a_launch_that_left_nothing_is_not_running(self) -> None:
+        backend, fake = self._backend(ps_output="root 1 0 init")
+        result = backend.ensure_frida_server("emulator-5554")
+
+        assert result["running"] is False
+        assert any(isinstance(cmd, str) and cmd.startswith("su") for cmd in fake.shells)
+        # It has to look again after the launch, not just trust the shell.
+        assert sum(1 for cmd in fake.shells if isinstance(cmd, str) and cmd.startswith("ps")) >= 3
+
+    def test_a_server_that_is_already_up_is_left_alone(self) -> None:
+        backend, fake = self._backend(ps_output="root 88 1 frida-server")
+        result = backend.ensure_frida_server("emulator-5554")
+
+        assert result["running"] is True
+        assert result["pushed"] is False
+        assert not any(isinstance(cmd, str) and cmd.startswith("su") for cmd in fake.shells)
+
+    def test_a_launch_that_actually_starts_is_running(self) -> None:
+        backend, fake = self._backend(ps_output="root 1 0 init")
+        seen = {"launched": False}
+
+        def shell(cmd: object, timeout: float | None = None) -> str:
+            fake.shells.append(cmd)
+            if isinstance(cmd, str) and cmd.startswith("su"):
+                seen["launched"] = True
+                return ""
+            if isinstance(cmd, str) and cmd.startswith("ps"):
+                return "root 88 1 frida-server" if seen["launched"] else "root 1 0 init"
+            return ""
+
+        fake.shell = shell  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
