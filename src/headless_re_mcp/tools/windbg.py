@@ -40,7 +40,11 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_threads(
         dump_path: str, timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0
     ) -> dict[str, Any]:
-        """Thread list of a crash dump, as cdb prints it."""
+        """Thread list of a crash dump, as cdb prints it.
+
+        The session excerpt is capped: read truncated rather than treating
+        threads as the whole ~* listing.
+        """
         return _dump(analysis.windbg_threads(dump_path, timeout=timeout))
 
     @tools.tool(name="windbg.modules")
