@@ -1678,6 +1678,63 @@ class TestGhidraExportSaysWhenTheListStopped:
         assert page["has_more"] is False
 
 
+class TestGhidraExportDoesNotSucceedOnEmptyFailedJson:
+    """analyzeHeadless exit 1 still answered items=[] if the file was {}.
+
+    Measured: functions() against an empty {} written on exit 1 returned
+    items=[] with no error, so an unattended agent would treat a failed
+    export as a binary that has no functions.
+    """
+
+    def _client(self, tmp_path: Any, payload: dict[str, Any], code: int) -> Any:
+        import json
+
+        from headless_re_mcp.backends.ghidra.client import GhidraClient
+
+        home = tmp_path / "ghidra"
+        analyze = home / "support" / "analyzeHeadless"
+        analyze.parent.mkdir(parents=True)
+        analyze.write_text("#!/bin/sh\n")
+        java = tmp_path / "java"
+        java.write_text("")
+        client = GhidraClient(home=home, java=java)
+
+        def fake_run(*args: object, **kwargs: object) -> tuple[str, str, int]:
+            del args, kwargs
+            out = tmp_path / "proj" / "export_functions.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload))
+            return ("", "ERROR: analysis failed", code)
+
+        client._run_headless = fake_run  # type: ignore[method-assign]
+        return client
+
+    def test_exit_1_with_empty_object_is_backend_error(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.ghidra.client import GhidraError
+
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        client = self._client(tmp_path, {}, 1)
+        with pytest.raises(GhidraError) as info:
+            client.functions(binary, tmp_path / "proj")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+    def test_exit_1_with_this_run_items_still_succeeds(self, tmp_path: Any) -> None:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        page = self._client(
+            tmp_path,
+            {
+                "mode": "functions",
+                "items": [{"name": "foo", "entry": "0x1000", "body_size": 8}],
+                "count": 1,
+            },
+            1,
+        ).functions(binary, tmp_path / "proj")
+        assert page["items"][0]["name"] == "foo"
+
+
 class TestAFindingIsEitherRecordedOrRefused:
     """Findings are what an unattended run remembers between sessions.
 

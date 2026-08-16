@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **Ghidra 导出失败时仍把空 JSON 当成功**。analyzeHeadless exit 1
+  但写出 `{}` 时，函数列表变成 `items=[]` 且没有错误。过夜任务会把
+  失败的导出当「这个二进制没有函数」。现在空内容加非零退出一律失败。
 - **WinDbg dump 分析失败时仍报成功**。cdb exit 2 时 dump 路径完全
   不看退出码，空输出或残留 banner 都会变成模块/线程列表。过夜任务
   会把没打开的 dump 当已分析。现在非 0/1 退出一律失败。
