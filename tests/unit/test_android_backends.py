@@ -266,6 +266,53 @@ class TestApkNativeLibsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkClassesSayWhenTheyStopped:
+    """A class page that filled used to look like the whole DEX if count was all you read."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass(f"L{index};") for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _Parsed())
+        return client
+
+    def test_a_full_page_is_marked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 250).classes(tmp_path / "app.apk", limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).classes(tmp_path / "app.apk", limit=100)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+    def test_a_page_that_exactly_fills_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 100).classes(tmp_path / "app.apk", limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestApkPermissionsAreBounded:
     """A permission list used to be the whole manifest with no way to see a cut."""
 

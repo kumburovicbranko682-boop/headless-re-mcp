@@ -287,11 +287,15 @@ class ApkClient:
             if not klass.is_external()
         )
         window = names[offset : offset + limit]
+        # A page that filled used to look like the whole class list if the
+        # caller only read count. Measured: 250 classes, limit 100, count=100,
+        # total=250, no has_more.
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
             "offset": offset,
+            "has_more": offset + len(window) < len(names),
         }
 
     def methods(
