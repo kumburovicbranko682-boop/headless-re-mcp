@@ -246,12 +246,15 @@ class ApkClient:
             for klass in parsed.analysis.get_classes()
             if not klass.is_external()
         )
-        window = names[offset : offset + limit]
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        window = names[start : start + cap]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
+            "offset": start,
+            "has_more": start + len(window) < len(names),
         }
 
     def methods(

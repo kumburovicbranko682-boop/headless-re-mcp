@@ -629,6 +629,50 @@ class TestFridaServerEnsureDoesNotInventARunningServer:
         assert result["running"] is True
 
 
+class TestApkClassesSayWhenTheyStopped:
+    """A class page that hit the cap looks exactly like one that ended.
+
+    Measured: 250 classes, limit 100, count=100, total=250, no has_more.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass(f"L{index};") for index in range(n)]
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(250).classes(tmp_path / "a.apk", limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3).classes(tmp_path / "a.apk", limit=100)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(100).classes(tmp_path / "a.apk", limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestJadxExportSaysWhenItStopped:
     """A java_files page that hit the cap looks exactly like one that ended.
 
