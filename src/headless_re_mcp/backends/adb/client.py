@@ -329,6 +329,14 @@ class AdbBackend:
             image.save(str(out_path))
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+        # Measured: save() that wrote nothing still returned path, so an
+        # unattended agent treats a missing PNG as a captured screen.
+        if not out_path.is_file() or out_path.stat().st_size <= 0:
+            raise AdbError(
+                "backend_error",
+                "screenshot produced no image",
+                path=str(out_path),
+            )
         return {"path": str(out_path), "serial": _check_serial(serial)}
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:
