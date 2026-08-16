@@ -306,3 +306,27 @@ def test_a_capped_mission_list_says_what_it_left_out(tmp_path: Path) -> None:
     assert len(second) == 50
     assert {item.id for item in first}.isdisjoint({item.id for item in second})
     assert store.list_missions(limit=100, offset=150) == []
+
+
+def test_a_capped_event_page_is_distinguishable_from_the_end(tmp_path: Path) -> None:
+    """A run writes one event per token; the history page is capped.
+
+    Measured: 1200 events, default list_events after=0 returned 1000 and
+    stopped at seq 1000. The HTTP history reply had only the array, so
+    the last 200 deltas looked like they never happened.
+    """
+    store = AgentStore(tmp_path / "events.db")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    # create_run already writes run.started as seq 1.
+    for index in range(1200):
+        store.append_event(run.id, "message.delta", {"n": index})
+
+    latest = store.latest_event_seq(run.id)
+    assert latest == 1201
+    page = store.list_events(run.id, after=0, limit=1000)
+    assert len(page) == 1000
+    assert page[-1].seq < latest
+    rest = store.list_events(run.id, after=page[-1].seq, limit=1000)
+    assert rest[-1].seq == latest
+    assert len(page) + len(rest) == latest

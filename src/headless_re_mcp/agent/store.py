@@ -278,6 +278,14 @@ class AgentStore:
         con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, json.dumps(safe, ensure_ascii=False, default=str), created))
         return RunEvent(run_id, seq, event_type, safe, created)
 
+    def latest_event_seq(self, run_id: str) -> int:
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COALESCE(MAX(seq),0) AS seq FROM run_events WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return int(row["seq"]) if row is not None else 0
+
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
         with self._reading() as con:
             rows = con.execute("SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run_id, max(0, after), max(1, min(limit, 5000)))).fetchall()
