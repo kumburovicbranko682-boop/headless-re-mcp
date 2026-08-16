@@ -341,12 +341,15 @@ class ApkClient:
                     }
                 )
         window = methods[offset : offset + limit]
+        # Measured: 250 methods came back as count=100, total=250, offset=0
+        # and no has_more.
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
             "offset": offset,
+            "has_more": offset + len(window) < len(methods),
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:

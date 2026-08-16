@@ -892,6 +892,59 @@ class TestApkClassesSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkMethodsSayWhenTheyStopped:
+    """A method page that hit the cap looked complete except for total.
+
+    Measured: 250 methods came back as count=100, total=250, offset=0 and
+    no has_more.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class Method:
+            def __init__(self, index: int) -> None:
+                self.name = f"m{index}"
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class Klass:
+            name = "Lcom/Foo;"
+
+            def get_methods(self) -> list[Method]:
+                return [Method(index) for index in range(count)]
+
+        class Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[Klass]:
+                return [Klass()]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: Parsed())
+        return client
+
+    def test_a_page_says_what_was_left_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 250).methods(
+            tmp_path / "app.apk", "Lcom/Foo;", offset=0, limit=100
+        )
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_the_last_page_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 250).methods(
+            tmp_path / "app.apk", "Lcom/Foo;", offset=200, limit=100
+        )
+        assert result["count"] == 50
+        assert result["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
