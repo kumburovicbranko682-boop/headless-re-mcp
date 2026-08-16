@@ -913,7 +913,10 @@ class ExtAnalysisMixin(UiDriveMixin):
         if isinstance(limit, bool) or type(limit) is not int or not 0 <= limit <= 200:
             return _failure(ValueError("limit must be 0..200"))
         payload = TELEMETRY.metrics()
-        payload["recent"] = TELEMETRY.recent(limit)
+        recent = TELEMETRY.recent(limit)
+        payload["recent"] = recent
+        payload["recent_total"] = TELEMETRY.retained()
+        payload["recent_has_more"] = TELEMETRY.retained() > len(recent)
         return _success(payload)
 
 

@@ -264,6 +264,8 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Sampled from a bounded ring of recent calls; the same records are emitted
         as structured JSON log lines under the headless_re_mcp.telemetry logger.
+        `recent` is a page: read recent_total and recent_has_more rather than
+        treating the array as every call still in the ring.
         """
         return _dump(analysis.tool_metrics(limit=limit))
     return tools.bindings

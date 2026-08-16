@@ -152,6 +152,10 @@ class TelemetryRing:
             self._records.clear()
             self._totals.clear()
 
+    def retained(self) -> int:
+        with self._lock:
+            return len(self._records)
+
     def recent(self, limit: int = 50) -> list[JsonObject]:
         with self._lock:
             items = list(self._records)

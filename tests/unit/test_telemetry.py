@@ -24,6 +24,33 @@ def test_ring_is_bounded_and_returns_newest_first() -> None:
     assert ring.metrics()["sampled_calls"] == 3
 
     assert ring.capacity == 3
+    assert ring.retained() == 3
+
+
+def test_metrics_recent_page_says_when_the_ring_has_more() -> None:
+    """A 20-call page used to look like the whole ring.
+
+    Measured: 50 records, tool_metrics(limit=20) returned recent of
+    length 20 and no total. The other 30 looked like they never ran.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.telemetry import TELEMETRY
+
+    TELEMETRY.clear()
+    try:
+        for index in range(50):
+            record_tool_call(f"tool.{index}", ok=True, duration_ms=1.0)
+        service = AnalysisService()
+        try:
+            result = service.tool_metrics(limit=20)
+            assert result.ok and result.data is not None
+            assert len(result.data["recent"]) == 20
+            assert result.data["recent_total"] == 50
+            assert result.data["recent_has_more"] is True
+        finally:
+            service.close_all()
+    finally:
+        TELEMETRY.clear()
 
 
 def test_instrument_records_success_and_envelope_failure() -> None:
