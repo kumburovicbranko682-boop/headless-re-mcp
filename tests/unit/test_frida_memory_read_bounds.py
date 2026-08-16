@@ -67,3 +67,23 @@ class TestFridaMemoryReadSaysWhenItStopped:
         result = self._client(blob).memory_read(7, 0x1000, 16, allowed_pid=7)
         assert result["size"] == 16
         assert "truncated" not in result
+
+
+class TestFridaMemoryReadDescriptionMatchesTheCut:
+    """frida.memory.read now reports a short read, but the tool text hid that.
+
+    Measured: asked 16, size 3, truncated=true, while the description said
+    only hex and detach -- so a model treats size as the request.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.memory.read"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc

@@ -44,7 +44,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
-        """Read process memory as hex; the attach is destroyed on detach."""
+        """Read process memory as hex; the attach is destroyed on detach.
+
+        Check truncated: size is the bytes actually returned, not the request.
+        """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
     @tools.tool(name="frida.hook.template")
