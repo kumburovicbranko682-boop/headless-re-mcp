@@ -32,7 +32,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_beautify(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Return a readable, unminified form of a JavaScript file via webcrack."""
+        """Return a readable, unminified form of a JavaScript file (check truncated)."""
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
     @tools.tool(name="js.unpack_bundle")
