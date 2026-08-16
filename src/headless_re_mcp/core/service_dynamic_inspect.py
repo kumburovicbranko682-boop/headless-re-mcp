@@ -596,6 +596,19 @@ class DynamicInspectMixin:
                     _atomic_write_bytes(header_path, image[:header_end])
                     headers["header_artifact"] = str(header_path)
                     headers["header_sha256"] = file_sha256(header_path)
+                    # Measured: fallback wrote 512 bytes, 0 artifact rows, no
+                    # artifact_id -- so the file was a dead end the same way
+                    # the native path used to be.
+                    headers.update(
+                        _register_capture(
+                            self,
+                            session_id,
+                            header_path,
+                            kind="pe_headers",
+                            source="pe.headers.runtime",
+                            payload={},
+                        )
+                    )
                 return _success(headers, session_id=session_id, backend=BackendKind.X64DBG.value)
             return result
         except XdbgRpcError as exc:
