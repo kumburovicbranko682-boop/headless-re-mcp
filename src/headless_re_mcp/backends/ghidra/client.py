@@ -13,6 +13,7 @@ JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
+_DECOMPILE_CAP = 200_000
 
 
 class GhidraError(RuntimeError):
@@ -205,6 +206,7 @@ class GhidraClient:
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
         payload = _annotate_export_page(payload, capped)
+        payload = _annotate_decompile_truncation(payload)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
@@ -267,6 +269,25 @@ def _annotate_export_page(payload: JsonObject, limit: int) -> JsonObject:
         payload["has_more"] = len(items) >= max(1, int(limit))
     else:
         payload["has_more"] = bool(payload["has_more"])
+    return payload
+
+
+def _annotate_decompile_truncation(payload: JsonObject) -> JsonObject:
+    """Mark a cut Ghidra decompile so a cap is not read as the whole function.
+
+    Measured: 200019 characters came back as 200000 with no truncated
+    flag, so a page looked like the whole decompilation.
+    """
+    if payload.get("mode") != "decompile":
+        return payload
+    text = payload.get("decompiled")
+    if not isinstance(text, str):
+        payload.setdefault("truncated", False)
+        return payload
+    if "truncated" not in payload:
+        payload["truncated"] = len(text) >= _DECOMPILE_CAP
+    else:
+        payload["truncated"] = bool(payload["truncated"])
     return payload
 
 

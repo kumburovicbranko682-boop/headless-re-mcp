@@ -99,7 +99,9 @@ elif mode == "decompile":
                 decomp.dispose()
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
-    payload["decompiled"] = text[:200000]
+    cap = 200000
+    payload["truncated"] = len(text) > cap
+    payload["decompiled"] = text[:cap]
 else:
     payload["error"] = "unknown mode"
 

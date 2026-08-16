@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from headless_re_mcp.backends.ghidra.client import _annotate_export_page
+from headless_re_mcp.backends.ghidra.client import (
+    _annotate_decompile_truncation,
+    _annotate_export_page,
+)
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
@@ -71,6 +74,36 @@ class TestGhidraExportPage:
         assert 'payload["has_more"] = has_more' in text
         assert text.count("has_more = True") == 3
 
+    def test_a_cut_decompile_used_to_look_complete(self) -> None:
+        """Measured: 200019 characters came back as 200000 with no flag."""
+        text = "int f(){\n" + ("x" * 200_010)
+        payload = {
+            "mode": "decompile",
+            "decompiled": text[:200_000],
+            "count": 0,
+        }
+        assert len(payload["decompiled"]) == 200_000
+        assert "truncated" not in payload
+        marked = _annotate_decompile_truncation(dict(payload))
+        assert marked["truncated"] is True
+        short = _annotate_decompile_truncation(
+            {"mode": "decompile", "decompiled": "int f(){ return 0; }"}
+        )
+        assert short["truncated"] is False
+
+    def test_export_script_marks_a_cut_decompile(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "backends"
+            / "ghidra"
+            / "scripts"
+            / "ExportJson.py"
+        )
+        text = script.read_text(encoding="utf-8")
+        assert 'payload["truncated"] = len(text) > cap' in text
+
     def test_tool_descriptions_tell_the_model_to_read_has_more(self) -> None:
         service = AnalysisService()
         try:
@@ -78,5 +111,6 @@ class TestGhidraExportPage:
             for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs"):
                 doc = tools[name].handler.__doc__ or ""
                 assert "has_more" in doc
+            assert "truncated" in (tools["ghidra.decompile"].handler.__doc__ or "")
         finally:
             service.close_all()
