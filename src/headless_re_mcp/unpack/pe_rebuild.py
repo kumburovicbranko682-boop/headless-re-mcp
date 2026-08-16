@@ -73,10 +73,15 @@ def _u64(data: bytes | bytearray, offset: int) -> int:
 # seconds.
 MAX_FILE_ALIGNMENT = 0x10000
 MAX_SECTION_ALIGNMENT = 0x1000000
-# Windows loaders historically stop at 96 sections. A hostile NumberOfSections
-# of 0xFFFF still fits a u16 and was being used to size the rewritten headers
-# and to iterate allocations, one section at a time.
+# The Windows loader will not map more than 96 sections. A hostile
+# NumberOfSections of 0xFFFF still fits a u16 and was being used to size the
+# rewritten headers and to iterate allocations. Each section is copied out of
+# the dump, so the count is an allocation multiplier the same way FileAlignment
+# is: a 1 MB dump claiming 400 sections rebuilt to 419 MB and peaked at 842 MB
+# of heap, while the memory gate -- which only sees the dump -- estimated 4 MB
+# and let it through.
 MAX_SECTION_COUNT = 96
+MAX_SECTIONS = MAX_SECTION_COUNT
 
 
 def _usable_alignment(value: Any, *, floor: int, ceiling: int, what: str) -> int:
@@ -239,7 +244,7 @@ def remap_dump_to_file(
     if len(sections) > MAX_SECTION_COUNT:
         raise PeRebuildError(
             f"NumberOfSections {len(sections)} exceeds the {MAX_SECTION_COUNT} "
-            "the rebuild will accept; the dump's headers are not usable for a rebuild"
+            "the loader accepts; the dump's headers are not usable for a rebuild"
         )
 
     size_of_headers = _align(
