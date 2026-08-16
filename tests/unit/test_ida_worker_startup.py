@@ -301,3 +301,66 @@ def test_an_exact_immediate_search_page_is_complete() -> None:
     assert result["returned"] == 100
     assert result["total"] == 100
     assert result["has_more"] is False
+
+
+class _FakeFunc:
+    def __init__(self, start: int, end: int) -> None:
+        self.start_ea = start
+        self.end_ea = end
+
+
+def _install_fake_funcs(holder: dict[str, _FakeFunc | None]) -> None:
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: holder["func"]  # type: ignore[attr-defined]
+    ida_funcs.del_func = lambda start: True  # type: ignore[attr-defined]
+    sys.modules["ida_funcs"] = ida_funcs
+
+
+def test_a_function_that_is_still_there_is_not_deleted() -> None:
+    """del_func True with the same function still present used to say deleted."""
+    from headless_re_mcp.backends.ida.worker import WorkerRequestError, _function_delete
+
+    _install_fake_funcs({"func": _FakeFunc(0x1000, 0x1100)})
+    try:
+        _function_delete({"address": 0x1000})
+    except WorkerRequestError as exc:
+        assert "still found" in str(exc)
+        return
+    raise AssertionError("a live function was reported deleted")
+
+
+def test_a_removed_function_is_deleted() -> None:
+    from headless_re_mcp.backends.ida.worker import _function_delete
+
+    holder: dict[str, _FakeFunc | None] = {"func": _FakeFunc(0x1000, 0x1100)}
+
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: holder["func"]  # type: ignore[attr-defined]
+
+    def del_func(start: int) -> bool:
+        holder["func"] = None
+        return True
+
+    ida_funcs.del_func = del_func  # type: ignore[attr-defined]
+    sys.modules["ida_funcs"] = ida_funcs
+
+    result = _function_delete({"address": 0x1000})
+    assert result["deleted"] is True
+    assert result["ok"] is True
+    assert result["address"] == 0x1000
