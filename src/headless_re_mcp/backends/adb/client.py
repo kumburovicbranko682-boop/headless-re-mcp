@@ -405,6 +405,26 @@ class AdbBackend:
             dev.sync.push(str(path), remote_path)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
+        # Measured: a no-op push still named the remote path, so an agent
+        # reads a device file that was never written.
+        stat_fn = getattr(getattr(dev, "sync", None), "stat", None)
+        if callable(stat_fn):
+            try:
+                info = stat_fn(remote_path)
+            except Exception:  # noqa: BLE001
+                info = None
+            landed = False
+            if info is not None:
+                mode = int(getattr(info, "mode", 0) or 0)
+                is_dir = bool(getattr(info, "is_dir", False)) or (mode & 0o040000) == 0o040000
+                landed = not is_dir
+            if not landed:
+                raise AdbError(
+                    "backend_error",
+                    "push did not produce a remote file",
+                    local=str(path),
+                    remote=remote_path,
+                )
         return {"local": str(path), "remote": remote_path}
 
     def ensure_frida_server(

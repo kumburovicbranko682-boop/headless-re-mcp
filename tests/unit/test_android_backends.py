@@ -1717,3 +1717,81 @@ class TestDeviceScreenshotDoesNotReportAGhost:
         result = self._shot(tmp_path, _Img())
         assert result == {"path": str(dest), "serial": "emulator-5554"}
         assert dest.is_file()
+
+
+class TestDevicePushDoesNotReportAGhost:
+    """A push that left no remote file used to be reported as a remote path.
+
+    Measured: sync.push was a no-op and the reply still named the remote.
+    An unattended agent then reads a device file that was never written.
+    """
+
+    def _push(self, tmp_path: Path, sync: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        local = tmp_path / "payload.bin"
+        local.write_bytes(b"abc")
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.sync = sync
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.push("emulator-5554", str(local), "/data/local/tmp/payload.bin")
+
+    def test_a_no_op_push_is_not_a_remote_file(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class _Sync:
+            def push(self, local: str, remote: str) -> int:
+                return 0
+
+            def stat(self, remote: str) -> object:
+                raise FileNotFoundError(remote)
+
+        try:
+            self._push(tmp_path, _Sync())
+        except AdbError as exc:
+            assert exc.code == "backend_error"
+            assert "did not produce a remote file" in exc.message
+            return
+        raise AssertionError("no-op push was reported as a remote file")
+
+    def test_a_directory_at_the_destination_is_not_a_push(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class _Info:
+            mode = 0o040755
+            is_dir = True
+
+        class _Sync:
+            def push(self, local: str, remote: str) -> int:
+                return 0
+
+            def stat(self, remote: str) -> object:
+                return _Info()
+
+        try:
+            self._push(tmp_path, _Sync())
+        except AdbError as exc:
+            assert exc.code == "backend_error"
+            assert "did not produce a remote file" in exc.message
+            return
+        raise AssertionError("directory destination was reported as a pushed file")
+
+    def test_a_remote_file_is_still_pushed(self, tmp_path: Path) -> None:
+        class _Info:
+            mode = 0o100644
+            is_dir = False
+
+        class _Sync:
+            def push(self, local: str, remote: str) -> int:
+                return 3
+
+            def stat(self, remote: str) -> object:
+                return _Info()
+
+        result = self._push(tmp_path, _Sync())
+        assert result["remote"] == "/data/local/tmp/payload.bin"
+        assert result["local"].endswith("payload.bin")
