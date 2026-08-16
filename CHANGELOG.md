@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`web.network.list` 停在一页时看起来像完整抓包**。500 条请求、limit=20 时回
+  `count=20` / `total=500`，没有 `has_more`。只看列表的 agent 会停在第一页。
+  现在截断时标 `has_more`。
 - **`apk.permissions` 一次回完整权限表**。2000 条声明 + 1500 条请求整包返回
   （95 KiB），没有 `has_more`。现在每类列表默认 500，截断时标 `totals` /
   `has_more`。

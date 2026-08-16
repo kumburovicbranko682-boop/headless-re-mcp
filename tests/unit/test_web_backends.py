@@ -275,6 +275,46 @@ class TestWebScriptsAreCapped:
         assert page["has_more"] is False
 
 
+class TestWebNetworkListSaysWhenItStopped:
+    """A network page that hit the cap looks exactly like one that ended.
+
+    Measured: 500 captured requests with limit=20 came back as count=20 and
+    total=500, with no has_more, so a caller reading only the list would
+    stop after the first page of an overnight capture.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from collections import OrderedDict
+
+        from headless_re_mcp.backends.web.client import _WebSession
+
+        handle = object.__new__(_WebSession)
+        handle.requests = OrderedDict(
+            (str(index), {"id": str(index), "url": f"https://x/{index}"})
+            for index in range(n)
+        )
+        handle.lock = threading.RLock()
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(500).network_list("s", offset=0, limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 500
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).network_list("s", offset=0, limit=20)
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+    def test_the_last_page_is_not_labelled_partial(self) -> None:
+        page = self._backend(25).network_list("s", offset=20, limit=20)
+        assert page["count"] == 5
+        assert page["has_more"] is False
+
+
 class TestJsUnpackBundleSaysWhenTheListStopped:
     """The unpacked-file index was cut at 2000 with no signal that it had stopped.
 
