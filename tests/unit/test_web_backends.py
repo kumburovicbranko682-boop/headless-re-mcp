@@ -269,6 +269,27 @@ class TestWebConsoleSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebDomSnapshotDescriptionMatchesTheCut:
+    """web.dom.snapshot already cuts HTML at 200000 bytes, but the tool text hid that.
+
+    Measured: the payload sets truncated when the document is larger, while
+    the description said "return the current page HTML" -- so a model treats
+    the slice as the whole DOM.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.web import build_web_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_web_tools(service)}
+            doc = tools["web.dom.snapshot"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
+
+
 class TestWebScriptsSayWhenTheyStopped:
     """A script page that hit the cap looks exactly like one that ended.
 
