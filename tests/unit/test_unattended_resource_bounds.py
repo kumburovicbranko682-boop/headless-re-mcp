@@ -110,6 +110,34 @@ class TestProxyCaptureIsBounded:
         assert recorder._seq == 4 * 300
 
 
+class TestProxyHarExportSaysWhenTheWindowDroppedOlderFlows:
+    """A HAR of 2500 flows used to say entry_count=2000 with no truncated."""
+
+    def _export(self, tmp_path: Any, n: int) -> dict[str, Any]:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 8080)
+        for index in range(n):
+            inst.recorder.response(_FakeFlow(index))
+        backend._instances["s"] = inst
+        return backend.export_har("s", tmp_path / "capture.har")
+
+    def test_a_window_at_the_cap_marks_the_file_truncated(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.proxy.client import _MAX_FLOWS
+
+        exported = self._export(tmp_path, _MAX_FLOWS + 500)
+        assert exported["entry_count"] == _MAX_FLOWS
+        assert exported["seen"] == _MAX_FLOWS + 500
+        assert exported["truncated"] is True
+
+    def test_a_complete_capture_is_not_labelled_partial(self, tmp_path: Any) -> None:
+        exported = self._export(tmp_path, 3)
+        assert exported["entry_count"] == 3
+        assert exported["seen"] == 3
+        assert exported["truncated"] is False
+
+
 class TestProxyFlowsSayWhenTheWindowDroppedOlderFlows:
     """2500 flows used to come back as total=2000 with no has_more.
 

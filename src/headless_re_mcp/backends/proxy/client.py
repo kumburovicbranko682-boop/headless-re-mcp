@@ -393,6 +393,8 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
+        retained = inst.recorder.snapshot()
+        seen = inst.recorder.seen()
         entries = [
             {
                 "request": {"method": f.get("method"), "url": f.get("url")},
@@ -401,14 +403,19 @@ class ProxyBackend:
                     "content": {"mimeType": f.get("content_type") or ""},
                 },
             }
-            for f in inst.recorder.snapshot()
+            for f in retained
         ]
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "seen": seen,
+            "truncated": seen > len(entries),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):
