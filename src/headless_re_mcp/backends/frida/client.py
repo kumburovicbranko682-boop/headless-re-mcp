@@ -379,15 +379,23 @@ class FridaClient:
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
+        page, has_more = _page(apps, capped)
         items = [
             {
                 "identifier": str(app.identifier),
                 "name": str(app.name),
                 "pid": int(getattr(app, "pid", 0) or 0),
             }
-            for app in apps[:capped]
+            for app in page
         ]
-        return {"applications": items, "count": len(items), "total": len(apps)}
+        # Measured: 400 applications came back as count=256, total=400, and
+        # no has_more. modules now carries that flag; this list did not.
+        return {
+            "applications": items,
+            "count": len(items),
+            "total": len(apps),
+            "has_more": has_more,
+        }
 
     def spawn(self, device_id: str | None, package: str) -> JsonObject:
         device = self._resolve_device(device_id)

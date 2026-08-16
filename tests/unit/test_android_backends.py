@@ -347,6 +347,46 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaApplicationsSayWhenTheyStopped:
+    """A device app list that hit the cap looked complete except for total.
+
+    Measured: 400 applications came back as count=256, total=400, and no
+    has_more.
+    """
+
+    def _client(self, count: int) -> Any:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = f"App{index}"
+                self.pid = 0
+
+        class Device:
+            def enumerate_applications(self) -> list[App]:
+                return [App(index) for index in range(count)]
+
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        client._resolve_device = lambda device_id: Device()  # type: ignore[method-assign]
+        return client
+
+    def test_a_long_list_says_what_was_left_out(self) -> None:
+        result = self._client(400).applications("usb", limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 400
+        assert result["has_more"] is True
+        assert len(result["applications"]) == 256
+
+    def test_a_short_list_is_complete(self) -> None:
+        result = self._client(3).applications("usb", limit=256)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+
 class TestApkManifestSaysWhenItStopped:
     """The tool text says this is the decoded manifest.
 
