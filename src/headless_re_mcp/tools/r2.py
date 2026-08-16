@@ -69,7 +69,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_imports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Imported symbols with the library each resolves to."""
+        """Imported symbols with the library each resolves to.
+
+        A cut listing carries truncated or items_truncated; read those
+        rather than treating the page as every import r2 found.
+        """
         return _dump(analysis.r2_imports(session_id, timeout=timeout))
 
     @tools.tool(name="r2.exports")
