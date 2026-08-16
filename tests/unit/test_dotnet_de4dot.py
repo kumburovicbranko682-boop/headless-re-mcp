@@ -150,6 +150,106 @@ def test_dotnet_verify_rejects_other_session_artifact(tmp_path: Path) -> None:
     assert accepted.data["ok"] is True
 
 
+def _alive(pid: int) -> bool:
+    import os
+
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _hanging_launcher(tmp_path: Path) -> tuple[Path, Path]:
+    import os
+    import sys
+
+    body = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "marker = Path(__file__).with_suffix('.children')\n"
+        "marker.write_text(marker.read_text() + str(child.pid) + '\\n' "
+        "if marker.is_file() else str(child.pid) + '\\n')\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n"
+    )
+    script = tmp_path / "de4dot_launcher.py"
+    marker = script.with_suffix(".children")
+    if os.name == "nt":
+        script.write_text(body, encoding="utf-8")
+        wrapper = tmp_path / "de4dot.cmd"
+        wrapper.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return wrapper, marker
+    script.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+    script.chmod(0o755)
+    return script, marker
+
+
+def test_a_hanging_probe_is_not_ready_and_leaves_no_children(tmp_path: Path) -> None:
+    """Measured: three argv attempts, 1.2s, ok=True, three children still alive."""
+    import os
+    import time
+
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    stub, marker = _hanging_launcher(tmp_path)
+    children: list[int] = []
+    try:
+        ok, output = probe_de4dot_version(stub, timeout=0.4)
+        assert ok is False
+        assert output == ""
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if marker.is_file() and marker.read_text().strip():
+                break
+            time.sleep(0.05)
+        if marker.is_file():
+            children = [int(line) for line in marker.read_text().split() if line.strip()]
+        for pid in children:
+            while _alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert _alive(pid) is False, f"probe child {pid} outlived the probe"
+    finally:
+        for pid in children:
+            if _alive(pid):
+                os.kill(pid, 9)
+
+
+def test_a_probe_that_prints_de4dot_is_ready(tmp_path: Path) -> None:
+    import os
+
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    if os.name == "nt":
+        stub = tmp_path / "de4dot.cmd"
+        stub.write_text("@echo off\r\necho de4dot 3.1.0\r\n", encoding="utf-8")
+    else:
+        stub = tmp_path / "de4dot"
+        stub.write_text(
+            "#!/usr/bin/env python3\nimport sys\nprint('de4dot 3.1.0')\nsys.exit(0)\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+    ok, output = probe_de4dot_version(stub, timeout=5.0)
+    assert ok is True
+    assert "de4dot" in output.casefold()
+
+
 def test_doctor_reports_de4dot_missing(tmp_path: Path) -> None:
     service = AnalysisService(
         Settings(
