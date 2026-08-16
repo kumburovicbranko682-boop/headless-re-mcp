@@ -410,6 +410,16 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
+        # Measured: app_current returning None still came back as a success
+        # with package=None and activity=None. The tool is "the current
+        # foreground", so that read as an empty desktop rather than a failed
+        # read.
+        if current is None:
+            raise AdbError(
+                "backend_error",
+                "adb reported no current activity",
+                serial=_check_serial(serial),
+            )
         return {
             "package": getattr(current, "package", None),
             "activity": getattr(current, "activity", None),

@@ -3259,6 +3259,45 @@ class TestAdbMutationsDoNotInventSuccess:
         assert caught.value.code == "backend_error"
 
 
+class TestAdbCurrentActivityDoesNotInventAForeground:
+    """app_current returning None used to look like an empty desktop.
+
+    Measured: None came back as package=None, activity=None, no error.
+    The tool is the current foreground.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_none_is_not_a_foreground(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def app_current(self) -> None:
+                return None
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).current_activity("emulator-5554")
+        assert caught.value.code == "backend_error"
+
+    def test_a_real_activity_is_still_returned(self) -> None:
+        class Current:
+            package = "com.example.app"
+            activity = ".Main"
+
+        class Device:
+            def app_current(self) -> Current:
+                return Current()
+
+        result = self._backend(Device()).current_activity("emulator-5554")
+        assert result == {"package": "com.example.app", "activity": ".Main"}
+
+
 class TestAdbInstallDoesNotInventSuccess:
     """adbutils returns False when pm install failed.
 
