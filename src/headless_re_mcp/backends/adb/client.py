@@ -25,6 +25,7 @@ _MAX_LOGCAT_LINES = 5000
 _INSTALL_PUSH_TIMEOUT = 180.0
 _PUSH_TIMEOUT = 180.0
 _PULL_TIMEOUT = 180.0
+_FORWARD_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -551,14 +552,48 @@ class AdbBackend:
                 return True
         return False
 
+    def _forward_port(self, serial: str, local: str, remote: str, *, timeout: float) -> None:
+        """Set one forward with a deadline. adbutils ``forward`` has none.
+
+        Measured: ``forward()`` was invoked with no kwargs; a 0.8s sleep
+        held ``device.forward`` for 0.8s. A wedged adb held the worker.
+        """
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "-s", _check_serial(serial), "forward", local, remote],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"forward timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"forward failed: {err or completed.returncode}",
+            )
+
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
-        dev = self._device(serial)
+        """Set an adb forward. The hop is bounded.
+
+        adbutils ``forward()`` has no timeout. Measured: forward() was
+        invoked with no kwargs; a 0.8s sleep held ``device.forward`` 0.8s.
+        """
+        self._device(serial)
         if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
             raise AdbError("invalid_params", "invalid local forward spec", local=local)
         if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
             raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
         try:
-            dev.forward(local, remote)
+            self._forward_port(serial, local, remote, timeout=_FORWARD_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
         return {"local": local, "remote": remote}

@@ -429,6 +429,43 @@ class TestAdbArgumentValidation:
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
 
+    def test_forward_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """adbutils forward used to run with no deadline.
+
+        Measured: forward() was invoked with no kwargs; a 0.8s sleep held
+        device.forward for 0.8s.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_FORWARD_TIMEOUT", 0.4)
+
+        class _Dev:
+            pass
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(_Dev(), adb).forward(
+                "emulator-5554", "tcp:27042", "tcp:27042"
+            )
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
+
     def test_uninstall_is_false_when_pm_did_not_succeed(self) -> None:
         """A returned pm uninstall used to be reported as uninstalled.
 
