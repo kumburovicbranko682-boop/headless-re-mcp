@@ -127,6 +127,8 @@ until 1.0 the tool surface may still change between minor versions.
 - **`frida.server.ensure` 把空启动报成已在跑**。ps 只有 init、launch 回空字
   符串时仍 `running=True`。模型接着去 hook 会打到不存在的服务。现在启动后
   再查进程表，没有 frida-server 就回 False。
+- **工具调用表只截断单行、不淘汰行**。80 次 × 20_000 字符把 `agent.db` 堆到
+  1.7 MiB，COUNT 仍是 80。现在每个 run 只留最近 2000 条。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

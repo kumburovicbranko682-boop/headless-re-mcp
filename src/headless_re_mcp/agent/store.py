@@ -36,6 +36,10 @@ MESSAGE_RETAINED_ROWS = 2000
 # list_events pages from a cursor; the table itself used to keep every
 # message.delta forever. A streamed run writes one row per token.
 EVENT_RETAINED_ROWS = 10_000
+# Each tool result can be hundreds of KiB. The table kept every call in a
+# run, so an unattended loop filled the file while nothing ever listed the
+# extra history.
+TOOL_CALL_RETAINED_ROWS = 2000
 
 
 def utc_now() -> str:
@@ -55,6 +59,7 @@ class AgentStore:
         self.journal_mode = "unknown"
         self.message_retained_rows = MESSAGE_RETAINED_ROWS
         self.event_retained_rows = EVENT_RETAINED_ROWS
+        self.tool_call_retained_rows = TOOL_CALL_RETAINED_ROWS
         self._enable_wal()
         self._init_schema()
         # Deliberately not recovering here. Opening a database is what a
@@ -314,6 +319,13 @@ class AgentStore:
         with self.transaction() as con:
             safe_arguments = redact(arguments)
             con.execute("INSERT INTO tool_calls(id,run_id,name,arguments_json,args_sha256,effects_json,status,approved,consumed_at,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)", (tool_call_id, run_id, name, json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True), args_hash, json.dumps(effects), "proposed", now, now))
+            retain = max(1, int(self.tool_call_retained_rows))
+            con.execute(
+                "DELETE FROM tool_calls WHERE run_id=? AND id IN ("
+                " SELECT id FROM tool_calls WHERE run_id=?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                (run_id, run_id, retain),
+            )
         return {"id": tool_call_id, "run_id": run_id, "name": name, "arguments": arguments, "args_sha256": args_hash, "effects": effects, "status": "proposed"}
 
     def decide_tool_call(self, run_id: str, tool_call_id: str, args_sha256: str, *, approved: bool) -> JsonObject:

@@ -344,6 +344,38 @@ def test_a_long_thread_does_not_keep_every_message_on_disk(tmp_path: Path) -> No
     )
 
 
+def test_a_long_run_does_not_keep_every_tool_call_on_disk(tmp_path: Path) -> None:
+    """Each result was truncated; the table itself was not.
+
+    Measured: 80 completed calls with a 20_000-character blob left agent.db
+    at 1_703_936 bytes and COUNT(*) was still 80. An unattended run writes
+    one row per tool, so the file only grew.
+    """
+    import sqlite3
+
+    path = tmp_path / "tools.db"
+    store = AgentStore(path)
+    store.tool_call_retained_rows = 20
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    payload = {"blob": "x" * 20_000}
+    for index in range(80):
+        store.propose_tool_call(run.id, f"c{index}", "test.tool", {"i": index}, ["read_only"])
+        store.complete_tool_call(run.id, f"c{index}", payload, ok=True)
+
+    with sqlite3.connect(path) as con:
+        stored = con.execute("SELECT COUNT(*) FROM tool_calls WHERE run_id=?", (run.id,)).fetchone()[0]
+        newest = con.execute(
+            "SELECT id FROM tool_calls WHERE run_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (run.id,),
+        ).fetchone()[0]
+    assert stored == 20, "the write path must drop rows, not only hide them"
+    assert newest == "c79", "the newest tool call must survive"
+    assert path.stat().st_size < 800_000, (
+        f"bounded run still filled the file: {path.stat().st_size} bytes"
+    )
+
+
 def test_an_oversized_failed_tool_result_keeps_its_verdict(tmp_path: Path) -> None:
     """The second cut dropped ok from result_json.
 
