@@ -182,17 +182,22 @@ class ApkClient:
             "bytes": len(xml),
         }
 
-    def permissions(self, path: Path) -> JsonObject:
+    def permissions(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
         declared = sorted(apk.get_permissions())
         try:
             requested = sorted(apk.get_requested_permissions())
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested = declared
+        capped = max(1, min(int(limit), 2000))
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
+            "permissions": declared[:capped],
+            "requested_permissions": requested[:capped],
+            "count": min(len(declared), capped),
+            "total": len(declared),
+            "requested_total": len(requested),
+            "limit": capped,
+            "has_more": len(declared) > capped or len(requested) > capped,
         }
 
     def certificates(self, path: Path) -> JsonObject:

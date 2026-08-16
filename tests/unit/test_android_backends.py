@@ -277,6 +277,49 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkPermissionsSayWhenTheyStopped:
+    """5000 permissions used to come back as count=5000 with no limit.
+
+    Measured: 5000 names, 277839 bytes, keys were only permissions/
+    requested_permissions/count. A hostile manifest can grow without bound,
+    and an unattended agent cannot tell a full grant list from a cut.
+    """
+
+    def _permissions(self, n: int, *, limit: int = 500) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _FakeApk:
+            def get_permissions(self) -> list[str]:
+                return [f"android.permission.P{index}" for index in range(n)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return self.get_permissions()
+
+        client = ApkClient()
+        client._apk = lambda path: _FakeApk()  # type: ignore[method-assign]
+        return client.permissions(Path("app.apk"), limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._permissions(5000, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 5000
+        assert result["requested_total"] == 5000
+        assert result["has_more"] is True
+        assert len(result["permissions"]) == 500
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._permissions(3, limit=500)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._permissions(500, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 500
+        assert result["has_more"] is False
+
+
 class TestApkStringsSayWhenTheyStopped:
     """250 strings with limit=200 used to come back as count=200, no has_more."""
 
