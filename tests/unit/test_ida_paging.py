@@ -641,3 +641,59 @@ class TestStaticXrefsToDescriptionSaysWhenItWasCut:
         ).read_text(encoding="utf-8")
         block = source.split("def static_xrefs_to(")[1].split("def static_xrefs_from(")[0]
         assert "has_more" in block
+
+
+class TestStaticXrefsFromDescriptionSaysWhenItWasCut:
+    """The xref-from page already carries has_more; the tool text did not say so.
+
+    Measured: 250 xrefs, limit 100, returned=100, total=250, has_more=True,
+    while the description was only ``List cross-references from an address.``.
+    An unattended agent that trusted the description treated the page as
+    every outgoing reference.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        class _Xref:
+            def __init__(self, index: int) -> None:
+                self.frm = 0x1000
+                self.to = 0x2000 + index
+                self.type = 16
+                self.iscode = True
+
+        ida_xref = types.ModuleType("ida_xref")
+        ida_xref.fl_CF = 16  # type: ignore[attr-defined]
+        ida_xref.fl_CN = 17  # type: ignore[attr-defined]
+        ida_xref.fl_JF = 18  # type: ignore[attr-defined]
+        ida_xref.fl_JN = 19  # type: ignore[attr-defined]
+        ida_xref.fl_F = 20  # type: ignore[attr-defined]
+        ida_xref.dr_O = 1  # type: ignore[attr-defined]
+        ida_xref.dr_W = 2  # type: ignore[attr-defined]
+        ida_xref.dr_R = 3  # type: ignore[attr-defined]
+        ida_xref.dr_T = 4  # type: ignore[attr-defined]
+        ida_xref.dr_I = 5  # type: ignore[attr-defined]
+        idautils = types.ModuleType("idautils")
+        idautils.XrefsFrom = lambda address: [_Xref(index) for index in range(250)]  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_xref", ida_xref)
+        monkeypatch.setitem(sys.modules, "idautils", idautils)
+        page = worker._xrefs_from({"address": 0x1000, "offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_xrefs_from(")[1].split("def static_callers(")[0]
+        assert "has_more" in block
