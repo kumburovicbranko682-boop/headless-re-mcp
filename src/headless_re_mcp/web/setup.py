@@ -25,6 +25,7 @@ from headless_re_mcp.doctor import ProbeStatus, probe_ida, run_doctor
 from headless_re_mcp.web.deps import build_deps_snapshot
 
 JsonObject = dict[str, Any]
+_ACTIVATE_TIMEOUT = 120.0
 
 SETUP_STEPS = (
     "environment",
@@ -86,15 +87,13 @@ def activate_idalib(ida_home: Path) -> JsonObject:
             "script": str(script),
         }
     command = [sys.executable, str(script), "--ida-install-dir", str(ida_home)]
+    # subprocess.run(timeout=...) killed only the script. Measured: a
+    # launcher that started a sleeper, timeout 0.4s, left one orphan
+    # reparented to pid 1.
+    from headless_re_mcp.dotnet.de4dot import _probe_run
+
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            creationflags=_no_window_flags(),
-            check=False,
-        )
+        completed = _probe_run(command, _ACTIVATE_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
             "ok": False,
@@ -102,12 +101,14 @@ def activate_idalib(ida_home: Path) -> JsonObject:
             "message": str(exc),
             "script": str(script),
         }
+    stdout = (completed.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
     return {
         "ok": completed.returncode == 0,
         "code": "activated" if completed.returncode == 0 else "activation_exit_nonzero",
         "exit_code": completed.returncode,
-        "stdout": (completed.stdout or "")[-4000:],
-        "stderr": (completed.stderr or "")[-4000:],
+        "stdout": stdout[-4000:],
+        "stderr": stderr[-4000:],
         "script": str(script),
         "python": sys.executable,
     }

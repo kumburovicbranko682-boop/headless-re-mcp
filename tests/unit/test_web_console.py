@@ -403,3 +403,51 @@ def test_the_monitor_timeline_follows_the_session_instead_of_its_first_frames(
     assert len(shown) == 48
     assert shown[-1] == "step 300", "the newest entry must be in the frame"
     assert shown[0] == "step 253"
+
+
+def test_activate_idalib_timeout_kills_what_the_launcher_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """subprocess.run killed the activator and left the work running.
+
+    Measured: a launcher that started a sleeper, timeout 0.4s, left one
+    orphan reparented to pid 1.
+    """
+    import os
+    import time
+
+    import headless_re_mcp.web.setup as setup_module
+    from headless_re_mcp.web.setup import activate_idalib
+
+    monkeypatch.setattr(setup_module, "_ACTIVATE_TIMEOUT", 0.4)
+    script = tmp_path / "idalib" / "python" / "py-activate-idalib.py"
+    script.parent.mkdir(parents=True)
+    pid_path = tmp_path / "child.pid"
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    script.write_text(
+        "import subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(sleeper)!r}])\n"
+        f"open({str(pid_path)!r}, 'a').write(str(child.pid) + '\\n')\n",
+        encoding="utf-8",
+    )
+    result = activate_idalib(tmp_path)
+    assert result["ok"] is False
+    assert result["code"] == "activation_failed"
+    assert pid_path.is_file()
+    pids = [int(line) for line in pid_path.read_text().split() if line.strip()]
+    assert pids
+    deadline = time.monotonic() + 2.0
+    alive = set(pids)
+    while time.monotonic() < deadline and alive:
+        remaining = set()
+        for pid in alive:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            remaining.add(pid)
+        alive = remaining
+        if alive:
+            time.sleep(0.05)
+    assert alive == set(), f"activation left orphans {sorted(alive)}"
