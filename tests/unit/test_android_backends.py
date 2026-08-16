@@ -1004,6 +1004,22 @@ class TestDeviceInstallDoesNotReportAGhost:
         assert result["installed"] is True
         assert "note" not in result
 
+    def test_the_tool_description_names_the_installed_flag(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_install"]
+        assert "installed" in docs["device_install"]
+        assert "Success" in docs["device_install"]
+
 
 class TestDeviceUninstallDoesNotReportAGhost:
     """adbutils returning False used to be reported as uninstalled=True.
