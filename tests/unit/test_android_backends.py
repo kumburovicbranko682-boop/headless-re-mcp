@@ -342,6 +342,46 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkComponentsAreCapped:
+    """The component lists had no page and no signal that they had stopped.
+
+    Measured: 2000 activities came back in one 42 KiB reply, with no has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Apk:
+            def get_activities(self) -> list[str]:
+                return [f"com.example.A{i}" for i in range(n)]
+
+            def get_services(self) -> list[str]:
+                return ["com.example.S0"]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "com.example.A0"
+
+        client = ApkClient()
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(2000).components(tmp_path / "app.apk", limit=10)
+        assert len(page["activities"]) == 10
+        assert page["totals"]["activities"] == 2000
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).components(tmp_path / "app.apk", limit=10)
+        assert page["has_more"] is False
+        assert page["totals"]["activities"] == 3
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

@@ -66,8 +66,8 @@ class ApkAnalysisMixin:
     def apk_certificates(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "certificates")
 
-    def apk_components(self, session_id: str) -> Result[JsonObject]:
-        return self._apk_call(session_id, "components")
+    def apk_components(self, session_id: str, limit: int = 500) -> Result[JsonObject]:
+        return self._apk_call(session_id, "components", limit=limit)
 
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
@@ -223,11 +223,11 @@ class ApkAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def _apk_call(self, session_id: str, op: str) -> Result[JsonObject]:
+    def _apk_call(self, session_id: str, op: str, **kwargs: Any) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
             method = getattr(ApkClient(), op)
-            data = method(binary)
+            data = method(binary, **kwargs)
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
