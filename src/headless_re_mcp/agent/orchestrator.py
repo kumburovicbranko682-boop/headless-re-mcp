@@ -56,6 +56,29 @@ _MAX_STUCK_TOOL_THREADS = 32
 # text is arriving so a peer cannot make the run retain an arbitrarily large
 # response only to have the finished message rejected by the store.
 _MAX_ASSISTANT_RESPONSE_BYTES = 1_048_576
+# json.dumps no longer RecursionErrors on a 5 000-deep object (C encoder,
+# 35 019 bytes, well inside the 262 KiB byte limit). The same payload used
+# to be refused only because the encoder gave up first. Walk the structure
+# instead, and stop at the depth redaction already treats as too deep.
+_MAX_ARGUMENT_DEPTH = 250
+
+
+def _arguments_too_deep(value: Any, *, limit: int = _MAX_ARGUMENT_DEPTH) -> bool:
+    """True when a JSON value nests deeper than ``limit``.
+
+    Iterative: a recursive walk would blow the stack on the payload this is
+    here to refuse.
+    """
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > limit:
+            return True
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return False
 
 
 class AgentOrchestrator:
@@ -323,6 +346,17 @@ class AgentOrchestrator:
         The refusal goes back as a tool result, which is the one thing the model
         reads, so it can correct itself instead of repeating the call.
         """
+        if _arguments_too_deep(arguments):
+            return {
+                "ok": False,
+                "error": {
+                    "code": "arguments_too_large",
+                    "message": (
+                        "arguments are nested too deeply to encode; send a reference "
+                        "such as an artifact_id rather than inline data"
+                    ),
+                },
+            }
         try:
             encoded = len(json.dumps(arguments, ensure_ascii=False, default=str).encode("utf-8"))
         except RecursionError:
