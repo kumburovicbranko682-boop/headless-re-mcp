@@ -669,6 +669,51 @@ class TestFridaServerEnsureDoesNotInventARunningServer:
         assert result["running"] is True
 
 
+class TestApkComponentsAreBounded:
+    """A large app can declare thousands of components; the lists had no cap.
+
+    Measured: 3000 activities + 500/400/100 others, 65 KiB, no has_more.
+    """
+
+    def _client(self, activities: int, services: int = 0) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_activities(self) -> list[str]:
+                return [f"com.app.A{index}" for index in range(activities)]
+
+            def get_services(self) -> list[str]:
+                return [f"com.app.S{index}" for index in range(services)]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "com.app.A0"
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(3000).components(tmp_path / "a.apk", limit=1000)
+        assert len(result["activities"]) == 1000
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3, services=2).components(tmp_path / "a.apk", limit=1000)
+        assert result["activities"] == ["com.app.A0", "com.app.A1", "com.app.A2"]
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(1000).components(tmp_path / "a.apk", limit=1000)
+        assert len(result["activities"]) == 1000
+        assert result["has_more"] is False
+
+
 class TestApkNativeLibsAreBounded:
     """A fat APK can ship thousands of .so files; the list had no cap.
 

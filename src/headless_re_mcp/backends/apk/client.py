@@ -221,14 +221,25 @@ class ApkClient:
             "v1_signed": bool(names),
         }
 
-    def components(self, path: Path) -> JsonObject:
+    def components(self, path: Path, *, limit: int = 1000) -> JsonObject:
         apk = self._apk(path)
+        cap = max(1, min(int(limit), 5000))
+        activities = sorted(apk.get_activities())
+        services = sorted(apk.get_services())
+        receivers = sorted(apk.get_receivers())
+        providers = sorted(apk.get_providers())
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities[:cap],
+            "services": services[:cap],
+            "receivers": receivers[:cap],
+            "providers": providers[:cap],
             "main_activity": apk.get_main_activity(),
+            "has_more": (
+                len(activities) > cap
+                or len(services) > cap
+                or len(receivers) > cap
+                or len(providers) > cap
+            ),
         }
 
     def native_libs(self, path: Path, *, limit: int = 1000) -> JsonObject:
