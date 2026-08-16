@@ -184,8 +184,7 @@ class Watchdog:
             return {"session_id": session_id, "backend": backend, "action": "abandoned"}
 
         outcome = self.health.session_recover(session_id, [backend] if backend else None)
-        ok = bool(getattr(outcome, "ok", False))
-        if ok:
+        if self._recovery_succeeded(outcome):
             self.recovered += 1
             self._dead_streak.pop(key, None)
             self._alert(
@@ -197,16 +196,46 @@ class Watchdog:
             )
             return {"session_id": session_id, "backend": backend, "action": "recovered"}
 
-        error = getattr(outcome, "error", None)
         self._alert(
             "backend_recovery_failed",
             session_id=session_id,
             backend=backend,
-            detail=str(getattr(error, "message", error) or "recovery returned no error"),
+            detail=self._recovery_failure_detail(outcome),
             attempt=seen_before + 1,
             of=limit,
         )
         return {"session_id": session_id, "backend": backend, "action": "recovery_failed"}
+
+    @staticmethod
+    def _recovery_succeeded(outcome: Any) -> bool:
+        """session_recover can be ok=True while every reopen failed."""
+        if not bool(getattr(outcome, "ok", False)):
+            return False
+        data = getattr(outcome, "data", None)
+        if not isinstance(data, dict):
+            return False
+        try:
+            failed = int(data.get("failed") or 0)
+            recovered = int(data.get("recovered") or 0)
+        except (TypeError, ValueError):
+            return False
+        return failed == 0 and recovered > 0
+
+    @staticmethod
+    def _recovery_failure_detail(outcome: Any) -> str:
+        error = getattr(outcome, "error", None)
+        message = str(getattr(error, "message", error) or "").strip()
+        if message:
+            return message
+        data = getattr(outcome, "data", None)
+        if isinstance(data, dict):
+            try:
+                failed = int(data.get("failed") or 0)
+            except (TypeError, ValueError):
+                failed = 0
+            if failed:
+                return f"recovery finished with {failed} failed backend(s)"
+        return "recovery returned no error"
 
     @staticmethod
     def _rows(result: Any) -> list[JsonObject]:

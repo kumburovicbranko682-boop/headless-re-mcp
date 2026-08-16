@@ -27,9 +27,15 @@ def _row(session: str, backend: str, *, alive: bool = True, connected: bool = Tr
 
 
 class FakeHealth:
-    def __init__(self, rows: list[JsonObject], recover_ok: bool = True) -> None:
+    def __init__(
+        self,
+        rows: list[JsonObject],
+        recover_ok: bool = True,
+        recover_data: JsonObject | None = None,
+    ) -> None:
         self.rows = rows
         self.recover_ok = recover_ok
+        self.recover_data = recover_data
         self.recover_calls: list[tuple[str, list[str] | None]] = []
 
     def session_health(self, session_id: str | None = None) -> FakeResult:
@@ -38,7 +44,7 @@ class FakeHealth:
     def session_recover(self, session_id: str, backends: list[str] | None = None) -> FakeResult:
         self.recover_calls.append((session_id, backends))
         if self.recover_ok:
-            return FakeResult(True, {"recovered": 1, "failed": 0})
+            return FakeResult(True, self.recover_data or {"recovered": 1, "failed": 0})
         return FakeResult(False, None, error=type("E", (), {"message": "no headless configured"})())
 
 
@@ -85,6 +91,36 @@ def test_a_dead_backend_is_recovered_once_the_operator_opts_in() -> None:
     assert alert["kind"] == "backend_recovered"
     # Recovery is reported at info: it is a fact to record, not a page.
     assert alert["severity"] == "info"
+
+
+def test_ok_recover_with_failed_backends_does_not_clear_the_dead_streak() -> None:
+    """session_recover stays ok=True when every reopen fails.
+
+    Treating that envelope as recovered reset the streak, so a backend that
+    cannot come back was relaunched forever and never abandoned.
+    """
+    health = FakeHealth(
+        [_row("s1", "ida", alive=False, connected=False)],
+        recover_data={"recovered": 0, "failed": 1, "kept": 0},
+    )
+    watchdog = Watchdog(
+        health,
+        policy=WatchdogPolicy(auto_recover_backends=True, interval_s=30.0, max_recovery_attempts=5),
+    )
+
+    first = watchdog.sweep()
+    assert first["actions"][0]["action"] == "recovery_failed"
+    assert watchdog.recovered == 0
+    assert watchdog.recent_alerts()[0]["kind"] == "backend_recovery_failed"
+
+    for _ in range(119):
+        report = watchdog.sweep()
+
+    assert len(health.recover_calls) == 5, "failed>0 must count toward giving up"
+    assert report["actions"][0]["action"] == "abandoned"
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts(limit=20)]
+    assert "backend_recovery_abandoned" in kinds
+    assert "backend_recovered" not in kinds
 
 
 def test_a_failed_recovery_is_escalated_rather_than_swallowed() -> None:
