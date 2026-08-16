@@ -552,32 +552,36 @@ def _functions(params: JsonObject) -> JsonObject:
     import idautils
 
     offset, limit = _paging(params)
-    addresses = list(idautils.Functions())
-    items: list[JsonObject] = []
-    for ea in addresses[offset : offset + limit]:
-        function = ida_funcs.get_func(ea)
-        start = int(function.start_ea) if function is not None else int(ea)
-        end = int(function.end_ea) if function is not None else start
-        name = ida_name.get_name(start) or f"sub_{start:X}"
-        items.append(
-            {
-                "address": start,
-                "name": name,
-                "end": end,
-                "size": max(0, end - start),
-                "flags": int(function.flags) if function is not None else 0,
-            }
-        )
     # Built here instead of via _page_items so we do not materialise every
     # function dict. Measured: 500 functions and limit=100 came back as
     # returned=100, total=500, and no has_more.
+    # Measured: 20000 function addresses were still listed before the
+    # window was taken. A large IDB paid that allocation on every page.
+    items: list[JsonObject] = []
+    total = 0
+    for ea in idautils.Functions():
+        if offset <= total < offset + limit:
+            function = ida_funcs.get_func(ea)
+            start = int(function.start_ea) if function is not None else int(ea)
+            end = int(function.end_ea) if function is not None else start
+            name = ida_name.get_name(start) or f"sub_{start:X}"
+            items.append(
+                {
+                    "address": start,
+                    "name": name,
+                    "end": end,
+                    "size": max(0, end - start),
+                    "flags": int(function.flags) if function is not None else 0,
+                }
+            )
+        total += 1
     return {
         "items": items,
         "offset": offset,
         "limit": limit,
         "returned": len(items),
-        "total": len(addresses),
-        "has_more": offset + len(items) < len(addresses),
+        "total": total,
+        "has_more": offset + len(items) < total,
     }
 
 
@@ -593,26 +597,30 @@ def _strings(params: JsonObject) -> JsonObject:
             max_length=max_length,
         )
 
-    strings = list(idautils.Strings())
+    # Same as _functions: listing every string object just to count them
+    # allocated the whole table on every page.
     items: list[JsonObject] = []
-    for item in strings[offset : offset + limit]:
-        value = str(item)
-        items.append(
-            {
-                "address": int(item.ea),
-                "length": int(getattr(item, "length", len(value))),
-                "type": int(getattr(item, "strtype", 0)),
-                "value": value[:max_length],
-                "truncated": len(value) > max_length,
-            }
-        )
+    total = 0
+    for item in idautils.Strings():
+        if offset <= total < offset + limit:
+            value = str(item)
+            items.append(
+                {
+                    "address": int(item.ea),
+                    "length": int(getattr(item, "length", len(value))),
+                    "type": int(getattr(item, "strtype", 0)),
+                    "value": value[:max_length],
+                    "truncated": len(value) > max_length,
+                }
+            )
+        total += 1
     return {
         "items": items,
         "offset": offset,
         "limit": limit,
         "returned": len(items),
-        "total": len(strings),
-        "has_more": offset + len(items) < len(strings),
+        "total": total,
+        "has_more": offset + len(items) < total,
     }
 
 
