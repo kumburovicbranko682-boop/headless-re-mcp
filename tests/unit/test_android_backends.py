@@ -1320,6 +1320,54 @@ class TestDeviceListDoesNotProbeState:
         assert all(item["state"] == "device" for item in result["devices"])
 
 
+class TestDeviceListIsBounded:
+    """A wedged host:devices used to park the tool worker with no deadline.
+
+    Measured: device.list called adbutils.device_list with no timeout, so a
+    2.5s block was waited out in full and still returned the listing.
+    """
+
+    def test_a_blocking_device_list_fails_instead_of_waiting_it_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.2)
+
+        class _Client:
+            def device_list(self) -> list[object]:
+                time.sleep(5)
+                return []
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            backend.list_devices()
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_device_list_is_success(self) -> None:
+        class _Listed:
+            serial = "emulator-5554"
+
+        class _Client:
+            def device_list(self) -> list[_Listed]:
+                return [_Listed()]
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        result = backend.list_devices()
+        assert result["count"] == 1
+        assert result["devices"][0]["serial"] == "emulator-5554"
+
+
 class TestDeviceInfoIsBounded:
     """device.info used to read properties through adbutils getprop with no deadline.
 

@@ -180,7 +180,12 @@ class AdbBackend:
     def list_devices(self) -> JsonObject:
         client = self._client()
         try:
-            devices = client.device_list()
+            # adbutils.device_list talks to the host with no timeout.
+            # Measured: a 2.5s block was waited out in full and still
+            # returned the listing.
+            devices = _deadline(client.device_list, timeout=_SHELL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
         # device_list() already yields only state=device. A follow-up
