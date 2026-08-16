@@ -476,6 +476,46 @@ class TestDeviceConnectDoesNotReportAGhost:
             assert result["endpoint"] == "127.0.0.1:5555"
 
 
+class TestDevicePackagesSayWhenTheyStopped:
+    """5000 packages used to come back as count=5000 with no limit and no has_more.
+
+    Measured: 5000 names, 113946 bytes, keys were only packages/count/
+    third_party_only. A device image or a hostile pm list can grow without
+    bound; an unattended agent also cannot tell a full inventory from a cut.
+    """
+
+    def _packages(self, n: int, *, limit: int = 500) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object) -> str:
+                return "\n".join(f"package:com.example.app{index}" for index in range(n))
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.packages("emulator-5554", limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._packages(5000, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 5000
+        assert result["limit"] == 500
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 500
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._packages(3, limit=500)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._packages(500, limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 500
+        assert result["has_more"] is False
+
+
 class TestDevicePropertiesSayWhenTheyStopped:
     """800 properties with limit=500 used to come back as count=500, unmarked."""
 

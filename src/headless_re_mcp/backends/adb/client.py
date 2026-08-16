@@ -183,7 +183,9 @@ class AdbBackend:
             "has_more": total > len(props),
         }
 
-    def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
+    def packages(
+        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+    ) -> JsonObject:
         dev = self._device(serial)
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
@@ -195,7 +197,16 @@ class AdbBackend:
             for line in str(raw).splitlines()
             if line.startswith("package:")
         )
-        return {"packages": pkgs, "count": len(pkgs), "third_party_only": third_party_only}
+        capped = max(1, min(int(limit), 2000))
+        page = pkgs[:capped]
+        return {
+            "packages": page,
+            "count": len(page),
+            "total": len(pkgs),
+            "limit": capped,
+            "has_more": len(pkgs) > len(page),
+            "third_party_only": third_party_only,
+        }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)
