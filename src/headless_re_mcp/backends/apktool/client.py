@@ -85,10 +85,13 @@ class ApktoolClient:
             args.append("-r")
         _, stderr, code = _run(args, timeout=timeout)
         manifest = out_dir / "AndroidManifest.xml"
-        if code != 0 and not manifest.is_file():
+        # Measured: exit 0 with an empty output dir came back as a decoded_dir
+        # and manifest=None. An overnight agent then edits a tree that was
+        # never decoded.
+        if not manifest.is_file():
             raise ApktoolError(
                 "backend_error",
-                "apktool decode failed",
+                "apktool decode produced no manifest",
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )

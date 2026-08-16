@@ -1039,6 +1039,43 @@ class TestApktoolBoundaries:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
 
+    def test_a_decode_without_a_manifest_is_not_decoded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apktool import client as apktool_mod
+
+        monkeypatch.setattr(apktool_mod, "_run", lambda cmd, timeout, redact_from=None: ("", "", 0))
+        tool = tmp_path / "apktool"
+        tool.write_text("x", encoding="utf-8")
+        client = ApktoolClient(tool, None)
+        with pytest.raises(ApktoolError) as caught:
+            client.decode(_apk(tmp_path / "a.apk"), tmp_path / "out")
+        assert caught.value.code == "backend_error"
+
+    def test_a_decode_with_a_manifest_is_decoded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apktool import client as apktool_mod
+
+        out = tmp_path / "out"
+
+        def fake_run(
+            cmd: object, timeout: float, redact_from: object = None
+        ) -> tuple[str, str, int]:
+            del cmd, timeout, redact_from
+            out.mkdir()
+            (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+            (out / "smali").mkdir()
+            return ("", "", 0)
+
+        monkeypatch.setattr(apktool_mod, "_run", fake_run)
+        tool = tmp_path / "apktool"
+        tool.write_text("x", encoding="utf-8")
+        client = ApktoolClient(tool, None)
+        result = client.decode(_apk(tmp_path / "a.apk"), out)
+        assert result["manifest"] == str(out / "AndroidManifest.xml")
+        assert result["smali_dirs"] == ["smali"]
+
 
 class TestExportListingsSayWhenTheyStopped:
     """The file list is a window; the count is the tree.
