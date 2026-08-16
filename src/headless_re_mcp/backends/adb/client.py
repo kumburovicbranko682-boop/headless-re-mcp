@@ -398,10 +398,18 @@ class AdbBackend:
                 current = dev.app_current()
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
-            return {
-                "package": getattr(current, "package", None),
-                "activity": getattr(current, "activity", None),
-            }
+            package = getattr(current, "package", None) if current is not None else None
+            activity = getattr(current, "activity", None) if current is not None else None
+            # Measured: app_current() returning None still answered
+            # {package: None, activity: None} as a successful tool call.
+            if not package:
+                raise AdbError(
+                    "backend_error",
+                    "failed to read current activity",
+                    package=package or None,
+                    activity=activity or None,
+                )
+            return {"package": package, "activity": activity}
 
         return self._call("current_activity", work)
 

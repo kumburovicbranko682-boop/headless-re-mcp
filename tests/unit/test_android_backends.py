@@ -1667,6 +1667,41 @@ class TestDevicePushDoesNotInventSuccess:
         assert page["remote"] == "/sdcard/x"
 
 
+class TestDeviceCurrentActivityDoesNotInventSuccess:
+    """A failed foreground read was still reported as a successful tool call.
+
+    Measured: a device whose app_current() returned None still answered
+    {package: None, activity: None} with ok=True. An unattended agent then
+    treats "no foreground app" as a fact instead of a failed read.
+    """
+
+    def _backend(self, current: object) -> AdbBackend:
+        class _Dev:
+            def app_current(self) -> object:
+                return current
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_none_result_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend(None).current_activity("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("package") is None
+
+    def test_a_real_foreground_is_still_success(self) -> None:
+        from types import SimpleNamespace
+
+        page = self._backend(
+            SimpleNamespace(package="com.example.app", activity=".Main")
+        ).current_activity("emulator-5554")
+        assert page["package"] == "com.example.app"
+        assert page["activity"] == ".Main"
+
+
 class TestDeviceForceStopDoesNotInventSuccess:
     """am force-stop writing an error was still reported as stopped.
 

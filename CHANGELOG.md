@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.current_activity` 在读不到前台包时仍报成功**。假设备
+  `app_current()` 返回 `None` 时仍 `ok=True` 且 `package=None`。agent
+  会当成「没有前台应用」而不是读失败。现在空包名报 `backend_error`。
 - **`device.screenshot` 在保存被拒绝时仍报成功**。假设备 `save()` 返回
   `False` 时仍回 `{path, serial}`，本地文件也不存在。agent 会去读空路径。
   现在显式 `False` 报 `backend_error`；`None` 仍算成功。
