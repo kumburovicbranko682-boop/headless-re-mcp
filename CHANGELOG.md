@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **隔离步骤超时后仍留下它拉起的子进程**。脚本先 `sleep 60 &` 再
+  自己睡，`subprocess.run` 0.4s 超时后子进程还在。Linux 上
+  `terminate_process_tree` 不走子进程。过夜回滚拉起的虚拟机 CLI
+  会占着核到服务退出。现在枚举 `/proc` 并杀掉整棵树。
 - **`wasm.info` 在 wasm-objdump 失败时仍报成功**。exit 1 但 stdout
   非空时仍返回 `objdump`。过夜任务会把失败的转储当完整 listing。现在
   非零退出一律报 `backend_error`。

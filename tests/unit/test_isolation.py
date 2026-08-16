@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -77,6 +78,44 @@ def test_a_command_that_cannot_start_is_a_failure_not_a_crash() -> None:
 
     assert outcome["ok"] is False
     assert "FileNotFoundError" in str(outcome["detail"])
+
+
+def test_a_timeout_kills_the_process_the_command_started(tmp_path: Path) -> None:
+    """subprocess.run left the isolation child running after the deadline.
+
+    Measured: a script that launched sleep 60 and then slept still left
+    the child alive after a 0.4s timeout, so an overnight rollback that
+    starts a hypervisor CLI would keep that process for the rest of the
+    service life.
+    """
+    import os
+    import time
+
+    child_pid_file = tmp_path / "child.pid"
+    script = tmp_path / "spawn_and_sleep.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"sleep 60 &\n"
+        f"echo $! > {child_pid_file}\n"
+        "sleep 60\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    runner = IsolationRunner(
+        IsolationPolicy(command=(str(script),), timeout_s=0.4, required=False)
+    )
+    started = time.monotonic()
+    outcome = runner.rotate(reason="measure")
+    elapsed = time.monotonic() - started
+    assert outcome["ok"] is False
+    assert "Timeout" in str(outcome["detail"])
+    # run_bounded drains pipes for up to 5s after the kill.
+    assert elapsed < 7.0
+    child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+    still = os.path.exists(f"/proc/{child_pid}")
+    if still:
+        os.kill(child_pid, 9)
+    assert still is False
 
 
 def test_a_timeout_is_a_failure() -> None:

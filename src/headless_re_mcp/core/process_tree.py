@@ -89,8 +89,53 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
     return children
 
 
+def _linux_direct_children(parent_pid: int, *, max_pids: int) -> list[int]:
+    """Direct children of ``parent_pid`` via ``/proc/*/status``.
+
+    ``enumerate_direct_children`` is Win32 Toolhelp and returns [] here, so
+    a timeout kill that walked it left every Linux grandchild running.
+    Measured: isolation that launched ``sleep 60`` still had that child
+    after run_bounded timed out.
+    """
+    if type(parent_pid) is not int or parent_pid <= 0:
+        return []
+    limit = max(1, min(int(max_pids), _MAX_KILL_DESCENDANTS))
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return []
+    children: list[int] = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        child = int(name)
+        if child <= 0 or child == parent_pid:
+            continue
+        try:
+            with open(f"/proc/{child}/status", encoding="ascii", errors="replace") as handle:
+                ppid = None
+                for line in handle:
+                    if line.startswith("PPid:"):
+                        ppid = int(line.split()[1])
+                        break
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == parent_pid:
+            children.append(child)
+            if len(children) >= limit:
+                break
+    children.sort()
+    return children
+
+
 def collect_descendants(parent_pid: int) -> list[int]:
     """Descendant PIDs, deepest last, bounded in both breadth and depth."""
+    if os.name == "nt":
+        walker = enumerate_direct_children
+    elif os.path.isdir("/proc"):
+        walker = _linux_direct_children
+    else:
+        return []
     found: list[int] = []
     seen = {int(parent_pid)}
     frontier = [int(parent_pid)]
@@ -99,7 +144,7 @@ def collect_descendants(parent_pid: int) -> list[int]:
             break
         children: list[int] = []
         for pid in frontier:
-            for child in enumerate_direct_children(pid, max_pids=_MAX_KILL_DESCENDANTS):
+            for child in walker(pid, max_pids=_MAX_KILL_DESCENDANTS):
                 if child in seen:
                     continue
                 seen.add(child)
@@ -128,7 +173,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
-    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
 
