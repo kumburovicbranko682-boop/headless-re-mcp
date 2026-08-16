@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -794,11 +794,10 @@ def _globals(params: JsonObject) -> JsonObject:
     }
 
 
-def _iter_numbered_types() -> list[JsonObject]:
+def _iter_numbered_types() -> Iterator[JsonObject]:
     import ida_typeinf
 
     til = ida_typeinf.get_idati()
-    items: list[JsonObject] = []
     # IDA 9: get_ordinal_limit; older: get_ordinal_qty
     limit_fn = getattr(ida_typeinf, "get_ordinal_limit", None)
     qty_fn = getattr(ida_typeinf, "get_ordinal_qty", None)
@@ -809,7 +808,7 @@ def _iter_numbered_types() -> list[JsonObject]:
         upper = int(qty_fn(til))
         ordinals = range(1, upper + 1)
     else:
-        return items
+        return
 
     for ordinal in ordinals:
         name = ida_typeinf.get_numbered_type_name(til, ordinal)
@@ -844,35 +843,58 @@ def _iter_numbered_types() -> list[JsonObject]:
                 kind = "pointer"
             else:
                 kind = "typedef"
-        items.append(
-            {
-                "ordinal": int(ordinal),
-                "name": name,
-                "kind": kind,
-                **details,
-            }
-        )
-    return items
+        yield {
+            "ordinal": int(ordinal),
+            "name": name,
+            "kind": kind,
+            **details,
+        }
+
+
+def _page_types(
+    items: Iterator[JsonObject], offset: int, limit: int
+) -> JsonObject:
+    # Measured: 5000 types and limit=100 still built 5000 dicts before
+    # slicing. A large TIL would allocate the whole library on every page.
+    window: list[JsonObject] = []
+    total = 0
+    for item in items:
+        if offset <= total < offset + limit:
+            window.append(item)
+        total += 1
+    return {
+        "items": window,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(window),
+        "total": total,
+        "has_more": offset + len(window) < total,
+    }
 
 
 def _types(params: JsonObject) -> JsonObject:
     offset, limit = _paging(params)
-    items = _iter_numbered_types()
-    payload = _page_items(items, offset, limit)
+    payload = _page_types(_iter_numbered_types(), offset, limit)
     payload["note"] = "local type library ordinals; best-effort kind classification"
     return payload
 
 
 def _structs(params: JsonObject) -> JsonObject:
     offset, limit = _paging(params)
-    items = [item for item in _iter_numbered_types() if item.get("kind") in {"struct", "union"}]
-    return _page_items(items, offset, limit)
+    return _page_types(
+        (item for item in _iter_numbered_types() if item.get("kind") in {"struct", "union"}),
+        offset,
+        limit,
+    )
 
 
 def _enums(params: JsonObject) -> JsonObject:
     offset, limit = _paging(params)
-    items = [item for item in _iter_numbered_types() if item.get("kind") == "enum"]
-    return _page_items(items, offset, limit)
+    return _page_types(
+        (item for item in _iter_numbered_types() if item.get("kind") == "enum"),
+        offset,
+        limit,
+    )
 
 
 def _bytes_read(params: JsonObject) -> JsonObject:

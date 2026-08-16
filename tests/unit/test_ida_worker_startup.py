@@ -24,6 +24,7 @@ from headless_re_mcp.backends.ida.worker import (
     _open_database_error,
     _page_items,
     _strings,
+    _types,
 )
 
 
@@ -306,6 +307,52 @@ def test_a_globals_page_does_not_build_the_whole_idb(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(worker, "_page_items", boom)
     result = _globals({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_a_type_page_does_not_build_the_whole_til(monkeypatch: Any) -> None:
+    """5000 types and limit=100 still built 5000 dicts before slicing."""
+    import sys
+    import types
+
+    import headless_re_mcp.backends.ida.worker as worker
+
+    ida_typeinf = types.ModuleType("ida_typeinf")
+
+    class Tinfo:
+        def get_numbered_type(self, til: object, ordinal: int) -> bool:
+            del til, ordinal
+            return True
+
+        def is_udt(self) -> bool:
+            return False
+
+        def is_union(self) -> bool:
+            return False
+
+        def is_enum(self) -> bool:
+            return False
+
+        def is_func(self) -> bool:
+            return False
+
+        def is_ptr(self) -> bool:
+            return False
+
+    ida_typeinf.get_idati = lambda: object()  # type: ignore[attr-defined]
+    ida_typeinf.get_ordinal_limit = lambda til: 5001  # type: ignore[attr-defined]
+    ida_typeinf.get_numbered_type_name = lambda til, ordinal: f"T{ordinal}"  # type: ignore[attr-defined]
+    ida_typeinf.tinfo_t = Tinfo  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_typeinf", ida_typeinf)
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} type dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _types({"offset": 0, "limit": 100})
     assert result["returned"] == 100
     assert result["total"] == 5000
     assert result["has_more"] is True

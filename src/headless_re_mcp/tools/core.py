@@ -388,7 +388,10 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List local type-library ordinals."""
+        """List local type-library ordinals.
+
+        Read `total` and `has_more` rather than assuming the page is complete.
+        """
         return _dump(analysis.static_types(session_id, offset=offset, limit=limit))
 
     def static_structs(
@@ -396,7 +399,10 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List struct/union types from the local type library."""
+        """List struct/union types from the local type library.
+
+        Read `total` and `has_more` rather than assuming the page is complete.
+        """
         return _dump(analysis.static_structs(session_id, offset=offset, limit=limit))
 
     def static_enums(
@@ -404,7 +410,10 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List enum types from the local type library."""
+        """List enum types from the local type library.
+
+        Read `total` and `has_more` rather than assuming the page is complete.
+        """
         return _dump(analysis.static_enums(session_id, offset=offset, limit=limit))
 
     def static_bytes_read(
