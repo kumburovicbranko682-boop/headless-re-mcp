@@ -229,7 +229,7 @@ class AdbBackend:
         # _shell. get_state is a host command: measured 2.5s block waited
         # out in full after the getprop path was already bounded.
         try:
-            return {
+            info = {
                 "serial": _check_serial(serial),
                 "state": str(_deadline(dev.get_state, timeout=_SHELL_TIMEOUT)),
                 "model": _shell(dev, ["getprop", "ro.product.model"]).strip(),
@@ -242,6 +242,20 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+        # get_state can still say "device" while getprop returns the host
+        # error text. Measured: model/sdk/abi were all
+        # "error: device offline" and the call still succeeded, so an
+        # agent treated a dead device as a Pixel named "error: device offline".
+        for key in ("model", "device", "sdk", "release", "abi"):
+            value = str(info.get(key) or "")
+            if value.lower().startswith(("error:", "adb:")):
+                raise AdbError(
+                    "backend_error",
+                    "failed to read device info",
+                    field=key,
+                    output=value[:800],
+                )
+        return info
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)

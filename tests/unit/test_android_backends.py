@@ -1663,6 +1663,42 @@ class TestDeviceInfoIsBounded:
         assert "timed out" in info.value.message.lower() or "info" in info.value.message
 
 
+class TestInfoDoesNotInventIdentity:
+    """A host error line used to look like the device model.
+
+    Measured: get_state said ``device`` while getprop printed
+    ``error: device offline``, and info still answered
+    ``{'model': 'error: device offline', 'sdk': 'error: device offline', ...}``.
+    An unattended agent then treats a dead device as that model.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def get_state(self) -> str:
+                return "device"
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_an_adb_error_line_is_not_a_model(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("error: device offline").info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "device info" in info.value.message
+        assert info.value.details.get("field") == "model"
+
+    def test_real_props_are_identity(self) -> None:
+        result = self._backend("sdk_gphone64_x86_64").info("emulator-5554")
+        assert result["model"] == "sdk_gphone64_x86_64"
+        assert result["sdk"] == "sdk_gphone64_x86_64"
+
+
 class TestDeviceScreenshotIsBounded:
     """A wedged screencap used to park the tool worker for as long as adb liked.
 
