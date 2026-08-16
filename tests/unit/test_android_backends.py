@@ -1405,3 +1405,47 @@ class TestDevicePullDoesNotReportAGhost:
         assert result == {"remote": "/sdcard/missing.bin", "local": str(dest)}
         assert dest.is_file()
         assert dest.read_bytes() == b"abc"
+
+
+class TestDeviceScreenshotDoesNotReportAGhost:
+    """A screenshot that wrote nothing used to be reported as a PNG path.
+
+    Measured: image.save was a no-op and the reply still named the path. An
+    unattended agent then reads a screenshot that was never captured.
+    """
+
+    def _shot(self, tmp_path: Path, image: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def screenshot(self) -> object:
+                return image
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.screenshot("emulator-5554", tmp_path / "shot.png")
+
+    def test_a_save_that_wrote_nothing_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class _Img:
+            def save(self, path: str) -> None:
+                return None
+
+        try:
+            self._shot(tmp_path, _Img())
+        except AdbError as exc:
+            assert exc.code == "backend_error"
+            assert "did not produce a local file" in exc.message
+            return
+        raise AssertionError("empty save was reported as a screenshot")
+
+    def test_a_written_png_is_still_a_screenshot(self, tmp_path: Path) -> None:
+        class _Img:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        dest = tmp_path / "shot.png"
+        result = self._shot(tmp_path, _Img())
+        assert result == {"path": str(dest), "serial": "emulator-5554"}
+        assert dest.is_file()
