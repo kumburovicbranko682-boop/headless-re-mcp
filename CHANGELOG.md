@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.server.ensure` 在 su 超时后仍报成功**。启动命令抛错时回 `running: None` 且
+  工具信封 `ok=True`，时间线还写「ensured」。对一个 `ps` 里只有 init 的设备，调用方会
+  当成已经起来。现在超时后仍读 `ps`：看不到进程就失败，看到才成功。
 - **`web.scripts` 一次回完整脚本表**。800 条解析脚本整包返回（59 KiB），没有 `has_more`。
   现在默认 200，截断时标 `total` / `has_more`；`web.wasm.list` 同一条规矩。
 - **`web.console` 停在上限时看起来和“到此为止”完全一样**。缓冲里 500 条、limit=20 时回

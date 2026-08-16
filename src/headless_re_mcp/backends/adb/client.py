@@ -429,13 +429,20 @@ class AdbBackend:
                     f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
                     timeout=min(8.0, self._timeout),
                 )
-            except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
-                return {
-                    "running": None,
-                    "pushed": pushed,
-                    "port": port,
-                    "note": f"launch attempted; verify manually ({exc})",
-                }
+            except Exception as exc:  # noqa: BLE001
+                # A timeout used to be reported as success with running=None
+                # ("it might have launched"). Measured: ps still showed only
+                # init, and the tool envelope was ok. Check, then fail.
+                if _frida_running(dev):
+                    return {"running": True, "pushed": pushed, "port": port}
+                raise AdbError(
+                    "backend_error",
+                    "frida-server did not appear in the process list after launch",
+                    running=False,
+                    pushed=pushed,
+                    port=port,
+                    note=str(exc),
+                ) from exc
             # The su command returning is not evidence the process exists.
             # Measured: a device whose ps never listed frida-server still
             # answered running: True, and the caller then waited on nothing.

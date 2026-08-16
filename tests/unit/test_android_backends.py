@@ -506,6 +506,35 @@ class TestEnsureFridaServerDoesNotInventAProcess:
         payload = self._backend(_Starts()).ensure_frida_server("emulator-5554")
         assert payload["running"] is True
 
+    def test_a_launch_timeout_is_not_success_when_ps_is_empty(self) -> None:
+        class _Blocked:
+            def shell(self, cmd: object, **kwargs: object) -> str:
+                del kwargs
+                if "ps" in str(cmd):
+                    return "root         1     0  init"
+                raise TimeoutError("su blocked")
+
+        with pytest.raises(AdbError) as info:
+            self._backend(_Blocked()).ensure_frida_server("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("running") is False
+
+    def test_a_launch_timeout_is_success_only_if_ps_then_lists_it(self) -> None:
+        class _SlowStart:
+            def __init__(self) -> None:
+                self.launched = False
+
+            def shell(self, cmd: object, **kwargs: object) -> str:
+                del kwargs
+                text = str(cmd)
+                if "ps" in text:
+                    return "root 99 frida-server" if self.launched else "root 1 init"
+                self.launched = True
+                raise TimeoutError("su returned after the process started")
+
+        payload = self._backend(_SlowStart()).ensure_frida_server("emulator-5554")
+        assert payload["running"] is True
+
 
 class TestDevicePropertiesSayWhenTheyStopped:
     """A page that hit the cap looks exactly like one that ended.
