@@ -350,6 +350,33 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestProxyFlowsSayWhenTheyWereCut:
+    """A flow page that filled used to look like every capture if count was all you read."""
+
+    def _backend(self, n: int) -> ProxyBackend:
+        class _Recorder:
+            def snapshot(self) -> list[dict[str, str]]:
+                return [{"id": str(index)} for index in range(n)]
+
+        class _Inst:
+            recorder = _Recorder()
+
+        backend = ProxyBackend()
+        backend._get = lambda session_id: _Inst()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._backend(500).flows("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 500
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).flows("s", offset=0, limit=100)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
