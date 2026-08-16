@@ -300,3 +300,22 @@ def test_windbg_live_disasm_description_says_to_check_truncated() -> None:
     finally:
         service.close_all()
     assert "truncated" in doc
+
+
+def test_windbg_attach_description_says_to_check_truncated() -> None:
+    """windbg.attach already cuts at 8000 chars, but the tool text hid that.
+
+    Measured: 20000-char probe, output length 8000, truncated=true, while
+    the description said only version and platform -- so a model treats
+    the slice as the whole probe.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.windbg import build_windbg_tools
+
+    service = AnalysisService()
+    try:
+        tools = {item.name: item for item in build_windbg_tools(service)}
+        doc = tools["windbg.attach"].handler.__doc__ or ""
+    finally:
+        service.close_all()
+    assert "truncated" in doc
