@@ -251,6 +251,19 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
 
 
+def test_a_thread_page_at_the_cap_is_not_the_whole_list(tmp_path: Path) -> None:
+    """150 threads with limit=100 used to come back as 100 items, unmarked."""
+    store = AgentStore(tmp_path / "threads.db")
+    for index in range(150):
+        store.create_thread(title=f"t{index}")
+    assert store.count_threads() == 150
+    page = store.list_threads(limit=100)
+    assert len(page) == 100
+    tail = store.list_threads(offset=100, limit=100)
+    assert len(tail) == 50
+    assert {item.id for item in page}.isdisjoint({item.id for item in tail})
+
+
 def test_a_mission_page_at_the_cap_is_not_the_whole_queue(tmp_path: Path) -> None:
     """150 missions with limit=100 used to come back as count=100, unmarked.
 

@@ -117,9 +117,25 @@ def register_agent_routes(
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.get("/api/agent/threads")
-    def list_threads(authorization: str | None = Header(default=None)) -> JSONResponse:
+    def list_threads(
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=500),
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
         authorize(authorization)
-        return JSONResponse({"ok": True, "threads": [item.dump() for item in store.list_threads()]})
+        items = [item.dump() for item in store.list_threads(offset=offset, limit=limit)]
+        total = store.count_threads()
+        return JSONResponse(
+            {
+                "ok": True,
+                "threads": items,
+                "count": len(items),
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(items) < total,
+            }
+        )
 
     @app.post("/api/agent/threads", status_code=201)
     def create_thread(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:

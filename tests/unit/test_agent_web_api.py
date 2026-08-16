@@ -64,6 +64,30 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_a_thread_list_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        for index in range(3):
+            created = client.post(
+                "/api/agent/threads",
+                headers=headers,
+                json={"title": f"t{index}"},
+            )
+            assert created.status_code == 201
+        listed = client.get("/api/agent/threads?limit=2", headers=headers).json()
+        assert listed["count"] == 2
+        assert listed["total"] == 3
+        assert listed["has_more"] is True
+        tail = client.get("/api/agent/threads?offset=2&limit=2", headers=headers).json()
+        assert tail["count"] == 1
+        assert tail["has_more"] is False
+        assert tail["threads"][0]["id"] not in {item["id"] for item in listed["threads"]}
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 

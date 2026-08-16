@@ -182,9 +182,19 @@ class AgentStore:
             con.execute("INSERT INTO threads VALUES(?,?,?,?,?)", (thread_id, title[:200], session_id, now, now))
         return AgentThread(thread_id, title[:200], session_id, now, now)
 
-    def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
+    def count_threads(self) -> int:
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            row = con.execute("SELECT COUNT(*) AS c FROM threads").fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def list_threads(self, *, offset: int = 0, limit: int = 100) -> list[AgentThread]:
+        bounded = max(1, min(limit, 500))
+        skipped = max(0, int(offset))
+        with self._reading() as con:
+            rows = con.execute(
+                "SELECT * FROM threads ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (bounded, skipped),
+            ).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:
