@@ -43,9 +43,6 @@ class ManagedSubprocessMixin:
         lock = getattr(self, "_lock", nullcontext())
         with lock:
             if self._process.poll() is None:
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=wait_timeout)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                    self._process.wait(timeout=wait_timeout)
+                from headless_re_mcp.core.process_tree import terminate_process_tree
+
+                terminate_process_tree(self._process, wait_s=wait_timeout)

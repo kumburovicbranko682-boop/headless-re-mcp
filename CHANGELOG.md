@@ -152,6 +152,9 @@ until 1.0 the tool surface may still change between minor versions.
   按完整值去重并标明切过。
 - **`device.logcat` 停在上限却不说还有**。200 行快照只有 lines/requested。
   模型把一页当成整段 logcat。现在满页带回 `has_more`。
+- **共享的 subprocess 关闭助手仍只杀启动器**。IDA 的 `terminate()` 已改杀
+  树，混入的 `terminate_process()` 仍只 SIGTERM 父进程，子 sleeper 仍是 S。
+  现在这条路径也杀整树。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
