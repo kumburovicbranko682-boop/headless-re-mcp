@@ -333,3 +333,25 @@ def test_a_spilled_artifact_is_tracked_so_gc_can_reclaim_it(tmp_path: Path) -> N
     assert reclaimed.ok
     # gc deliberately keeps the newest artifact, so only the first is reclaimed.
     assert not Path(str(first.data["artifact"])).exists(), "gc must be able to delete a spill"
+
+
+def test_the_decompile_tool_says_oversized_output_is_truncated() -> None:
+    """The reply already spilled and marked truncated; the description did not.
+
+    An agent that only reads the tool text treats the 1 KiB preview as the
+    whole function.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_core_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_decompile"]
+    assert "truncated" in docs["static_decompile"]
+    assert "artifacts.read" in docs["static_decompile"]
