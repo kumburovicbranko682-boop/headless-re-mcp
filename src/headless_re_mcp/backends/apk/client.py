@@ -23,6 +23,7 @@ _MAX_MANIFEST_CHARS = 200_000
 _MAX_COMPONENTS = 2000
 _MAX_PERMISSIONS = 2000
 _MAX_NATIVE_LIBS = 2000
+_MAX_CERTIFICATES = 200
 
 
 class ApkError(RuntimeError):
@@ -206,11 +207,12 @@ class ApkClient:
             "has_more": len(declared) > capped or len(requested) > capped,
         }
 
-    def certificates(self, path: Path) -> JsonObject:
+    def certificates(self, path: Path, *, limit: int = 50) -> JsonObject:
         apk = self._apk(path)
+        capped = max(1, min(int(limit), _MAX_CERTIFICATES))
         items: list[JsonObject] = []
         try:
-            names = apk.get_signature_names()
+            names = list(apk.get_signature_names())
         except Exception:  # noqa: BLE001
             names = []
         for cert in apk.get_certificates():
@@ -227,10 +229,17 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        # Measured: 200 certificates came back as one 30 KiB object with no
+        # has_more, so an agent treated the page as every signer.
         return {
-            "signature_files": list(names),
-            "certificates": items,
+            "signature_files": names[:capped],
+            "certificates": items[:capped],
             "v1_signed": bool(names),
+            "totals": {
+                "certificates": len(items),
+                "signature_files": len(names),
+            },
+            "has_more": len(items) > capped or len(names) > capped,
         }
 
     def components(self, path: Path, *, limit: int = 500) -> JsonObject:

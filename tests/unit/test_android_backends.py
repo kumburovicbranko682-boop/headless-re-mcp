@@ -402,6 +402,46 @@ class TestApkClassesSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkCertificatesAreBounded:
+    """A certificate list used to be every signer with no way to see a cut."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Cert:
+            def __init__(self, index: int) -> None:
+                self.subject = f"CN=c{index}"
+                self.issuer = f"CN=i{index}"
+                self.serial_number = index
+                self.sha256_fingerprint = "aa" * 32
+
+        class _Apk:
+            def get_signature_names(self) -> list[str]:
+                return [f"CERT{index}.RSA" for index in range(count)]
+
+            def get_certificates(self) -> list[_Cert]:
+                return [_Cert(index) for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        return client
+
+    def test_a_large_list_is_cut_and_said_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 200).certificates(tmp_path / "app.apk", limit=50)
+        assert len(result["certificates"]) == 50
+        assert result["totals"]["certificates"] == 200
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 2).certificates(tmp_path / "app.apk", limit=50)
+        assert result["has_more"] is False
+        assert result["totals"]["certificates"] == 2
+
+
 class TestApkPermissionsAreBounded:
     """A permission list used to be the whole manifest with no way to see a cut."""
 
