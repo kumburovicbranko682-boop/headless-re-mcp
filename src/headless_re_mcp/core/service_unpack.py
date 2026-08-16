@@ -806,6 +806,16 @@ class UnpackMixin:
                 payload["pe_verify"] = {"ok": False, "error": str(exc)}
                 report.unfixed.append(f"built-in PE parse failed: {exc}")
                 payload["report"] = report.to_dict()
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="invalid_pe",
+                        message=str(exc),
+                        details={"pe_verify": payload["pe_verify"]},
+                    ),
+                    data=payload,
+                    meta={"session_id": session_id, "backend": "unpack"},
+                )
             if import_report is not None:
                 blocked = self._guard_unpack_active(session_id, stage="pe_rebuild_advance")
                 if blocked is not None:

@@ -129,3 +129,33 @@ def test_iat_rebuild_does_not_succeed_when_pe_self_check_fails(
     state = service._unpack_sessions[session_id]
     assert state.phase == UnpackPhase.OEP_CANDIDATE
     assert not any(item.kind == "iat_rebuilt" for item in state.artifacts)
+
+
+def test_pe_rebuild_does_not_succeed_when_pe_self_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, session_id, dump_file, worker = _ready_iat_rebuild(tmp_path)
+
+    def _broken_scan_pe(path: Path, **kwargs: object) -> object:
+        raise PeFormatError("built-in parser rejected the rebuilt image")
+
+    monkeypatch.setattr("headless_re_mcp.core.service_unpack.scan_pe", _broken_scan_pe)
+
+    rebuilt = service.unpack_pe_rebuild(
+        session_id,
+        str(dump_file),
+        entry_point_rva=0x1000,
+        iat_va=worker.module_base + 0x2000,
+        iat_size=0x20,
+    )
+
+    assert rebuilt.ok is False
+    assert rebuilt.error is not None
+    assert rebuilt.error.code == "invalid_pe"
+    assert rebuilt.data is not None
+    pe_verify = rebuilt.data.get("pe_verify")
+    assert isinstance(pe_verify, dict)
+    assert pe_verify.get("ok") is False
+    state = service._unpack_sessions[session_id]
+    assert state.phase == UnpackPhase.OEP_CANDIDATE
+    assert not any(item.kind == "pe_rebuilt" for item in state.artifacts)
