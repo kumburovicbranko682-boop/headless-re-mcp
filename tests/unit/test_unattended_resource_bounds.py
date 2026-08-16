@@ -2151,3 +2151,99 @@ def test_long_lived_buffers_declare_an_explicit_cap(module_name: str) -> None:
     ]
     assert caps, f"{module_name} retains state but declares no _MAX_* bound"
     assert all(cap > 0 for cap in caps)
+
+
+class TestAdbShellCannotHoldAWorker:
+    """adbutils' shell() waits forever unless a timeout is passed.
+
+    Measured before the bound: 8 shell calls across properties / packages /
+    launch / force_stop / logcat / ensure_frida_server, 7 of them granted
+    timeout=None. Against a device that never answers, logcat, properties and
+    the frida-server ps probe were all still running after 500ms. The MCP pool
+    has 16 slots and no deadline of its own, so sixteen wedged devices stop
+    the rest of the server answering.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_wedged_device_comes_back_as_timeout_not_a_hung_thread(self) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Hung:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, kw
+                self.timeouts.append(timeout)
+                if timeout is None:
+                    threading.Event().wait()
+                raise TimeoutError(f"adb timed out after {timeout}")
+
+        hung = Hung()
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            self._backend(hung).logcat("emulator-5554")
+        elapsed = time.monotonic() - started
+
+        assert caught.value.code == "timeout"
+        assert hung.timeouts and hung.timeouts[0] is not None
+        # The fake raises as soon as a deadline is granted. Before the fix this
+        # thread was still alive at 500ms with timeout=None.
+        assert elapsed < 0.5
+
+    def test_every_shell_is_granted_a_deadline(self) -> None:
+        from headless_re_mcp.backends.adb.client import _SHELL_TIMEOUT
+
+        class Recording:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del kw
+                self.timeouts.append(timeout)
+                text = str(cmd)
+                if "ps" in text:
+                    return "root 1 0 init"
+                if "logcat" in text:
+                    return "a\nb"
+                if "getprop" in text:
+                    return "[ro.build.version.sdk]: [33]"
+                if "pm list" in text:
+                    return "package:com.foo"
+                return ""
+
+        rec = Recording()
+        backend = self._backend(rec)
+        backend.properties("emulator-5554")
+        backend.packages("emulator-5554")
+        backend.launch("emulator-5554", "com.example.app")
+        backend.force_stop("emulator-5554", "com.example.app")
+        backend.logcat("emulator-5554")
+        backend.ensure_frida_server("emulator-5554")
+
+        assert rec.timeouts, "no shell was issued"
+        assert all(grant is not None for grant in rec.timeouts)
+        assert all(grant > 0 for grant in rec.timeouts if grant is not None)
+        assert any(grant == _SHELL_TIMEOUT for grant in rec.timeouts)
+
+    def test_a_timeout_is_not_relabelled_backend_error(self) -> None:
+        from headless_re_mcp.backends.adb.client import _SHELL_TIMEOUT, AdbError
+
+        class Timed:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, kw
+                raise TimeoutError(f"adb timed out after {timeout}")
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Timed()).properties("emulator-5554")
+        assert caught.value.code == "timeout"
+        assert caught.value.details["timeout"] == _SHELL_TIMEOUT

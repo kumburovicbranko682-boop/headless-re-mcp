@@ -22,6 +22,13 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+# adbutils' shell() waits forever when timeout is omitted. The MCP transport
+# parks each call on a 16-thread pool with no deadline of its own, so a wedged
+# device (offline, su prompt, hung adbd) holds a slot until it answers -- which
+# for an unattended overnight run is never. Sixteen of those and the rest of
+# the server stops answering. 30s is long enough for a slow emulator and short
+# enough that a stuck pool recovers in minutes, not in the morning.
+_SHELL_TIMEOUT = 30.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -55,6 +62,30 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if "timeout" in type(exc).__name__.lower():
+        return True
+    return "timed out" in str(exc).lower()
+
+
+def _shell(dev: Any, cmd: str | list[str], *, timeout: float = _SHELL_TIMEOUT) -> Any:
+    """Run one adb shell with a deadline the caller cannot forget."""
+    try:
+        return dev.shell(cmd, timeout=timeout)
+    except AdbError:
+        raise
+    except Exception as exc:
+        if _is_timeout(exc):
+            raise AdbError(
+                "timeout",
+                f"adb shell timed out after {timeout:g}s",
+                timeout=timeout,
+            ) from exc
+        raise
 
 
 class AdbBackend:
@@ -149,7 +180,9 @@ class AdbBackend:
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
         try:
-            raw = dev.shell("getprop")
+            raw = _shell(dev, "getprop")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
         props: dict[str, str] = {}
@@ -165,7 +198,9 @@ class AdbBackend:
         dev = self._device(serial)
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
-            raw = dev.shell(args)
+            raw = _shell(dev, args)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pm list failed: {exc}") from exc
         pkgs = sorted(
@@ -204,7 +239,9 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            _shell(dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
         return {"launched": True, "package": pkg}
@@ -213,7 +250,9 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["am", "force-stop", pkg])
+            _shell(dev, ["am", "force-stop", pkg])
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
         return {"stopped": True, "package": pkg}
@@ -233,7 +272,9 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         try:
-            raw = dev.shell(["logcat", "-d", "-t", str(capped)])
+            raw = _shell(dev, ["logcat", "-d", "-t", str(capped)])
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
         text = str(raw)
@@ -287,9 +328,11 @@ class AdbBackend:
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
+            running = "frida-server" in str(_shell(dev, "ps -A")) or "frida-server" in str(
+                _shell(dev, "ps")
             )
+        except AdbError:
+            raise
         except Exception:  # noqa: BLE001
             running = False
         if running:
@@ -301,13 +344,14 @@ class AdbBackend:
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
                 dev.sync.push(str(path), remote_path)
-                dev.shell(["chmod", "755", remote_path])
+                _shell(dev, ["chmod", "755", remote_path])
                 pushed = True
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
-            dev.shell(
+            _shell(
+                dev,
                 f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
