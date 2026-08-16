@@ -689,7 +689,14 @@ def _cfg(params: JsonObject) -> JsonObject:
     chart = ida_gdl.FlowChart(function)
     nodes: list[JsonObject] = []
     edges: list[JsonObject] = []
+    # Measured: 5000 blocks, 411 KiB, no truncated -- a huge function
+    # looked like a complete graph.
+    cap = 1024
+    truncated = False
     for block in chart:
+        if len(nodes) >= cap:
+            truncated = True
+            break
         nodes.append(
             {
                 "id": int(block.id),
@@ -700,6 +707,8 @@ def _cfg(params: JsonObject) -> JsonObject:
         )
         for succ in block.succs():
             edges.append({"src": int(block.id), "dst": int(succ.id)})
+    kept = {int(node["id"]) for node in nodes}
+    edges = [edge for edge in edges if edge["src"] in kept and edge["dst"] in kept]
     return {
         "address": int(function.start_ea),
         "function_end": int(function.end_ea),
@@ -707,6 +716,7 @@ def _cfg(params: JsonObject) -> JsonObject:
         "edges": edges,
         "node_count": len(nodes),
         "edge_count": len(edges),
+        "truncated": truncated,
         "note": "function-local CFG from ida_gdl.FlowChart",
     }
 
