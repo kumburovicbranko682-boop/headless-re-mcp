@@ -80,6 +80,14 @@ class UnpackCliMixin:
         """Run official ``upx -t`` against the session binary without modifying it."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.upx.test cannot run in {session.state.value} state"
+                )
             bounded_timeout = _detection_timeout(timeout)
             if self.settings.upx is None:
                 return Result[JsonObject](
@@ -110,6 +118,15 @@ class UnpackCliMixin:
                 input_sha256=session.sha256,
                 timeout=bounded_timeout,
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.upx.test cannot run in {session.state.value} state"
+                )
             return _success(
                 {"upx": result.to_dict(), "input_unchanged": True},
                 session_id=session_id,
