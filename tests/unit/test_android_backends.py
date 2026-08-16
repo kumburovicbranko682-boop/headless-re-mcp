@@ -350,6 +350,34 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestDeviceUninstallDoesNotInventSuccess:
+    """adbutils returning False used to be reported as uninstalled=True."""
+
+    def _backend(self, outcome: object) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def uninstall(self, package: str) -> object:
+                return outcome
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_false_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend(False).uninstall("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+        assert "not installed" in str(info.value)
+
+    def test_true_or_none_is_uninstalled(self) -> None:
+        for outcome in (True, None):
+            result = self._backend(outcome).uninstall("emulator-5554", "com.example.app")
+            assert result == {"uninstalled": True, "package": "com.example.app"}
+
+
 class TestDeviceInstallDoesNotInventSuccess:
     """A failed pm install used to be reported as installed=True.
 
