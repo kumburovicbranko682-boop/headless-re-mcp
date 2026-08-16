@@ -186,3 +186,54 @@ class TestIdaBytesReadSaysWhenItWasShort:
         result = worker._bytes_read({"address": 0x1000, "size": 64})
         assert result["size"] == 64
         assert result["truncated"] is False
+
+
+class TestIdaSearchTextSaysWhenItWasCut:
+    """A search that stopped at the page used to report has_more=False.
+
+    Measured: 250 hits, limit 100, returned=100, total=100, has_more=False.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, hits: list[int]) -> None:
+        import sys
+        import types
+
+        ida_ida = types.ModuleType("ida_ida")
+        ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+        ida_ida.inf_get_max_ea = lambda: 0x100000  # type: ignore[attr-defined]
+        ida_idaapi = types.ModuleType("ida_idaapi")
+        ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+        ida_search = types.ModuleType("ida_search")
+        ida_search.SEARCH_DOWN = 1  # type: ignore[attr-defined]
+
+        def find_text(ea: int, *_args: object) -> int:
+            for hit in hits:
+                if hit >= ea:
+                    return hit
+            return int(ida_idaapi.BADADDR)
+
+        ida_search.find_text = find_text  # type: ignore[attr-defined]
+        idc = types.ModuleType("idc")
+        idc.BADADDR = ida_idaapi.BADADDR  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_ida", ida_ida)
+        monkeypatch.setitem(sys.modules, "ida_idaapi", ida_idaapi)
+        monkeypatch.setitem(sys.modules, "ida_search", ida_search)
+        monkeypatch.setitem(sys.modules, "idc", idc)
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        hits = list(range(0x1000, 0x1000 + 250))
+        self._install(monkeypatch, hits)
+        page = worker._search_text({"text": "foo", "offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["has_more"] is True
+
+    def test_an_exact_page_is_complete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        hits = list(range(0x1000, 0x1000 + 100))
+        self._install(monkeypatch, hits)
+        page = worker._search_text({"text": "foo", "offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["has_more"] is False

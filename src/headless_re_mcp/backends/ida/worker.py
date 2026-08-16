@@ -967,7 +967,10 @@ def _search_text(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    # Collect one past the page so _page_items can set has_more. Measured:
+    # 250 hits, limit 100, returned=100, total=100, has_more=False, so an
+    # agent treated a full page as every match.
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_text(ea, 0, 0, text, flags)
         if found in {idc.BADADDR, ida_idaapi.BADADDR, -1} or found is None:
             break
