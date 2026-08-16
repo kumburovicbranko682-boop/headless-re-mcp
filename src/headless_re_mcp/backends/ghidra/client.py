@@ -47,7 +47,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         project_dir.mkdir(parents=True, exist_ok=True)
-        stdout, stderr, code = self._run_headless(
+        ran = self._run_headless(
             project_dir,
             binary=binary,
             extra=[],
@@ -55,6 +55,8 @@ class GhidraClient:
             max_heap=max_heap,
             delete_project=delete_project,
         )
+        stdout, stderr, code = ran[0], ran[1], ran[2]
+        produced = int(ran[3]) if len(ran) > 3 else len(stdout)
         if code != 0:
             raise GhidraError(
                 "backend_error",
@@ -64,15 +66,17 @@ class GhidraClient:
             )
         # Measured: 20000-char stdout, excerpt length 8000, no truncated --
         # a caller reading the excerpt thinks analysis logged only that tail.
+        # Also measured: 250000-char JVM log, output_chars 200000 -- the
+        # inner cap hid how much analyzeHeadless actually printed.
         excerpt = stdout[-8000:]
         payload: JsonObject = {
             "project_dir": str(project_dir),
             "stdout_excerpt": excerpt,
             "note": "headless import/analyze completed; use ghidra.functions/decompile/symbols/xrefs for exports",
         }
-        if len(stdout) > 8000:
+        if produced > 8000:
             payload["truncated"] = True
-            payload["output_chars"] = len(stdout)
+            payload["output_chars"] = produced
             payload["returned_chars"] = len(excerpt)
         return payload
 
@@ -186,7 +190,7 @@ class GhidraClient:
             str(capped + 1),
             addr,
         ]
-        stdout, stderr, code = self._run_headless(
+        ran = self._run_headless(
             project_dir,
             binary=binary,
             extra=extra,
@@ -194,6 +198,7 @@ class GhidraClient:
             max_heap=max_heap,
             delete_project=True,
         )
+        stdout, stderr, code = ran[0], ran[1], ran[2]
         if code != 0 and not out_path.is_file():
             raise GhidraError(
                 "backend_error",
@@ -258,7 +263,7 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
         delete_project: bool,
-    ) -> tuple[str, str, int]:
+    ) -> tuple[str, str, int, int]:
         assert self.analyze is not None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
@@ -288,9 +293,10 @@ class GhidraClient:
                 timeout=timeout,
                 killed_pids=exc.killed,
             ) from exc
-        stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
+        decoded = completed.stdout.decode("utf-8", errors="replace")
+        stdout = decoded[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
-        return stdout, stderr, int(completed.returncode)
+        return stdout, stderr, int(completed.returncode), len(decoded)
 
 
 def _which(name: str) -> Path | None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.backends.ghidra.client import GhidraClient
 
 
@@ -38,6 +40,37 @@ class TestGhidraAnalyzeSaysWhenItStopped:
         result = client.analyze_binary(binary, project)
         assert result["stdout_excerpt"] == "ok"
         assert "truncated" not in result
+
+
+class TestGhidraAnalyzeReportsTheInnerCap:
+    """The 200000-char capture cap used to hide how much the JVM printed.
+
+    Measured: 250000-char stdout, excerpt 8000, output_chars 200000 -- so a
+    caller reading output_chars thinks analyzeHeadless logged only the
+    retained prefix.
+    """
+
+    def test_the_true_log_length_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.ghidra.client as ghidra_mod
+        from headless_re_mcp.backends.common.bounded_run import Completed
+
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        client = GhidraClient()
+        client.analyze = Path("/bin/true")
+        client.java = Path("/bin/true")
+        monkeypatch.setattr(
+            ghidra_mod,
+            "run_bounded",
+            lambda *args, **kwargs: Completed(0, b"G" * 250_000, b""),
+        )
+        result = client.analyze_binary(binary, tmp_path / "proj")
+        assert len(result["stdout_excerpt"]) == 8000
+        assert result["truncated"] is True
+        assert result["output_chars"] == 250_000
+        assert result["returned_chars"] == 8000
 
 
 class TestGhidraAnalyzeDescriptionMatchesTheCut:
