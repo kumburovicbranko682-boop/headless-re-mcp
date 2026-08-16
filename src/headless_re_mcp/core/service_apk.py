@@ -7,6 +7,8 @@ into a per-session artifact directory, exactly like the Ghidra adapter.
 
 from __future__ import annotations
 
+import shutil
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +17,10 @@ from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Result, TargetKind
+from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
 
@@ -165,11 +167,37 @@ class ApkAnalysisMixin:
         self, session_id: str, timeout: float = 600.0, no_resources: bool = False
     ) -> Result[JsonObject]:
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.decode cannot run in {session.state.value} state"
+                )
             binary = self._apk_binary(session_id)
-            out_dir = self._repack_dir(session_id) / "decoded"
+            root = self._repack_dir(session_id)
+            out_dir = root / "decoded"
             data = self._apktool_client().decode(
                 binary, out_dir, timeout=timeout, no_resources=no_resources
             )
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.decode cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a tree written
+                # after that is invisible to the next close and to artifacts.gc.
+                with suppress(OSError):
+                    shutil.rmtree(root)
+                raise
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(self, session_id, "apk.decode", "apktool decoded apk")
             return _success(data, session_id=session_id, backend="apk")
