@@ -438,9 +438,16 @@ class AdbBackend:
             if not path.is_file():
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
-                dev.sync.push(str(path), remote_path)
+                # Same unbounded sync.push as device.push. Measured: a 2.5s
+                # block was waited out in full before the post-launch ps.
+                _deadline(
+                    lambda: dev.sync.push(str(path), remote_path),
+                    timeout=_PUSH_TIMEOUT,
+                )
                 _shell(dev, ["chmod", "755", remote_path])
                 pushed = True
+            except AdbError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
         launch_error: str | None = None

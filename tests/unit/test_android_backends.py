@@ -828,6 +828,46 @@ class TestEnsureFridaServerDoesNotInventARunningProcess:
             service.close_all()
 
 
+class TestEnsureFridaServerPushIsBounded:
+    """Pushing frida-server used the same unbounded sync.push as device.push.
+
+    Measured: a 2.5s block on push was waited out in full before the
+    post-launch ps ran.
+    """
+
+    def test_a_blocking_push_fails_instead_of_waiting_it_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PUSH_TIMEOUT", 0.2)
+        binary = tmp_path / "frida-server"
+        binary.write_bytes(b"x")
+
+        class _Sync:
+            def push(self, src: str, dst: str) -> int:
+                time.sleep(5)
+                return 1
+
+        class _Dev:
+            sync = _Sync()
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return "root 1 0 init"
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            backend.ensure_frida_server("emulator-5554", server_binary=str(binary))
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+
 class TestDevicePropertiesSayWhenTheyStopped:
     """A getprop page that hit the cap used to look like the whole property set."""
 
