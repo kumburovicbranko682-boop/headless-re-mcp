@@ -62,11 +62,19 @@ class GhidraClient:
                 exit_code=code,
                 stderr=stderr[:4000],
             )
-        return {
+        # Measured: 20000-char stdout, excerpt length 8000, no truncated --
+        # a caller reading the excerpt thinks analysis logged only that tail.
+        excerpt = stdout[-8000:]
+        payload: JsonObject = {
             "project_dir": str(project_dir),
-            "stdout_excerpt": stdout[-8000:],
+            "stdout_excerpt": excerpt,
             "note": "headless import/analyze completed; use ghidra.functions/decompile/symbols/xrefs for exports",
         }
+        if len(stdout) > 8000:
+            payload["truncated"] = True
+            payload["output_chars"] = len(stdout)
+            payload["returned_chars"] = len(excerpt)
+        return payload
 
     def functions(
         self,
