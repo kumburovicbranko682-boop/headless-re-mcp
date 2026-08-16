@@ -421,6 +421,38 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_methods_says_when_the_page_is_not_the_whole_set() -> None:
+    """180 methods, limit=100 returned count=100 and total=180 but no has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _Meth:
+        def __init__(self, index: int) -> None:
+            self.name = f"m{index}"
+            self.descriptor = "()V"
+            self.access = "public"
+
+    class _Klass:
+        name = "Lcom/foo/Bar;"
+
+        def get_methods(self) -> list[_Meth]:
+            return [_Meth(i) for i in range(180)]
+
+    class _Analysis:
+        def get_classes(self) -> list[_Klass]:
+            return [_Klass()]
+
+    class _Parsed:
+        analysis = _Analysis()
+
+    client = ApkClient()
+    client._available = True
+    client._parsed = lambda _path: _Parsed()  # type: ignore[method-assign]
+    got = client.methods(Path("dummy.apk"), "com.foo.Bar", limit=100)
+    assert got["count"] == 100
+    assert got["total"] == 180
+    assert got["has_more"] is True
+
+
 def test_apk_classes_says_when_the_page_is_not_the_whole_set() -> None:
     """250 classes, limit=100 returned count=100 and total=250 but no has_more."""
     from headless_re_mcp.backends.apk.client import ApkClient
