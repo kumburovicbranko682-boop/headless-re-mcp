@@ -807,6 +807,27 @@ class TestApkComponentsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkXrefsDescriptionMatchesTheCut:
+    """apk.xrefs already cuts the caller list, but the tool text hid that.
+
+    Measured: 150 callers, limit 100, count=100, has_more=true, while the
+    description said "every method" and never mentioned has_more -- so a
+    model that trusts the text treats a page as the complete xref set.
+    """
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.xrefs"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestApkCertificatesAreBounded:
     """A certificate list that hit the cap looks exactly like one that ended.
 

@@ -99,7 +99,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         method_name: str,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List callers (xrefs-from) of every method named method_name."""
+        """List callers (xrefs-from) of methods named method_name (check has_more)."""
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
     @tools.tool(name="apk.decompile")
