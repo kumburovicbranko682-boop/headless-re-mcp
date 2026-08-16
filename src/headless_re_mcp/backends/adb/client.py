@@ -427,6 +427,20 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
         text = str(raw)
+        # adbutils.shell can return the host error text instead of raising.
+        # Measured: "error: device offline" still answered
+        # {'lines': ['error: device offline']}, so an agent treated a dead
+        # device as a one-line log snapshot. Real logcat lines do not all
+        # start with "error:" / "adb:".
+        captured = [line for line in text.splitlines() if line.strip()]
+        if captured and all(
+            line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+        ):
+            raise AdbError(
+                "backend_error",
+                "logcat failed",
+                output=text[:800],
+            )
         return {"lines": text.splitlines()[-capped:], "requested": capped}
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:

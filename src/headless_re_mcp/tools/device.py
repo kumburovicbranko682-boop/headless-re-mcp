@@ -93,7 +93,7 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_logcat(
         serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200
     ) -> dict[str, Any]:
-        """Return the last N lines of logcat (non-streaming snapshot)."""
+        """Return the last N lines of logcat; an adb error line is not a snapshot."""
         return _dump(analysis.device_logcat(serial, lines=lines))
 
     @tools.tool(name="device.screenshot")

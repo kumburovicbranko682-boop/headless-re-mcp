@@ -1051,7 +1051,40 @@ class TestDeviceShellCallsAreBounded:
         assert "timed out" in info.value.message.lower() or "logcat" in info.value.message
 
 
-class TestLaunchDoesNotInventSuccess:
+class TestLogcatDoesNotInventSuccess:
+    """A host error line used to look like a logcat snapshot.
+
+    Measured: a device whose shell printed ``error: device offline`` still
+    answered ``{'lines': ['error: device offline'], 'requested': 20}``. An
+    unattended agent then treats a dead device as a one-line log.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_an_adb_error_line_is_not_a_snapshot(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("error: device offline").logcat("emulator-5554", lines=20)
+        assert info.value.code == "backend_error"
+        assert "logcat failed" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+    def test_real_log_lines_are_a_snapshot(self) -> None:
+        result = self._backend(
+            "01-01 00:00:00.000  1  1 I tag: hello\n01-01 00:00:00.001  1  1 E tag: error: boom"
+        ).logcat("emulator-5554", lines=20)
+        assert result["lines"] == [
+            "01-01 00:00:00.000  1  1 I tag: hello",
+            "01-01 00:00:00.001  1  1 E tag: error: boom",
+        ]
     """``launched: True`` used to mean the monkey command returned, not that it started.
 
     Measured: a device whose monkey printed
