@@ -831,3 +831,65 @@ class TestStaticCalleesDescriptionSaysWhenItWasCut:
         ).read_text(encoding="utf-8")
         block = source.split("def static_callees(")[1].split("def static_basic_blocks(")[0]
         assert "has_more" in block
+
+
+class TestStaticBasicBlocksDescriptionSaysWhenItWasCut:
+    """The block page already carries has_more; the tool text did not say so.
+
+    Measured: 250 blocks, limit 100, returned=100, total=250, has_more=True,
+    while the description omitted has_more. An unattended agent that trusted
+    the description treated the page as every block.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        class _Block:
+            def __init__(self, index: int, total: int) -> None:
+                self.id = index
+                self.start_ea = 0x1000 + index * 16
+                self.end_ea = self.start_ea + 16
+                self.type = 0
+                self._total = total
+
+            def succs(self) -> list[_Block]:
+                return [_Block(self.id + 1, self._total)] if self.id + 1 < self._total else []
+
+            def preds(self) -> list[_Block]:
+                return [_Block(self.id - 1, self._total)] if self.id else []
+
+        class _Chart:
+            def __iter__(self) -> object:
+                for index in range(250):
+                    yield _Block(index, 250)
+
+        class _Fn:
+            start_ea = 0x1000
+            end_ea = 0x1000 + 250 * 16
+
+        ida_gdl = types.ModuleType("ida_gdl")
+        ida_gdl.FlowChart = lambda fn: _Chart()  # type: ignore[attr-defined]
+        ida_funcs = types.ModuleType("ida_funcs")
+        ida_funcs.get_func = lambda ea: _Fn()  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_gdl", ida_gdl)
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        page = worker._basic_blocks({"address": 0x1000, "offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_basic_blocks(")[1].split("def static_cfg(")[0]
+        assert "has_more" in block
