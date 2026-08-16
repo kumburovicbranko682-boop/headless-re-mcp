@@ -247,3 +247,35 @@ def test_mission_list_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None:
     assert body["count"] == 100
     assert body["has_more"] is True
     assert len(body["missions"]) == 100
+
+
+def test_watchdog_alerts_say_when_they_stopped(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """GET /watchdog stopped at 50 alerts and said that was every alert.
+
+    Measured: 80 alerts with limit=50 came back as 50 and alerts_total=80
+    with no has_more, so overnight backend deaths disappeared.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    watchdog = app.state.watchdog
+    for index in range(80):
+        watchdog._alert("test", n=index)
+
+    with TestClient(app) as client:
+        body = client.get(
+            "/api/agent/watchdog", headers=headers, params={"limit": 50}
+        ).json()
+    assert body["ok"] is True
+    assert body["alerts_total"] == 80
+    assert len(body["alerts"]) == 50
+    assert body["has_more"] is True
+
+    with TestClient(app) as client:
+        complete = client.get(
+            "/api/agent/watchdog", headers=headers, params={"limit": 128}
+        ).json()
+    assert complete["has_more"] is False
+    assert len(complete["alerts"]) == 80

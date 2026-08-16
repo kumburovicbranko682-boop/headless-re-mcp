@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **watchdog 告警列表停在一页时看起来像完整历史**。80 条告警、limit=50
+  时回 50 条且 `alerts_total=80`，没有 `has_more`。只读列表的 agent
+  会漏掉过夜告警。现在截断时标 `has_more`。
 - **`frida.devices` 一次回完整设备表**。500 个设备整包返回，没有
   `has_more`。现在最多 256，截断时标 `has_more`。
 - **`device.list` 一次回完整设备表**。500 个 serial 整包返回，没有
