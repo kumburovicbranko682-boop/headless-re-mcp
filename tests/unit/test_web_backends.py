@@ -180,6 +180,26 @@ class TestCapturesAreReachableAndReclaimable:
         finally:
             service.close_all()
 
+    def test_a_missing_capture_file_is_not_a_silent_skip(self, tmp_path: Path) -> None:
+        """A path that was never written used to come back with no marker.
+
+        Measured: _register_capture returned the original payload, no
+        artifact_id and no artifact_error.
+        """
+        from headless_re_mcp.core.service_ext import _register_capture
+
+        payload = {"path": str(tmp_path / "missing.har")}
+        result = _register_capture(
+            object(),
+            "s",
+            tmp_path / "missing.har",
+            kind="web_har",
+            source="web.har.export",
+            payload=payload,
+        )
+        assert "artifact_id" not in result
+        assert result["artifact_error"] == "capture file missing"
+
 
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:

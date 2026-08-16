@@ -111,7 +111,10 @@ def _register_capture(
     failure travels in the payload rather than as an exception.
     """
     if not path.is_file():
-        return payload
+        # Measured: a missing capture file came back as the original payload
+        # with no artifact_id and no artifact_error, so a path that was never
+        # written looked like a capture that simply was not indexed.
+        return {**payload, "artifact_error": "capture file missing"}
     try:
         artifact = _record_artifact(
             service,
