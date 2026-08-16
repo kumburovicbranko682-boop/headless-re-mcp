@@ -80,7 +80,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_exports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Exported symbols with their addresses."""
+        """Exported symbols with their addresses.
+
+        A cut listing carries truncated or items_truncated; read those
+        rather than treating the page as every export r2 found.
+        """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
     @tools.tool(name="r2.disasm")
