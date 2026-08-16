@@ -158,6 +158,10 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def seen(self) -> int:
+        with self._lock:
+            return self._seq
+
 
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
@@ -319,8 +323,18 @@ class ProxyBackend:
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
+        seen = inst.recorder.seen()
+        retained = len(items)
         window = items[offset : offset + limit]
-        return {"flows": window, "count": len(window), "total": len(items), "offset": offset}
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": retained,
+            "seen": seen,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(window) < retained or seen > retained,
+        }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

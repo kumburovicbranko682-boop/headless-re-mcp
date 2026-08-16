@@ -110,6 +110,49 @@ class TestProxyCaptureIsBounded:
         assert recorder._seq == 4 * 300
 
 
+class TestProxyFlowsSayWhenTheWindowDroppedOlderFlows:
+    """2500 flows used to come back as total=2000 with no has_more.
+
+    The ring drops the oldest once it is full. A list sitting at the cap
+    looked exactly like a capture that only ever saw 2000 flows, so the
+    ones that scrolled off disappeared from whoever was supposed to see them.
+    """
+
+    def _listed(self, n: int, *, limit: int = 100) -> dict[str, Any]:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 8080)
+        for index in range(n):
+            inst.recorder.response(_FakeFlow(index))
+        backend._instances["s"] = inst
+        return backend.flows("s", limit=limit)
+
+    def test_a_window_at_the_cap_reports_that_flows_were_dropped(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _MAX_FLOWS
+
+        listed = self._listed(_MAX_FLOWS + 500, limit=_MAX_FLOWS)
+        assert listed["count"] == _MAX_FLOWS
+        assert listed["total"] == _MAX_FLOWS
+        assert listed["seen"] == _MAX_FLOWS + 500
+        assert listed["has_more"] is True
+        assert listed["flows"][0]["id"] == f"flow-{500}"
+
+    def test_a_page_inside_a_complete_window_reports_more(self) -> None:
+        listed = self._listed(150, limit=100)
+        assert listed["count"] == 100
+        assert listed["total"] == 150
+        assert listed["seen"] == 150
+        assert listed["has_more"] is True
+
+    def test_a_window_that_never_filled_is_complete(self) -> None:
+        listed = self._listed(3)
+        assert listed["count"] == 3
+        assert listed["total"] == 3
+        assert listed["seen"] == 3
+        assert listed["has_more"] is False
+
+
 class TestProxyStartHonesty:
     def test_port_probe_reports_false_for_a_closed_port(self) -> None:
         # Port 1 on loopback is not something this test suite ever binds.
