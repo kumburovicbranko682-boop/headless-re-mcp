@@ -70,6 +70,44 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
+    def test_properties_at_the_cap_say_so_and_getprop_is_bounded(self) -> None:
+        """A full getprop used to be cut at `limit` with only count.
+
+        Measured: 10 properties, limit 3, reply was count=3 and no total or
+        has_more, and getprop was invoked with timeout=None. An unattended
+        agent treated the page as the device, and a wedged adb held the
+        worker until the process was killed.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeout = timeout
+                return "\n".join(f"[ro.prop.{index}]: [{index}]" for index in range(10))
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                assert serial
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).properties("emulator-5554", limit=3)
+        assert device.timeout == 15.0
+        assert result["count"] == 3
+        assert result["total"] == 10
+        assert result["has_more"] is True
+        whole = _Backend(_Dev()).properties("emulator-5554", limit=20)
+        assert whole["has_more"] is False
+        assert whole["total"] == 10
+
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
         if backend.available:
