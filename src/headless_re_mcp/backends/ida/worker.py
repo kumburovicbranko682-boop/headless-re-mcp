@@ -138,6 +138,20 @@ def _capabilities() -> frozenset[str]:
     return frozenset(capabilities)
 
 
+_MAX_INSN_TEXT = 512
+
+
+def _bound_insn_text(text: str) -> tuple[str, bool]:
+    """Cut a disassembly line at the inline cap and say whether it was cut.
+
+    Measured: a 600-character line still came back as 512 characters with no
+    mark, so an agent treated the prefix as the whole instruction.
+    """
+    if len(text) > _MAX_INSN_TEXT:
+        return text[:_MAX_INSN_TEXT], True
+    return text, False
+
+
 def _page_envelope(
     window: list[JsonObject], offset: int, limit: int, total: int
 ) -> JsonObject:
@@ -374,13 +388,15 @@ def _disassemble(params: JsonObject) -> JsonObject:
             partial = True
             break
         text = idc.generate_disasm_line(ea, 0) or ""
-        instructions.append(
-            {
-                "ea": int(ea),
-                "size": length,
-                "text": text[:512],
-            }
-        )
+        rendered, cut = _bound_insn_text(text)
+        item: JsonObject = {
+            "ea": int(ea),
+            "size": length,
+            "text": rendered,
+        }
+        if cut:
+            item["truncated"] = True
+        instructions.append(item)
         consumed += length
         ea = int(ea) + length
     return {

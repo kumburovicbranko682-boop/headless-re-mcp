@@ -12,6 +12,8 @@ from pathlib import Path
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
+    _MAX_INSN_TEXT,
+    _bound_insn_text,
     _open_database_error,
     _page_envelope,
     _page_items,
@@ -95,3 +97,16 @@ def test_a_static_page_that_exactly_fills_is_complete() -> None:
     assert page["returned"] == 100
     assert page["total"] == 100
     assert page["has_more"] is False
+
+
+def test_a_long_disassembly_line_says_it_was_cut() -> None:
+    """600 characters used to come back as 512 with no truncated flag."""
+    rendered, cut = _bound_insn_text("X" * (_MAX_INSN_TEXT + 88))
+    assert cut is True
+    assert len(rendered) == _MAX_INSN_TEXT
+
+
+def test_a_short_disassembly_line_is_complete() -> None:
+    rendered, cut = _bound_insn_text("mov rax, rbx")
+    assert cut is False
+    assert rendered == "mov rax, rbx"
