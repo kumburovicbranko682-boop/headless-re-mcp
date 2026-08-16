@@ -194,15 +194,34 @@ class WebBackend:
                 self._wire_events(handle)
                 if url:
                     page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                landed = str(page.url or "")
+                requested = url.strip()
+                # Measured: goto that left the page on about:blank still
+                # returned opened=True, so an unattended agent treats a
+                # failed first load as a live browser on the target.
+                if (not landed or landed == "about:blank") and requested not in {
+                    "",
+                    "about:blank",
+                }:
+                    raise WebError(
+                        "backend_error",
+                        "navigation did not leave about:blank",
+                        url=requested,
+                        landed=landed,
+                    )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
                 summary = {
                     "opened": True,
-                    "url": page.url,
+                    "url": landed,
                     "title": _safe_title(page),
                     "headless": headless,
                 }
+            except WebError:
+                with contextlib.suppress(Exception):
+                    pw.stop()
+                raise
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
