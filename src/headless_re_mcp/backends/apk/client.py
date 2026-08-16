@@ -201,11 +201,11 @@ class ApkClient:
             "has_more": len(declared) > cap or len(requested) > cap,
         }
 
-    def certificates(self, path: Path) -> JsonObject:
+    def certificates(self, path: Path, *, limit: int = 32) -> JsonObject:
         apk = self._apk(path)
         items: list[JsonObject] = []
         try:
-            names = apk.get_signature_names()
+            names = list(apk.get_signature_names())
         except Exception:  # noqa: BLE001
             names = []
         for cert in apk.get_certificates():
@@ -222,10 +222,16 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        cap = max(1, min(int(limit), 200))
         return {
-            "signature_files": list(names),
-            "certificates": items,
+            "signature_files": names[:cap],
+            "certificates": items[:cap],
             "v1_signed": bool(names),
+            "count": len(items[:cap]),
+            "total": len(items),
+            # A caller deciding "these are all the signers" has to know
+            # whether the list ended or this page merely stopped.
+            "has_more": len(items) > cap or len(names) > cap,
         }
 
     def components(self, path: Path, *, limit: int = 1000) -> JsonObject:

@@ -807,6 +807,51 @@ class TestApkComponentsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkCertificatesAreBounded:
+    """A certificate list that hit the cap looks exactly like one that ended.
+
+    Measured: 200 certificates + 200 signature files, 116 KiB, no has_more.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Cert:
+            subject = "CN=example"
+            issuer = "CN=example"
+            serial_number = 1
+            sha256_fingerprint = "ab" * 32
+
+        class _Apk:
+            def get_signature_names(self) -> list[str]:
+                return [f"META-INF/CERT{index}.RSA" for index in range(n)]
+
+            def get_certificates(self) -> list[_Cert]:
+                return [_Cert() for _ in range(n)]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(200).certificates(tmp_path / "a.apk", limit=32)
+        assert result["count"] == 32
+        assert result["total"] == 200
+        assert result["has_more"] is True
+        assert len(result["certificates"]) == 32
+        assert len(result["signature_files"]) == 32
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3).certificates(tmp_path / "a.apk", limit=32)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(32).certificates(tmp_path / "a.apk", limit=32)
+        assert result["count"] == 32
+        assert result["has_more"] is False
+
+
 class TestApkPermissionsAreBounded:
     """A permission list that hit the cap looks exactly like one that ended.
 
