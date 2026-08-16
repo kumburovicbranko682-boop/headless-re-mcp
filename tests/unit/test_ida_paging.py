@@ -984,6 +984,55 @@ class TestStaticGlobalsDescriptionSaysWhenItWasCut:
         assert "has_more" in block
 
 
+class TestStaticEntrypointsDescriptionSaysWhenItWasCut:
+    """The entry page already carries has_more; the tool text did not say so.
+
+    Measured: 250 entry points, limit 100, returned=100, total=250,
+    has_more=True, while the description omitted has_more. An unattended
+    agent that trusted the description treated the page as every entry.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        ida_ida = types.ModuleType("ida_ida")
+
+        def _start_ip() -> int:
+            raise RuntimeError("no start ip")
+
+        ida_ida.inf_get_start_ip = _start_ip  # type: ignore[attr-defined]
+        ida_entry = types.ModuleType("ida_entry")
+        ida_entry.get_entry_qty = lambda: 250  # type: ignore[attr-defined]
+        ida_entry.get_entry_ordinal = lambda index: index  # type: ignore[attr-defined]
+        ida_entry.get_entry = lambda ordinal: 0x1000 + ordinal  # type: ignore[attr-defined]
+        ida_entry.get_entry_name = lambda ordinal: f"e{ordinal}"  # type: ignore[attr-defined]
+        ida_name = types.ModuleType("ida_name")
+        ida_name.get_name = lambda ea: None  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_ida", ida_ida)
+        monkeypatch.setitem(sys.modules, "ida_entry", ida_entry)
+        monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+        page = worker._entrypoints({"offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_entrypoints(")[1].split("def static_disassemble(")[0]
+        assert "has_more" in block
+
+
 class TestIdaDecompileDoesNotInventEmptySource:
     """An empty Hex-Rays result used to look like a finished decompile.
 
