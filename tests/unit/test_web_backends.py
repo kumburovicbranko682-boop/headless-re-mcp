@@ -215,6 +215,38 @@ class TestWebConsoleSaysWhenItWasCut:
         assert result["has_more"] is False
 
 
+class TestWebNetworkListSaysWhenItWasCut:
+    """A request page that filled used to look like every capture if count was all you read."""
+
+    def _backend(self, n: int) -> WebBackend:
+        import threading
+        from collections import OrderedDict
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.requests = OrderedDict(
+                    (str(index), {"requestId": str(index), "url": f"https://ex/{index}"})
+                    for index in range(n)
+                )
+                self.runner = object()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._backend(500).network_list("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 500
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).network_list("s", offset=0, limit=100)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestWebScriptsSayWhenTheyWereCut:
     """A script list that filled the debugger buffer used to look like every script."""
 

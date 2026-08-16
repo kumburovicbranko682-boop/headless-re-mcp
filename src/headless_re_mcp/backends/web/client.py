@@ -324,7 +324,16 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
         window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        # A page that filled used to look like every request if the caller
+        # only read count. Measured: 500 requests, limit 100, count=100,
+        # total=500, no has_more.
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
