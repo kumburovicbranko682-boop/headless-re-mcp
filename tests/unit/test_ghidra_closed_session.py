@@ -41,6 +41,25 @@ class _TrackingGhidra:
             "note": "tracked",
         }
 
+    def functions(
+        self,
+        binary: Path,
+        project_dir: Path,
+        *,
+        limit: int = 256,
+        timeout: float = 180.0,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        project_dir.mkdir(parents=True, exist_ok=True)
+        marker = project_dir / "headless-started"
+        marker.write_text("started", encoding="utf-8")
+        self.starts.append(marker)
+        return {
+            "items": [{"name": "x", "entry": "0x1000", "body_size": 16}],
+            "count": 1,
+            "has_more": False,
+        }
+
 
 def test_ghidra_analyze_on_a_closed_session_does_not_start_headless(
     tmp_path: Path, monkeypatch: Any
@@ -119,3 +138,83 @@ def test_ghidra_analyze_does_not_report_success_if_the_session_closes_during_run
         assert "closed" in result.error.message
     finally:
         service.close_all()
+
+def test_ghidra_functions_on_a_closed_session_does_not_start_headless(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A retained CLOSED session still resolved, so a late export started JVM work.
+
+    Measured: after close_session, ghidra.functions returned ok=True, functions()
+    ran once, and artifact_root/ghidra/<id>/headless-started was written. The
+    analyze gate does not cover the other ghidra tools; each of them imports
+    the binary again under -deleteProject.
+    """
+    tracker = _TrackingGhidra()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.GhidraClient",
+        lambda *args, **kwargs: tracker,
+    )
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        closed = service.close_session(session_id)
+        assert closed.ok, closed.error
+
+        result = service.ghidra_functions(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert tracker.starts == []
+        project = settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
+        assert not project.exists()
+    finally:
+        service.close_all()
+
+
+def test_ghidra_functions_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close mid-export used to record a backend on a session that cannot use it."""
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+
+    class _CloseThenExport(_TrackingGhidra):
+        def functions(  # type: ignore[override]
+            self,
+            binary: Path,
+            project_dir: Path,
+            *,
+            limit: int = 256,
+            timeout: float = 180.0,
+            **kwargs: object,
+        ) -> dict[str, Any]:
+            service.close_session(session_id)
+            return super().functions(
+                binary, project_dir, limit=limit, timeout=timeout, **kwargs
+            )
+
+    tracker = _CloseThenExport()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.GhidraClient",
+        lambda *args, **kwargs: tracker,
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.ghidra_functions(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+    finally:
+        service.close_all()
+

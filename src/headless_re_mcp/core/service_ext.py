@@ -976,6 +976,14 @@ def _ghidra_export(
 ) -> Result[JsonObject]:
     try:
         session = service.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"ghidra.{mode} cannot run in {session.state.value} state"
+            )
         client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
@@ -992,6 +1000,15 @@ def _ghidra_export(
             data = client.decompile(session.require_binary(), project, address, timeout=timeout)
         else:
             raise GhidraError("invalid_params", "unknown ghidra export mode", mode=mode)
+        session = service.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"ghidra.{mode} cannot run in {session.state.value} state"
+            )
         _record_backend(service, session_id, "ghidra", endpoint=str(project))
         _timeline_append(service, session_id, f"ghidra.{mode}", f"ghidra {mode} export")
         export_path = data.get("export_path")
