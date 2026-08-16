@@ -51,6 +51,14 @@ def _check_serial(serial: str) -> str:
     return value
 
 
+def _frida_server_listed(dev: Any) -> bool:
+    """True only when a process listing actually names frida-server."""
+    try:
+        return "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(dev.shell("ps"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _check_package(package: str) -> str:
     value = (package or "").strip()
     if not _PACKAGE_RE.match(value):
@@ -299,13 +307,7 @@ class AdbBackend:
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        if _frida_server_listed(dev):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -331,7 +333,14 @@ class AdbBackend:
                 "port": port,
                 "note": f"launch attempted; verify manually ({exc})",
             }
-        return {"running": True, "pushed": pushed, "port": port}
+        if _frida_server_listed(dev):
+            return {"running": True, "pushed": pushed, "port": port}
+        return {
+            "running": False,
+            "pushed": pushed,
+            "port": port,
+            "note": "launch command returned but frida-server is not in the process list",
+        }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)

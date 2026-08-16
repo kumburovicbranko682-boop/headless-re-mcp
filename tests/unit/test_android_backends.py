@@ -351,6 +351,27 @@ class TestApktoolBoundaries:
         assert info.value.code == "capability_unavailable"
 
 
+def test_ensure_frida_server_does_not_call_a_missing_process_running() -> None:
+    """A successful empty shell was reported as running.
+
+    Measured: ps listed only init, the launch command returned '', and the
+    reply was running=True. An unattended hook path then attached to nothing.
+    """
+    from headless_re_mcp.backends.adb.client import AdbBackend
+
+    class _FakeDev:
+        def shell(self, cmd: object, timeout: float | None = None) -> str:
+            if isinstance(cmd, str) and "ps" in cmd:
+                return "USER PID NAME\nroot 1 init\n"
+            return ""
+
+    backend = AdbBackend()
+    backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+    got = backend.ensure_frida_server("emulator-5554")
+    assert got["running"] is False
+    assert "process list" in str(got.get("note", ""))
+
+
 def test_device_packages_does_not_return_every_package_as_if_it_were_small() -> None:
     """pm list was unbounded. Measured: 5000 packages serialised to 113_946 bytes
     and the reply had no total/has_more, so a page looked like the whole device.

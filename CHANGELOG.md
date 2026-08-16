@@ -124,6 +124,9 @@ until 1.0 the tool surface may still change between minor versions.
   现在杀整树并回结构化超时，不再把异常抛出探针。
 - **x64dbg 探针超时只杀启动器，排空再卡 10 秒后抛异常**。同一场景 10.4 秒
   TimeoutExpired，子 sleeper 仍是 S。现在杀整树并回结构化失败。
+- **`frida.server.ensure` 把空启动报成已在跑**。ps 只有 init、launch 回空字
+  符串时仍 `running=True`。模型接着去 hook 会打到不存在的服务。现在启动后
+  再查进程表，没有 frida-server 就回 False。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
