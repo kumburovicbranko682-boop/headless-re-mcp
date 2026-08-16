@@ -569,6 +569,25 @@ def test_apk_manifest_says_when_the_xml_was_cut() -> None:
     assert got["manifest_chars"] == 250_000
 
 
+def test_device_logcat_says_when_the_page_filled_the_cap() -> None:
+    """A 200-line snapshot looked like the whole buffer.
+
+    Measured: requested=200, 200 lines, keys were only lines/requested.
+    """
+    from headless_re_mcp.backends.adb.client import AdbBackend
+
+    class _FakeDev:
+        def shell(self, cmd: object, timeout: float | None = None) -> str:
+            n = int(cmd[3]) if isinstance(cmd, list) else 200
+            return "\n".join(f"line {i}" for i in range(n))
+
+    backend = AdbBackend()
+    backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+    got = backend.logcat("emulator-5554", lines=200)
+    assert got["count"] == 200
+    assert got["has_more"] is True
+
+
 def test_ensure_frida_server_does_not_call_a_missing_process_running() -> None:
     """A successful empty shell was reported as running.
 

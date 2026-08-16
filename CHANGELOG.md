@@ -150,6 +150,8 @@ until 1.0 the tool surface may still change between minor versions.
 - **`apk.strings` 先切片再去重，长串被静默合并**。两条共享 2000 字符前缀
   的 5000 字符常量变成一条，且没有 truncated。模型会以为后缀不存在。现在
   按完整值去重并标明切过。
+- **`device.logcat` 停在上限却不说还有**。200 行快照只有 lines/requested。
+  模型把一页当成整段 logcat。现在满页带回 `has_more`。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
