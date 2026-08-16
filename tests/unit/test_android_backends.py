@@ -1451,6 +1451,38 @@ class TestApktoolSaysWhenTheDecodeWasPartial:
         assert "stderr" not in result
 
 
+class TestApktoolKeepsTheHardFailErrorTail:
+    """A long apktool failure used to come back as the opening 8000 characters.
+
+    Measured: 10038 characters of stderr ending in AndrolibException still
+    raised with 8000 leading I's. The exception line was gone, so an agent
+    retried a decode it could not see.
+    """
+
+    def test_a_hard_fail_keeps_the_error_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apktool import client as apktool_mod
+        from headless_re_mcp.backends.apktool.client import _MAX_STDERR
+        from headless_re_mcp.backends.common.bounded_run import Completed
+
+        body = ("I" * 10_000) + "ERROR brut.androlib.AndrolibException\n"
+
+        def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+            return Completed(1, b"", body.encode("utf-8"))
+
+        monkeypatch.setattr(apktool_mod, "run_bounded", fake_bounded)
+        fake_tool = tmp_path / "apktool"
+        fake_tool.write_text("x", encoding="utf-8")
+        client = ApktoolClient(fake_tool, None)
+        with pytest.raises(ApktoolError) as caught:
+            client.decode(_apk(tmp_path / "a.apk"), tmp_path / "out")
+        assert caught.value.code == "backend_error"
+        err = str(caught.value.details.get("stderr") or "")
+        assert "AndrolibException" in err
+        assert len(err) == _MAX_STDERR
+
+
 class TestDevicePullDoesNotReportAGhost:
     """A pull that left no file used to be reported as a local path.
 
