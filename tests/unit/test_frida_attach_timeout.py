@@ -1,0 +1,40 @@
+"""frida.attach must not wait on a wedged target forever."""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+import headless_re_mcp.backends.frida.client as frida_client
+from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+
+def test_frida_attach_does_not_wait_forever(monkeypatch: pytest.MonkeyPatch) -> None:
+    """frida.attach used to run with no deadline.
+
+    Measured: a 0.8s sleep in attach held frida.attach 0.8s. A wedged
+    target pinned the worker. get_usb_device already had a timeout;
+    this hop did not.
+    """
+    monkeypatch.setattr(frida_client, "_ATTACH_TIMEOUT", 0.4)
+
+    class _Sess:
+        def detach(self) -> None:
+            return None
+
+    class _Fake:
+        def attach(self, pid: int) -> _Sess:
+            assert pid == 4242
+            time.sleep(30)
+            return _Sess()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.attach(4242, allowed_pid=4242)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"
