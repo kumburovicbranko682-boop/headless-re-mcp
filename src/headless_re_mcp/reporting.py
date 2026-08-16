@@ -207,7 +207,11 @@ def render_markdown_report(
 
             lines.append("")
 
-    artifact_entries = list((artifacts or {}).get("entries") or [])
+    payload = artifacts or {}
+    raw_artifacts = payload.get("artifacts")
+    if not isinstance(raw_artifacts, list):
+        raw_artifacts = payload.get("entries")
+    artifact_entries = list(raw_artifacts) if isinstance(raw_artifacts, list) else []
 
     lines.append("## Artifacts")
 

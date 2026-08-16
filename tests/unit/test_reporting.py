@@ -198,3 +198,18 @@ def test_a_capped_report_says_it_is_capped() -> None:
     )
     assert "Showing 500 of 913 findings" in partial
     assert "Showing 100 of 247 artifacts" in partial
+
+
+def test_report_reads_the_list_artifacts_key() -> None:
+    """Production list_artifacts returns artifacts, not entries."""
+    markdown = render_markdown_report(
+        session=_SESSION,
+        artifacts={
+            "artifacts": [{"kind": "dump", "path": "mod.bin", "size": 4096}],
+            "count": 1,
+            "total": 1,
+        },
+        generated_at="t",
+    )
+    assert "mod.bin" in markdown
+    assert "No artifacts were produced for this session yet." not in markdown
