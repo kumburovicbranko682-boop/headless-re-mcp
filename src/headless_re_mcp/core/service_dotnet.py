@@ -198,6 +198,14 @@ class DotnetAnalysisMixin:
         """Optional NETReactorSlayer unpack into a session artifact; never overwrite input."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"dotnet.reactor.unpack cannot run in {session.state.value} state"
+                )
             if self.settings.net_reactor_slayer is None:
                 return Result[JsonObject](
                     ok=False,
@@ -237,6 +245,15 @@ class DotnetAnalysisMixin:
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"dotnet.reactor.unpack cannot run in {session.state.value} state"
+                )
             after = inspect_dotnet(result.output_path, require_verified=True)
             return _success(
                 {
