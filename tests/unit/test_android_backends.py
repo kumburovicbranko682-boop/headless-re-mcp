@@ -575,6 +575,52 @@ class TestApkClassesSayWhenTheyStopped:
         assert page["has_more"] is False
 
 
+class TestApkMethodsSayWhenTheyStopped:
+    """A method page that hit the cap looks exactly like one that ended.
+
+    Measured: 80 methods with limit=10 came back as count=10 and total=80,
+    with no has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Meth:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class _Klass:
+            name = "Lcom/ex/C;"
+
+            def get_methods(self) -> list[_Meth]:
+                return [_Meth(f"m{index}") for index in range(n)]
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = type(
+                    "Analysis", (), {"get_classes": lambda _self: [_Klass()]}
+                )()
+
+        client = ApkClient()
+        client._available = True
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(80).methods(
+            tmp_path / "app.apk", "Lcom/ex/C;", offset=0, limit=10
+        )
+        assert page["count"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).methods(
+            tmp_path / "app.apk", "Lcom/ex/C;", offset=0, limit=10
+        )
+        assert page["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

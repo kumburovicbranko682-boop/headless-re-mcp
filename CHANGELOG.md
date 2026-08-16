@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.methods` 停在一页时看起来像完整方法表**。80 个方法、limit=10 时回
+  `count=10` / `total=80`，没有 `has_more`。只看列表的 agent 会停在第一页。
+  现在截断时标 `has_more`。
 - **`apk.classes` 停在一页时看起来像完整类表**。80 个内部类、limit=10 时回
   `count=10` / `total=80`，没有 `has_more`。只看列表的 agent 会停在第一页。
   现在截断时标 `has_more`。
