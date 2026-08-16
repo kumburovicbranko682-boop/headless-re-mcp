@@ -51,7 +51,11 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_modules(
         dump_path: str, timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0
     ) -> dict[str, Any]:
-        """Loaded module list of a crash dump, as cdb prints it."""
+        """Loaded module list of a crash dump, as cdb prints it.
+
+        Large dumps are cut; read truncated rather than treating the
+        listing as every module.
+        """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
     @tools.tool(name="windbg.disasm")

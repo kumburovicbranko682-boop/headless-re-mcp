@@ -128,6 +128,25 @@ def test_launch_failure_becomes_a_structured_error(
     assert exc.value.details["cdb"] == str(cdb)
 
 
+def test_modules_description_says_to_read_truncated() -> None:
+    """windbg.modules already cuts output but its tool text never said so.
+
+    Measured: handler.__doc__ had no truncated while a listing over
+    500000 characters is cut and marked. A model that never saw the
+    field treated a cut module list as every module.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.windbg import build_windbg_tools
+
+    service = AnalysisService()
+    try:
+        tools = {item.name: item for item in build_windbg_tools(service)}
+        doc = tools["windbg.modules"].handler.__doc__ or ""
+        assert "truncated" in doc
+    finally:
+        service.close_all()
+
+
 def test_threads_description_says_to_read_truncated() -> None:
     """windbg.threads already cuts output but its tool text never said so.
 
