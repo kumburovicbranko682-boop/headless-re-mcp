@@ -68,7 +68,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         server_binary: str = "",
         port: Annotated[int, Field(ge=1, le=65535)] = 27042,
     ) -> dict[str, Any]:
-        """Push and start frida-server on a rooted device/emulator via adb (best-effort)."""
+        """Push and start frida-server on a rooted device/emulator via adb.
+
+        running is true only when a frida-server process is visible afterwards.
+        """
         return _dump(
             analysis.frida_server_ensure(session_id, serial, server_binary=server_binary, port=port)
         )

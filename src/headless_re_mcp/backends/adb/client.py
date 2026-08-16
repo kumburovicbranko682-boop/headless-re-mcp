@@ -294,13 +294,7 @@ class AdbBackend:
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        if self._frida_server_visible(dev):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -326,7 +320,26 @@ class AdbBackend:
                 "port": port,
                 "note": f"launch attempted; verify manually ({exc})",
             }
-        return {"running": True, "pushed": pushed, "port": port}
+        # The launch command returning is not the same as the process existing.
+        # Measured: a successful empty shell still reported running=True while
+        # ps listed only init. An unattended agent then attaches to nothing.
+        if self._frida_server_visible(dev):
+            return {"running": True, "pushed": pushed, "port": port}
+        return {
+            "running": False,
+            "pushed": pushed,
+            "port": port,
+            "note": "launch command returned but frida-server is not in the process list",
+        }
+
+    @staticmethod
+    def _frida_server_visible(dev: Any) -> bool:
+        try:
+            return "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
+                dev.shell("ps")
+            )
+        except Exception:  # noqa: BLE001
+            return False
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)

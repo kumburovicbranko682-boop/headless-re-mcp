@@ -378,6 +378,60 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestFridaServerEnsureDoesNotReportAGhost:
+    """A launch command that returned used to be reported as running=True.
+
+    Measured: ps listed only init, su returned empty success, and the reply
+    said running=True. An unattended agent then attaches to a server that is
+    not there and burns the mission on a target that never started.
+    """
+
+    def _backend(self, *, after_launch: str) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.phase = "before"
+
+            def shell(self, args: object, timeout: float | None = None) -> str:
+                if isinstance(args, str) and args.startswith("su "):
+                    self.phase = "after"
+                    return ""
+                if self.phase == "after":
+                    return after_launch
+                return "root 1 0 init"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_launch_that_left_nothing_is_not_running(self) -> None:
+        result = self._backend(after_launch="root 1 0 init").ensure_frida_server(
+            "emulator-5554"
+        )
+        assert result["running"] is False
+        assert "not in the process list" in result["note"]
+
+    def test_a_process_that_actually_appeared_is_running(self) -> None:
+        result = self._backend(
+            after_launch="root 99 1 frida-server"
+        ).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+        assert "note" not in result
+
+    def test_already_running_is_still_a_no_op(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object, timeout: float | None = None) -> str:
+                return "root 99 1 frida-server"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554")
+        assert result == {"running": True, "pushed": False, "port": 27042}
+
+
 class TestDevicePropertiesSayWhenTheyStopped:
     """800 properties with limit=500 used to come back as count=500, unmarked."""
 
