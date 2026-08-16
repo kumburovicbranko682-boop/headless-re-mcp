@@ -414,6 +414,30 @@ class TestWebScriptBufferIsBounded:
         assert str(_MAX_SCRIPTS + 499) in handle.scripts
         assert "0" not in handle.scripts
 
+    def test_the_script_list_is_paged(self) -> None:
+        """2000 typical URLs encoded to 441 KiB; a page of 100 is 22 KiB."""
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(250):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "url": f"https://cdn.example.com/{index}.js",
+                "language": "JavaScript",
+            }
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        page = backend.scripts("s", offset=0, limit=10)
+        assert page["count"] == 10
+        assert page["total"] == 250
+        assert page["has_more"] is True
+        tail = backend.scripts("s", offset=240, limit=20)
+        assert tail["count"] == 10
+        assert tail["has_more"] is False
+        assert {item["scriptId"] for item in page["scripts"]} & {
+            item["scriptId"] for item in tail["scripts"]
+        } == set()
+
     def test_request_and_console_buffers_are_bounded_types(self) -> None:
         handle = _WebSession(object(), object(), object(), object(), object())
         assert handle.console.maxlen is not None

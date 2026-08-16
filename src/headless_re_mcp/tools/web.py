@@ -71,9 +71,22 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_console(session_id, limit=limit))
 
     @tools.tool(name="web.scripts")
-    def web_scripts(session_id: str, wasm_only: bool = False) -> dict[str, Any]:
-        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger."""
-        return _dump(analysis.web_scripts(session_id, wasm_only=wasm_only))
+    def web_scripts(
+        session_id: str,
+        wasm_only: bool = False,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List parsed scripts seen by the debugger, one page at a time.
+
+        The session keeps at most 2000 scripts. A page of 100 typical URLs
+        is ~22 KiB; the full list was 441 KiB. Read `total` and `has_more`.
+        """
+        return _dump(
+            analysis.web_scripts(
+                session_id, wasm_only=wasm_only, offset=offset, limit=limit
+            )
+        )
 
     @tools.tool(name="web.script.source")
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
@@ -81,9 +94,16 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_script_source(session_id, script_id))
 
     @tools.tool(name="web.wasm.list")
-    def web_wasm_list(session_id: str) -> dict[str, Any]:
-        """List WebAssembly modules loaded by the page."""
-        return _dump(analysis.web_wasm_list(session_id))
+    def web_wasm_list(
+        session_id: str,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List WebAssembly modules loaded by the page, one page at a time.
+
+        Same buffer as web.scripts. Read `total` and `has_more`.
+        """
+        return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
