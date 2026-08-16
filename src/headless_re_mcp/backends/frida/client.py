@@ -409,11 +409,32 @@ class FridaClient:
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         try:
-            pid = device.spawn([package.strip()])
+            raw_pid = device.spawn([package.strip()])
+        except Exception as exc:  # noqa: BLE001
+            raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
+        # Measured: spawn() returning 0 still answered {'pid': 0}, so an
+        # agent treated a process that never started as the session debuggee.
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError) as exc:
+            raise FridaError(
+                "backend_error",
+                "spawn did not start the package",
+                package=package.strip(),
+                pid=raw_pid,
+            ) from exc
+        if pid <= 0:
+            raise FridaError(
+                "backend_error",
+                "spawn did not start the package",
+                package=package.strip(),
+                pid=pid,
+            )
+        try:
             device.resume(pid)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
-        return {"package": package.strip(), "pid": int(pid), "device": str(device_id or "local")}
+        return {"package": package.strip(), "pid": pid, "device": str(device_id or "local")}
 
     def java_enumerate(
         self,

@@ -83,7 +83,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.spawn")
     def frida_spawn(session_id: str, package: str) -> dict[str, Any]:
-        """Spawn and resume a package on the device, authorizing its pid for this session."""
+        """Spawn and resume a package; pid 0 is not a started process."""
         return _dump(analysis.frida_spawn(session_id, package))
 
     @tools.tool(name="frida.java.classes")

@@ -652,6 +652,50 @@ class TestFridaDevicesSayWhenTheyStopped:
         assert result["total"] == 3
 
 
+class TestFridaSpawnDoesNotInventAPid:
+    """A spawn that returned pid 0 used to look like a started process.
+
+    Measured: device.spawn() returning 0 still answered
+    ``{'package': 'com.example.app', 'pid': 0}``. An unattended agent then
+    treats a process that never started as the session debuggee.
+    """
+
+    def _client(self, pid: object) -> FridaClient:
+        class _Dev:
+            def spawn(self, args: object) -> object:
+                return pid
+
+            def resume(self, spawned: object) -> None:
+                return None
+
+        class _Frida:
+            def get_local_device(self) -> _Dev:
+                return _Dev()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_pid_zero_is_not_spawned(self) -> None:
+        with pytest.raises(FridaError) as info:
+            self._client(0).spawn(None, "com.example.app")
+        assert info.value.code == "backend_error"
+        assert "did not start" in info.value.message
+        assert info.value.details.get("pid") == 0
+
+    def test_a_missing_pid_is_not_spawned(self) -> None:
+        with pytest.raises(FridaError) as info:
+            self._client(None).spawn(None, "com.example.app")
+        assert info.value.code == "backend_error"
+        assert "did not start" in info.value.message
+
+    def test_a_positive_pid_is_spawned(self) -> None:
+        result = self._client(4242).spawn(None, "com.example.app")
+        assert result["pid"] == 4242
+        assert result["package"] == "com.example.app"
+
+
 class TestFridaApplicationsSayWhenTheyStopped:
     """An application page that filled used to look like every package if count was all you read."""
 
