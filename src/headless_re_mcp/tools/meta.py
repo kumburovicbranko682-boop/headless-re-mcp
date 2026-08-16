@@ -123,7 +123,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Not a log of every call. Reads are absent, so a session that analysed
         for an hour without changing anything shows only its open and close.
-        Each write carries the undo record written alongside it.
+        Each write carries the undo record written alongside it. Read
+        `has_more` for unread lines, and `skipped` for lines that would not
+        parse; a full page can still have skipped > 0.
         """
         return _dump(analysis.timeline_list(session_id, offset=offset, limit=limit))
 

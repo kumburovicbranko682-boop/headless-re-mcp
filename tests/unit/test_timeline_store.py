@@ -117,3 +117,20 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     # The reader already skips what will not parse.
     listed = store.list_session_timeline(path)
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
+    assert listed["skipped"] == 1
+    assert listed["has_more"] is False
+
+
+def test_skipped_lines_do_not_invent_another_page(tmp_path: Path) -> None:
+    """5 lines, 2 corrupt: count=3, total=5, has_more=True after the whole file."""
+    path = tmp_path / "timeline.jsonl"
+    path.write_text(
+        '{"event":"a"}\nnot-json\n{"event":"b"}\n{bad\n{"event":"c"}\n',
+        encoding="utf-8",
+    )
+    page = store.list_session_timeline(path, offset=0, limit=100)
+    assert [item["event"] for item in page["events"]] == ["a", "b", "c"]
+    assert page["count"] == 3
+    assert page["total"] == 5
+    assert page["skipped"] == 2
+    assert page["has_more"] is False

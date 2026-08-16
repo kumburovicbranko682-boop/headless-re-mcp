@@ -158,6 +158,7 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
         "offset": offset,
         "limit": limit,
         "has_more": False,
+        "skipped": 0,
     }
     with _timeline_lock(path):
         if not path.is_file():
@@ -176,17 +177,23 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
     # answer, and the decode itself is now outside the lock entirely.
     total, chunk = _page(raw, offset, limit)
     events = []
+    skipped = 0
     for line in chunk:
         try:
             events.append(json.loads(line))
         except json.JSONDecodeError:
-            continue
+            skipped += 1
+    # has_more is about lines not yet read, not about lines that parsed.
+    # Measured: 5 lines with 2 corrupt came back as count=3, total=5,
+    # has_more=True after the whole file had been read, so a caller kept
+    # paging an empty remainder.
     return {
         "events": events,
         "count": len(events),
         "total": total,
         "offset": offset,
         "limit": limit,
-        "has_more": offset + len(events) < total,
+        "has_more": offset + len(chunk) < total,
+        "skipped": skipped,
         "path": str(path),
     }
