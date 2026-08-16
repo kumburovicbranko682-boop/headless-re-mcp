@@ -57,7 +57,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.packages")
     def device_packages(serial: str, third_party_only: bool = False) -> dict[str, Any]:
-        """List installed package names, optionally only third-party ones."""
+        """List installed package names, optionally only third-party ones.
+
+        Capped; read `total` and `has_more`. `count` is this page, not every
+        package on the device.
+        """
         return _dump(analysis.device_packages(serial, third_party_only=third_party_only))
 
     @tools.tool(name="device.install")

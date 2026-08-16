@@ -113,6 +113,8 @@ until 1.0 the tool surface may still change between minor versions.
   现在与浏览器采集列表一样带这两项。
 - **`device.properties` 停在上限却装成全部**。600 条 getprop、limit=500 时只回
   `count=500`，没有 `total` / `has_more`。现在带这两项。
+- **`device.packages` 没有上限**。5000 个包名序列化成 113_946 字节，回包没有
+  `total` / `has_more`。现在最多回 2000 个并标明还有更多。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

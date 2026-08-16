@@ -351,6 +351,25 @@ class TestApktoolBoundaries:
         assert info.value.code == "capability_unavailable"
 
 
+def test_device_packages_does_not_return_every_package_as_if_it_were_small() -> None:
+    """pm list was unbounded. Measured: 5000 packages serialised to 113_946 bytes
+    and the reply had no total/has_more, so a page looked like the whole device.
+    """
+    from headless_re_mcp.backends.adb.client import AdbBackend
+
+    class _FakeDev:
+        def shell(self, _cmd: str) -> str:
+            return "\n".join(f"package:com.example.app{i}" for i in range(5000))
+
+    backend = AdbBackend()
+    backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+    got = backend.packages("emulator-5554")
+    assert got["count"] == 2000
+    assert got["total"] == 5000
+    assert got["has_more"] is True
+    assert len(got["packages"]) == 2000
+
+
 def test_device_properties_says_when_the_page_is_not_the_whole_set() -> None:
     """The cap was applied; the reply looked like the whole getprop.
 

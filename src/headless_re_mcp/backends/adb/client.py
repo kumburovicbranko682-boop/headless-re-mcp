@@ -22,6 +22,7 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+_MAX_PACKAGES = 2000
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -178,7 +179,14 @@ class AdbBackend:
             for line in str(raw).splitlines()
             if line.startswith("package:")
         )
-        return {"packages": pkgs, "count": len(pkgs), "third_party_only": third_party_only}
+        window = pkgs[:_MAX_PACKAGES]
+        return {
+            "packages": window,
+            "count": len(window),
+            "total": len(pkgs),
+            "has_more": len(pkgs) > len(window),
+            "third_party_only": third_party_only,
+        }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)
