@@ -438,6 +438,53 @@ class TestEnsureFridaServerDoesNotInventARunningProcess:
             service.close_all()
 
 
+class TestDeviceShellCallsAreBounded:
+    """A wedged adb used to park the tool worker for as long as it liked.
+
+    Measured: logcat, getprop and pm list all passed timeout=None and waited
+    out a 2.5s block in full. The same device with a 30s block would have
+    held the worker until the process died. ``ensure_frida_server`` already
+    passed a timeout to ``su``; the rest of the surface did not.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_logcat_properties_and_packages_pass_a_deadline(self) -> None:
+        class _Recorder:
+            def __init__(self) -> None:
+                self.timeouts: list[float | None] = []
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                self.timeouts.append(timeout)
+                return ""
+
+        device = _Recorder()
+        backend = self._backend(device)
+        backend.logcat("emulator-5554", lines=10)
+        backend.properties("emulator-5554")
+        backend.packages("emulator-5554")
+        assert device.timeouts
+        assert all(t is not None and t > 0 for t in device.timeouts)
+
+    def test_a_blocking_shell_fails_instead_of_waiting_it_out(self) -> None:
+        class _Blocker:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                if timeout is None:
+                    raise AssertionError("unbounded shell would wait forever")
+                raise TimeoutError(f"adb timed out after {timeout}")
+
+        backend = self._backend(_Blocker())
+        with pytest.raises(AdbError) as info:
+            backend.logcat("emulator-5554", lines=10)
+        assert info.value.code == "backend_error"
+        assert "timed out" in info.value.message.lower() or "logcat" in info.value.message
+
+
 class TestLaunchDoesNotInventSuccess:
     """``launched: True`` used to mean the monkey command returned, not that it started.
 

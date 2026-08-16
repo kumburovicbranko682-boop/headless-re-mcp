@@ -22,6 +22,12 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+# adbutils.shell has no default deadline. A wedged adb server then parks the
+# tool worker until the process dies -- measured: logcat / getprop / pm list
+# all passed timeout=None and waited out a 2.5s block in full. Twenty seconds
+# is longer than any of these commands need and shorter than the 60s tool
+# budget, so a stuck device costs one call, not a thread.
+_SHELL_TIMEOUT = 20.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -57,6 +63,15 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _shell(dev: Any, cmd: str | list[str], *, timeout: float = _SHELL_TIMEOUT) -> str:
+    """Run one device shell command with a deadline.
+
+    ``timeout`` is passed through to adbutils; callers that used to omit it
+    blocked for as long as the adb server did.
+    """
+    return str(dev.shell(cmd, timeout=timeout))
+
+
 def _frida_server_running(dev: Any) -> bool:
     """Whether ``ps`` currently lists a frida-server process.
 
@@ -65,13 +80,13 @@ def _frida_server_running(dev: Any) -> bool:
     after the process actually started. Only a live listing is ``running``.
     """
     try:
-        listing = str(dev.shell("ps -A"))
+        listing = _shell(dev, "ps -A")
     except Exception:  # noqa: BLE001
         listing = ""
     if "frida-server" in listing:
         return True
     try:
-        listing = str(dev.shell("ps"))
+        listing = _shell(dev, "ps")
     except Exception:  # noqa: BLE001
         return False
     return "frida-server" in listing
@@ -169,7 +184,7 @@ class AdbBackend:
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
         try:
-            raw = dev.shell("getprop")
+            raw = _shell(dev, "getprop")
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
         props: dict[str, str] = {}
@@ -185,7 +200,7 @@ class AdbBackend:
         dev = self._device(serial)
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
-            raw = dev.shell(args)
+            raw = _shell(dev, args)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pm list failed: {exc}") from exc
         pkgs = sorted(
@@ -224,7 +239,9 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            raw = dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            raw = _shell(
+                dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
+            )
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
         text = str(raw)
@@ -246,7 +263,7 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["am", "force-stop", pkg])
+            _shell(dev, ["am", "force-stop", pkg])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
         return {"stopped": True, "package": pkg}
@@ -266,7 +283,7 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         try:
-            raw = dev.shell(["logcat", "-d", "-t", str(capped)])
+            raw = _shell(dev, ["logcat", "-d", "-t", str(capped)])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
         text = str(raw)
@@ -328,7 +345,7 @@ class AdbBackend:
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
                 dev.sync.push(str(path), remote_path)
-                dev.shell(["chmod", "755", remote_path])
+                _shell(dev, ["chmod", "755", remote_path])
                 pushed = True
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
@@ -337,7 +354,8 @@ class AdbBackend:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             # A timeout here often means su blocked after the process started, so
             # the verdict is the post-launch ``ps``, not the exception.
-            dev.shell(
+            _shell(
+                dev,
                 f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
