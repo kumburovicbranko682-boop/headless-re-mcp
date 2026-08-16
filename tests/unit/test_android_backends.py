@@ -462,6 +462,41 @@ class TestDeviceLaunchDoesNotInventSuccess:
         assert result == {"launched": True, "package": "com.example.app"}
 
 
+class TestDeviceLogcatSaysWhenItStopped:
+    """A logcat page that hit the cap looks exactly like one that ended."""
+
+    def _backend(self, count: int) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                asked = int(cmd[-1]) if isinstance(cmd, list) else count
+                start = max(0, count - asked)
+                return "\n".join(f"line{index}" for index in range(start, count))
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(600).logcat("emulator-5554", lines=200)
+        assert len(result["lines"]) == 200
+        assert result["has_more"] is True
+        assert result["requested"] == 200
+
+    def test_a_short_buffer_is_complete(self) -> None:
+        result = self._backend(3).logcat("emulator-5554", lines=200)
+        assert len(result["lines"]) == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(200).logcat("emulator-5554", lines=200)
+        assert len(result["lines"]) == 200
+        assert result["has_more"] is False
+
+
 class TestDevicePackagesAreBounded:
     """An emulator image can carry thousands of packages; the list had no cap."""
 
