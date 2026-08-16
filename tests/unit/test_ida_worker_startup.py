@@ -14,8 +14,10 @@ from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
     _bytes_read,
+    _functions,
     _open_database_error,
     _page_items,
+    _strings,
 )
 
 
@@ -86,6 +88,55 @@ def test_a_short_byte_read_says_so(monkeypatch: Any) -> None:
     assert result["requested"] == 64
     assert result["truncated"] is True
     assert len(result["hex"]) == 32
+
+
+def test_a_function_list_page_says_what_was_left_out(monkeypatch: Any) -> None:
+    """The live list does not use _page_items; 500/100 had total and no has_more."""
+    import sys
+    import types
+
+    idautils = types.ModuleType("idautils")
+    idautils.Functions = lambda: list(range(500))  # type: ignore[attr-defined]
+    ida_funcs = types.ModuleType("ida_funcs")
+
+    class Func:
+        def __init__(self, ea: int) -> None:
+            self.start_ea = ea
+            self.end_ea = ea + 1
+            self.flags = 0
+
+    ida_funcs.get_func = lambda ea: Func(int(ea))  # type: ignore[attr-defined]
+    ida_name = types.ModuleType("ida_name")
+    ida_name.get_name = lambda ea: f"f{ea}"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+    monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+    result = _functions({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 500
+    assert result["has_more"] is True
+
+
+def test_a_string_list_page_says_what_was_left_out(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    class Item:
+        def __init__(self, index: int) -> None:
+            self.ea = index
+            self.length = 1
+            self.strtype = 0
+
+        def __str__(self) -> str:
+            return f"s{self.ea}"
+
+    idautils = types.ModuleType("idautils")
+    idautils.Strings = lambda: [Item(index) for index in range(500)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    result = _strings({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 500
+    assert result["has_more"] is True
 
 
 def test_a_full_byte_read_is_complete(monkeypatch: Any) -> None:

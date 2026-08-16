@@ -561,12 +561,16 @@ def _functions(params: JsonObject) -> JsonObject:
                 "flags": int(function.flags) if function is not None else 0,
             }
         )
+    # Built here instead of via _page_items so we do not materialise every
+    # function dict. Measured: 500 functions and limit=100 came back as
+    # returned=100, total=500, and no has_more.
     return {
         "items": items,
         "offset": offset,
         "limit": limit,
         "returned": len(items),
         "total": len(addresses),
+        "has_more": offset + len(items) < len(addresses),
     }
 
 
@@ -601,6 +605,7 @@ def _strings(params: JsonObject) -> JsonObject:
         "limit": limit,
         "returned": len(items),
         "total": len(strings),
+        "has_more": offset + len(items) < len(strings),
     }
 
 
