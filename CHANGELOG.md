@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.connect` 连不上仍回 `ok=True`**。拒绝已经被认出来之后，回包仍是成功信封加
+  `connected: False`。只看 `ok` 的无人值守 agent 会当成已经连上。现在连不上就
+  `backend_error`。
 - **`apk.manifest` 截断后看起来仍是完整清单**。250,021 字符的清单被切成 200,000 且没有
   `truncated`，agent 会把一段切到一半的 XML 当成整份 AndroidManifest。现在带回
   `truncated` 与 `bytes`。

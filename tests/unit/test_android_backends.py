@@ -644,8 +644,10 @@ class TestDeviceConnectDoesNotInventSuccess:
         ],
     )
     def test_a_refusal_is_not_connected(self, message: str) -> None:
-        payload = self._backend(message).connect("127.0.0.1", 5555)
-        assert payload["connected"] is False, message
+        with pytest.raises(AdbError) as info:
+            self._backend(message).connect("127.0.0.1", 5555)
+        assert info.value.code == "backend_error", message
+        assert info.value.details.get("connected") is False, message
 
     @pytest.mark.parametrize(
         "message",

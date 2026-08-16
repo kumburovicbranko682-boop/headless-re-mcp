@@ -209,10 +209,19 @@ class AdbBackend:
                 raise AdbError(
                     "backend_error", f"connect failed: {exc}", endpoint=endpoint
                 ) from exc
+            text = str(message)
+            if not _adb_connect_succeeded(text):
+                raise AdbError(
+                    "backend_error",
+                    "adb connect did not attach the endpoint",
+                    endpoint=endpoint,
+                    result=text,
+                    connected=False,
+                )
             return {
                 "endpoint": endpoint,
-                "result": str(message),
-                "connected": _adb_connect_succeeded(str(message)),
+                "result": text,
+                "connected": True,
             }
 
         return self._call("connect", work)
