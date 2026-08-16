@@ -149,3 +149,46 @@ class TestIdaFunctionAndStringPagesSayWhenTheyStopped:
         self._install(monkeypatch, 3)
         page = _functions({"offset": 0, "limit": 10})
         assert page["has_more"] is False
+
+
+class TestIdaDisassemblySaysWhenALineWasCut:
+    """Instruction text was sliced at 512 characters and said nothing.
+
+    Measured: an 800-character line came back as 512 with no truncated, so a
+    caller would treat a cut operand list as the whole instruction.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+        import sys
+        import types
+
+        ida_bytes = types.ModuleType("ida_bytes")
+        ida_bytes.is_loaded = lambda ea: True  # type: ignore[attr-defined]
+        ida_ua = types.ModuleType("ida_ua")
+
+        class _Insn:
+            pass
+
+        ida_ua.insn_t = _Insn  # type: ignore[attr-defined]
+        ida_ua.decode_insn = lambda insn, ea: 4  # type: ignore[attr-defined]
+        idc = types.ModuleType("idc")
+        idc.generate_disasm_line = lambda ea, flags: text  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+        monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+        monkeypatch.setitem(sys.modules, "idc", idc)
+
+    def test_a_cut_line_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida.worker import _disassemble
+
+        self._install(monkeypatch, "X" * 800)
+        page = _disassemble({"address": 0x1000, "count": 1})
+        insn = page["instructions"][0]
+        assert len(insn["text"]) == 512
+        assert insn["truncated"] is True
+
+    def test_a_short_line_is_not_labelled_partial(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida.worker import _disassemble
+
+        self._install(monkeypatch, "mov eax, ebx")
+        page = _disassemble({"address": 0x1000, "count": 1})
+        assert page["instructions"][0]["truncated"] is False

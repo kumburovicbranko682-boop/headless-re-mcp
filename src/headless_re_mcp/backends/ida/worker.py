@@ -374,6 +374,7 @@ def _disassemble(params: JsonObject) -> JsonObject:
                 "ea": int(ea),
                 "size": length,
                 "text": text[:512],
+                "truncated": len(text) > 512,
             }
         )
         consumed += length

@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **IDA 反汇编行截断后看起来仍是完整指令**。800 字符的一行被切成 512 且没有
+  `truncated`。agent 会把切掉的操作数当成整条指令。现在每行带回
+  `truncated`。
 - **agent 任务列表停在一页时看起来像完整队列**。150 个 mission、limit=100 时回
   `count=100`，没有 `has_more`。过夜排队的旧任务会消失。现在截断时标
   `has_more`。
