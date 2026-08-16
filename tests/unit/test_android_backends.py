@@ -912,6 +912,27 @@ class TestApkComponentsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkDecompileDescriptionMatchesTheCut:
+    """apk.decompile already cuts Java at 400000 bytes, but the tool text hid that.
+
+    Measured: source is sliced at 400000 with truncated=true, while the
+    description said "decompile one class to Java" -- so a model treats the
+    slice as the whole class.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.decompile"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
+
+
 class TestApkXrefsDescriptionMatchesTheCut:
     """apk.xrefs already cuts the caller list, but the tool text hid that.
 
