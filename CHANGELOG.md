@@ -86,6 +86,8 @@ until 1.0 the tool surface may still change between minor versions.
   三个 S 态子进程，doctor 因此标 READY。现在超时即失败并杀掉整树，不再试剩下的旗标。
 - **VMPDump 探针超时只杀启动器**。包装脚本起 sleeper 时 0.40 秒返回失败，子进程仍是 S。
   现在走有界执行。
+- **NETReactorSlayer 探针超时只杀启动器**。包装脚本起 sleeper 时 0.40 秒返回失败，子进程
+  仍是 S。现在走有界执行。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

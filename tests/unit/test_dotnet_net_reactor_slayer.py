@@ -122,3 +122,69 @@ def test_doctor_reports_net_reactor_slayer_missing(tmp_path: Path) -> None:
     )
     probes = {item.name: item for item in report.probes}
     assert probes["net_reactor_slayer"].status.value == "missing"
+
+
+def _pid_is_running(pid: int) -> bool:
+    """True only for a live process. A zombie after SIGKILL counts as dead."""
+    import os
+
+    if os.name != "nt":
+        stat = Path(f"/proc/{pid}/stat")
+        if not stat.is_file():
+            return False
+        try:
+            return stat.read_text(encoding="ascii").split()[2] != "Z"
+        except OSError:
+            return False
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    exit_code = ctypes.c_ulong(0)
+    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return exit_code.value == 259
+
+
+def test_a_timed_out_nrs_probe_kills_what_it_started(tmp_path: Path) -> None:
+    """subprocess.run left the child of a NETReactorSlayer probe wrapper running.
+
+    Measured: a script that spawned a sleeper returned in 0.40s and left the
+    child in state S.
+    """
+    import os
+    import stat
+    import sys
+    import time
+
+    from headless_re_mcp.dotnet.net_reactor_slayer import probe_net_reactor_slayer
+
+    marker = tmp_path / "child.pid"
+    fake = tmp_path / ("nrs.cmd" if os.name == "nt" else "nrs")
+    body = tmp_path / "fake_nrs.py"
+    body.write_text(
+        "import subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "open(marker, 'w', encoding='ascii').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake.write_text(f'@echo off\n"{sys.executable}" "{body}" %*\n', encoding="utf-8")
+    else:
+        script = f"#!{sys.executable}\n" + body.read_text(encoding="utf-8")
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    started = time.monotonic()
+    ok, _text = probe_net_reactor_slayer(fake, timeout=0.4)
+    elapsed = time.monotonic() - started
+
+    assert ok is False
+    assert elapsed < 3.0
+    child = int(marker.read_text(encoding="ascii").strip())
+    assert _pid_is_running(child) is False
