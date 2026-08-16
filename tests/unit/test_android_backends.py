@@ -185,64 +185,67 @@ class TestAdbArgumentValidation:
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
 
-    def test_logcat_does_not_wait_on_adb_forever(self) -> None:
-        """logcat -d still has to come back if adb has stopped answering.
+    def test_logcat_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """logcat used adbutils shell, which connects with a 600s default.
 
-        Measured: the dump was invoked with timeout=None. A wedged adb
-        held the worker; the -t line cap does not bound the wait.
+        Measured on info: shell(timeout=15) opened the transport with the
+        library default first. The -t line cap does not bound the wait.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeout = timeout
-                return "line\n"
+        monkeypatch.setattr(adb_client, "_LOGCAT_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).logcat("emulator-5554", lines=10)
-        assert device.timeout == 15.0
-        assert result["requested"] == 10
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).logcat("emulator-5554", lines=10)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
-    def test_logcat_says_when_the_dump_was_cut(self) -> None:
+    def test_logcat_says_when_the_dump_was_cut(self, tmp_path: Path) -> None:
         """A 5-line page used to look like the whole dump.
 
         Measured: 20 dumped lines, lines=5, reply had 5 lines and only
         requested. The other 15 looked like they were never logged.
         """
 
-        class _Dev:
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                return "\n".join(f"line {index}" for index in range(20))
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        result = _Backend(_Dev()).logcat("emulator-5554", lines=5)
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            + "".join(f"print('line {index}')\n" for index in range(20))
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).logcat("emulator-5554", lines=5)
         assert result["count"] == 5
         assert result["total"] == 20
         assert result["has_more"] is True
         assert result["lines"][0] == "line 15"
+        assert result["requested"] == 5
 
-        complete = _Backend(_Dev()).logcat("emulator-5554", lines=20)
+        complete = _Backend(adb).logcat("emulator-5554", lines=20)
         assert complete["has_more"] is False
         assert complete["total"] == 20
 

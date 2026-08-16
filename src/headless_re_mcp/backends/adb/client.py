@@ -30,6 +30,7 @@ _LIST_DEVICES_TIMEOUT = 10.0
 _INFO_TIMEOUT = 15.0
 _PROPERTIES_TIMEOUT = 15.0
 _PACKAGES_TIMEOUT = 15.0
+_LOGCAT_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -492,10 +493,21 @@ class AdbBackend:
         return {"package": None, "activity": None}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
-        dev = self._device(serial)
+        """Dump recent logcat. The hop is bounded; the reply is capped.
+
+        adbutils ``shell(timeout=15)`` still opened the transport with a
+        600s default. Measured on info: a wedged adb held the connect,
+        not the command.
+        """
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         try:
-            raw = dev.shell(["logcat", "-d", "-t", str(capped)], timeout=15.0)
+            raw = self._adb_shell(
+                serial, f"logcat -d -t {capped}", timeout=_LOGCAT_TIMEOUT
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
         dumped = str(raw).splitlines()
