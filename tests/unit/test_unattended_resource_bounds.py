@@ -464,6 +464,41 @@ class TestWebScriptBufferIsBounded:
         assert listed["has_more"] is False
 
 
+class TestWebConsoleSaysWhenItIsATail:
+    """Asking for 200 lines of a 2000-line log used to look like the whole log."""
+
+    def _listed(self, lines: int, *, limit: int = 200) -> dict[str, Any]:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(lines):
+            handle.console_seen += 1
+            handle.console.append({"type": "log", "text": f"line {index}"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend.console("s", limit=limit)
+
+    def test_a_short_request_against_a_long_log_reports_more(self) -> None:
+        listed = self._listed(2000, limit=200)
+        assert listed["count"] == 200
+        assert listed["total"] == 2000
+        assert listed["limit"] == 200
+        assert listed["has_more"] is True
+        assert listed["console"][0]["text"] == "line 1800"
+
+    def test_a_complete_log_is_not_labelled_partial(self) -> None:
+        listed = self._listed(3, limit=200)
+        assert listed["count"] == 3
+        assert listed["total"] == 3
+        assert listed["has_more"] is False
+
+    def test_a_request_that_exactly_covers_the_log_is_complete(self) -> None:
+        listed = self._listed(200, limit=200)
+        assert listed["count"] == 200
+        assert listed["total"] == 200
+        assert listed["has_more"] is False
+
+
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:
         """Sorting would silently target the highest pid, not the new app."""

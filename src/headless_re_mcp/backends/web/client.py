@@ -122,6 +122,9 @@ class _WebSession:
         self.cdp = cdp
         self.requests: OrderedDict[str, JsonObject] = OrderedDict()
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
+        # console_seen counts every line, including ones the ring later
+        # dropped, so a tail of `limit` lines can be told from the whole log.
+        self.console_seen = 0
         # Bounded like the other two: scriptParsed fires for every script a page
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
@@ -281,6 +284,7 @@ class WebBackend:
                 else:
                     parts.append(str(argument.get("type", "")))
             with handle.lock:
+                handle.console_seen += 1
                 handle.console.append(
                     {"type": str(params.get("type") or "log"), "text": " ".join(parts)}
                 )
@@ -369,7 +373,14 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            seen = handle.console_seen
+        return {
+            "console": items,
+            "count": len(items),
+            "total": seen,
+            "limit": limit,
+            "has_more": seen > len(items),
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)
