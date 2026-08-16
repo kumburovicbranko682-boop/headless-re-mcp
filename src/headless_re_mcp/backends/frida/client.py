@@ -267,7 +267,7 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._frida.attach(pid)
+        session = self._attach_with_deadline(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
