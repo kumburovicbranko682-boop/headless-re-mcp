@@ -165,3 +165,94 @@ def test_doctor_reports_de4dot_missing(tmp_path: Path) -> None:
     assert report is not None
     probes = {item["name"]: item for item in report["probes"]}
     assert probes["de4dot"]["status"] == "missing"
+
+
+def test_de4dot_probe_does_not_invent_ready_from_a_silent_stub(tmp_path: Path) -> None:
+    """A file that exists used to be reported as de4dot even when it was not.
+
+    Measured: a stub that exited 2 with 'definitely not this tool' still
+    returned (True, ''). Doctor then reported READY and an unattended box
+    would send assemblies to a binary that is not de4dot.
+    """
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    stub = tmp_path / "not-de4dot"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stderr.write('definitely not this tool\\n')\n"
+        "sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    ok, output = probe_de4dot_version(stub, timeout=1.0)
+    assert ok is False
+    assert output == ""
+
+
+def test_de4dot_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) -> None:
+    """The same silent-ready path also left the launcher's child running.
+
+    Measured: three argv timeouts, (True, ''), and os.kill(child, 0) still
+    succeeded.
+    """
+    import os
+    import time
+    from contextlib import suppress
+
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    pidfile = tmp_path / "child.pid"
+    stub = tmp_path / "de4dot"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    child = 0
+    try:
+        ok, output = probe_de4dot_version(stub, timeout=0.4)
+        assert ok is False
+        assert output == ""
+        deadline = time.monotonic() + 2.0
+        while not pidfile.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pidfile.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.kill(child, 0)
+                alive = True
+            except OSError:
+                alive = False
+            if not alive or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert alive is False
+    finally:
+        if child:
+            with suppress(OSError):
+                os.kill(child, 9)
+
+
+def test_de4dot_probe_still_accepts_a_banner(tmp_path: Path) -> None:
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    stub = tmp_path / "de4dot"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.write('de4dot 3.1.41592\\n')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    ok, output = probe_de4dot_version(stub, timeout=2.0)
+    assert ok is True
+    assert "de4dot" in output.casefold()

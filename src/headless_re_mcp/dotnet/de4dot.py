@@ -17,6 +17,8 @@ from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any, Final
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
 JsonObject = dict[str, Any]
 
 DEFAULT_TIMEOUT: Final[float] = 120.0
@@ -371,24 +373,23 @@ def probe_de4dot_version(executable: Path, *, timeout: float = 5.0) -> tuple[boo
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     for args in ([str(exe)], [str(exe), "-h"], [str(exe), "--help"]):
         try:
-            completed = subprocess.run(args, **options)
-        except (OSError, subprocess.TimeoutExpired):
+            # Measured: a stub that exited 2 with "not this tool" still
+            # returned (True, ""). A hanging launcher did the same after
+            # three timeouts and left its child running. Doctor then
+            # reported READY and the next sample shared a core with that
+            # leftover process.
+            completed = run_bounded(args, timeout=timeout, creationflags=creationflags)
+        except (OSError, TimedOut):
             continue
-        text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        text = (
+            completed.stdout.decode("utf-8", errors="replace")
+            + "\n"
+            + completed.stderr.decode("utf-8", errors="replace")
+        ).strip()
         lowered = text.casefold()
         if "de4dot" in lowered or completed.returncode in {0, 1}:
             return True, text[:2000]
-    return True, ""
+    return False, ""
