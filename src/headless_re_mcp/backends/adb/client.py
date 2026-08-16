@@ -152,14 +152,20 @@ class AdbBackend:
             raw = dev.shell("getprop")
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
+        cap = max(1, int(limit))
         props: dict[str, str] = {}
+        has_more = False
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
-            if match:
-                props[match.group(1)] = match.group(2)
-            if len(props) >= limit:
+            if not match:
+                continue
+            if len(props) >= cap:
+                # Only set once something was actually left out, so a result
+                # that happens to fill the page is not reported as partial.
+                has_more = True
                 break
-        return {"properties": props, "count": len(props)}
+            props[match.group(1)] = match.group(2)
+        return {"properties": props, "count": len(props), "has_more": has_more}
 
     def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
         dev = self._device(serial)
