@@ -657,6 +657,59 @@ class TestWebNetworkListSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebNetworkGetDoesNotInventABody:
+    """A CDP failure used to come back as a completed get.
+
+    Measured: send() raising RuntimeError returned a success object with
+    body_error and no body. The tool is "fetch the body".
+    """
+
+    def test_a_cdp_failure_is_an_error(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend, WebError
+
+        class Boom:
+            def send(self, *args: object, **kwargs: object) -> dict[str, object]:
+                del args, kwargs
+                raise RuntimeError("cdp gone")
+
+        class Runner:
+            def call(self, work: Any, timeout: float = 60.0) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), object(), Boom())
+        handle.runner = Runner()  # type: ignore[assignment]
+        handle.remember_request({"requestId": "r1", "url": "https://x", "method": "GET"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        with pytest.raises(WebError) as caught:
+            backend.network_get("s", "r1", tmp_path)
+        assert caught.value.code == "backend_error"
+        assert "cdp gone" in caught.value.message
+
+    def test_a_body_that_arrives_is_still_returned(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        class Cdp:
+            def send(self, *args: object, **kwargs: object) -> dict[str, object]:
+                del args, kwargs
+                return {"body": "hello", "base64Encoded": False}
+
+        class Runner:
+            def call(self, work: Any, timeout: float = 60.0) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), object(), Cdp())
+        handle.runner = Runner()  # type: ignore[assignment]
+        handle.remember_request({"requestId": "r1", "url": "https://x", "method": "GET"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.network_get("s", "r1", tmp_path)
+        assert result["body"] == "hello"
+        assert result["body_truncated"] is False
+
+
 class TestWebConsoleSaysWhenItStopped:
     """truncated meant the ring evicted, not that this page is complete.
 

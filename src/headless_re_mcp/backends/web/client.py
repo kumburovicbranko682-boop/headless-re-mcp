@@ -376,8 +376,17 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            # Measured: a CDP failure came back as a success object with
+            # body_error and no body. The tool is "fetch the body", so that
+            # read as a completed get.
+            raise WebError(
+                "backend_error",
+                f"cannot fetch response body: {exc}",
+                request_id=request_id,
+            ) from exc
         result = dict(entry)
         if len(body) > _MAX_INLINE_BODY:
             artifact_dir.mkdir(parents=True, exist_ok=True)
