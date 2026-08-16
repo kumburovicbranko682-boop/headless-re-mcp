@@ -276,12 +276,19 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            result: JsonObject = {
                 "address": address,
-                "size": size,
+                "size": len(data),
+                "requested": size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            if len(data) != size:
+                # Measured: a 4-byte read still came back size=16, so an agent
+                # treated a short buffer as the whole request.
+                result["truncated"] = True
+                result["note"] = "read returned fewer bytes than requested"
+            return result
         finally:
             session.detach()
 

@@ -199,6 +199,61 @@ class TestHookTemplateSaysWhatItActuallyLeavesBehind:
         assert fake.session.script.destroyed is True
 
 
+class TestFridaMemoryReadDoesNotPadAShortBuffer:
+    """A short read used to come back with size equal to the request.
+
+    Measured: Memory.read returned 4 bytes and the reply still said size=16.
+    An unattended agent then treats a truncated buffer as the whole read.
+    """
+
+    def _read(self, returned: list[int], size: int) -> dict[str, Any]:
+        class _Exports:
+            def read(self, address: int, count: int) -> list[int]:
+                assert count == size
+                return returned
+
+        class _Script:
+            def __init__(self) -> None:
+                self.exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                assert source
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                assert pid == 7
+                return _Session()
+
+        client = FridaClient()
+        client._frida = _Frida()
+        client._available = True
+        return client.memory_read(7, 0x1000, size, allowed_pid=7)
+
+    def test_a_short_read_is_not_the_requested_size(self) -> None:
+        result = self._read([1, 2, 3, 4], 16)
+        assert result["size"] == 4
+        assert result["requested"] == 16
+        assert result["data"] == "01020304"
+        assert result["truncated"] is True
+        assert "fewer bytes" in result["note"]
+
+    def test_a_full_read_is_not_labelled_truncated(self) -> None:
+        result = self._read([1, 2, 3, 4], 4)
+        assert result["size"] == 4
+        assert result["requested"] == 4
+        assert result["data"] == "01020304"
+        assert "truncated" not in result
+        assert "note" not in result
+
+
 class _FakeCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
