@@ -786,6 +786,71 @@ class TestFridaModulesSayWhenTheyStopped:
         assert result["total"] == 3
 
 
+class TestFridaMemoryReadSaysWhenItWasShort:
+    """A short Frida read used to look like the requested range.
+
+    Measured: request 64, 16 bytes back, ``{'size': 64, 'data': <32 hex>}``
+    and no truncated. An empty buffer answered ``size=64`` with ``data=""``.
+    An unattended agent then treats a hole as the bytes it asked for.
+    """
+
+    def _client(self, payload: list[int]) -> FridaClient:
+        class _Exports:
+            def read(self, address: int, size: int) -> list[int]:
+                del address, size
+                return payload
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                return _Session()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_a_short_read_is_marked(self) -> None:
+        result = self._client([0x41] * 16).memory_read(1, 0x1000, 64, allowed_pid=1)
+        assert result["size"] == 16
+        assert len(bytes.fromhex(result["data"])) == 16
+        assert result["truncated"] is True
+
+    def test_an_empty_read_is_marked(self) -> None:
+        result = self._client([]).memory_read(1, 0x1000, 64, allowed_pid=1)
+        assert result["size"] == 0
+        assert result["data"] == ""
+        assert result["truncated"] is True
+
+    def test_a_full_read_is_not_labelled_partial(self) -> None:
+        result = self._client([0x90] * 16).memory_read(1, 0x1000, 16, allowed_pid=1)
+        assert result["size"] == 16
+        assert result["truncated"] is False
+
+    def test_the_tool_description_says_to_read_truncated(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "frida.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def frida_memory_read(")[1].split("def frida_hook_template(")[0]
+        assert "truncated" in block
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

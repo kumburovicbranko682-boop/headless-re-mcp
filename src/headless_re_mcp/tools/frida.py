@@ -42,6 +42,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
+        """Read a bounded byte range; truncated is True when fewer bytes came back."""
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
     @tools.tool(name="frida.hook.template")

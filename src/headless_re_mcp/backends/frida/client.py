@@ -278,11 +278,15 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            # Measured: a 64-byte request that got 16 bytes still answered
+            # size=64 and no truncated, so an agent treated a short read as
+            # the range. An empty buffer answered the same with data="".
             return {
                 "address": address,
-                "size": size,
+                "size": len(data),
                 "encoding": "hex",
                 "data": data.hex(),
+                "truncated": len(data) < size,
             }
         finally:
             session.detach()
