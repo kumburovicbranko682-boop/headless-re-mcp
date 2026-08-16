@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
@@ -92,15 +93,40 @@ class IsolationRunner:
         started = self.clock()
         command: Sequence[str] = self.policy.command
         try:
-            completed = self.run(
-                list(command),
-                capture_output=True,
-                text=True,
-                timeout=self.policy.timeout_s,
-                check=False,
-                # Runs once per sample on an unattended box; a console window
-                # per rotation would pile up on the desktop.
-                **no_window_popen_kwargs(),
+            # Tests inject `run`. The default used subprocess.run, which kills
+            # only the launcher: measured, a wrapper that spawned a sleeper
+            # returned in 0.40s and left the child in state S -- so the next
+            # sample started while the previous rotation was still running.
+            if self.run is subprocess.run:
+                bounded = run_bounded(
+                    list(command),
+                    timeout=self.policy.timeout_s,
+                    creationflags=int(no_window_popen_kwargs().get("creationflags") or 0),
+                )
+                completed = subprocess.CompletedProcess(
+                    args=list(command),
+                    returncode=bounded.returncode,
+                    stdout=bounded.stdout.decode("utf-8", errors="replace"),
+                    stderr=bounded.stderr.decode("utf-8", errors="replace"),
+                )
+            else:
+                completed = self.run(
+                    list(command),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.policy.timeout_s,
+                    check=False,
+                    # Runs once per sample on an unattended box; a console window
+                    # per rotation would pile up on the desktop.
+                    **no_window_popen_kwargs(),
+                )
+        except TimedOut as exc:
+            return self._failed(
+                f"timed out after {exc.timeout:g}s",
+                command=command,
+                elapsed=self.clock() - started,
+                reason=reason,
+                killed_pids=exc.killed,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._failed(
@@ -136,6 +162,7 @@ class IsolationRunner:
         elapsed: float,
         reason: str,
         stderr: str = "",
+        killed_pids: list[int] | None = None,
     ) -> JsonObject:
         payload: JsonObject = {
             "ok": False,
@@ -147,6 +174,8 @@ class IsolationRunner:
         }
         if stderr:
             payload["stderr"] = stderr
+        if killed_pids:
+            payload["killed_pids"] = killed_pids
         record_alert("isolation_failed", fields={"detail": detail, "reason": reason})
         if self.policy.required:
             raise IsolationError(

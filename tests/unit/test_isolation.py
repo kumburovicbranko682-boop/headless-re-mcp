@@ -79,6 +79,52 @@ def test_a_command_that_cannot_start_is_a_failure_not_a_crash() -> None:
     assert "FileNotFoundError" in str(outcome["detail"])
 
 
+def test_a_timed_out_rotation_kills_what_it_started(tmp_path: Any) -> None:
+    """subprocess.run left the child of a wrapper running.
+
+    Measured: a script that spawned a sleeper returned in 0.40s and left the
+    child in state S, so the next sample started while the previous rotation
+    was still on the machine.
+    """
+    import os
+    import stat
+    import sys
+    import time
+
+    marker = tmp_path / "child.pid"
+    fake = tmp_path / ("rotate.cmd" if os.name == "nt" else "rotate.sh")
+    body = tmp_path / "rotate.py"
+    body.write_text(
+        "import subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "open(marker, 'w', encoding='ascii').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake.write_text(f'@echo off\n"{sys.executable}" "{body}" %*\n', encoding="utf-8")
+    else:
+        script = f"#!{sys.executable}\n" + body.read_text(encoding="utf-8")
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    started = time.monotonic()
+    outcome = IsolationRunner(
+        IsolationPolicy(command=(str(fake),), timeout_s=0.4, required=False)
+    ).rotate(reason="test")
+    elapsed = time.monotonic() - started
+
+    assert outcome["ok"] is False
+    assert elapsed < 3.0
+    killed = list(outcome.get("killed_pids") or [])
+    assert len(killed) >= 2
+    child = int(marker.read_text(encoding="ascii").strip())
+    assert child in killed
+
+
 def test_a_timeout_is_a_failure() -> None:
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd="revert.ps1", timeout=1.0)
