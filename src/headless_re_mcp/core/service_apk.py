@@ -37,6 +37,14 @@ class ApkAnalysisMixin:
 
     def _apk_binary(self, session_id: str) -> Path:
         session = self.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"apk tools cannot run in {session.state.value} state"
+            )
         return session.require_target(TargetKind.APK)
 
     def _jadx_out_dir(self, session_id: str) -> Path:
@@ -49,6 +57,15 @@ class ApkAnalysisMixin:
         try:
             binary = self._apk_binary(session_id)
             data = ApkClient().open(binary)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.open cannot run in {session.state.value} state"
+                )
             _record_backend(self, session_id, "apk", endpoint="androguard")
             _timeline_append(
                 self, session_id, "apk.open", "apk parsed", package=data.get("package")
