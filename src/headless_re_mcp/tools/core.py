@@ -378,7 +378,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List basic blocks for the function containing address."""
+        """List basic blocks for the function containing address.
+
+        Capped by limit. Read has_more and total rather than treating returned
+        as every block.
+        """
         return _dump(
             analysis.static_basic_blocks(
                 session_id,
