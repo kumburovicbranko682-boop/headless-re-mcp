@@ -1170,3 +1170,46 @@ class TestFridaServerEnsureIsHonest:
         result = _EnsureBackend(device).ensure_frida_server("emulator-5554")
         assert result["running"] is True
         assert result["pushed"] is False
+
+    def test_ensure_does_not_wait_on_push_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """adbutils sync.push used to run with no deadline.
+
+        Measured: push() was invoked with no kwargs; a 0.8s sleep held
+        ensure_frida_server for 0.8s.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PUSH_TIMEOUT", 0.4)
+
+        class _Dev:
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                text = cmd if isinstance(cmd, str) else " ".join(str(part) for part in cmd)
+                if "ps" in text:
+                    return "init\n"
+                raise AssertionError("chmod/launch must not run after a push timeout")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        binary = tmp_path / "frida-server"
+        binary.write_bytes(b"elf")
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(_Dev(), adb).ensure_frida_server(
+                "emulator-5554", server_binary=str(binary)
+            )
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
