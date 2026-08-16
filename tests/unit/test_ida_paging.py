@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from headless_re_mcp.backends.ida.worker import _page_items
 
 
@@ -27,3 +29,68 @@ class TestIdaPageItemsSaysWhenItWasCut:
         page = _page_items([{"i": index} for index in range(100)], 0, 100)
         assert page["returned"] == 100
         assert page["has_more"] is False
+
+
+class TestIdaFunctionsSaysWhenItWasCut:
+    """static.functions built its own page and omitted has_more.
+
+    The envelope matched the old _page_items shape: 250 functions, limit
+    100, returned=100, total=250, no has_more.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        addresses = list(range(250))
+
+        class _Func:
+            def __init__(self, ea: int) -> None:
+                self.start_ea = ea
+                self.end_ea = ea + 16
+                self.flags = 0
+
+        idautils = types.ModuleType("idautils")
+        idautils.Functions = lambda: addresses  # type: ignore[attr-defined]
+        ida_funcs = types.ModuleType("ida_funcs")
+        ida_funcs.get_func = lambda ea: _Func(ea)  # type: ignore[attr-defined]
+        ida_name = types.ModuleType("ida_name")
+        ida_name.get_name = lambda ea: f"sub_{ea:X}"  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "idautils", idautils)
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+
+        page = worker._functions({"offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_an_exact_page_is_complete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        addresses = list(range(100))
+
+        class _Func:
+            def __init__(self, ea: int) -> None:
+                self.start_ea = ea
+                self.end_ea = ea + 16
+                self.flags = 0
+
+        idautils = types.ModuleType("idautils")
+        idautils.Functions = lambda: addresses  # type: ignore[attr-defined]
+        ida_funcs = types.ModuleType("ida_funcs")
+        ida_funcs.get_func = lambda ea: _Func(ea)  # type: ignore[attr-defined]
+        ida_name = types.ModuleType("ida_name")
+        ida_name.get_name = lambda ea: f"sub_{ea:X}"  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "idautils", idautils)
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+
+        page = worker._functions({"offset": 0, "limit": 100})
+        assert page["has_more"] is False
+        assert page["total"] == 100

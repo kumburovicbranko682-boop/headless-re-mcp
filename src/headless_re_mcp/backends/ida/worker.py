@@ -559,12 +559,15 @@ def _functions(params: JsonObject) -> JsonObject:
                 "flags": int(function.flags) if function is not None else 0,
             }
         )
+    # Same silent cut as _page_items: 250 functions, limit 100, returned=100,
+    # total=250, no has_more, so an agent treated the page as the program.
     return {
         "items": items,
         "offset": offset,
         "limit": limit,
         "returned": len(items),
         "total": len(addresses),
+        "has_more": offset + len(items) < len(addresses),
     }
 
 
