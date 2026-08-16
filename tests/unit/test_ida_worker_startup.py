@@ -8,10 +8,12 @@ telling an unattended caller it is permanent costs it the sample.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
+    _bytes_read,
     _open_database_error,
     _page_items,
 )
@@ -68,3 +70,33 @@ def test_the_last_function_page_is_complete() -> None:
     result = _page_items([{"i": index} for index in range(500)], 400, 100)
     assert result["returned"] == 100
     assert result["has_more"] is False
+
+
+def test_a_short_byte_read_says_so(monkeypatch: Any) -> None:
+    """Asked 64, got 16, truncated=False — the rest of the range vanished."""
+    import sys
+    import types
+
+    ida = types.ModuleType("ida_bytes")
+    ida.is_loaded = lambda addr: True  # type: ignore[attr-defined]
+    ida.get_bytes = lambda addr, size: b"\x00" * 16  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida)
+    result = _bytes_read({"address": 0x1000, "size": 64})
+    assert result["size"] == 16
+    assert result["requested"] == 64
+    assert result["truncated"] is True
+    assert len(result["hex"]) == 32
+
+
+def test_a_full_byte_read_is_complete(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    ida = types.ModuleType("ida_bytes")
+    ida.is_loaded = lambda addr: True  # type: ignore[attr-defined]
+    ida.get_bytes = lambda addr, size: b"\x00" * size  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida)
+    result = _bytes_read({"address": 0x1000, "size": 64})
+    assert result["size"] == 64
+    assert result["requested"] == 64
+    assert result["truncated"] is False
