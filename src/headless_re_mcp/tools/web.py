@@ -32,7 +32,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         headless: bool = True,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Launch a Chrome browser for the session and open a URL via CDP."""
+        """Launch a Chrome browser for the session and open a URL via CDP.
+
+        Answers with opened, url, title and headless. There is no session,
+        browser, ok or page field.
+        """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
     @tools.tool(name="web.navigate")
