@@ -294,6 +294,16 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        # Measured: exit 2 with stdout "Could not open dump\n" still became
+        # threads="Could not open dump\n", so an unattended agent treats the
+        # error text as the thread list.
+        if completed.returncode not in {0, 1}:
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

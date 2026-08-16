@@ -95,6 +95,37 @@ def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
     assert payload["modules"] == "ok"
 
 
+def test_a_failed_dump_is_not_saved_by_error_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cdb exit 2 used to succeed if it printed anything to stdout.
+
+    Measured: returncode=2, stdout "Could not open dump\\n", threads and
+    modules both returned that string as the listing.
+    """
+    import subprocess
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def failed(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"Could not open dump\n",
+            stderr=b"fatal",
+        )
+
+    monkeypatch.setattr(windbg_module, "run_bounded", failed)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    with pytest.raises(WindbgError) as info:
+        WindbgClient(cdb).threads(dump)
+    assert info.value.code == "backend_error"
+
+
 def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch) -> None:
     store = r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.0_x64__abc\amd64\cdb.exe"
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
