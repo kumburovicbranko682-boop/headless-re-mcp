@@ -50,9 +50,9 @@ class FridaDeviceMixin:
     def _save_auth(self, session_id: str, auth: JsonObject) -> None:
         self.registry.update_metadata(session_id, {_AUTH_KEY: auth})
 
-    def frida_devices(self) -> Result[JsonObject]:
+    def frida_devices(self, offset: int = 0, limit: int = 32) -> Result[JsonObject]:
         try:
-            data = FridaClient().enumerate_devices()
+            data = FridaClient().enumerate_devices(offset=offset, limit=limit)
             return _success(data, backend="frida")
         except FridaError as exc:
             return _failure(_as_rpc(exc))

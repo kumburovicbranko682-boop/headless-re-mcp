@@ -53,9 +53,15 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.frida_hook_template(session_id, template=template))
 
     @tools.tool(name="frida.devices")
-    def frida_devices() -> dict[str, Any]:
-        """Enumerate Frida devices (local, USB, remote)."""
-        return _dump(analysis.frida_devices())
+    def frida_devices(
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 32,
+    ) -> dict[str, Any]:
+        """Enumerate Frida devices (local, USB, remote).
+
+        Check has_more / total: a full page is not every device Frida can see.
+        """
+        return _dump(analysis.frida_devices(offset=offset, limit=limit))
 
     @tools.tool(name="frida.device.connect")
     def frida_device_connect(

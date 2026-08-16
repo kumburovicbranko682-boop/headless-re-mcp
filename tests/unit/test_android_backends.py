@@ -386,6 +386,57 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaDevicesIsPaged:
+    """frida.devices used to dump every device Frida could see.
+
+    Measured: 80 devices, count=80, 3.8 KiB, no has_more -- so a caller
+    that only looks at the page thinks Frida has nothing else.
+    """
+
+    def _client(self, n: int) -> FridaClient:
+        class _Dev:
+            def __init__(self, index: int) -> None:
+                self.id = f"d{index}"
+                self.name = f"dev-{index}"
+                self.type = "usb"
+
+        class _Frida:
+            def enumerate_devices(self) -> list[_Dev]:
+                return [_Dev(index) for index in range(n)]
+
+        client = FridaClient()
+        client._need = lambda: _Frida()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_default_page_is_reported(self) -> None:
+        result = self._client(80).enumerate_devices()
+        assert result["count"] == 32
+        assert result["total"] == 80
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_complete(self) -> None:
+        result = self._client(3).enumerate_devices()
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._client(32).enumerate_devices()
+        assert result["count"] == 32
+        assert result["has_more"] is False
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.devices"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestFridaMemoryReadDescriptionMatchesTheReturn:
     """frida.memory.read returns hex then immediately detaches.
 
