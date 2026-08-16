@@ -27,9 +27,15 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
 
     @tools.tool(name="device.list")
-    def device_list() -> dict[str, Any]:
-        """List ADB devices and emulators visible to the local adb server."""
-        return _dump(analysis.device_list())
+    def device_list(
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 32,
+    ) -> dict[str, Any]:
+        """List ADB devices and emulators visible to the local adb server.
+
+        Check has_more / total: a full page is not every serial adb can see.
+        """
+        return _dump(analysis.device_list(offset=offset, limit=limit))
 
     @tools.tool(name="device.connect")
     def device_connect(

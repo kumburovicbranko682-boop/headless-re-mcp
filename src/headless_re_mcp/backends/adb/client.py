@@ -98,14 +98,19 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
 
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, offset: int = 0, limit: int = 32) -> JsonObject:
         client = self._client()
         try:
-            devices = client.device_list()
+            devices = list(client.device_list())
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
+        # Measured: 200 serials, count=200, 8.3 KiB, no has_more -- and
+        # get_state ran for every one before the caller saw a page.
+        start = max(0, int(offset))
+        cap = min(256, max(1, int(limit)))
+        window = devices[start : start + cap]
         items = []
-        for dev in devices:
+        for dev in window:
             serial = getattr(dev, "serial", "")
             state = "device"
             try:
@@ -113,7 +118,13 @@ class AdbBackend:
             except Exception:  # noqa: BLE001
                 state = "unknown"
             items.append({"serial": serial, "state": state})
-        return {"devices": items, "count": len(items)}
+        return {
+            "devices": items,
+            "count": len(items),
+            "total": len(devices),
+            "offset": start,
+            "has_more": start + len(window) < len(devices),
+        }
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
         client = self._client()

@@ -79,6 +79,74 @@ class TestAdbArgumentValidation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestDeviceListIsPaged:
+    """device.list used to dump every serial and probe each one's state.
+
+    Measured: 200 serials, count=200, 8.3 KiB, no has_more -- so a caller
+    that only looks at the page thinks adb has nothing else, and get_state
+    ran 200 times before anyone saw a page.
+    """
+
+    def _backend(self, n: int) -> tuple[AdbBackend, list[str]]:
+        probed: list[str] = []
+
+        class _Dev:
+            def __init__(self, index: int) -> None:
+                self.serial = f"emu-{index}"
+
+        class _Handle:
+            def __init__(self, serial: str) -> None:
+                self.serial = serial
+
+            def get_state(self) -> str:
+                probed.append(self.serial)
+                return "device"
+
+        class _Client:
+            def device_list(self) -> list[_Dev]:
+                return [_Dev(index) for index in range(n)]
+
+            def device(self, serial: str = "") -> _Handle:
+                return _Handle(serial)
+
+        backend = AdbBackend()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        return backend, probed
+
+    def test_hitting_the_default_page_is_reported(self) -> None:
+        backend, probed = self._backend(200)
+        result = backend.list_devices()
+        assert result["count"] == 32
+        assert result["total"] == 200
+        assert result["has_more"] is True
+        assert len(probed) == 32
+
+    def test_a_short_list_is_complete(self) -> None:
+        backend, probed = self._backend(3)
+        result = backend.list_devices()
+        assert result["count"] == 3
+        assert result["has_more"] is False
+        assert len(probed) == 3
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        backend, _probed = self._backend(32)
+        result = backend.list_devices()
+        assert result["count"] == 32
+        assert result["has_more"] is False
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.device import build_device_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_device_tools(service)}
+            doc = tools["device.list"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
