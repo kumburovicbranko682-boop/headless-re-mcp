@@ -677,10 +677,11 @@ class TestWebScriptBufferIsBounded:
                 handle.scripts.popitem(last=False)
                 handle.scripts_dropped += 1
         backend._sessions["s"] = handle
-        result = backend.scripts("s")
+        result = backend.scripts("s", limit=_MAX_SCRIPTS)
         assert result["count"] == _MAX_SCRIPTS
-        assert result["has_more"] is True
-        assert handle.scripts_dropped == 10
+        assert result["total"] == _MAX_SCRIPTS
+        assert result["has_more"] is False
+        assert result["dropped"] == 10
 
     def test_a_full_script_buffer_says_older_wasm_modules_were_dropped(self) -> None:
         from headless_re_mcp.backends.web.client import WebBackend
@@ -696,10 +697,9 @@ class TestWebScriptBufferIsBounded:
                 handle.scripts.popitem(last=False)
                 handle.scripts_dropped += 1
         backend._sessions["s"] = handle
-        result = backend.scripts("s", wasm_only=True)
+        result = backend.scripts("s", wasm_only=True, limit=_MAX_SCRIPTS)
         assert result["count"] == _MAX_SCRIPTS // 2
-        assert result["has_more"] is True
-        assert handle.scripts_dropped == 10
+        assert result["dropped"] == 10
 
     def test_a_script_buffer_that_never_evicted_is_not_labelled_truncated(self) -> None:
         from headless_re_mcp.backends.web.client import WebBackend
@@ -711,6 +711,7 @@ class TestWebScriptBufferIsBounded:
         result = backend.scripts("s")
         assert result["count"] == 1
         assert result["has_more"] is False
+        assert result["dropped"] == 0
 
     def test_evicted_requests_are_counted_as_dropped(self) -> None:
         from headless_re_mcp.backends.web.client import WebBackend
@@ -723,6 +724,30 @@ class TestWebScriptBufferIsBounded:
         result = backend.network_list("s")
         assert result["dropped"] == 7
         assert result["has_more"] is False
+
+    def test_the_script_list_is_paged(self) -> None:
+        """2000 typical URLs encoded to 441 KiB; a page of 100 is 22 KiB."""
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(250):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "url": f"https://cdn.example.com/{index}.js",
+                "language": "JavaScript",
+            }
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        page = backend.scripts("s", offset=0, limit=10)
+        assert page["count"] == 10
+        assert page["total"] == 250
+        assert page["has_more"] is True
+        tail = backend.scripts("s", offset=240, limit=20)
+        assert tail["count"] == 10
+        assert tail["has_more"] is False
+        assert {item["scriptId"] for item in page["scripts"]} & {
+            item["scriptId"] for item in tail["scripts"]
+        } == set()
 
     def test_request_and_console_buffers_are_bounded_types(self) -> None:
         handle = _WebSession(object(), object(), object(), object(), object())
