@@ -1315,7 +1315,9 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
-    def unpack_artifacts(self, session_id: str) -> Result[JsonObject]:
+    def unpack_artifacts(
+        self, session_id: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
         """List artifacts produced by the current unpack session."""
         try:
             self.registry.get(session_id)
@@ -1330,10 +1332,20 @@ class UnpackMixin:
                     ),
                 )
             directory = self._unpack_session_dir(session_id)
+            total = len(state.artifacts)
+            skipped = max(0, int(offset))
+            capped = max(1, min(int(limit), 500))
+            page = state.artifacts[skipped : skipped + capped]
+            # Measured: 151 artifacts came back as count=151 with no mark and
+            # no page size. The ledger grows for as long as the unpack runs.
             return _success(
                 {
-                    "artifacts": [item.to_dict() for item in state.artifacts],
-                    "count": len(state.artifacts),
+                    "artifacts": [item.to_dict() for item in page],
+                    "count": len(page),
+                    "total": total,
+                    "offset": skipped,
+                    "limit": capped,
+                    "has_more": skipped + len(page) < total,
                     "timeline_path": str(directory / "timeline.jsonl"),
                     "state_path": str(directory / "state.json"),
                     "claims_universal_unpack": False,

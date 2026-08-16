@@ -661,11 +661,15 @@ def register_legacy_routes(
     @app.get("/api/sessions/{session_id}/unpack/artifacts")
     def unpack_artifacts(
         session_id: str,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=500),
         authorization: str | None = Header(default=None),
         token_q: str | None = Query(default=None, alias="token"),
     ) -> JSONResponse:
         _require_token(authorization, token_q)
-        return JSONResponse(_result_payload(service.unpack_artifacts(session_id)))
+        return JSONResponse(
+            _result_payload(service.unpack_artifacts(session_id, offset=offset, limit=limit))
+        )
 
     @app.get("/api/artifacts")
     def artifacts(

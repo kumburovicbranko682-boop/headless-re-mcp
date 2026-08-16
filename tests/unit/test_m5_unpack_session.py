@@ -13,6 +13,7 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.unpack.oep import score_oep_candidates
 from headless_re_mcp.unpack.plan import build_unpack_plan
 from headless_re_mcp.unpack.session import (
+    UnpackArtifact,
     UnpackPhase,
     cancel_unpack_session,
     check_timeout,
@@ -210,6 +211,7 @@ def test_service_unpack_plan_start_cancel(tmp_path: Path) -> None:
     assert arts.ok
     # Artifacts ledger retained after cancel (input_binary still listed).
     assert arts.data["count"] >= 1
+    assert arts.data["has_more"] is False
     timeline = Path(arts.data["timeline_path"])
     assert timeline.is_file()
     lines = timeline.read_text(encoding="utf-8").strip().splitlines()
@@ -404,3 +406,50 @@ def test_service_score_oep_auto_collects_from_fake_dynamic(tmp_path: Path) -> No
     kinds = {item["kind"] for item in scored.data["observations"]}
     assert "rip_in_main_module_code" in kinds
     assert "write_to_execute" in kinds or "ep_section_protect_changed" in kinds
+
+
+def test_unpack_artifacts_says_when_the_list_is_only_a_page(tmp_path: Path) -> None:
+    """151 artifacts used to come back as count=151 with no has_more.
+
+    The ledger grows for as long as the unpack runs. An agent reading count
+    treated one reply as every dump the session produced.
+    """
+    binary = tmp_path / "plain.exe"
+    _write_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert started.ok
+    state = service._unpack_owner.get(session_id)
+    assert state is not None
+    extra = tuple(
+        UnpackArtifact(
+            kind="dump",
+            path=f"/tmp/d{index}.bin",
+            sha256="ab",
+            phase=UnpackPhase.DUMPED,
+        )
+        for index in range(150)
+    )
+    service._unpack_owner.put(session_id, replace(state, artifacts=state.artifacts + extra))
+
+    page = service.unpack_artifacts(session_id, offset=0, limit=100)
+    assert page.ok and page.data is not None
+    assert page.data["count"] == 100
+    assert page.data["total"] == 151
+    assert page.data["has_more"] is True
+    assert len(page.data["artifacts"]) == 100
+
+    tail = service.unpack_artifacts(session_id, offset=100, limit=100)
+    assert tail.ok and tail.data is not None
+    assert tail.data["count"] == 51
+    assert tail.data["total"] == 151
+    assert tail.data["has_more"] is False

@@ -178,9 +178,17 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.unpack_cancel(session_id, reason=reason))
 
     @tools.tool(name="unpack.artifacts")
-    def unpack_artifacts(session_id: str) -> dict[str, Any]:
-        """List unpack session artifacts and timeline/state paths."""
-        return _dump(analysis.unpack_artifacts(session_id))
+    def unpack_artifacts(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        """List unpack session artifacts and timeline/state paths.
+
+        Capped by limit. Read has_more and total rather than treating count as
+        every artifact the unpack produced.
+        """
+        return _dump(analysis.unpack_artifacts(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="unpack.score_oep")
     def unpack_score_oep(
