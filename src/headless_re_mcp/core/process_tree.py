@@ -99,7 +99,10 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
     """Return direct child PIDs of ``parent_pid`` (bounded)."""
     if type(parent_pid) is not int or parent_pid <= 0:
         return []
-    limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
+    # Measured: 20 children, asked 64, returned 16 -- the UI window cap
+    # (_MAX_CHILD_PIDS) was also applied to timeout kills, so four
+    # descendants survived the sweep.
+    limit = max(1, min(int(max_pids), _MAX_KILL_DESCENDANTS))
     if os.name != "nt":
         return _enumerate_direct_children_proc(parent_pid, limit)
     kernel32 = ctypes.windll.kernel32
