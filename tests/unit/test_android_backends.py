@@ -1369,6 +1369,41 @@ class TestApkPermissionPaging:
         assert complete["has_more"] is False
 
 
+class TestApkCertificatePaging:
+    def test_a_certificate_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A certificate list used to look complete with no totals.
+
+        Measured: five certificates, no count/total/has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Cert:
+            def __init__(self, index: int) -> None:
+                self.subject = f"CN={index}"
+                self.issuer = "CN=CA"
+                self.serial_number = index
+                self.sha256_fingerprint = "aa"
+
+        class _Apk:
+            def get_signature_names(self) -> list[str]:
+                return [f"CERT{index}.RSA" for index in range(5)]
+
+            def get_certificates(self) -> list[_Cert]:
+                return [_Cert(index) for index in range(5)]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.certificates(apk, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["signature_total"] == 5
+        assert result["has_more"] is True
+        complete = client.certificates(apk, limit=5)
+        assert complete["has_more"] is False
+
+
 class TestApkManifestTruncation:
     def test_a_cut_manifest_says_it_was_cut(self, tmp_path: Path) -> None:
         """A 200k cap used to look like the whole manifest.
