@@ -98,7 +98,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
-        """Capture a page screenshot; a missing file is not success."""
+        """Capture a page screenshot; a missing or empty file is not success."""
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 
     @tools.tool(name="web.har.export")

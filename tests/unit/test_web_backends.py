@@ -205,6 +205,17 @@ class TestScreenshotDoesNotInventAnEmptyImage:
         assert result["path"] == str(out)
         assert out.stat().st_size > 0
 
+    def test_the_tool_description_says_empty_is_not_success(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "web.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def web_screenshot(")[1].split("def web_har_export(")[0]
+        assert "empty" in block
+
 
 class TestWebTargetClassification:
     def test_urls_and_web_assets_classify_as_web(self, tmp_path: Path) -> None:
