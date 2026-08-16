@@ -27,6 +27,7 @@ _PUSH_TIMEOUT = 180.0
 _PULL_TIMEOUT = 180.0
 _FORWARD_TIMEOUT = 15.0
 _LIST_DEVICES_TIMEOUT = 10.0
+_INFO_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -179,17 +180,49 @@ class AdbBackend:
             "connected": "connected" in str(message).lower() or "already" in str(message).lower(),
         }
 
+    def _adb_shell(self, serial: str, command: str, *, timeout: float) -> str:
+        """Run one ``adb shell`` with a deadline. adbutils ``shell`` connects first.
+
+        Measured: ``shell(timeout=15)`` still opens the transport with the
+        library's 600s default, then applies 15s only to the read. A
+        wedged adb server held ``info`` for the connect, not the command.
+        """
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "-s", _check_serial(serial), "shell", command],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"shell timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"shell failed: {err or completed.returncode}",
+            )
+        return (completed.stdout or b"").decode("utf-8", errors="replace")
+
     def info(self, serial: str) -> JsonObject:
-        """Read a few well-known properties. Every adb hop is bounded.
+        """Read a few well-known properties. The hop is bounded.
 
         ``get_state`` / ``prop.*`` / ``getprop`` used to be invoked with no
-        deadline. Six of those in a row held the worker for the life of the
-        process when adb had stopped answering. A successful ``getprop``
-        already means the device accepted a shell, so ``state`` is ``device``.
+        deadline. adbutils ``shell(timeout=15)`` still opened the
+        transport with a 600s default. A successful ``getprop`` already
+        means the device accepted a shell, so ``state`` is ``device``.
         """
-        dev = self._device(serial)
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         try:
-            raw = dev.shell("getprop", timeout=15.0)
+            raw = self._adb_shell(serial, "getprop", timeout=_INFO_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
         props: dict[str, str] = {}

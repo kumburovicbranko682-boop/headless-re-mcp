@@ -700,50 +700,59 @@ class TestAdbArgumentValidation:
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
 
-    def test_info_does_not_wait_on_adb_forever(self) -> None:
-        """info used six unbounded adbutils calls.
+    def test_info_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """info used adbutils shell, which connects with a 600s default.
 
-        Measured: get_state, prop.model, prop.device, and three getprop
-        keys were invoked with no timeout. A wedged adb held the worker
-        for the life of the process.
+        Measured: shell(timeout=15) still opened the transport with the
+        library default first. A wedged adb held info for the connect,
+        not the command.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-                self.cmd: object = None
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.cmd = cmd
-                self.timeout = timeout
-                return (
-                    "[ro.product.model]: [Pixel]\n"
-                    "[ro.product.device]: [pixel]\n"
-                    "[ro.build.version.sdk]: [33]\n"
-                    "[ro.build.version.release]: [13]\n"
-                    "[ro.product.cpu.abi]: [arm64-v8a]\n"
-                )
-
-            def get_state(self) -> str:
-                raise AssertionError("unbounded get_state")
-
-            def getprop(self, name: str) -> str:
-                raise AssertionError(f"unbounded getprop {name}")
+        monkeypatch.setattr(adb_client, "_INFO_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).info("emulator-5554")
-        assert device.timeout == 15.0
-        assert device.cmd == "getprop"
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).info("emulator-5554")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
+
+    def test_info_reads_getprop_from_bounded_adb_shell(self, tmp_path: Path) -> None:
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
+
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "print('[ro.product.model]: [Pixel]')\n"
+            "print('[ro.product.device]: [pixel]')\n"
+            "print('[ro.build.version.sdk]: [33]')\n"
+            "print('[ro.build.version.release]: [13]')\n"
+            "print('[ro.product.cpu.abi]: [arm64-v8a]')\n"
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).info("emulator-5554")
         assert result["model"] == "Pixel"
         assert result["sdk"] == "33"
         assert result["state"] == "device"
