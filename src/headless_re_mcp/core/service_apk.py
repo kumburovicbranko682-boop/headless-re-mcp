@@ -227,6 +227,15 @@ class ApkAnalysisMixin:
                 timeout=timeout,
             )
             _timeline_append(self, session_id, "apk.sign", "apksigner signed apk")
+            # Measured: 5 signs overwrite the same file, 0 artifact rows.
+            data = _register_capture(
+                self,
+                session_id,
+                out_apk,
+                kind="apk_signed",
+                source="apk.sign",
+                payload=data,
+            )
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
