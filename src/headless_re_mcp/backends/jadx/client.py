@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
+_MAX_JAVA_FILES = 2000
 
 
 class JadxError(RuntimeError):
@@ -57,11 +58,15 @@ class JadxClient:
             if out_dir.is_dir()
             else []
         )
+        # java_file_count is the whole tree; the list is a page. Measured:
+        # 2500 files came back as java_file_count=2500 and a 2000-name list
+        # with no has_more, so an agent treated the page as every class.
         return {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": len(java_files),
-            "java_files": java_files[:2000],
+            "java_files": java_files[:_MAX_JAVA_FILES],
+            "has_more": len(java_files) > _MAX_JAVA_FILES,
         }
 
     def decompile(

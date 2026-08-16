@@ -720,6 +720,40 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestJadxExportSaysWhenTheFileListWasCut:
+    """java_file_count used to be the whole tree while the list silently stopped at 2000."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        monkeypatch.setattr(
+            JadxClient, "_run", lambda self, apk, extra, out_dir, timeout=0: ("", "", 0)
+        )
+        return JadxClient(None)
+
+    def test_a_cut_list_is_marked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        out = tmp_path / "jadx" / "sources"
+        out.mkdir(parents=True)
+        for index in range(2500):
+            (out / f"C{index}.java").write_text("class X{}", encoding="utf-8")
+        result = self._client(monkeypatch).export_sources(tmp_path / "a.apk", tmp_path / "jadx")
+
+        assert result["java_file_count"] == 2500
+        assert len(result["java_files"]) == 2000
+        assert result["has_more"] is True
+
+    def test_a_short_tree_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out = tmp_path / "jadx" / "sources"
+        out.mkdir(parents=True)
+        (out / "Main.java").write_text("class Main{}", encoding="utf-8")
+        result = self._client(monkeypatch).export_sources(tmp_path / "a.apk", tmp_path / "jadx")
+
+        assert result["java_file_count"] == 1
+        assert result["has_more"] is False
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
