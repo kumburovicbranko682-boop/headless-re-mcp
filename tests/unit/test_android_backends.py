@@ -350,6 +350,46 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestFridaApplicationsSayWhenTheyStopped:
+    """An app page that hit the cap looks exactly like one that ended.
+
+    Measured: 800 apps, limit 256, count=256, total=800, no has_more.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class _App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = f"App{index}"
+                self.pid = 0
+
+        class _Dev:
+            def enumerate_applications(self) -> list[_App]:
+                return [_App(index) for index in range(n)]
+
+        client = FridaClient()
+        client._resolve_device = lambda device_id: _Dev()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._client(800).applications(None, limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 800
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._client(3).applications(None, limit=256)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._client(256).applications(None, limit=256)
+        assert result["count"] == 256
+        assert result["has_more"] is False
+
+
 class TestDeviceUninstallDoesNotInventSuccess:
     """adbutils returning False used to be reported as uninstalled=True."""
 
