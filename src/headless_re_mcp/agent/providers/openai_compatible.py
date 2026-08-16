@@ -318,7 +318,22 @@ class OpenAICompatibleProvider:
                 headers=self._headers(),
             ) as response,
         ):
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                # Streaming leaves the body unread, so raise_for_status says
+                # only "429 Too Many Requests". probe_models then kept just
+                # HTTPStatusError. Measured: a 429 whose body said
+                # "quota exceeded retry after 30s" produced an exception
+                # without those words.
+                detail = await _read_bounded_error_detail(response)
+                if not detail:
+                    raise
+                raise httpx.HTTPStatusError(
+                    f"{exc}: {detail}",
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 allowance = _MAX_MODELS_BODY_BYTES + 1 - len(body)

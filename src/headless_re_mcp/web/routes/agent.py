@@ -414,7 +414,16 @@ def register_agent_routes(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="profile_not_found") from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"provider_probe_failed:{type(exc).__name__}") from exc
+            # Type name alone made 401/403/404/429/500 look identical.
+            # Keep a bounded str(exc) so a quota body or a refused key
+            # survives the 502.
+            detail = " ".join(str(exc).split())
+            if len(detail) > 500:
+                detail = detail[:500]
+            raise HTTPException(
+                status_code=502,
+                detail=f"provider_probe_failed:{type(exc).__name__}:{detail}",
+            ) from exc
         return JSONResponse({"ok": True, "models": models})
 
     @app.post("/api/providers/zerofall/preview")
