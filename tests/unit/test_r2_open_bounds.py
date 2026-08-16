@@ -32,3 +32,24 @@ class TestR2OpenSaysWhenItStopped:
         result = client.open(binary)
         assert result["info"] == "ok"
         assert "truncated" not in result
+
+
+class TestR2OpenDescriptionMatchesTheCut:
+    """r2.open now cuts info at 8000 chars, but the tool text hid that.
+
+    Measured: 20000-char identity, info length 8000, truncated=true, while
+    the description never mentioned the cut -- so a model treats the slice
+    as the whole identity.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.r2 import build_r2_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_r2_tools(service)}
+            doc = tools["r2.open"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
