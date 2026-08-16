@@ -239,3 +239,24 @@ def test_the_disasm_tool_names_the_session_cut() -> None:
     }
     assert docs["windbg_disasm"]
     assert "truncated" in docs["windbg_disasm"]
+
+
+def test_the_live_threads_tool_names_the_session_cut() -> None:
+    """The reply already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut ~* listing as every
+    live thread.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import windbg as windbg_tools
+
+    tree = ast.parse(inspect.getsource(windbg_tools.build_windbg_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["windbg_live_threads"]
+    assert "truncated" in docs["windbg_live_threads"]

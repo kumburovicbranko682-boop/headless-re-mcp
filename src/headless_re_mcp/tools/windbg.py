@@ -88,7 +88,11 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_live_threads(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Thread list of this session's live debuggee, read non-invasively."""
+        """Thread list of this session's live debuggee, read non-invasively.
+
+        The session excerpt is capped: read truncated rather than treating
+        threads as the whole ~* listing.
+        """
         return _dump(analysis.windbg_live_threads(session_id, timeout=timeout))
 
     @tools.tool(name="windbg.live_modules")
