@@ -1733,6 +1733,21 @@ class TestDeviceScreenshotDoesNotReportAGhost:
         assert result == {"path": str(dest), "serial": "emulator-5554"}
         assert dest.is_file()
 
+    def test_the_tool_description_names_a_missing_file(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_screenshot"]
+        assert "local file" in docs["device_screenshot"]
+
 
 class TestDevicePushDoesNotReportAGhost:
     """A push that left no remote file used to be reported as a remote path.
