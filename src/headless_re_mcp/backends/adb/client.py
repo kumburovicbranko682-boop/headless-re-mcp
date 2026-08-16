@@ -196,14 +196,25 @@ class AdbBackend:
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
         try:
-            dev.install(
+            outcome = dev.install(
                 str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
             )
         except TypeError:
             # Older adbutils signatures accept only the path.
-            dev.install(str(path))
+            outcome = dev.install(str(path))
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
+        # Modern adbutils raises; older ones return the pm line. Measured:
+        # "Failure [INSTALL_FAILED_INVALID_APK]" and False both became
+        # installed=True, so an unattended agent then launched a package
+        # that is not on the device.
+        text = "" if outcome is None else str(outcome)
+        if outcome is False or "failure" in text.casefold():
+            raise AdbError(
+                "backend_error",
+                f"install failed: {text or 'install returned false'}",
+                path=str(path),
+            )
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
     def uninstall(self, serial: str, package: str) -> JsonObject:

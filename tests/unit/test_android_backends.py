@@ -350,6 +350,52 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestDeviceInstallDoesNotInventSuccess:
+    """A failed pm install used to be reported as installed=True.
+
+    Measured: ``Failure [INSTALL_FAILED_INVALID_APK]`` and ``False`` both
+    produced ``{"installed": true}``. An unattended agent then launches a
+    package that is not on the device.
+    """
+
+    def _backend(self, outcome: object) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def install(self, *args: object, **kwargs: object) -> object:
+                return outcome
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_failure_line_is_a_failure(self, tmp_path: Path) -> None:
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        backend = self._backend("Failure [INSTALL_FAILED_INVALID_APK]")
+        with pytest.raises(AdbError) as info:
+            backend.install("emulator-5554", str(apk))
+        assert info.value.code == "backend_error"
+        assert "INSTALL_FAILED_INVALID_APK" in str(info.value)
+
+    def test_false_is_a_failure(self, tmp_path: Path) -> None:
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        with pytest.raises(AdbError) as info:
+            self._backend(False).install("emulator-5554", str(apk))
+        assert info.value.code == "backend_error"
+
+    def test_success_or_none_is_installed(self, tmp_path: Path) -> None:
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        for outcome in (None, "Success"):
+            result = self._backend(outcome).install("emulator-5554", str(apk))
+            assert result["installed"] is True
+            assert result["path"] == str(apk)
+
+
 class TestDeviceLaunchDoesNotInventSuccess:
     """monkey aborting used to be reported as launched=True.
 
