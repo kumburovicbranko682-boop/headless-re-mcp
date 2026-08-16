@@ -729,3 +729,23 @@ def test_the_structs_tool_says_a_page_is_only_a_page() -> None:
     }
     assert docs["static_structs"]
     assert "has_more" in docs["static_structs"]
+
+
+def test_the_enums_tool_says_a_page_is_only_a_page() -> None:
+    """The worker already set has_more; the description did not.
+
+    An agent that only reads the tool text treats one page as every enum.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_enums"]
+    assert "has_more" in docs["static_enums"]
