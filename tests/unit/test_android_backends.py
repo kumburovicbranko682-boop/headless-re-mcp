@@ -689,6 +689,21 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["count"] == 10
         assert result["has_more"] is False
 
+    def test_the_tool_description_names_the_page_flag(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import apk as apk_mod
+
+        tree = ast.parse(inspect.getsource(apk_mod.build_apk_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["apk_xrefs"]
+        assert "has_more" in docs["apk_xrefs"]
+
 
 class TestFridaModulesSayWhenTheyStopped:
     """100 modules with limit=64 used to come back as count=64, no has_more."""
