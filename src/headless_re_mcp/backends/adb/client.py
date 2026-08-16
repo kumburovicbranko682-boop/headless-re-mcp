@@ -341,6 +341,17 @@ class AdbBackend:
             dev.sync.pull(remote_path, str(local_path))
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+        if not local_path.is_file():
+            # adbutils treats a missing remote as a directory pull: it
+            # makedirs the destination and returns 0. Measured: that still
+            # came back as a local path with no file, so an agent reads an
+            # artifact that was never written.
+            raise AdbError(
+                "backend_error",
+                "pull did not produce a local file",
+                remote=remote_path,
+                local=str(local_path),
+            )
         return {"remote": remote_path, "local": str(local_path)}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
