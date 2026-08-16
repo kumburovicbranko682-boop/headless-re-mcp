@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.proxy.client import _FlowRecorder, _port_accepts
-from headless_re_mcp.backends.web.client import _MAX_SCRIPTS, _WebSession
+from headless_re_mcp.backends.web.client import _MAX_CONSOLE, _MAX_SCRIPTS, WebBackend, _WebSession
 from headless_re_mcp.core.service_frida import _MAX_AUTHORIZED, _append_recent
 
 
@@ -418,6 +418,56 @@ class TestWebScriptBufferIsBounded:
         handle = _WebSession(object(), object(), object(), object(), object())
         assert handle.console.maxlen is not None
         assert isinstance(handle.requests, OrderedDict)
+
+    def test_a_full_console_page_says_there_is_more(self) -> None:
+        """count used to be the page size, so 200 lines looked like the lot.
+
+        Measured: 2500 lines into a 2000-slot ring, limit 200, returned
+        count=200 and no has_more. The agent read that as the whole console.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_CONSOLE + 500):
+            handle.console.append({"type": "log", "text": f"line-{index}"})
+        backend._sessions["s"] = handle
+        page = backend.console("s", limit=200)
+        assert page["count"] == 200
+        assert page["total"] == _MAX_CONSOLE
+        assert page["has_more"] is True
+        assert page["buffer_full"] is True
+        assert page["console"][0]["text"] == "line-2300"
+        whole = backend.console("s", limit=2000)
+        assert whole["has_more"] is False
+        assert whole["buffer_full"] is True
+        assert whole["console"][0]["text"] == "line-500"
+
+    def test_a_full_script_list_says_the_buffer_dropped_older_ones(self) -> None:
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_SCRIPTS + 300):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "url": f"https://x/{index}.js",
+                "language": "JavaScript",
+            }
+            while len(handle.scripts) > _MAX_SCRIPTS:
+                handle.scripts.popitem(last=False)
+        backend._sessions["s"] = handle
+        listing = backend.scripts("s")
+        assert listing["count"] == _MAX_SCRIPTS
+        assert listing["has_more"] is False
+        assert listing["buffer_full"] is True
+
+    def test_a_short_console_is_not_marked_incomplete(self) -> None:
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.console.append({"type": "log", "text": "only"})
+        backend._sessions["s"] = handle
+        page = backend.console("s", limit=200)
+        assert page["count"] == 1
+        assert page["total"] == 1
+        assert page["has_more"] is False
+        assert page["buffer_full"] is False
 
 
 class TestFridaAuthorizationWindow:

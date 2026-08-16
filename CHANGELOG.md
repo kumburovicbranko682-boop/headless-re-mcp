@@ -68,6 +68,8 @@ until 1.0 the tool surface may still change between minor versions.
 - **产物库仍会把过大的 finding 静默切成非法 JSON**。服务层已经拒绝，存储层还在切片：9012
   字符写入成功，读回来是 8000 字符的字符串碎片（`Unterminated string`），内存库却原样保留。
   现在两处都拒绝。
+- **浏览器采集列表停在上限却不说**。console 2500 条进 2000 槽、取 200 条时只回 `count=200`，
+  scripts 满 2000 条看起来像全部。现在回 `total` / `has_more` / `buffer_full`。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

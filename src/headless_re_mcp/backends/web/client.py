@@ -324,7 +324,14 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
         window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+            "buffer_full": len(items) >= _MAX_REQUESTS,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
@@ -358,17 +365,33 @@ class WebBackend:
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
+        capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
-            items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            held = list(handle.console)
+        window = held[-capped:]
+        return {
+            "console": window,
+            "count": len(window),
+            "total": len(held),
+            "limit": capped,
+            "has_more": len(held) > len(window),
+            "buffer_full": len(held) >= _MAX_CONSOLE,
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
+            held = len(handle.scripts)
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        return {
+            "scripts": values,
+            "count": len(values),
+            "total": len(values),
+            "has_more": False,
+            "buffer_full": held >= _MAX_SCRIPTS,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
