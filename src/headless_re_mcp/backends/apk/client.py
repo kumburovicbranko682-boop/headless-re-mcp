@@ -204,10 +204,14 @@ class ApkClient:
         apk = self._apk(path)
         items: list[JsonObject] = []
         skipped = 0
+        names_error: str | None = None
         try:
             names = apk.get_signature_names()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Measured: two readable certificates still came back v1_signed=False
+            # because the name list raised. That is "unsigned", not "unknown".
             names = []
+            names_error = str(exc)
         for cert in apk.get_certificates():
             try:
                 items.append(
@@ -224,13 +228,17 @@ class ApkClient:
                 # Measured: 2 of 5 certs raising still came back as 3 items
                 # with no mark, so the broken ones disappeared.
                 skipped += 1
-        return {
+        result: JsonObject = {
             "signature_files": list(names),
             "certificates": items,
             "count": len(items),
             "skipped": skipped,
-            "v1_signed": bool(names),
+            # None when the name list failed: False would mean unsigned.
+            "v1_signed": bool(names) if names_error is None else None,
         }
+        if names_error is not None:
+            result["signature_files_error"] = names_error
+        return result
 
     def components(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)

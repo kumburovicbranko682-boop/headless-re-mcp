@@ -319,6 +319,30 @@ class TestApkCertificatesSayWhenSomeWereSkipped:
         result = self._certs(good=2, bad=0)
         assert result["count"] == 2
         assert result["skipped"] == 0
+        assert result["v1_signed"] is True
+
+    def test_a_failed_name_list_is_not_called_unsigned(self) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Good:
+            subject = "CN=Good"
+            issuer = "CN=CA"
+            serial_number = 1
+            sha256_fingerprint = "aa"
+
+        class _FakeApk:
+            def get_signature_names(self) -> list[str]:
+                raise RuntimeError("androguard has no names")
+
+            def get_certificates(self) -> list[object]:
+                return [_Good(), _Good()]
+
+        client = ApkClient()
+        client._apk = lambda path: _FakeApk()  # type: ignore[method-assign]
+        result = client.certificates(Path("app.apk"))
+        assert result["count"] == 2
+        assert result["v1_signed"] is None
+        assert "no names" in result["signature_files_error"]
 
 
 class TestApkNativeLibsSayWhenTheyStopped:

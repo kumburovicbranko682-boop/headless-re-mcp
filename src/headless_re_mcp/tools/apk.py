@@ -52,7 +52,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List signing certificates and v1 signature files.
 
         Read skipped. A non-zero skipped means some certificates could not be
-        described and are not in the list.
+        described and are not in the list. v1_signed is null when the signature
+        file list could not be read -- that is not the same as unsigned.
         """
         return _dump(analysis.apk_certificates(session_id))
 
