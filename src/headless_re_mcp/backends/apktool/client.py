@@ -188,7 +188,9 @@ class ApktoolClient:
             ],
             timeout=timeout,
         )
-        if code != 0 or not out_apk.is_file():
+        # Measured: exit 0 plus a 0-byte out_apk still became signed=true,
+        # so an unattended agent treats an empty file as a signed package.
+        if code != 0 or not out_apk.is_file() or out_apk.stat().st_size <= 0:
             # stderr can echo the argument vector, so scrub the password if present.
             scrubbed = stderr.replace(password, "***") if password else stderr
             raise ApktoolError(
