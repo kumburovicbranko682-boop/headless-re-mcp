@@ -281,3 +281,22 @@ def test_windbg_live_modules_description_says_to_check_truncated() -> None:
     finally:
         service.close_all()
     assert "truncated" in doc
+
+
+def test_windbg_live_disasm_description_says_to_check_truncated() -> None:
+    """windbg.live_disasm already cuts at 500000 chars, but the text hid that.
+
+    Measured: 500-byte session, cap 64, truncated=true, while the
+    description said "disassemble length instructions" -- so a model
+    treats the slice as the whole live listing.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.windbg import build_windbg_tools
+
+    service = AnalysisService()
+    try:
+        tools = {item.name: item for item in build_windbg_tools(service)}
+        doc = tools["windbg.live_disasm"].handler.__doc__ or ""
+    finally:
+        service.close_all()
+    assert "truncated" in doc
