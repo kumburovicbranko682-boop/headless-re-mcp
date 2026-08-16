@@ -49,6 +49,11 @@ class InvalidStateTransition(RuntimeError):
 # called remove_closed outside tests, so every session ever opened stayed
 # resident and session.list returned the entire history.
 _RETAINED_CLOSED_SESSIONS = 64
+# Closed history is capped above. Open sessions were not: measured 80
+# creates left 80 live sessions in the registry, and session.list returned
+# all of them. An overnight agent that opens a target per file and never
+# closes would grow without bound. 64 matches the closed retain window.
+_MAX_OPEN_SESSIONS = 64
 
 
 class SessionNotFound(KeyError):
@@ -64,10 +69,16 @@ class SessionNotFound(KeyError):
 
 
 class SessionRegistry:
-    def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
+    def __init__(
+        self,
+        *,
+        retained_closed: int = _RETAINED_CLOSED_SESSIONS,
+        max_open: int = _MAX_OPEN_SESSIONS,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
         self._closed_order: deque[str] = deque()
         self._retained_closed = max(0, retained_closed)
+        self._max_open = max(1, max_open)
         self._lock = RLock()
 
     def create(
@@ -111,6 +122,16 @@ class SessionRegistry:
                 metadata=metadata,
             )
         with self._lock:
+            open_count = sum(
+                1
+                for item in self._sessions.values()
+                if item.state is not SessionState.CLOSED
+            )
+            if open_count >= self._max_open:
+                raise ValueError(
+                    f"too many open sessions ({open_count}); "
+                    f"close one before opening another (limit {self._max_open})"
+                )
             self._sessions[session.id] = session
         return session.model_copy(deep=True)
 

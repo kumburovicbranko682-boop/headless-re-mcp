@@ -95,6 +95,32 @@ def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> No
     assert registry.get(survivor.id).state == SessionState.READY
 
 
+def test_open_sessions_are_bounded(tmp_path: Path) -> None:
+    """An unattended loop that never closes used to keep every session.
+
+    Measured: 80 creates left 80 live sessions in the registry. Closed
+    history was already capped at 64; the live set was not.
+    """
+    registry = SessionRegistry(max_open=3)
+    ids = []
+    for index in range(3):
+        target = tmp_path / f"{index}.js"
+        target.write_text("x", encoding="utf-8")
+        ids.append(registry.create(target).id)
+    assert len(registry.list()) == 3
+
+    extra = tmp_path / "extra.js"
+    extra.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="too many open sessions"):
+        registry.create(extra)
+
+    registry.transition(ids[0], SessionState.CLOSING)
+    registry.transition(ids[0], SessionState.CLOSED)
+    created = registry.create(extra)
+    assert created.id not in ids
+    assert len([item for item in registry.list() if item.state is not SessionState.CLOSED]) == 3
+
+
 def test_registry_rejects_invalid_transition(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary, 0x014C)

@@ -35,7 +35,8 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
 
         binary is a local file path, or an http(s) URL when target is web. The
         target kind is inferred from the extension and magic bytes when omitted,
-        so a PE path behaves exactly as before.
+        so a PE path behaves exactly as before. At most 64 sessions can be
+        open at once; close one before opening another.
         """
         return _dump(analysis.create_session(binary, target))
 
