@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`js.deobfuscate` 在 webcrack 失败时仍报成功**。exit 1 但 stdout
+  非空时仍返回 `code`。过夜任务会把失败的反混淆当恢复后的源码。现在
+  非零退出一律报 `backend_error`。
 - **自动创建的任务线程标题被额外切到 80 且无信号**。120 字符的
   objective 变成 80 字符标题，低于 store 的 200 上限。过夜任务列表
   显示被切掉的名字。现在与 store 上限对齐。

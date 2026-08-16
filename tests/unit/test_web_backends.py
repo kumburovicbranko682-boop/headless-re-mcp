@@ -184,6 +184,32 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestJsDeobfuscateDoesNotSucceedOnAFailedExit:
+    """webcrack exit 1 still answered code= if any stdout was left behind.
+
+    Measured: deobfuscate against leftover stdout returned
+    {code: "partial leftover"} with no error, so an unattended agent
+    would treat a failed deobfuscation as the recovered source.
+    """
+
+    def test_exit_1_with_stdout_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        fake = tmp_path / "webcrack"
+        fake.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._run",
+            lambda cmd, *, timeout: ("partial leftover", "ERROR: failed", 1),
+        )
+        client = JsClient(fake)
+        with pytest.raises(JsReError) as info:
+            client.deobfuscate(source)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
