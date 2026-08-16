@@ -230,3 +230,38 @@ class TestGhidraSaysWhenTheAnalyzeLogWasCut:
         assert result["truncated"] is True
         assert result["stdout_chars"] == 250_000
         assert result["returned_chars"] == _MAX_ANALYZE_EXCERPT
+
+
+class TestGhidraKeepsTheAnalyzeErrorTail:
+    """A long failure log used to come back as the opening 4000 characters.
+
+    Measured: 56032 characters of stderr ending in 'ERROR analyze failed at
+    the end' still raised with 4000 leading I's. The ERROR line was gone, so
+    an agent retried a run it could not see.
+    """
+
+    def test_a_long_failure_keeps_the_error_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.ghidra import client as ghidra_mod
+        from headless_re_mcp.backends.ghidra.client import GhidraError
+
+        body = ("I" * 56_000) + "ERROR analyze failed at the end\n"
+
+        def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+            return Completed(1, b"", body.encode("utf-8"))
+
+        monkeypatch.setattr(ghidra_mod, "run_bounded", fake_bounded)
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        analyze = tmp_path / "analyzeHeadless"
+        analyze.write_text("x", encoding="utf-8")
+        client = GhidraClient(home=tmp_path, java=tmp_path / "java")
+        client.analyze = analyze
+        with pytest.raises(GhidraError) as caught:
+            client.analyze_binary(binary, tmp_path / "proj")
+        assert caught.value.code == "backend_error"
+        err = str(caught.value.details.get("stderr") or "")
+        assert "ERROR analyze failed at the end" in err
+        assert len(err) == 4000

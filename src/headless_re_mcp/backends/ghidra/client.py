@@ -104,7 +104,10 @@ class GhidraClient:
                 "backend_error",
                 "analyzeHeadless failed",
                 exit_code=code,
-                stderr=stderr[:4000],
+                # The failure reason is at the end. Measured: 56032 characters
+                # of stderr still came back as 4000 leading I's, so the ERROR
+                # line was gone and an agent retried a run it could not see.
+                stderr=stderr[-4000:],
             )
         original = (
             self._last_stdout_chars if self._last_stdout_chars is not None else len(stdout)
@@ -247,14 +250,14 @@ class GhidraClient:
                 "backend_error",
                 "analyzeHeadless export failed",
                 exit_code=code,
-                stderr=stderr[:4000],
+                stderr=stderr[-4000:],
                 stdout_excerpt=stdout[-4000:],
             )
         if not out_path.is_file():
             raise GhidraError(
                 "backend_error",
                 "export JSON missing after postScript",
-                stderr=stderr[:2000],
+                stderr=stderr[-2000:],
             )
         try:
             payload = json.loads(out_path.read_text(encoding="utf-8"))
@@ -318,7 +321,9 @@ class GhidraClient:
         stdout = (
             stdout_text[-_MAX_STDOUT:] if len(stdout_text) > _MAX_STDOUT else stdout_text
         )
-        stderr = stderr_text[:50_000]
+        stderr = (
+            stderr_text[-50_000:] if len(stderr_text) > 50_000 else stderr_text
+        )
         return stdout, stderr, int(completed.returncode)
 
 
