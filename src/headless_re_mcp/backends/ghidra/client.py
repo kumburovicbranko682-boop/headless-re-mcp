@@ -13,6 +13,7 @@ JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
+_MAX_ANALYZE_EXCERPT = 8000
 # Same cap as ExportJson.py. The script cuts first so the JSON on disk stays
 # bounded; this side says so even when an older script omitted the mark.
 _MAX_DECOMPILE_CHARS = 200_000
@@ -103,11 +104,20 @@ class GhidraClient:
                 exit_code=code,
                 stderr=stderr[:4000],
             )
-        return {
+        excerpt = stdout[-_MAX_ANALYZE_EXCERPT:]
+        result: JsonObject = {
             "project_dir": str(project_dir),
-            "stdout_excerpt": stdout[-8000:],
+            "stdout_excerpt": excerpt,
             "note": "headless import/analyze completed; use ghidra.functions/decompile/symbols/xrefs for exports",
         }
+        if len(stdout) > _MAX_ANALYZE_EXCERPT:
+            # Measured: 20000 characters of analyze log still came back as an
+            # 8000-character excerpt with no mark, so an agent treated the tail
+            # as the whole run.
+            result["truncated"] = True
+            result["stdout_chars"] = len(stdout)
+            result["returned_chars"] = len(excerpt)
+        return result
 
     def functions(
         self,

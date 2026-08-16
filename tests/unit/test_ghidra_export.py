@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.ghidra.client import (
+    _MAX_ANALYZE_EXCERPT,
     _MAX_DECOMPILE_CHARS,
     GhidraClient,
     _disclose_decompile,
@@ -164,3 +165,41 @@ class TestGhidraSaysWhenTheExportIsOnlyAPage:
         )
         assert payload["has_more"] is False
         assert payload["count"] == 2
+
+
+def _analyze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> dict[str, Any]:
+    binary = tmp_path / "a.bin"
+    binary.write_bytes(b"MZ")
+    project = tmp_path / "proj"
+    analyze = tmp_path / "analyzeHeadless"
+    analyze.write_text("x", encoding="utf-8")
+
+    def fake_run(self: GhidraClient, project_dir: Path, **kwargs: object) -> tuple[str, str, int]:
+        return stdout, "", 0
+
+    monkeypatch.setattr(GhidraClient, "_run_headless", fake_run)
+    client = GhidraClient(home=tmp_path, java=tmp_path / "java")
+    client.analyze = analyze
+    return client.analyze_binary(binary, project)
+
+
+class TestGhidraSaysWhenTheAnalyzeLogWasCut:
+    """20000 characters of analyze log used to come back as an 8000-char excerpt."""
+
+    def test_a_long_log_is_marked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _analyze(tmp_path, monkeypatch, "L" * 20000)
+        assert len(result["stdout_excerpt"]) == _MAX_ANALYZE_EXCERPT
+        assert result["truncated"] is True
+        assert result["stdout_chars"] == 20000
+        assert result["returned_chars"] == _MAX_ANALYZE_EXCERPT
+
+    def test_a_short_log_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _analyze(tmp_path, monkeypatch, "INFO analyze done")
+        assert result["stdout_excerpt"] == "INFO analyze done"
+        assert "truncated" not in result
