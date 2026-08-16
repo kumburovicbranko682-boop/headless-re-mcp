@@ -409,3 +409,50 @@ class TestIdaCfgSaysWhenItWasCut:
         assert page["node_count"] == 100
         assert page["total_nodes"] == 100
         assert page["has_more"] is False
+
+
+class TestIdaDisassembleSaysWhenALineWasCut:
+    """A disasm line that hit 512 characters used to look complete.
+
+    Measured: an 800-character line came back as 512 characters with
+    truncated absent and partial=False, so an agent treated the fragment
+    as the instruction.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+        import sys
+        import types
+
+        ida_bytes = types.ModuleType("ida_bytes")
+        ida_bytes.is_loaded = lambda ea: True  # type: ignore[attr-defined]
+        ida_ua = types.ModuleType("ida_ua")
+
+        class _Insn:
+            pass
+
+        ida_ua.insn_t = _Insn  # type: ignore[attr-defined]
+        ida_ua.decode_insn = lambda insn, ea: 4  # type: ignore[attr-defined]
+        idc = types.ModuleType("idc")
+        idc.generate_disasm_line = lambda ea, flags: text  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+        monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+        monkeypatch.setitem(sys.modules, "idc", idc)
+
+    def test_a_cut_line_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, "x" * 800)
+        page = worker._disassemble({"address": 0x1000, "count": 1})
+        insn = page["instructions"][0]
+        assert len(insn["text"]) == 512
+        assert insn["truncated"] is True
+        assert page["partial"] is False
+
+    def test_a_short_line_is_complete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, "retn")
+        page = worker._disassemble({"address": 0x1000, "count": 1})
+        insn = page["instructions"][0]
+        assert insn["text"] == "retn"
+        assert insn["truncated"] is False

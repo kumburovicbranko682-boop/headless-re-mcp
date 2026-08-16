@@ -371,11 +371,15 @@ def _disassemble(params: JsonObject) -> JsonObject:
             partial = True
             break
         text = idc.generate_disasm_line(ea, 0) or ""
+        # Measured: an 800-character line came back as 512 characters with
+        # truncated absent and partial=False, so an agent treated the
+        # fragment as the instruction.
         instructions.append(
             {
                 "ea": int(ea),
                 "size": length,
                 "text": text[:512],
+                "truncated": len(text) > 512,
             }
         )
         consumed += length
