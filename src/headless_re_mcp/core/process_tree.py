@@ -59,11 +59,49 @@ def process_image_path(pid: int) -> str | None:
         kernel32.CloseHandle(handle)
 
 
+# A /proc walk on a busy host must not become the slowest part of a timeout.
+_PROC_SCAN_LIMIT = 4096
+
+
+def _enumerate_direct_children_proc(parent_pid: int, limit: int) -> list[int]:
+    """Direct children via /proc, used when a timeout has to kill a launcher's tree."""
+    children: list[int] = []
+    scanned = 0
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return []
+    with entries:
+        for entry in entries:
+            if scanned >= _PROC_SCAN_LIMIT or len(children) >= limit:
+                break
+            if not entry.name.isdigit():
+                continue
+            scanned += 1
+            child = int(entry.name)
+            if child <= 0 or child == parent_pid:
+                continue
+            try:
+                with open(f"/proc/{child}/status", encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.startswith("PPid:"):
+                            ppid = int(line.split(":", 1)[1].strip())
+                            if ppid == parent_pid:
+                                children.append(child)
+                            break
+            except (OSError, ValueError):
+                continue
+    children.sort()
+    return children
+
+
 def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PIDS) -> list[int]:
-    """Return direct child PIDs of ``parent_pid`` (bounded, Toolhelp32)."""
-    if os.name != "nt" or type(parent_pid) is not int or parent_pid <= 0:
+    """Return direct child PIDs of ``parent_pid`` (bounded)."""
+    if type(parent_pid) is not int or parent_pid <= 0:
         return []
     limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
+    if os.name != "nt":
+        return _enumerate_direct_children_proc(parent_pid, limit)
     kernel32 = ctypes.windll.kernel32
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1, 0xFFFFFFFF):
@@ -128,7 +166,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
-    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
 
