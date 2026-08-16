@@ -78,7 +78,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_applications(
         session_id: str, limit: Annotated[int, Field(ge=1, le=1000)] = 256
     ) -> dict[str, Any]:
-        """List installed applications on the session's connected device."""
+        """List installed applications on the session's connected device.
+
+        Capped; read `total` and `has_more`. `count` is this page.
+        """
         return _dump(analysis.frida_applications(session_id, limit=limit))
 
     @tools.tool(name="frida.spawn")

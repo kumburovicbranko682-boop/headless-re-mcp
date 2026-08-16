@@ -394,6 +394,33 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
+    """400 apps, limit=256 returned count=256 and total=400 but no has_more."""
+    from headless_re_mcp.backends.frida.client import FridaClient
+
+    class _App:
+        def __init__(self, index: int) -> None:
+            self.identifier = f"com.app{index}"
+            self.name = f"App{index}"
+            self.pid = 0
+
+    class _Device:
+        def enumerate_applications(self) -> list[_App]:
+            return [_App(i) for i in range(400)]
+
+    class _Frida:
+        def get_local_device(self) -> _Device:
+            return _Device()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    got = client.applications("local", limit=256)
+    assert got["count"] == 256
+    assert got["total"] == 400
+    assert got["has_more"] is True
+
+
 def test_apk_manifest_says_when_the_xml_was_cut() -> None:
     """A 250_000-character manifest came back as 200_000 with no truncated flag.
 
