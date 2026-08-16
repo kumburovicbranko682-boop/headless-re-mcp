@@ -945,6 +945,50 @@ class TestApkMethodsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkStringsSayWhenTheyStopped:
+    """A string page that hit the cap looked complete except for total.
+
+    Measured: 400 strings came back as count=200, total=400, offset=0 and
+    no has_more.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_strings(self) -> list[Item]:
+                return [Item(f"s{index}") for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: Parsed())
+        return client
+
+    def test_a_page_says_what_was_left_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 400).strings(tmp_path / "app.apk", offset=0, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 400
+        assert result["has_more"] is True
+
+    def test_the_last_page_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 400).strings(tmp_path / "app.apk", offset=300, limit=200)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
