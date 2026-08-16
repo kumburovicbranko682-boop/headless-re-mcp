@@ -12,7 +12,11 @@ from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, Session
 from headless_re_mcp.core.store import SessionStore
-from headless_re_mcp.core.store.sqlite_store import encode_knowledge_value
+from headless_re_mcp.core.store.sqlite_store import (
+    AUDIT_RETAINED_ROWS,
+    AUDIT_TRIM_INTERVAL,
+    encode_knowledge_value,
+)
 from headless_re_mcp.core.store.timeline import (
     append_session_timeline,
     list_session_timeline,
@@ -364,6 +368,9 @@ class InMemoryAnalysisRepository:
         self._timeline: dict[str, list[JsonObject]] = {}
         self._audit: list[JsonObject] = []
         self._knowledge: dict[tuple[str, str, str], JsonObject] = {}
+        self.audit_retained_rows = AUDIT_RETAINED_ROWS
+        self.audit_trim_interval = AUDIT_TRIM_INTERVAL
+        self._audit_writes = 0
 
     @contextmanager
     def transaction(self) -> Iterator[AnalysisRepository]:
@@ -603,6 +610,12 @@ class InMemoryAnalysisRepository:
                     "result_summary": dict(result_summary),
                 }
             )
+            self._audit_writes += 1
+            if self._audit_writes >= self.audit_trim_interval:
+                self._audit_writes = 0
+                retain = max(1, int(self.audit_retained_rows))
+                if len(self._audit) > retain:
+                    self._audit = self._audit[-retain:]
 
     def list_audit(
         self,

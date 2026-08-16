@@ -155,6 +155,8 @@ until 1.0 the tool surface may still change between minor versions.
 - **共享的 subprocess 关闭助手仍只杀启动器**。IDA 的 `terminate()` 已改杀
   树，混入的 `terminate_process()` 仍只 SIGTERM 父进程，子 sleeper 仍是 S。
   现在这条路径也杀整树。
+- **内存审计库不淘汰**。SQLite 已有上限，InMemory 80 次写入后仍 80 行。
+  它是生产可用的仓储。现在用同一套保留上限。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

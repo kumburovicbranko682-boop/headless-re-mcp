@@ -188,6 +188,34 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == ([], 0)
 
 
+def test_the_in_memory_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
+    """SQLite already dropped old rows; the in-memory port kept every one.
+
+    Measured: 80 appends left _audit at 80 and list_audit total=80. The class
+    is a production repository, so an unattended composition that uses it
+    grows without bound while the sqlite path does not.
+    """
+    repository = InMemoryAnalysisRepository(tmp_path / "mem-audit")
+    repository.audit_retained_rows = 5
+    repository.audit_trim_interval = 4
+
+    for index in range(12):
+        repository.append_audit(
+            session_id="s1",
+            action=f"action-{index:02d}",
+            params_summary={},
+            ok=True,
+            result_summary={},
+        )
+
+    listed = repository.list_audit("s1", limit=50)
+    actions = [entry["action"] for entry in listed["entries"]]
+    assert len(actions) <= repository.audit_retained_rows + repository.audit_trim_interval
+    assert actions[0] == "action-11"
+    assert listed["total"] == len(actions)
+    assert len(repository._audit) <= repository.audit_retained_rows + repository.audit_trim_interval
+
+
 def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     """The audit table is the one store with no natural end.
 
