@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.export_sources` 文件表停在 2000 时看起来像完整树**。2500 个 `.java` 只回
+  2000 条路径，没有 `has_more`。磁盘上的树是全的，但只看列表的 agent 会漏掉后面的
+  类。现在截断时标 `has_more`。
 - **`ghidra.decompile` 截断后看起来仍是完整 C**。250,021 字符的反编译被切成 200,000
   且没有 `truncated`，agent 会把切到一半的函数当成整份输出。现在带回
   `truncated` 与 `bytes`。

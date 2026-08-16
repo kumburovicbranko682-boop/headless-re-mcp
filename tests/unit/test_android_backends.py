@@ -18,6 +18,7 @@ from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_pac
 from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+from headless_re_mcp.backends.jadx.client import JadxClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.session import classify_target, describe_apk
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
@@ -412,6 +413,46 @@ class TestApkNativeLibsAreCapped:
         assert page["count"] == 3
         assert page["has_more"] is False
         assert page["abis"] == ["arm64-v8a"]
+
+
+class TestJadxExportSourcesSayWhenTheListStopped:
+    """The java_files index was cut at 2000 with no signal that it had stopped.
+
+    Measured: 2500 .java paths came back as 2000, with no has_more. The on-disk
+    tree was complete; a caller reading only the list would miss later classes.
+    """
+
+    def _client(self, tmp_path: Path, n: int) -> tuple[JadxClient, Path, Path]:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        out = tmp_path / "out"
+        for index in range(n):
+            path = out / "sources" / "com" / "ex" / f"C{index}.java"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("class C {}\n")
+        stub = tmp_path / "jadx"
+        stub.write_text("#!/bin/sh\n")
+        client = JadxClient(executable=stub)
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        return client, apk, out
+
+    def test_hitting_the_cap_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jadx.client as jadx_mod
+
+        monkeypatch.setattr(jadx_mod, "_MAX_JAVA_FILES", 10)
+        client, apk, out = self._client(tmp_path, 25)
+        page = client.export_sources(apk, out)
+        assert page["java_file_count"] == 25
+        assert len(page["java_files"]) == 10
+        assert page["has_more"] is True
+
+    def test_a_complete_tree_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        client, apk, out = self._client(tmp_path, 3)
+        page = client.export_sources(apk, out)
+        assert page["java_file_count"] == 3
+        assert page["has_more"] is False
 
 
 class TestApkClassification:
