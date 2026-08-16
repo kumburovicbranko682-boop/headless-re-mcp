@@ -158,6 +158,40 @@ class TestFridaApplicationsSayWhenTheyStopped:
         assert page["has_more"] is False
 
 
+class TestFridaApplicationsHaveADeadline:
+    """Enumerating applications used to park the caller when the device went silent.
+
+    Measured after attach/spawn had a deadline: ``applications()`` against
+    an ``enumerate_applications`` that slept 8s still returned only after
+    8.000s and was still running at 2s.
+    """
+
+    def test_a_hung_enumeration_returns_timeout_instead_of_blocking(self) -> None:
+        class _Dev:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def enumerate_applications(self) -> list[object]:
+                self.entered.set()
+                self.release.wait()
+                return []
+
+        device = _Dev()
+        client = FridaClient(timeout=0.3)
+        client._available = True
+        client._frida = object()
+        client._resolve_device = lambda device_id: device  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(FridaError) as info:
+            client.applications("usb")
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert device.entered.is_set()
+        device.release.set()
+
+
 class TestFridaModulesSayWhenTheyStopped:
     """A module page that hit the cap looks exactly like one that ended.
 

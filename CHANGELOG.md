@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.applications` 在枚举卡住时仍会一直挂着**。给 attach/spawn 加
+  截止后，`enumerate_applications` 睡 8s 仍要 8.000s 才回，2s 时仍在跑。
+  现在共用同一截止。
 - **设备侧 `frida.java.*` / `hook.template` / `spawn` 在 attach/spawn
   卡住时仍会一直挂着**。本地路径加截止后，`java_enumerate` 对睡 8s 的
   `device.attach` 仍要 8.000s 才回；`spawn` 2s 时仍在跑。现在这几条共用

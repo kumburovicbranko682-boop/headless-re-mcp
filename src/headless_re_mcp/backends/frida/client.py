@@ -436,25 +436,31 @@ class FridaClient:
 
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
         device = self._resolve_device(device_id)
-        try:
-            apps = device.enumerate_applications()
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
-        items = [
-            {
-                "identifier": str(app.identifier),
-                "name": str(app.name),
-                "pid": int(getattr(app, "pid", 0) or 0),
+
+        def work() -> JsonObject:
+            try:
+                apps = device.enumerate_applications()
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError(
+                    "backend_error", f"failed to enumerate applications: {exc}"
+                ) from exc
+            items = [
+                {
+                    "identifier": str(app.identifier),
+                    "name": str(app.name),
+                    "pid": int(getattr(app, "pid", 0) or 0),
+                }
+                for app in apps[:capped]
+            ]
+            return {
+                "applications": items,
+                "count": len(items),
+                "total": len(apps),
+                "has_more": len(apps) > len(items),
             }
-            for app in apps[:capped]
-        ]
-        return {
-            "applications": items,
-            "count": len(items),
-            "total": len(apps),
-            "has_more": len(apps) > len(items),
-        }
+
+        return self._call("applications", work)
 
     def spawn(self, device_id: str | None, package: str) -> JsonObject:
         device = self._resolve_device(device_id)
