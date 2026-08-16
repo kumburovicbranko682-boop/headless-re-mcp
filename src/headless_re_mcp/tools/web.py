@@ -79,13 +79,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_console(session_id, limit=limit))
 
     @tools.tool(name="web.scripts")
-    def web_scripts(session_id: str, wasm_only: bool = False) -> dict[str, Any]:
+    def web_scripts(
+        session_id: str,
+        wasm_only: bool = False,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
         """List parsed scripts (JavaScript and WebAssembly) seen by the debugger.
 
-        The buffer is a window; read `truncated` and `evicted` rather than
-        assuming these are every script the page ever parsed.
+        The buffer is a window; read `has_more` for this page, and
+        `truncated`/`evicted` for scripts the ring already dropped.
         """
-        return _dump(analysis.web_scripts(session_id, wasm_only=wasm_only))
+        return _dump(
+            analysis.web_scripts(session_id, wasm_only=wasm_only, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="web.script.source")
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
@@ -93,9 +100,17 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_script_source(session_id, script_id))
 
     @tools.tool(name="web.wasm.list")
-    def web_wasm_list(session_id: str) -> dict[str, Any]:
-        """List WebAssembly modules loaded by the page."""
-        return _dump(analysis.web_wasm_list(session_id))
+    def web_wasm_list(
+        session_id: str,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List WebAssembly modules loaded by the page.
+
+        The buffer is a window; read `has_more` for this page, and
+        `truncated`/`evicted` for modules the ring already dropped.
+        """
+        return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:

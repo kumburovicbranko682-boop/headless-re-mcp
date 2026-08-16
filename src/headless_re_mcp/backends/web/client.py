@@ -410,18 +410,35 @@ class WebBackend:
             "has_more": len(items) > cap,
         }
 
-    def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
+    def scripts(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        wasm_only: bool = False,
+    ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
             evicted = handle.scripts_evicted
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
+        start = max(0, int(offset))
+        cap = max(1, int(limit))
+        window = values[start : start + cap]
+        # truncated means the ring dropped older scripts. has_more means this
+        # page is not the whole current ring. Measured: 500 live scripts came
+        # back as count=500, truncated=False, no total or has_more, so an
+        # agent that follows the tool text treats the dump as complete.
         return {
-            "scripts": values,
-            "count": len(values),
+            "scripts": window,
+            "count": len(window),
+            "total": len(values),
+            "offset": start,
             "evicted": evicted,
             "truncated": evicted > 0,
+            "has_more": start + len(window) < len(values),
         }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:

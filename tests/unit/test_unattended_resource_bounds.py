@@ -467,8 +467,10 @@ class TestWebScriptBufferIsBounded:
             handle.remember_script({"scriptId": str(index), "url": f"https://x/{index}.js"})
         backend = WebBackend()
         backend._sessions["s"] = handle
-        result = backend.scripts("s")
+        result = backend.scripts("s", limit=_MAX_SCRIPTS)
         assert result["count"] == _MAX_SCRIPTS
+        assert result["total"] == _MAX_SCRIPTS
+        assert result["has_more"] is False
         assert result["evicted"] == dropped
         assert result["truncated"] is True
 
@@ -481,6 +483,8 @@ class TestWebScriptBufferIsBounded:
         backend._sessions["s"] = handle
         result = backend.scripts("s")
         assert result["count"] == 1
+        assert result["total"] == 1
+        assert result["has_more"] is False
         assert result["evicted"] == 0
         assert result["truncated"] is False
 
@@ -504,6 +508,44 @@ class TestWebScriptBufferIsBounded:
         assert console["truncated"] is True
         assert network["evicted"] == 11
         assert network["truncated"] is True
+
+
+class TestWebScriptsSayWhenTheyStopped:
+    """truncated meant the ring evicted, not that this dump is complete.
+
+    Measured: 500 live scripts came back as count=500, truncated=False,
+    evicted=0, and no total or has_more. The tool text told the caller to
+    read truncated, so the dump looked like every script the page parsed.
+    """
+
+    def test_a_page_says_what_was_left_out(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(500):
+            handle.remember_script({"scriptId": str(index), "url": f"https://x/{index}.js"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.scripts("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 500
+        assert result["has_more"] is True
+        assert result["truncated"] is False
+        assert result["evicted"] == 0
+
+    def test_the_last_page_is_complete(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(500):
+            handle.remember_script({"scriptId": str(index), "url": f"https://x/{index}.js"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.scripts("s", offset=400, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 500
+        assert result["has_more"] is False
+        assert result["truncated"] is False
 
 
 class TestWebNetworkListSaysWhenItStopped:
