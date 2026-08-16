@@ -473,6 +473,28 @@ class TestWasmWatDescriptionMatchesTheCut:
         assert "truncated" in doc
 
 
+class TestWasmWatDoesNotTreatStderrAsText:
+    """A failed wasm2wat used to succeed if it printed anything to stdout.
+
+    Measured: exit 1, stdout "(error)", wat returned that string as the
+    module text. An unattended agent then analyses the error text.
+    """
+
+    def test_a_failed_run_is_not_saved_by_error_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_mod
+
+        tool = tmp_path / "wasm2wat"
+        tool.write_text("x", encoding="utf-8")
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        monkeypatch.setattr(jsre_mod, "_run", lambda *args, **kwargs: ("(error)", "fail", 1))
+        with pytest.raises(JsReError) as info:
+            WasmClient(tool).wat(module)
+        assert info.value.code == "backend_error"
+
+
 class TestJsBeautifyDescriptionMatchesTheCut:
     """js.beautify is deobfuscate under another name and cuts the same way.
 

@@ -140,7 +140,9 @@ class WasmClient:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
-        if code != 0 and not stdout:
+        # Measured: exit 1 with stdout "(error)" still became wat="(error)",
+        # so an unattended agent treats the error text as the module text.
+        if code != 0:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
