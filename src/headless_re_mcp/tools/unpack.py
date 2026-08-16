@@ -178,7 +178,9 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         whose memory the run altered keeps those changes. The reply says so as
         artifacts_retained and safe_rollback, which is worth reading before
         cancelling in order to retry, since the next attempt starts from what
-        this one left behind.
+        this one left behind. The unpack object is a recent window: read
+        artifacts_has_more / timeline_has_more rather than treating the arrays
+        as the whole ledger.
         """
         return _dump(analysis.unpack_cancel(session_id, reason=reason))
 

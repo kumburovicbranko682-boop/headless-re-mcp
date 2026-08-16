@@ -1302,7 +1302,7 @@ class UnpackMixin:
             self._store_unpack_session(state)
             return _success(
                 {
-                    "unpack": state.to_dict(),
+                    "unpack": state.status_dict(),
                     "original_input_preserved": True,
                     "debuggee_paused_attempted": debuggee_paused_attempted,
                     "artifacts_retained": True,

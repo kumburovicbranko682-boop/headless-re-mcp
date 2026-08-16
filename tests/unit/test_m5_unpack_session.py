@@ -508,3 +508,41 @@ def test_unpack_status_says_when_the_summary_is_only_a_window(tmp_path: Path) ->
     assert unpack["artifacts_has_more"] is True
     assert unpack["timeline_has_more"] is True
     assert unpack["artifacts"][-1]["path"] == "/tmp/d149.bin"
+
+
+def test_unpack_cancel_says_when_the_ledger_is_only_a_window(tmp_path: Path) -> None:
+    """151 artifacts used to come back in full on cancel.
+
+    Cancel is not a dump of the ledger. An agent reading the arrays treated
+    one reply as every dump the session produced.
+    """
+    binary = tmp_path / "plain.exe"
+    _write_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert started.ok
+    state = service._unpack_owner.get(session_id)
+    assert state is not None
+    extra = tuple(
+        UnpackArtifact("dump", f"/tmp/d{index}.bin", "ab", UnpackPhase.DUMPED)
+        for index in range(150)
+    )
+    service._unpack_owner.put(session_id, replace(state, artifacts=state.artifacts + extra))
+
+    cancelled = service.unpack_cancel(session_id)
+    assert cancelled.ok and cancelled.data is not None
+    unpack = cancelled.data["unpack"]
+    assert unpack["phase"] == "cancelled"
+    assert unpack["artifact_total"] == 151
+    assert len(unpack["artifacts"]) == 20
+    assert unpack["artifacts_has_more"] is True
+    assert cancelled.data["artifacts_retained"] is True
