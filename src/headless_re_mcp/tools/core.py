@@ -228,7 +228,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List memory segments with names, ranges, and permissions."""
+        """List memory segments with names, ranges, and permissions.
+
+        Capped by limit. Read has_more and total rather than treating returned
+        as every segment in the database.
+        """
         return _dump(analysis.static_segments(session_id, offset=offset, limit=limit))
 
     def static_imports(
