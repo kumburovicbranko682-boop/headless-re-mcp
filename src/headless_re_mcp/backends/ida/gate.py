@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -59,13 +60,17 @@ def run_idalib_gate(
         command.append("--no-decompile")
     command.append(str(binary.resolve(strict=True)))
 
+    popen_kw = no_window_popen_kwargs()
+    if os.name != "nt":
+        # A new session lets the group be killed after the parent is gone.
+        popen_kw["start_new_session"] = True
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env=env,
-        **no_window_popen_kwargs(),
+        **popen_kw,
     )
 
     observed: set[str] = set()
@@ -87,12 +92,26 @@ def run_idalib_gate(
     monitor.start()
 
     timed_out = False
+    stdout = ""
+    stderr = ""
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # process.kill() left the worker's child holding the pipes.
+        # Measured: timeout 0.4s, then communicate(10) raised
+        # TimeoutExpired; the sleeper the launcher started was still
+        # alive. The gate never returned a result.
         timed_out = True
-        process.kill()
-        stdout, stderr = process.communicate(timeout=10)
+        from headless_re_mcp.core.process_tree import terminate_process_tree
+
+        terminate_process_tree(process)
+        if os.name != "nt" and isinstance(process.pid, int) and process.pid > 0:
+            with suppress(OSError, ProcessLookupError):
+                os.killpg(process.pid, 9)
+        with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+            stdout, stderr = process.communicate(timeout=2.0)
+        stdout = stdout or ""
+        stderr = stderr or ""
     finally:
         monitor_stop.set()
         monitor.join(timeout=2)
