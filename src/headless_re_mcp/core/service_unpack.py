@@ -705,6 +705,19 @@ class UnpackMixin:
                 payload["pe_verify"] = {"ok": False, "error": str(exc)}
                 report.unfixed.append(f"built-in PE parse failed: {exc}")
                 payload["report"] = report.to_dict()
+                # A rebuilt image the built-in parser rejects is not IAT-complete.
+                # Returning ok and advancing the session used to send an unattended
+                # agent into verify/reanalyze on a non-PE.
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="invalid_pe",
+                        message=str(exc),
+                        details={"pe_verify": payload["pe_verify"]},
+                    ),
+                    data=payload,
+                    meta={"session_id": session_id, "backend": "unpack"},
+                )
             self._advance_unpack_after_imports_rebuilt(
                 session_id,
                 path=str(out_path),
