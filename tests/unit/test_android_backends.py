@@ -318,6 +318,27 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaHookTemplateDescriptionMatchesDetach:
+    """frida.hook.template reports loaded=true then immediately destroys the hook.
+
+    Measured: the handler docstring was empty while the payload carries
+    persisted=false -- so a model that only sees the name treats the probe
+    as a live hook.
+    """
+
+    def test_the_tool_text_says_the_hook_does_not_persist(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.hook.template"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "persisted" in doc
+
+
 class TestFridaJavaMethodsDescriptionMatchesTheCut:
     """frida.java.methods already pages, but the tool text hid that.
 

@@ -47,6 +47,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.hook.template")
     def frida_hook_template(session_id: str, template: str = "noop") -> dict[str, Any]:
+        """Load a canned probe hook; it is destroyed on detach (check persisted)."""
         return _dump(analysis.frida_hook_template(session_id, template=template))
 
     @tools.tool(name="frida.devices")
