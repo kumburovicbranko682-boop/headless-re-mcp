@@ -620,6 +620,19 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["count"] == 10
         assert result["has_more"] is False
 
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "apk.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def apk_xrefs(")[1].split("def apk_decompile(")[0]
+        assert "has_more" in block
+
 
 class TestFridaDevicesSayWhenTheyStopped:
     """A device listing that filled used to look like every device if count was all you read."""
