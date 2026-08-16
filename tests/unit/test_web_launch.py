@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import socket
+import threading
+import time
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.web.launch_util import choose_bind_port, port_is_free, probe_our_healthz
+
+
+def _serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[int]:
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(httpd.server_address[1])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
 
 
 def test_port_is_free_and_choose_fallback() -> None:
@@ -44,6 +60,78 @@ def test_probe_our_healthz_none_on_closed_port() -> None:
     port = sock.getsockname()[1]
     sock.close()
     assert probe_our_healthz("127.0.0.1", port, timeout=0.2) is None
+
+
+def test_probe_our_healthz_short_body_is_not_our_console() -> None:
+    """A listener that closes early used to raise IncompleteRead.
+
+    Measured: Content-Length 10000 and 11 bytes on the wire raised
+    IncompleteRead in 16ms. That exception is not URLError or OSError, so
+    start_web.py died instead of treating the port as occupied-by-something-else
+    and binding the next one. The supervised restart then hit the same port.
+    """
+
+    class ShortBody(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "10000")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+    for port in _serve(ShortBody):
+        assert probe_our_healthz("127.0.0.1", port, timeout=0.4) is None
+
+
+def test_probe_our_healthz_returns_within_timeout_when_the_body_trickles() -> None:
+    """urlopen's timeout is per recv, so a slow body reset it forever.
+
+    Measured: 80 bytes at 50ms each, no Content-Length, timeout 0.4s, returned
+    after 4.045s. start_web probes /healthz before binding and again while
+    waiting to open the browser; a leftover listener that dribbles kept the
+    launcher -- and the supervisor that started it -- parked.
+    """
+
+    class Trickle(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            for _ in range(80):
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(0.05)
+
+    for port in _serve(Trickle):
+        started = time.perf_counter()
+        assert probe_our_healthz("127.0.0.1", port, timeout=0.4) is None
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.5, f"healthz probe ran {elapsed:.3f}s against a 0.4s timeout"
+
+
+def test_probe_our_healthz_still_recognises_this_console() -> None:
+    class Ours(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            body = b'{"ok":true,"service":"headless-re-mcp-web","build":{"version":"test"}}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    for port in _serve(Ours):
+        data = probe_our_healthz("127.0.0.1", port, timeout=0.4)
+        assert data is not None
+        assert data["service"] == "headless-re-mcp-web"
 
 
 def test_run_web_chinese_refuse_non_loopback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
