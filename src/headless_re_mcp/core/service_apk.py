@@ -164,10 +164,36 @@ class ApkAnalysisMixin:
         self, session_id: str, timeout: float = 300.0, no_imports: bool = False
     ) -> Result[JsonObject]:
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.export_sources cannot run in {session.state.value} state"
+                )
             binary = self._apk_binary(session_id)
             client = JadxClient(getattr(self.settings, "jadx", None))
             out_dir = self._jadx_out_dir(session_id)
             data = client.export_sources(binary, out_dir, timeout=timeout, no_imports=no_imports)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.export_sources cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a tree written
+                # after that is invisible to the next close and to artifacts.gc.
+                with suppress(OSError):
+                    if out_dir.is_dir():
+                        shutil.rmtree(out_dir)
+                raise
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(self, session_id, "apk.export_sources", "jadx exported sources")
             return _success(data, session_id=session_id, backend="apk")
