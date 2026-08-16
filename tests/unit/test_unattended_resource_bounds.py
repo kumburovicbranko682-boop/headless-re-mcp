@@ -2580,6 +2580,75 @@ class TestAdbOpsCannotHoldAWorker:
         assert caught.value.details["op"] == "info"
         assert time.monotonic() - started < 1.0
 
+    def test_a_wedged_adb_client_does_not_hold_the_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class HungCtor:
+            def __init__(self, host: str = "127.0.0.1", port: int = 5037) -> None:
+                del host, port
+                threading.Event().wait()
+
+        class Mod:
+            pass
+
+        Mod.AdbClient = HungCtor  # type: ignore[attr-defined]
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = Mod
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            backend.list_devices()
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "client"
+        assert time.monotonic() - started < 1.0
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            backend.connect("127.0.0.1", 5555)
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "client"
+        assert time.monotonic() - started < 1.0
+
+    def test_a_wedged_device_lookup_does_not_hold_the_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class HungClient:
+            def device(self, serial: str | None = None) -> object:
+                del serial
+                threading.Event().wait()
+                return object()
+
+        class Mod:
+            @staticmethod
+            def AdbClient(host: str = "127.0.0.1", port: int = 5037) -> HungClient:
+                del host, port
+                return HungClient()
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = Mod
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            backend.properties("emulator-5554")
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "device"
+        assert time.monotonic() - started < 1.0
+
     def test_a_screenshot_that_finishes_is_untouched(self, tmp_path: Any) -> None:
         from pathlib import Path
 

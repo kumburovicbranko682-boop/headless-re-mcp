@@ -85,10 +85,11 @@ def _call_bounded(work: Callable[[], T], *, timeout: float, op: str) -> T:
     """Bound an adbutils call that has no timeout of its own.
 
     screenshot / install / pull / push / uninstall / app_current / forward
-    wait forever when the device is wedged. Measured: each was still running
-    after 400ms against a device that never answers. The thread started here
-    is a daemon -- we cannot interrupt the socket -- but the tool-pool slot
-    is freed, which is what keeps the rest of the server answering.
+    wait forever when the device is wedged, and so do AdbClient() and
+    client.device(). Measured: each was still running after 400ms against a
+    client that never answers. The thread started here is a daemon -- we
+    cannot interrupt the socket -- but the tool-pool slot is freed, which
+    is what keeps the rest of the server answering.
     """
     future: Future[T] = Future()
 
@@ -168,14 +169,24 @@ class AdbBackend:
 
             os.environ.setdefault("ADBUTILS_ADB_PATH", str(self._adb_path))
         try:
-            return self._adbutils.AdbClient(host="127.0.0.1", port=5037)
+            return _call_bounded(
+                lambda: self._adbutils.AdbClient(host="127.0.0.1", port=5037),
+                timeout=_SHELL_TIMEOUT,
+                op="client",
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001 - adbutils raises broad types
             raise AdbError("backend_error", f"cannot reach adb server: {exc}") from exc
 
     def _device(self, serial: str) -> Any:
         client = self._client()
         try:
-            return client.device(serial=_check_serial(serial))
+            return _call_bounded(
+                lambda: client.device(serial=_check_serial(serial)),
+                timeout=_SHELL_TIMEOUT,
+                op="device",
+            )
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
