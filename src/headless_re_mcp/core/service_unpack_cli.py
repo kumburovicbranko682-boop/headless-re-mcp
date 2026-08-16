@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.detection import ScanMode, scan_pe
 from headless_re_mcp.detection.die import DieScanError
@@ -250,19 +251,27 @@ class UnpackCliMixin:
                         "error": child.error.model_dump() if child.error else None,
                     }
 
-            return _success(
-                {
-                    "upx": result.to_dict(),
-                    "comparison": comparison,
-                    "output_path": str(result.output_path),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
-                    "die_rescan": die_rescan,
-                    "reanalyze": reanalyze,
-                    "claims_universal_unpack": False,
-                },
-                session_id=session_id,
-                backend="upx",
+            payload = {
+                "upx": result.to_dict(),
+                "comparison": comparison,
+                "output_path": str(result.output_path),
+                "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                "die_rescan": die_rescan,
+                "reanalyze": reanalyze,
+                "claims_universal_unpack": False,
+            }
+            # A bare output_path is a dead end: nothing on the tool surface
+            # opens one, and retention only collects registered rows.
+            # Measured: 5 unpacks, 5 files / 5120 bytes, 0 artifact rows.
+            payload = _register_capture(
+                self,
+                session_id,
+                Path(result.output_path),
+                kind="upx_unpacked",
+                source="unpack.upx.unpack",
+                payload=payload,
             )
+            return _success(payload, session_id=session_id, backend="upx")
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="upx")
 

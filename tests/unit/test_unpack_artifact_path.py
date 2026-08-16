@@ -144,3 +144,11 @@ def test_upx_unpack_output_under_artifact_root(tmp_path: Path) -> None:
     assert (artifact_root / "unpack" / session_id) in output.parents or output.parent == (
         artifact_root / "unpack" / session_id
     )
+    assert result.data.get("artifact_id")
+    listed = service.artifacts_list(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 1
+    assert listed.data["artifacts"][0]["kind"] == "upx_unpacked"
+    read = service.artifacts_read(str(result.data["artifact_id"]), offset=0, limit=2)
+    assert read.ok and read.data is not None
+    assert read.data["data"].startswith("4d5a")
