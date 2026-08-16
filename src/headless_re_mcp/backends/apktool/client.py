@@ -84,14 +84,17 @@ class ApktoolClient:
         if no_resources:
             args.append("-r")
         _, stderr, code = _run(args, timeout=timeout)
-        manifest = out_dir / "AndroidManifest.xml"
-        if code != 0 and not manifest.is_file():
+        # Measured: exit 1 with a leftover AndroidManifest.xml from the last
+        # run still became a successful decode, so an unattended agent then
+        # edited and repacked yesterday's tree.
+        if code != 0:
             raise ApktoolError(
                 "backend_error",
                 "apktool decode failed",
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        manifest = out_dir / "AndroidManifest.xml"
         smali_dirs = sorted(str(p.name) for p in out_dir.glob("smali*") if p.is_dir())
         return {
             "decoded_dir": str(out_dir),

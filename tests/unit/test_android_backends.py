@@ -1294,6 +1294,32 @@ class TestApktoolBoundaries:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
 
+    def test_a_failed_decode_is_not_saved_by_a_leftover_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """apktool -f is supposed to replace the tree, but a crash leaves it.
+
+        Measured: exit 1, leftover AndroidManifest.xml still on disk, decode
+        returned decoded_dir as if this run had written it. An unattended
+        agent then edits and repacks yesterday's tree.
+        """
+        from headless_re_mcp.backends.apktool import client as apktool_mod
+
+        monkeypatch.setattr(
+            apktool_mod, "_run", lambda *args, **kwargs: ("", "apktool failed", 1)
+        )
+        fake_tool = tmp_path / "apktool.bat"
+        fake_tool.write_text("@echo off\n", encoding="utf-8")
+        out = tmp_path / "decoded"
+        out.mkdir()
+        leftover = out / "AndroidManifest.xml"
+        leftover.write_text("<manifest leftover='1'/>", encoding="utf-8")
+        client = ApktoolClient(fake_tool, None)
+        with pytest.raises(ApktoolError) as info:
+            client.decode(_apk(tmp_path / "a.apk"), out)
+        assert info.value.code == "backend_error"
+        assert leftover.is_file()
+
 
 class TestApkSignIsRegistered:
     """apk.sign writes signed.apk and never registered it.
