@@ -325,9 +325,18 @@ class AdbBackend:
             dev = self._device(serial)
             pkg = _check_package(package)
             try:
-                dev.uninstall(pkg)
+                result = dev.uninstall(pkg)
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
+            # adbutils returns True on success. Measured: an explicit False
+            # was still reported as uninstalled: True.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "uninstall was refused",
+                    package=pkg,
+                    uninstalled=False,
+                )
             return {"uninstalled": True, "package": pkg}
 
         return self._call("uninstall", work)

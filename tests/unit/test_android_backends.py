@@ -874,3 +874,33 @@ class TestDeviceInstallDoesNotInventSuccess:
         apk.write_bytes(b"PK")
         page = self._backend(None).install("emulator-5554", str(apk))
         assert page["installed"] is True
+
+
+class TestDeviceUninstallDoesNotInventSuccess:
+    """A refused uninstall was still reported as uninstalled.
+
+    Measured: a device whose uninstall() returned False still answered
+    {uninstalled: True}. An unattended agent then treats the package as gone.
+    """
+
+    def _backend(self, result: object) -> AdbBackend:
+        class _Dev:
+            def uninstall(self, *args: object, **kwargs: object) -> object:
+                del args, kwargs
+                return result
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_refused_uninstall_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend(False).uninstall("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("uninstalled") is False
+
+    def test_a_true_return_is_still_success(self) -> None:
+        page = self._backend(True).uninstall("emulator-5554", "com.example.app")
+        assert page["uninstalled"] is True

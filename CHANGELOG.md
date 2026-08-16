@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.uninstall` 在卸载被拒绝时仍报 `uninstalled: True`**。假设备
+  `uninstall()` 返回 `False` 仍回成功。无人值守的 agent 会以为包已经没了。现在
+  明确的 `False` 是 `backend_error`。
 - **`device.install` 在安装被拒绝时仍报 `installed: True`**。假设备 `install()`
   返回 `False` 仍回成功。无人值守的 agent 随后去启动一个根本没装上的包。现在
   明确的 `False` 是 `backend_error`；adbutils 成功时的 `None` 仍算成功。
