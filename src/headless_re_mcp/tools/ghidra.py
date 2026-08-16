@@ -67,8 +67,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Ghidra's decompilation of the function at address; empty is not success.
 
-        A second reading of code IDA decompiled differently, or of code it
-        could not.
+        Read truncated when the text was cut. A second reading of code IDA
+        decompiled differently, or of code it could not.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

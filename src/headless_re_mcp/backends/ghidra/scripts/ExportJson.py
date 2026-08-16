@@ -107,6 +107,10 @@ elif mode == "decompile":
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
     payload["decompiled"] = text[:200000]
+    # A 200_000-character cut used to look like the whole function.
+    # Measured: 250_000 characters came back as 200_000 with no
+    # truncated, so an agent treated the fragment as complete.
+    payload["truncated"] = len(text) > 200000
     # Empty used to look like a finished decompile. The Python client
     # forwards this JSON, so a missing function or a failed decompile
     # answered with decompiled="" and no error.

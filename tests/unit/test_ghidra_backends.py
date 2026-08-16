@@ -264,3 +264,64 @@ class TestGhidraDecompileDoesNotInventSuccess:
         source = _SCRIPT.read_text(encoding="utf-8")
         decompile_block = source.split('elif mode == "decompile"')[1]
         assert 'payload["error"] = "decompile produced no code"' in decompile_block
+
+
+def _decompile_cut(text: str, cap: int = 200000) -> tuple[str, bool]:
+    """Mirrors ExportJson.py decompile mode: cut at cap and say so."""
+    return text[:cap], len(text) > cap
+
+
+class TestGhidraDecompileSaysWhenItWasCut:
+    """A decompile that hit the 200_000-character cap used to look complete.
+
+    Measured: 250_000 characters came back as 200_000 with no truncated,
+    so an agent treated the fragment as the function.
+    """
+
+    def test_a_cut_body_is_marked(self) -> None:
+        text, truncated = _decompile_cut("x" * 250_000)
+        assert len(text) == 200_000
+        assert truncated is True
+
+    def test_a_short_body_is_complete(self) -> None:
+        text, truncated = _decompile_cut("void foo(void) {}")
+        assert text == "void foo(void) {}"
+        assert truncated is False
+
+    def test_the_export_script_sets_truncated(self) -> None:
+        source = _SCRIPT.read_text(encoding="utf-8")
+        decompile_block = source.split('elif mode == "decompile"')[1]
+        assert 'payload["truncated"]' in decompile_block
+
+    def test_the_client_forwards_truncated(self, tmp_path: Path) -> None:
+        class _Client(GhidraClient):
+            def __init__(self) -> None:
+                self.home = tmp_path
+                self.java = tmp_path
+                self.analyze = tmp_path / "analyzeHeadless"
+                self.analyze.write_text("", encoding="utf-8")
+
+            def _run_headless(self, project_dir: Path, **_: object) -> tuple[str, str, int]:
+                out_path = project_dir / "export_decompile.json"
+                out_path.write_text(
+                    json.dumps(
+                        {
+                            "mode": "decompile",
+                            "decompiled": "x" * 200_000,
+                            "function": "foo",
+                            "entry": "0x1000",
+                            "count": 0,
+                            "truncated": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return "", "", 0
+
+        binary = tmp_path / "app.bin"
+        binary.write_bytes(b"MZ")
+        project = tmp_path / "proj"
+        project.mkdir()
+        result = _Client().decompile(binary, project, "0x1000")
+        assert len(result["decompiled"]) == 200_000
+        assert result["truncated"] is True
