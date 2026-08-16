@@ -18,7 +18,7 @@ except Exception:
     limit = 256
 
 address_arg = ARGS[3] if len(ARGS) > 3 else None
-payload = {"mode": mode, "items": [], "count": 0}
+payload = {"mode": mode, "items": [], "count": 0, "has_more": False}
 monitor = ConsoleTaskMonitor()
 program = currentProgram
 fm = program.getFunctionManager()
@@ -33,8 +33,10 @@ def _addr(value):
 
 if mode == "functions":
     items = []
+    has_more = False
     for fn in fm.getFunctions(True):
         if len(items) >= limit:
+            has_more = True
             break
         entry = fn.getEntryPoint()
         items.append(
@@ -45,10 +47,13 @@ if mode == "functions":
             }
         )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "symbols":
     items = []
+    has_more = False
     for sym in st.getAllSymbols(True):
         if len(items) >= limit:
+            has_more = True
             break
         items.append(
             {
@@ -58,13 +63,16 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "xrefs":
     items = []
+    has_more = False
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
             for ref in refmgr.getReferencesTo(addr):
                 if len(items) >= limit:
+                    has_more = True
                     break
                 items.append(
                     {
@@ -74,6 +82,7 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "decompile":
     text = ""
     if address_arg:

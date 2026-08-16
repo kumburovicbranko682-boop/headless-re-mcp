@@ -204,6 +204,7 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        payload = _annotate_export_page(payload, capped)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
@@ -250,6 +251,23 @@ class GhidraClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
+
+
+def _annotate_export_page(payload: JsonObject, limit: int) -> JsonObject:
+    """Mark a capped Ghidra export so a full page is not read as the whole list.
+
+    Measured: 300 functions, limit 256, count=256, no has_more. A page
+    looked like every function Ghidra recovered.
+    """
+    items = payload.get("items")
+    if not isinstance(items, list):
+        payload.setdefault("has_more", False)
+        return payload
+    if "has_more" not in payload:
+        payload["has_more"] = len(items) >= max(1, int(limit))
+    else:
+        payload["has_more"] = bool(payload["has_more"])
+    return payload
 
 
 def _which(name: str) -> Path | None:
