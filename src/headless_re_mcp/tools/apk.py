@@ -144,7 +144,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
     ) -> dict[str, Any]:
-        """Decompile one class to Java via jadx (requires jadx + JRE)."""
+        """Decompile one class to Java via jadx (requires jadx + JRE).
+
+        Large classes are cut; read truncated rather than treating the
+        source as the whole class.
+        """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
     @tools.tool(name="apk.decode")

@@ -1519,6 +1519,26 @@ class TestApkManifestTruncation:
         assert complete["truncated"] is False
 
 
+class TestApkDecompileDescription:
+    def test_decompile_description_says_to_read_truncated(self) -> None:
+        """apk.decompile already cuts source but its tool text never said so.
+
+        Measured: handler.__doc__ had no truncated while jadx replies
+        with truncated when the class exceeds 400000 bytes. A model that
+        never saw the field treated a cut class as the whole file.
+        """
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.decompile"].handler.__doc__ or ""
+            assert "truncated" in doc
+        finally:
+            service.close_all()
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
