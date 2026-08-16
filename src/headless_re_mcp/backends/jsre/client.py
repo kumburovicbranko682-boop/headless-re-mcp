@@ -155,7 +155,14 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return {"objdump": stdout[:_MAX_INLINE], "truncated": len(stdout) > _MAX_INLINE}
+        # wat already carries bytes so a caller can tell how much was cut.
+        # Measured: a 400050-character objdump came back as 400000 characters,
+        # truncated=True, and no bytes field.
+        return {
+            "objdump": stdout[:_MAX_INLINE],
+            "truncated": len(stdout) > _MAX_INLINE,
+            "bytes": len(stdout),
+        }
 
 
 def _discover_webcrack() -> Path | None:

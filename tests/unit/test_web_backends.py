@@ -203,6 +203,47 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestWasmInfoSaysWhenItStopped:
+    """wasm.wat already reports bytes; wasm.info used to omit them.
+
+    Measured: a 400050-character objdump came back as 400000 characters,
+    truncated=True, and no bytes field. An agent then cannot tell how much
+    of the module dump was cut.
+    """
+
+    def test_a_cut_objdump_reports_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+        from headless_re_mcp.backends.jsre.client import _MAX_INLINE
+
+        blob = "x" * (_MAX_INLINE + 50)
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: (blob, "", 0))
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        client = WasmClient(None)
+        client._objdump = tmp_path / "wasm-objdump"
+        result = client.info(module)
+        assert result["truncated"] is True
+        assert result["bytes"] == len(blob)
+        assert len(result["objdump"]) == _MAX_INLINE
+
+    def test_a_short_objdump_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: ("headers", "", 0))
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        client = WasmClient(None)
+        client._objdump = tmp_path / "wasm-objdump"
+        result = client.info(module)
+        assert result["truncated"] is False
+        assert result["bytes"] == 7
+        assert result["objdump"] == "headers"
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
