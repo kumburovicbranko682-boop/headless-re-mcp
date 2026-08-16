@@ -303,6 +303,39 @@ class TestJsReSaysWhenTheRunWasPartial:
         assert result["exit_code"] == 1
 
 
+class TestJsReKeepsTheHardFailErrorTail:
+    """A long webcrack failure used to come back as the opening 8000 characters.
+
+    Measured: 10023 characters of stderr ending in 'ERROR unexpected token'
+    still raised with 8000 leading I's. The ERROR line was gone, so an agent
+    retried a deobfuscation it could not see.
+    """
+
+    def test_a_hard_fail_keeps_the_error_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jsre import client as js_mod
+        from headless_re_mcp.backends.jsre.client import _MAX_STDERR
+
+        body = ("I" * 10_000) + "ERROR unexpected token\n"
+
+        def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+            return Completed(1, b"", body.encode("utf-8"))
+
+        monkeypatch.setattr(js_mod, "run_bounded", fake_bounded)
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        with pytest.raises(JsReError) as caught:
+            JsClient(exe).deobfuscate(source)
+        assert caught.value.code == "backend_error"
+        err = str(caught.value.details.get("stderr") or "")
+        assert "unexpected token" in err
+        assert len(err) == _MAX_STDERR
+
+
 class TestWebScreenshotDoesNotReportAGhost:
     """A screenshot that wrote nothing used to be reported as a PNG path.
 

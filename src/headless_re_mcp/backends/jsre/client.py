@@ -58,7 +58,7 @@ def _with_exit(payload: JsonObject, code: int, stderr: str) -> JsonObject:
         payload["note"] = "tool exited non-zero; the output may be incomplete"
         snippet = stderr.strip()
         if snippet:
-            payload["stderr"] = snippet[:_MAX_STDERR]
+            payload["stderr"] = snippet[-_MAX_STDERR:]
     return payload
 
 
@@ -87,7 +87,13 @@ class JsClient:
         stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
         if code != 0 and not stdout:
             raise JsReError(
-                "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "webcrack failed",
+                exit_code=code,
+                # The failure reason is at the end. Measured: 10023 characters
+                # of stderr still came back as 8000 leading I's, so 'ERROR
+                # unexpected token' was gone.
+                stderr=stderr[-_MAX_STDERR:],
             )
         return _with_exit(
             {
@@ -119,7 +125,7 @@ class JsClient:
                 "backend_error",
                 "webcrack unpack failed",
                 exit_code=code,
-                stderr=stderr[:_MAX_STDERR],
+                stderr=stderr[-_MAX_STDERR:],
             )
         total = len(files)
         return _with_exit(
@@ -160,7 +166,7 @@ class WasmClient:
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
         if code != 0 and not stdout:
             raise JsReError(
-                "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[-_MAX_STDERR:]
             )
         return _with_exit(
             {
@@ -180,7 +186,10 @@ class WasmClient:
         )
         if code != 0 and not stdout:
             raise JsReError(
-                "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "wasm-objdump failed",
+                exit_code=code,
+                stderr=stderr[-_MAX_STDERR:],
             )
         return _with_exit(
             {"objdump": stdout[:_MAX_INLINE], "truncated": len(stdout) > _MAX_INLINE},
