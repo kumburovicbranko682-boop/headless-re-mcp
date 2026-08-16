@@ -158,6 +158,56 @@ class TestFridaApplicationsSayWhenTheyStopped:
         assert page["has_more"] is False
 
 
+class TestFridaModulesSayWhenTheyStopped:
+    """A module page that hit the cap looks exactly like one that ended.
+
+    Measured: 200 modules with limit=20 came back as count=20 and total=200,
+    with no has_more.
+    """
+
+    def _client(self, n: int) -> FridaClient:
+        class _Exports:
+            def modules(self) -> list[dict[str, object]]:
+                return [
+                    {"name": f"m{index}", "base": hex(index), "size": 1, "path": f"/lib/{index}"}
+                    for index in range(n)
+                ]
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                del source
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                del pid
+                return _Session()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._client(200).modules(4242, allowed_pid=4242, limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 200
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._client(3).modules(4242, allowed_pid=4242, limit=20)
+        assert page["has_more"] is False
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False
