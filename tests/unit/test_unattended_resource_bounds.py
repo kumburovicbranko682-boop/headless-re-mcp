@@ -1350,13 +1350,9 @@ class TestATimeoutBindsWhatTheToolStarted:
             ctypes.windll.kernel32.CloseHandle(handle)
 
     def test_the_process_the_launcher_started_is_killed_too(self) -> None:
-        import os
         import time
 
         from headless_re_mcp.core.process_tree import terminate_process_tree
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         process, grandchild = self._launcher()
         try:
@@ -1375,14 +1371,10 @@ class TestATimeoutBindsWhatTheToolStarted:
                 process.kill()
 
     def test_a_tool_that_overruns_is_reported_with_what_was_killed(self) -> None:
-        import os
         import sys
         import time
 
         from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         started = time.monotonic()
         with pytest.raises(TimedOut) as caught:
