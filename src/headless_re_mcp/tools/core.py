@@ -405,7 +405,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List named addresses in the IDA database."""
+        """List named addresses in the IDA database.
+
+        Capped by limit. Read has_more and total rather than treating returned
+        as every name in the database.
+        """
         return _dump(analysis.static_names(session_id, offset=offset, limit=limit))
 
     def static_types(
