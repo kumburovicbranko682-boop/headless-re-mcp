@@ -17,6 +17,7 @@ import http.client
 import json
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -45,23 +46,48 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     A non-200 is a definite answer and is reported as such; anything that stops
     the request from completing is reported as unreachable. The distinction
     matters because only one of them means the process is still serving.
+
+    ``urlopen(..., timeout=)`` is the socket timeout. A child that accepts the
+    connection and delivers one header byte inside that window resets it, so
+    the probe never returns and the supervisor cannot count a strike. Measured:
+    timeout 0.5s, one ``H`` every 250ms, returned after 4.016s when the
+    listener finally hung up (BadStatusLine) -- the full hold, not the bound.
+    The join is the overall deadline; a late answer is still used if it
+    arrived before we gave up.
     """
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed loopback URL
-            code = int(response.status)
-            return (200 <= code < 300, f"http {code}")
-    except urllib.error.HTTPError as exc:
-        return (False, f"http {exc.code}")
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        OSError,
-        # A child wedged badly enough to answer with a malformed response raises
-        # this, and it is not an OSError. That is the case a readiness check
-        # exists to catch, so it must read as unreachable rather than escape.
-        http.client.HTTPException,
-    ) as exc:
-        return (False, f"unreachable: {type(exc).__name__}")
+    bound = max(0.05, float(timeout))
+    box: list[tuple[bool, str] | BaseException] = []
+
+    def work() -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=bound) as response:  # noqa: S310 - fixed loopback URL
+                code = int(response.status)
+                box.append((200 <= code < 300, f"http {code}"))
+        except urllib.error.HTTPError as exc:
+            box.append((False, f"http {exc.code}"))
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            # A child wedged badly enough to answer with a malformed response
+            # raises this, and it is not an OSError. That is the case a
+            # readiness check exists to catch, so it must read as unreachable
+            # rather than escape.
+            http.client.HTTPException,
+        ) as exc:
+            box.append((False, f"unreachable: {type(exc).__name__}"))
+        except BaseException as exc:  # noqa: BLE001 - handed to the join
+            box.append(exc)
+
+    thread = threading.Thread(target=work, name="ready-probe", daemon=True)
+    thread.start()
+    thread.join(bound)
+    if box:
+        result = box[0]
+        if isinstance(result, BaseException):
+            return (False, f"unreachable: {type(result).__name__}")
+        return result
+    return (False, "unreachable: TimeoutError")
 
 
 @dataclass(slots=True)
