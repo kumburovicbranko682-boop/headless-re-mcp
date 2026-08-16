@@ -90,7 +90,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
 
-        Read `total` and `has_more`. `count` is this page, not every string.
+        Read `total` and `has_more`. Long values are capped; read
+        `values_truncated` rather than treating each string as complete.
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 

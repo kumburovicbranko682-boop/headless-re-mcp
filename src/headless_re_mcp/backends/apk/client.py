@@ -297,20 +297,23 @@ class ApkClient:
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        values = sorted(
-            {
-                str(item.get_value())[:_MAX_STRING_LEN]
-                for item in parsed.analysis.get_strings()
-            }
-        )
+        unique = sorted({str(item.get_value()) for item in parsed.analysis.get_strings()})
+        cut_count = sum(1 for item in unique if len(item) > _MAX_STRING_LEN)
+        values = [item[:_MAX_STRING_LEN] for item in unique]
         window = values[offset : offset + limit]
-        return {
+        payload: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
             "offset": offset,
             "has_more": offset + len(window) < len(values),
         }
+        if cut_count:
+            # Slicing before dedup used to merge distinct long strings into one
+            # 2000-character prefix and say nothing.
+            payload["values_truncated"] = True
+            payload["truncated_value_count"] = cut_count
+        return payload
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

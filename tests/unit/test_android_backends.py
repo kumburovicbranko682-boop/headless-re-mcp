@@ -421,6 +421,40 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_strings_does_not_merge_long_values_or_hide_the_cut() -> None:
+    """Two 5000-character strings that share a 2000-character prefix became one.
+
+    Measured: the set was taken after the slice, so distinct constants
+    collapsed and the reply had no truncated flag. An agent searching for the
+    suffix concluded the string was never in the APK.
+    """
+    from headless_re_mcp.backends.apk.client import _MAX_STRING_LEN, ApkClient
+
+    class _Str:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def get_value(self) -> str:
+            return self._value
+
+    class _Analysis:
+        def get_strings(self) -> list[_Str]:
+            prefix = "A" * _MAX_STRING_LEN
+            return [_Str(prefix + "one"), _Str(prefix + "two")]
+
+    class _Parsed:
+        analysis = _Analysis()
+
+    client = ApkClient()
+    client._available = True
+    client._parsed = lambda _path: _Parsed()  # type: ignore[method-assign]
+    got = client.strings(Path("dummy.apk"), limit=200)
+    assert got["total"] == 2
+    assert got["values_truncated"] is True
+    assert got["truncated_value_count"] == 2
+    assert all(len(item) == _MAX_STRING_LEN for item in got["strings"])
+
+
 def test_apk_strings_says_when_the_page_is_not_the_whole_set() -> None:
     """500 strings, limit=200 returned count=200 and total=500 but no has_more."""
     from headless_re_mcp.backends.apk.client import ApkClient
