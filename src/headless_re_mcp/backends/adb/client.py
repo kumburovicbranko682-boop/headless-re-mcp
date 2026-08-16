@@ -88,6 +88,18 @@ def _shell(dev: Any, cmd: str | list[str], *, timeout: float = _SHELL_TIMEOUT) -
         raise
 
 
+def _frida_server_present(dev: Any) -> bool:
+    """True only when a process listing actually names frida-server."""
+    try:
+        return "frida-server" in str(_shell(dev, "ps -A")) or "frida-server" in str(
+            _shell(dev, "ps")
+        )
+    except AdbError:
+        raise
+    except Exception:  # noqa: BLE001 - a missing ps is "not running", not a hang
+        return False
+
+
 class AdbBackend:
     def __init__(self, adb_path: Path | None = None) -> None:
         self._adbutils: Any = None
@@ -327,15 +339,7 @@ class AdbBackend:
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(_shell(dev, "ps -A")) or "frida-server" in str(
-                _shell(dev, "ps")
-            )
-        except AdbError:
-            raise
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        if _frida_server_present(dev):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -346,6 +350,8 @@ class AdbBackend:
                 dev.sync.push(str(path), remote_path)
                 _shell(dev, ["chmod", "755", remote_path])
                 pushed = True
+            except AdbError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
         try:
@@ -362,6 +368,17 @@ class AdbBackend:
                 "port": port,
                 "note": f"launch attempted; verify manually ({exc})",
             }
+        # The launch command returning is not the process existing. Measured:
+        # `su: not found` and an empty su both came back as running=True, and
+        # nothing re-checked ps, so an unattended agent would attach to a
+        # server that was never started.
+        if not _frida_server_present(dev):
+            raise AdbError(
+                "backend_error",
+                "frida-server did not start",
+                pushed=pushed,
+                port=port,
+            )
         return {"running": True, "pushed": pushed, "port": port}
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:

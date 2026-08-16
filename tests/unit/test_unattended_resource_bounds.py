@@ -2206,12 +2206,18 @@ class TestAdbShellCannotHoldAWorker:
         class Recording:
             def __init__(self) -> None:
                 self.timeouts: list[float | None] = []
+                self.cmds: list[str] = []
 
             def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
                 del kw
                 self.timeouts.append(timeout)
+                self.cmds.append(str(cmd))
                 text = str(cmd)
                 if "ps" in text:
+                    # After a launch, the process is there -- otherwise
+                    # ensure_frida_server now refuses instead of inventing it.
+                    if any("su" in item for item in self.cmds):
+                        return "root 99 1 /data/local/tmp/frida-server"
                     return "root 1 0 init"
                 if "logcat" in text:
                     return "a\nb"
@@ -2247,3 +2253,87 @@ class TestAdbShellCannotHoldAWorker:
             self._backend(Timed()).properties("emulator-5554")
         assert caught.value.code == "timeout"
         assert caught.value.details["timeout"] == _SHELL_TIMEOUT
+
+
+class TestFridaServerEnsureDoesNotInventAProcess:
+    """The launch command returning is not the process existing.
+
+    Measured: `su: not found` and an empty su both came back as running=True,
+    and nothing re-checked ps after the launch. An unattended agent then
+    attaches to a server that was never started.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_su_not_found_is_not_running(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                text = str(cmd)
+                if "ps" in text:
+                    return "root 1 0 init"
+                if "su" in text:
+                    return "su: not found"
+                return ""
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).ensure_frida_server("emulator-5554")
+        assert caught.value.code == "backend_error"
+        assert "did not start" in caught.value.message
+
+    def test_an_empty_launch_is_not_running(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                if "ps" in str(cmd):
+                    return "root 1 0 init"
+                return ""
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).ensure_frida_server("emulator-5554")
+        assert caught.value.code == "backend_error"
+
+    def test_a_process_that_appears_after_launch_is_running(self) -> None:
+        class Device:
+            def __init__(self) -> None:
+                self.launched = False
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                text = str(cmd)
+                if "su" in text:
+                    self.launched = True
+                    return ""
+                if "ps" in text and self.launched:
+                    return "root 99 1 /data/local/tmp/frida-server -l 0.0.0.0:27042"
+                return "root 1 0 init"
+
+        result = self._backend(Device()).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+        assert result["pushed"] is False
+
+    def test_already_running_does_not_launch_again(self) -> None:
+        class Device:
+            def __init__(self) -> None:
+                self.cmds: list[str] = []
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                self.cmds.append(str(cmd))
+                return "root 99 1 /data/local/tmp/frida-server"
+
+        device = Device()
+        result = self._backend(device).ensure_frida_server("emulator-5554")
+        assert result == {"running": True, "pushed": False, "port": 27042}
+        assert all("su" not in cmd for cmd in device.cmds)
+
