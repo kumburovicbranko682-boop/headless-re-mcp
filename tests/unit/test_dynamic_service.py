@@ -1595,6 +1595,29 @@ def test_pe_headers_memory_fallback_uses_atomic_write(tmp_path: Path) -> None:
     assert not list(artifact.parent.glob("*.partial"))
 
 
+def test_pe_headers_memory_fallback_is_registered(tmp_path: Path) -> None:
+    """The fallback used to write a header file nothing could reclaim.
+
+    Measured: 8 fallback writes (4096 bytes) left artifacts.list at total=0
+    and no artifact_id, while the native path already registered.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _NoNativePeHeadersWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    headers = service.pe_headers_runtime(session_id, worker.module_base, save_artifact=True)
+    assert headers.ok and headers.data is not None
+    assert headers.data.get("artifact_id")
+    listed = service.repository.list_artifacts(session_id)
+    assert listed["total"] > 0
+    assert {item["kind"] for item in listed["artifacts"]} == {"pe_headers"}
+
+
 def _rebased_service(tmp_path: Path, runtime_base: int) -> tuple[object, str, FakeDynamicWorker]:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
