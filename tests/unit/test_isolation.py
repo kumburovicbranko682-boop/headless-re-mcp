@@ -79,6 +79,67 @@ def test_a_command_that_cannot_start_is_a_failure_not_a_crash() -> None:
     assert "FileNotFoundError" in str(outcome["detail"])
 
 
+def test_a_timeout_kills_what_the_isolation_command_started(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A snapshot script is often a launcher.
+
+    Measured: a 0.5s isolation timeout returned while the child it started
+    was still alive -- so the next sample would rotate on a machine the
+    previous revert was still touching.
+    """
+    import os
+    import sys
+    import time
+
+    marker = tmp_path / "child.pid"
+    body = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', "
+        f"'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"Path({str(marker)!r}).write_text(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n"
+    )
+    policy = IsolationPolicy(command=(sys.executable, "-c", body), timeout_s=0.5, required=False)
+    child = 0
+    try:
+        outcome = IsolationRunner(policy).rotate()
+        assert outcome["ok"] is False
+        deadline = time.monotonic() + 3.0
+        while not marker.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.is_file(), "the isolation command never reported its child"
+        child = int(marker.read_text().strip())
+        while _pid_alive(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert _pid_alive(child) is False, "the isolation child outlived the timeout"
+    finally:
+        if child and _pid_alive(child):
+            os.kill(child, 9)
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def test_a_timeout_is_a_failure() -> None:
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd="revert.ps1", timeout=1.0)
