@@ -37,6 +37,7 @@ _LAUNCH_TIMEOUT = 15.0
 _CURRENT_ACTIVITY_TIMEOUT = 15.0
 _UNINSTALL_TIMEOUT = 30.0
 _SCREENSHOT_TIMEOUT = 20.0
+_FRIDA_PS_TIMEOUT = 5.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -666,10 +667,11 @@ class AdbBackend:
         from the shell, and reporting them as running left an unattended
         agent waiting for hooks that never appear.
         """
-        dev = self._device(serial)
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        if self._frida_server_visible(dev):
+        if self._frida_server_visible(serial):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -680,7 +682,7 @@ class AdbBackend:
                 # sync.push has no deadline. Measured: a 0.8s sleep in
                 # push held ensure_frida_server for 0.8s.
                 self._push_file(serial, str(path), remote_path, timeout=_PUSH_TIMEOUT)
-                dev.shell(["chmod", "755", remote_path], timeout=8.0)
+                self._device(serial).shell(["chmod", "755", remote_path], timeout=8.0)
                 pushed = True
             except AdbError:
                 raise
@@ -689,13 +691,13 @@ class AdbBackend:
         launch_note = ""
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
-            dev.shell(
+            self._device(serial).shell(
                 f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
             launch_note = f"launch attempted; verify manually ({exc})"
-        if self._frida_server_visible(dev):
+        if self._frida_server_visible(serial):
             result: JsonObject = {"running": True, "pushed": pushed, "port": port}
             if launch_note:
                 result["note"] = launch_note
@@ -708,12 +710,23 @@ class AdbBackend:
             or "launch command returned but frida-server is not in the process list",
         }
 
-    @staticmethod
-    def _frida_server_visible(dev: Any) -> bool:
-        """True only when ps lists a frida-server process, not when a command ran."""
+    def _frida_server_visible(self, serial: str) -> bool:
+        """True only when ps lists a frida-server process, not when a command ran.
+
+        Used to call adbutils ``shell(timeout=5)``. Measured: a 0.8s sleep
+        in that hop held ``ensure_frida_server`` 0.8s per ``ps``; five
+        hops (ps -A, ps, launch, ps -A, ps) held the worker 4.0s. The
+        library still opens the transport with a 600s default, so a
+        wedged adb server pinned the worker on connect, not the 5s read.
+        A timeout here is raised: a wedged listing is not "not running".
+        """
         for command in ("ps -A", "ps"):
             try:
-                listing = str(dev.shell(command, timeout=5.0))
+                listing = self._adb_shell(serial, command, timeout=_FRIDA_PS_TIMEOUT)
+            except AdbError as exc:
+                if exc.code == "timeout":
+                    raise
+                continue
             except Exception:  # noqa: BLE001
                 continue
             if "frida-server" in listing:
