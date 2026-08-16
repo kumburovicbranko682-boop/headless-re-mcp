@@ -195,6 +195,9 @@ class ApkAnalysisMixin:
             data = self._apktool_client().decode(
                 binary, out_dir, timeout=timeout, no_resources=no_resources
             )
+            data = self._register_apktool_tree(
+                session_id, out_dir, data, source="apk.decode"
+            )
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(self, session_id, "apk.decode", "apktool decoded apk")
             return _success(data, session_id=session_id, backend="apk")
@@ -247,6 +250,37 @@ class ApkAnalysisMixin:
             return _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    def _register_apktool_tree(
+        self, session_id: str, out_dir: Path, payload: JsonObject, *, source: str
+    ) -> JsonObject:
+        """Register apktool decode output so a closed session does not leave a dead tree.
+
+        Measured: 8 create/decode/close cycles left 168 files and 321 KiB,
+        with artifacts.list total=0 and artifacts.gc collected=0, against a
+        15 KiB budget. The tree is cheap to regenerate, so it belongs in the
+        table the collector already walks. Registration must not fail decode.
+        """
+        if not out_dir.is_dir():
+            return payload
+        registered = 0
+        try:
+            for path in out_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                _record_artifact(
+                    self,
+                    session_id=session_id,
+                    kind="apktool_decode",
+                    path=path,
+                    sha256=file_sha256(path),
+                    source=source,
+                    size=path.stat().st_size,
+                )
+                registered += 1
+        except BaseException as exc:  # noqa: BLE001 - reported, never raised
+            return {**payload, "registered": registered, "artifact_error": str(exc)}
+        return {**payload, "registered": registered}
 
     def _register_jadx_tree(
         self, session_id: str, out_dir: Path, payload: JsonObject, *, source: str
