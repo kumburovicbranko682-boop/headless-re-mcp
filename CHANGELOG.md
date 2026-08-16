@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 线程列表停在 100 条时看起来像完整目录**。150 个线程回 100 条且
+  `ok=True`，没有 `has_more`。过夜任务建的旧线程会消失。现在截断时标
+  `has_more`。
 - **`web.dom.snapshot` 截断后不说原来有多长**。250,001 字符的 HTML 被切成
   200,000 且 `truncated=True`，但没有 `bytes`。agent 无法判断丢掉了多少。
   现在带回 `bytes`。

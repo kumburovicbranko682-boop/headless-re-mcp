@@ -119,7 +119,20 @@ def register_agent_routes(
     @app.get("/api/agent/threads")
     def list_threads(authorization: str | None = Header(default=None)) -> JSONResponse:
         authorize(authorization)
-        return JSONResponse({"ok": True, "threads": [item.dump() for item in store.list_threads()]})
+        # Default list_threads cap is 100. Measured: 150 threads came back as
+        # 100 with ok=True and no has_more, so overnight missions' older
+        # threads disappeared.
+        probe = store.list_threads(limit=101)
+        has_more = len(probe) > 100
+        threads = probe[:100]
+        return JSONResponse(
+            {
+                "ok": True,
+                "threads": [item.dump() for item in threads],
+                "count": len(threads),
+                "has_more": has_more,
+            }
+        )
 
     @app.post("/api/agent/threads", status_code=201)
     def create_thread(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:

@@ -198,3 +198,26 @@ def test_a_long_thread_says_when_older_messages_were_dropped(
     assert body["has_more"] is True
     assert body["messages"][0]["content"] == "m100"
     assert body["messages"][-1]["content"] == "m599"
+
+
+def test_thread_list_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """GET /threads stopped at 100 rows and said that was every thread.
+
+    Measured: 150 threads came back as 100 with ok=True and no has_more, so
+    overnight missions' older threads disappeared.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    for index in range(150):
+        store.create_thread(title=f"t{index}", session_id="analysis-session")
+
+    with TestClient(app) as client:
+        body = client.get("/api/agent/threads", headers=headers).json()
+    assert body["ok"] is True
+    assert body["count"] == 100
+    assert body["has_more"] is True
+    assert len(body["threads"]) == 100
