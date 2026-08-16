@@ -265,29 +265,38 @@ class DotnetAnalysisMixin:
                     f"dotnet.reactor.unpack cannot run in {session.state.value} state"
                 )
             after = inspect_dotnet(result.output_path, require_verified=True)
+            # Measured: a 2048-byte nrs-*.exe listed total=0, gc removed=0,
+            # and survived close_all.
             return _success(
-                {
-                    "net_reactor_slayer": result.to_dict(),
-                    "before": inspect.to_dict(),
-                    "after": after.to_dict(),
-                    "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
-                    "claims_universal_unpack": False,
-                    "authorized_samples_only": True,
-                    "stats": {
-                        "before": (
-                            inspect.metadata_stats.to_dict()
-                            if inspect.metadata_stats is not None
-                            else None
-                        ),
-                        "after": (
-                            after.metadata_stats.to_dict()
-                            if after.metadata_stats is not None
-                            else None
-                        ),
-                        "before_kind": inspect.kind.value,
-                        "after_kind": after.kind.value,
+                _register_capture(
+                    self,
+                    session_id,
+                    Path(result.output_path),
+                    kind="dotnet_reactor_unpacked",
+                    source="dotnet.reactor.unpack",
+                    payload={
+                        "net_reactor_slayer": result.to_dict(),
+                        "before": inspect.to_dict(),
+                        "after": after.to_dict(),
+                        "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
+                        "claims_universal_unpack": False,
+                        "authorized_samples_only": True,
+                        "stats": {
+                            "before": (
+                                inspect.metadata_stats.to_dict()
+                                if inspect.metadata_stats is not None
+                                else None
+                            ),
+                            "after": (
+                                after.metadata_stats.to_dict()
+                                if after.metadata_stats is not None
+                                else None
+                            ),
+                            "before_kind": inspect.kind.value,
+                            "after_kind": after.kind.value,
+                        },
                     },
-                },
+                ),
                 session_id=session_id,
                 backend="dotnet",
             )

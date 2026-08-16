@@ -1020,8 +1020,10 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Optional NETReactorSlayer unpack (authorized Reactor samples only).
 
         Answers with net_reactor_slayer, before, after, input_unchanged,
-        stats, authorized_samples_only true, and claims_universal_unpack
-        false. There is no output field and no unpacked field.
+        stats, authorized_samples_only true, artifact_id, and
+        claims_universal_unpack false. There is no output field and no
+        unpacked field. artifact_id is the artifacts table row; without it
+        the image is invisible to artifacts.gc.
         """
         return _dump(analysis.dotnet_reactor_unpack(session_id, timeout=timeout))
 
