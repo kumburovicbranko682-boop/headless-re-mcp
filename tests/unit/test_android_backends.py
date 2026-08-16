@@ -848,3 +848,48 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class TestApkRepackIsRegistered:
+    """apk.repack writes repacked.apk and never registered it.
+
+    Measured: 5 repacks overwrite the same file, 0 artifact rows, so the
+    rebuilt APK cannot be read back or reclaimed.
+    """
+
+    def test_repacked_apk_is_a_readable_artifact(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+
+            class _Fake:
+                def build(
+                    self, source: Path, out_apk: Path, *, timeout: float = 600.0
+                ) -> dict[str, Any]:
+                    out_apk.parent.mkdir(parents=True, exist_ok=True)
+                    out_apk.write_bytes(b"PK" + b"x" * 64)
+                    return {"apk": str(out_apk), "size": out_apk.stat().st_size, "signed": False}
+
+            service._apktool_client = lambda: _Fake()  # type: ignore[method-assign]
+            result = service.apk_repack(session_id)
+            assert result.ok, result.error
+            assert result.data is not None
+            assert result.data.get("artifact_id")
+
+            listed = service.artifacts_list(session_id)
+            assert listed.ok and listed.data is not None
+            assert listed.data["total"] == 1
+            assert listed.data["artifacts"][0]["kind"] == "apk_repacked"
+
+            read = service.artifacts_read(str(result.data["artifact_id"]), offset=0, limit=2)
+            assert read.ok and read.data is not None
+            assert read.data["data"].startswith("504b")
+        finally:
+            service.close_all()
