@@ -571,11 +571,16 @@ class AdbBackend:
         if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
             raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
         try:
-            _call_bounded(
+            outcome = _call_bounded(
                 lambda: dev.forward(local, remote), timeout=_SHELL_TIMEOUT, op="forward"
             )
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
+        # Measured: forward returning False still came back as a local/remote
+        # pair with no error. An overnight agent then talks through a port
+        # that was never forwarded.
+        if outcome is False:
+            raise AdbError("backend_error", "adb forward reported failure")
         return {"local": local, "remote": remote}

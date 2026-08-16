@@ -3173,6 +3173,41 @@ class TestAdbCapturesDoNotInventAFile:
         assert out.read_bytes() == b"data"
 
 
+class TestAdbForwardDoesNotInventAPort:
+    """adbutils returns False when the forward was not installed.
+
+    Measured: that still came back as a local/remote pair with no error.
+    """
+
+    def test_forward_false_is_not_forwarded(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Device:
+            def forward(self, local: str, remote: str) -> bool:
+                del local, remote
+                return False
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert caught.value.code == "backend_error"
+
+    def test_forward_none_is_forwarded(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Device:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result == {"local": "tcp:27042", "remote": "tcp:27042"}
+
+
 class TestAdbConnectDoesNotInventALink:
     """adb connect writes a sentence; the word 'already' is not success.
 
