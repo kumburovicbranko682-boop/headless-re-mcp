@@ -1125,6 +1125,43 @@ class TestPackagesDoesNotInventAnEmptyDevice:
         )
         assert result["packages"] == ["com.example.app", "com.other.app"]
         assert result["total"] == 2
+
+
+class TestPropertiesDoesNotInventAnEmptyDevice:
+    """A host error line used to look like a device with no properties.
+
+    Measured: a device whose getprop printed ``error: device offline`` still
+    answered ``{'properties': {}, 'total': 0}``. An unattended agent then
+    treats a dead device as having an empty property set.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_an_adb_error_line_is_not_an_empty_property_set(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("error: device offline").properties("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "getprop failed" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+    def test_no_prop_lines_is_empty(self) -> None:
+        result = self._backend("").properties("emulator-5554")
+        assert result["properties"] == {}
+        assert result["total"] == 0
+
+    def test_prop_lines_are_listed(self) -> None:
+        result = self._backend("[ro.build.version.sdk]: [34]").properties("emulator-5554")
+        assert result["properties"] == {"ro.build.version.sdk": "34"}
+        assert result["total"] == 1
     """``launched: True`` used to mean the monkey command returned, not that it started.
 
     Measured: a device whose monkey printed

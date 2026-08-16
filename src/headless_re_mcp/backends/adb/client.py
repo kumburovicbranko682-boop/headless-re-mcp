@@ -249,6 +249,15 @@ class AdbBackend:
             raw = _shell(dev, "getprop")
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
+        text = str(raw)
+        # Same host-error leak as logcat/packages. Measured:
+        # "error: device offline" still answered {'properties': {}, 'total': 0},
+        # so an agent treated a dead device as having no props.
+        captured = [line for line in text.splitlines() if line.strip()]
+        if captured and all(
+            line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+        ):
+            raise AdbError("backend_error", "getprop failed", output=text[:800])
         parsed: list[tuple[str, str]] = []
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
