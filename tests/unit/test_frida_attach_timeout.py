@@ -362,3 +362,36 @@ def test_frida_remote_device_does_not_wait_forever(
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_resolve_remote_does_not_wait_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolving host:port still called add_remote_device with no deadline.
+
+    Measured: a 0.8s sleep in that hop held applications 0.8s after
+    add_remote_device itself was already bounded.
+    """
+    monkeypatch.setattr(frida_client, "_REMOTE_TIMEOUT", 0.4)
+
+    class _Mgr:
+        def get_device(self, device_id: str, timeout: object = None) -> object:
+            raise RuntimeError("absent")
+
+        def add_remote_device(self, endpoint: str) -> object:
+            time.sleep(30)
+            raise AssertionError(endpoint)
+
+    class _Fake:
+        def get_device_manager(self) -> _Mgr:
+            return _Mgr()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.applications("10.0.0.1:27042")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"

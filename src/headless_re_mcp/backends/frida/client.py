@@ -527,7 +527,7 @@ class FridaClient:
                 mgr = frida.get_device_manager()
                 with contextlib.suppress(Exception):
                     return mgr.get_device(device_id, timeout=1)
-                return mgr.add_remote_device(device_id)
+                return self._remote_with_deadline(frida, device_id)
             return frida.get_device(device_id, timeout=5)
         except FridaError:
             raise
