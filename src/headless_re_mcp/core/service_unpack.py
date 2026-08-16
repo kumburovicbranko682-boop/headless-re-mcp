@@ -1231,7 +1231,7 @@ class UnpackMixin:
 
             self._store_unpack_session(state)
             payload: JsonObject = {
-                "unpack": state.to_dict(),
+                "unpack": state.status_dict(),
                 "claims_universal_unpack": False,
             }
             if bounded_probe is not None:
@@ -1466,7 +1466,7 @@ class UnpackMixin:
                 "authoritative": False,
                 "blind_selection": False,
                 "claims_universal_unpack": False,
-                "unpack": state.to_dict() if state is not None else None,
+                "unpack": state.status_dict() if state is not None else None,
             }
             if collected_note is not None:
                 payload["note"] = collected_note
@@ -1767,7 +1767,7 @@ class UnpackMixin:
 
             return _success(
                 {
-                    "unpack": state.to_dict(),
+                    "unpack": state.status_dict(),
                     "confirmed_oep_rva": oep_rva,
                     "role": "confirmed",
                     "auto_dump": auto_dump,

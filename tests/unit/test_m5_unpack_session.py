@@ -546,3 +546,41 @@ def test_unpack_cancel_says_when_the_ledger_is_only_a_window(tmp_path: Path) -> 
     assert len(unpack["artifacts"]) == 20
     assert unpack["artifacts_has_more"] is True
     assert cancelled.data["artifacts_retained"] is True
+
+
+def test_unpack_score_embeds_only_a_status_window(tmp_path: Path) -> None:
+    """151 artifacts used to ride along inside unpack.score_oep in full."""
+    binary = tmp_path / "packed.exe"
+    _write_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    state = create_unpack_session(session_id, route="generic_dynamic")
+    state = transition(state, UnpackPhase.RUNNING, event="run", message="running")
+    extra = tuple(
+        UnpackArtifact("dump", f"/tmp/d{index}.bin", "ab", UnpackPhase.DUMPED)
+        for index in range(150)
+    )
+    service._store_unpack_session(replace(state, artifacts=state.artifacts + extra))
+
+    scored = service.unpack_score_oep(
+        session_id,
+        module_base=0x140000000,
+        module_size=0x4000,
+        observations=[
+            {"kind": "rip_in_main_module_code", "oep_rva": 0x1500},
+            {"kind": "write_to_execute", "oep_rva": 0x1500},
+        ],
+    )
+    assert scored.ok and scored.data is not None
+    unpack = scored.data["unpack"]
+    assert unpack["artifact_total"] == 150
+    assert len(unpack["artifacts"]) == 20
+    assert unpack["artifacts_has_more"] is True
