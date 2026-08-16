@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **provider 模型列表在 1000 条时不标 `has_more`**。1500 个模型 id
+  被切成 1000 且 `ok=True`。过夜探测会把一页当完整目录。现在满页标
+  `has_more`。
 - **`apk.export_sources` 在 jadx 失败时仍报成功**。exit 1 但目录里
   已有上次的 `.java` 时仍返回 `java_file_count=1`。过夜任务会把失败
   的反编译当恢复后的源码。现在只认本次新写入的文件。

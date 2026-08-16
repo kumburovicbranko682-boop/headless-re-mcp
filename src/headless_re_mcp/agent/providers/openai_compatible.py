@@ -221,4 +221,6 @@ class OpenAICompatibleProvider:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
+        # Measured: 1500 ids came back as 1000 with no has_more. The
+        # probe HTTP path now flags a full page; this is the cap.
         return sorted({str(item["id"]) for item in data if isinstance(item, dict) and isinstance(item.get("id"), str)})[:1000]

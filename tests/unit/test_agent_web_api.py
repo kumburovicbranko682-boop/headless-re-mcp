@@ -570,3 +570,47 @@ def test_thread_create_says_when_the_title_was_cut(
     assert len(cut["thread"]["title"]) == 200
     assert cut["thread"]["truncated"] is True
     assert intact["thread"]["truncated"] is False
+
+
+def test_provider_model_probe_says_when_the_list_stopped(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """GET /models sliced the catalog at 1000 and said that was every model.
+
+    Measured: 1500 model ids came back as 1000 with ok=True and no
+    has_more, so an unattended probe treated a page as the provider's
+    whole overnight catalog.
+    """
+    from headless_re_mcp.agent.providers.openai_compatible import OpenAICompatibleProvider
+
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    async def cut(self: OpenAICompatibleProvider) -> list[str]:
+        del self
+        return [f"m{index}" for index in range(1000)]
+
+    async def intact(self: OpenAICompatibleProvider) -> list[str]:
+        del self
+        return ["a", "b", "c"]
+
+    with TestClient(app) as client:
+        assert (
+            client.put(
+                "/api/providers/default",
+                headers=headers,
+                json={"base_url": "https://example.invalid/v1", "model": "fake", "api_key": "k"},
+            ).status_code
+            == 200
+        )
+        monkeypatch.setattr(OpenAICompatibleProvider, "list_models", cut)
+        cut_body = client.post("/api/providers/default/models", headers=headers).json()
+        monkeypatch.setattr(OpenAICompatibleProvider, "list_models", intact)
+        intact_body = client.post("/api/providers/default/models", headers=headers).json()
+    assert cut_body["ok"] is True
+    assert len(cut_body["models"]) == 1000
+    assert cut_body["has_more"] is True
+    assert intact_body["has_more"] is False

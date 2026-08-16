@@ -471,7 +471,12 @@ def register_agent_routes(
             raise HTTPException(status_code=404, detail="profile_not_found") from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"provider_probe_failed:{type(exc).__name__}") from exc
-        return JSONResponse({"ok": True, "models": models})
+        # Measured: 1500 model ids were sliced to 1000 with ok=True and
+        # no has_more, so an overnight probe treated a page as the
+        # provider's whole catalog.
+        return JSONResponse(
+            {"ok": True, "models": models, "has_more": len(models) >= 1000}
+        )
 
     @app.post("/api/providers/zerofall/preview")
     def zerofall_preview(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
