@@ -366,28 +366,53 @@ def _capture_process(
     return capture
 
 
+def _probe_run(args: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+    """Run one probe argv and kill what it started if it overruns.
+
+    ``subprocess.run(timeout=...)`` kills only the process it spawned.
+    A launcher that exits before the deadline still leaves its child:
+    measured three sleepers reparented to pid 1, one per argv variant.
+    A new session lets the group be killed after the parent is gone.
+    """
+    from headless_re_mcp.core.process_tree import terminate_process_tree
+
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "creationflags": creationflags,
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    with subprocess.Popen(args, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            terminate_process_tree(process)
+            if os.name != "nt" and isinstance(process.pid, int) and process.pid > 0:
+                with suppress(OSError, ProcessLookupError):
+                    os.killpg(process.pid, 9)
+            with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+                process.communicate(timeout=2.0)
+            raise exc
+        return subprocess.CompletedProcess(args, int(process.returncode or 0), stdout, stderr)
+
+
 def probe_de4dot_version(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
     """Best-effort version/help probe; de4dot builds vary in argv support."""
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     for args in ([str(exe)], [str(exe), "-h"], [str(exe), "--help"]):
         try:
-            completed = subprocess.run(args, **options)
+            completed = _probe_run(args, timeout)
         except (OSError, subprocess.TimeoutExpired):
             continue
-        text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        text = (
+            (completed.stdout or b"").decode("utf-8", errors="replace")
+            + "\n"
+            + (completed.stderr or b"").decode("utf-8", errors="replace")
+        ).strip()
         lowered = text.casefold()
         if "de4dot" in lowered or completed.returncode in {0, 1}:
             return True, text[:2000]
