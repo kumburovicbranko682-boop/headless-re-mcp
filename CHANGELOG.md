@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.native_libs` 一次回完整 so 表**。3100 条 `lib/` 路径整包返回（85 KiB），没有
+  `has_more`。现在默认 500，截断时标 `total` / `has_more`。
 - **`apk.components` 一次回完整组件表**。2000 个 activity 整包返回（42 KiB），没有
   `has_more`。现在每类列表默认 500，截断时标 `totals` / `has_more`。
 - **产物目录用量遍历失败时谁也不知道**。`UsageCache` 的 walk 跑在守护线程上，异常只

@@ -69,8 +69,8 @@ class ApkAnalysisMixin:
     def apk_components(self, session_id: str, limit: int = 500) -> Result[JsonObject]:
         return self._apk_call(session_id, "components", limit=limit)
 
-    def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
-        return self._apk_call(session_id, "native_libs")
+    def apk_native_libs(self, session_id: str, limit: int = 500) -> Result[JsonObject]:
+        return self._apk_call(session_id, "native_libs", limit=limit)
 
     def apk_classes(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:

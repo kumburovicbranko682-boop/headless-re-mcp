@@ -382,6 +382,38 @@ class TestApkComponentsAreCapped:
         assert page["totals"]["activities"] == 3
 
 
+class TestApkNativeLibsAreCapped:
+    """The native-lib list had no page and no signal that it had stopped.
+
+    Measured: 3100 lib/ paths came back in one 85 KiB reply, with no has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Apk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{i}.so" for i in range(n)] + [
+                    "res/layout/main.xml"
+                ]
+
+        client = ApkClient()
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(3100).native_libs(tmp_path / "app.apk", limit=10)
+        assert page["count"] == 10
+        assert page["total"] == 3100
+        assert page["has_more"] is True
+        assert len(page["native_libs"]) == 10
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).native_libs(tmp_path / "app.apk", limit=10)
+        assert page["count"] == 3
+        assert page["has_more"] is False
+        assert page["abis"] == ["arm64-v8a"]
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
