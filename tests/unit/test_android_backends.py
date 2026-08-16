@@ -299,6 +299,40 @@ class TestFridaAddRemoteDeviceHasADeadline:
         frida.mgr.release.set()
 
 
+class TestFridaResolveUsbHasADeadline:
+    """Resolving usb still parked when get_usb_device ignored its own timeout.
+
+    Measured: ``_resolve_device("usb")`` against a get_usb_device that
+    slept 8s still returned only after 8.000s, even with timeout=5 and a
+    0.3s client deadline that was not applied to this path.
+    """
+
+    def test_a_hung_usb_resolve_returns_timeout_instead_of_blocking(self) -> None:
+        class _Frida:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def get_usb_device(self, timeout: float = 5) -> object:
+                del timeout
+                self.entered.set()
+                self.release.wait()
+                return object()
+
+        frida = _Frida()
+        client = FridaClient(timeout=0.3)
+        client._available = True
+        client._frida = frida
+        started = time.monotonic()
+        with pytest.raises(FridaError) as info:
+            client._resolve_device("usb")
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert frida.entered.is_set()
+        frida.release.set()
+
+
 class TestFridaResolveRemoteHasADeadline:
     """Resolving host:port still parked on add_remote after the public add had a deadline.
 

@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **解析 USB Frida 设备时仍会一直挂着**。`get_usb_device(timeout=5)` 睡
+  8s 仍要 8.000s 才回。客户端 0.3s 截止也不生效。现在共用同一截止。
 - **`ui.windows.list` 一次回完整窗口表**。500 个窗口整包返回，没有
   `has_more`。现在最多 256，截断时标 `has_more`。
 - **`ui.process_tree` 子进程窗口停在 16 个时看起来像完整列表**。40 个

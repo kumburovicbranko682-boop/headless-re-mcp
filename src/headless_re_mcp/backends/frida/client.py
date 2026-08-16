@@ -397,7 +397,10 @@ class FridaClient:
             if device_id in (None, "", "local"):
                 return frida.get_local_device()
             if device_id == "usb":
-                return frida.get_usb_device(timeout=5)
+                # Measured: get_usb_device(timeout=5) that slept 8s still
+                # returned only after 8.000s. The kwarg is not a deadline
+                # this side can enforce.
+                return self._call("resolve_usb", lambda: frida.get_usb_device(timeout=5))
             if isinstance(device_id, str) and (":" in device_id):
                 # Reuse an already-registered remote device. Re-adding it on
                 # every call churns frida's device manager for what is meant to
