@@ -29,6 +29,11 @@ from headless_re_mcp.agent.redaction import redact
 
 JsonObject = dict[str, Any]
 
+# list_messages already refuses to return more than this. The write path used
+# to keep every row forever, so a thread that only grew filled the disk while
+# the reader could never see the extra history.
+MESSAGE_RETAINED_ROWS = 2000
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -45,6 +50,7 @@ class AgentStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self.journal_mode = "unknown"
+        self.message_retained_rows = MESSAGE_RETAINED_ROWS
         self._enable_wal()
         self._init_schema()
         # Deliberately not recovering here. Opening a database is what a
@@ -202,6 +208,14 @@ class AgentStore:
                 raise KeyError(thread_id)
             con.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?)", (message_id, thread_id, role, content, run_id, tool_call_id, now))
             con.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
+            retain = max(1, int(self.message_retained_rows))
+            # Same order as list_messages: newest created_at/id stay, the rest go.
+            con.execute(
+                "DELETE FROM messages WHERE thread_id=? AND id IN ("
+                " SELECT id FROM messages WHERE thread_id=?"
+                " ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)",
+                (thread_id, thread_id, retain),
+            )
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
     def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:

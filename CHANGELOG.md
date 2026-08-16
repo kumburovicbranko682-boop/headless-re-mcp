@@ -77,6 +77,9 @@ until 1.0 the tool surface may still change between minor versions.
   个样本在上一次回滚还没结束时就开始跑。现在走有界执行，被杀 pid 进失败详情。
 - **入库的超限失败结果会丢掉 ok**。`complete_tool_call` 的第二刀切掉整份信封：300 KiB 的
   `backend_error` 状态是 failed，读回来却没有 ok / error。截断后仍保留裁决和错误码。
+- **线程消息只读有上限、写入没有**。80 条 × 50_000 字符把 `agent.db` 堆到 4.1 MiB，
+  `list_messages` 仍回 80 条。一夜的任务会把磁盘写满。现在每线程只留最近 2000 条（与读
+  窗口硬顶对齐）。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
