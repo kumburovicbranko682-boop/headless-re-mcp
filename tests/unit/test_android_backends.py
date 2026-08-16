@@ -387,6 +387,102 @@ class TestFridaApplicationsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaDeviceOpsCannotHoldAWorker:
+    """frida device calls wait forever when the device never answers.
+
+    Measured: enumerate_devices, add_remote_device, enumerate_applications
+    and spawn were still running after 400ms.
+    """
+
+    def test_wedged_device_calls_come_back_as_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
+
+        from headless_re_mcp.backends.frida import client as frida_client
+        from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+        monkeypatch.setattr(frida_client, "_DEVICE_TIMEOUT", 0.05)
+
+        class HungFrida:
+            def enumerate_devices(self) -> list[object]:
+                threading.Event().wait()
+                return []
+
+            def get_device_manager(self) -> HungFrida:
+                return self
+
+            def add_remote_device(self, endpoint: str) -> object:
+                del endpoint
+                threading.Event().wait()
+                return object()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = HungFrida()
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.enumerate_devices()
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "enumerate_devices"
+        assert time.monotonic() - started < 1.0
+
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.add_remote_device("127.0.0.1:27042")
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "add_remote_device"
+        assert time.monotonic() - started < 1.0
+
+        class HungDevice:
+            def enumerate_applications(self) -> list[object]:
+                threading.Event().wait()
+                return []
+
+            def spawn(self, args: list[str]) -> int:
+                del args
+                threading.Event().wait()
+                return 1
+
+            def resume(self, pid: int) -> None:
+                del pid
+
+        client._resolve_device = lambda device_id: HungDevice()  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.applications("usb", limit=10)
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "applications"
+        assert time.monotonic() - started < 1.0
+
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", "com.example.app")
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "spawn"
+        assert time.monotonic() - started < 1.0
+
+    def test_a_device_list_that_finishes_is_untouched(self) -> None:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class Dev:
+            id = "local"
+            name = "Local System"
+            type = "local"
+
+        class Frida:
+            def enumerate_devices(self) -> list[Dev]:
+                return [Dev()]
+
+        client = FridaClient()
+        client._available = True
+        client._frida = Frida()
+        result = client.enumerate_devices()
+        assert result["count"] == 1
+        assert result["devices"][0]["id"] == "local"
+
+
 class TestApkManifestSaysWhenItStopped:
     """The tool text says this is the decoded manifest.
 

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterable
-from typing import Any
+import threading
+from collections.abc import Callable, Iterable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
+from typing import Any, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
+
+# frida device calls have no deadline of their own. Measured: enumerate_devices,
+# add_remote_device, enumerate_applications and spawn were still running after
+# 400ms against a client that never answers. The MCP pool has 16 slots and no
+# deadline, so a wedged USB/remote device holds a slot overnight.
+_DEVICE_TIMEOUT = 30.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -127,6 +137,30 @@ rpc.exports = {
   }
 };
 """
+
+
+def _call_bounded(work: Callable[[], T], *, timeout: float, op: str) -> T:
+    """Bound a frida call that waits forever when the device is gone."""
+    future: Future[T] = Future()
+
+    def run() -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(work())
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name=f"frida-{op}", daemon=True).start()
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeout as exc:
+        raise FridaError(
+            "timeout",
+            f"frida {op} timed out after {timeout:g}s",
+            timeout=timeout,
+            op=op,
+        ) from exc
 
 
 def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
@@ -353,7 +387,11 @@ class FridaClient:
     def enumerate_devices(self) -> JsonObject:
         frida = self._need()
         try:
-            devices = frida.enumerate_devices()
+            devices = _call_bounded(
+                frida.enumerate_devices, timeout=_DEVICE_TIMEOUT, op="enumerate_devices"
+            )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
         items = [
@@ -365,7 +403,13 @@ class FridaClient:
     def add_remote_device(self, endpoint: str) -> JsonObject:
         frida = self._need()
         try:
-            device = frida.get_device_manager().add_remote_device(endpoint)
+            device = _call_bounded(
+                lambda: frida.get_device_manager().add_remote_device(endpoint),
+                timeout=_DEVICE_TIMEOUT,
+                op="add_remote_device",
+            )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError(
                 "backend_error", f"failed to add remote device: {exc}", endpoint=endpoint
@@ -375,7 +419,13 @@ class FridaClient:
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
-            apps = device.enumerate_applications()
+            apps = _call_bounded(
+                device.enumerate_applications,
+                timeout=_DEVICE_TIMEOUT,
+                op="applications",
+            )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
@@ -402,8 +452,14 @@ class FridaClient:
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         try:
-            pid = device.spawn([package.strip()])
-            device.resume(pid)
+            def work() -> int:
+                spawned = device.spawn([package.strip()])
+                device.resume(spawned)
+                return int(spawned)
+
+            pid = _call_bounded(work, timeout=_DEVICE_TIMEOUT, op="spawn")
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
         return {"package": package.strip(), "pid": int(pid), "device": str(device_id or "local")}
