@@ -209,6 +209,10 @@ class GhidraClient:
             # The script used to stop at `limit` and say nothing. A page that
             # filled the cap looks like the whole program.
             payload["has_more"] = len(items) >= capped
+        decompiled = payload.get("decompiled")
+        if isinstance(decompiled, str) and "truncated" not in payload and len(decompiled) >= 200_000:
+            # The script used to slice C to 200_000 characters and say nothing.
+            payload["truncated"] = True
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload

@@ -59,6 +59,45 @@ def test_ghidra_functions_says_when_the_page_is_not_the_whole_set(tmp_path: Path
     assert got["has_more"] is True
 
 
+def test_ghidra_decompile_says_when_the_c_was_cut(tmp_path: Path) -> None:
+    """A 200_000-character decompile came back with no truncated flag.
+
+    An agent that greps that C for a helper past the cap concludes it was
+    never there.
+    """
+    from headless_re_mcp.backends.ghidra.client import GhidraClient
+
+    binary = tmp_path / "sample.bin"
+    binary.write_bytes(b"MZ")
+    project = tmp_path / "proj"
+    project.mkdir()
+    client = GhidraClient()
+    client.analyze = tmp_path / "analyzeHeadless"
+    client.java = tmp_path / "java"
+
+    def fake_run(project_dir: Path, **_kwargs: object) -> tuple[str, str, int]:
+        out = Path(project_dir) / "export_decompile.json"
+        out.write_text(
+            json.dumps(
+                {
+                    "mode": "decompile",
+                    "items": [],
+                    "count": 0,
+                    "decompiled": "C" * 200_000,
+                    "function": "Foo",
+                    "entry": "0x1000",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return "", "", 0
+
+    client._run_headless = fake_run  # type: ignore[method-assign]
+    got = client.decompile(binary, project, "0x1000")
+    assert len(got["decompiled"]) == 200_000
+    assert got["truncated"] is True
+
+
 def test_ghidra_list_tools_tell_the_model_to_read_has_more() -> None:
     from headless_re_mcp.tools.ghidra import build_ghidra_tools
 

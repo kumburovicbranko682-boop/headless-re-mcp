@@ -137,6 +137,8 @@ until 1.0 the tool surface may still change between minor versions.
   只有 count，没有 `has_more`。模型把一页当成整个程序。现在标明还有更多。
 - **`frida.modules` 停在上限却不说还有**。100 个模块、limit=64 时有 total
   没有 `has_more`。按其它列表工具读 count 的模型会漏掉后面的模块。现在带上。
+- **Ghidra 反编译超长时被静默切掉**。C 被切成 200_000 字符，回包没有
+  `truncated`。模型会把后半段里的调用当成不存在。现在标明切过。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
