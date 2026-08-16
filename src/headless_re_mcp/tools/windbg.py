@@ -66,8 +66,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Non-invasive cdb probe of this session's live debuggee.
 
-        Reads the process without taking control, so x64dbg keeps it. Answers
-        with the target's version and platform.
+        Reads the process without taking control, so x64dbg keeps it. The
+        session excerpt is capped: read truncated rather than treating output
+        as the whole probe.
         """
         return _dump(analysis.windbg_attach(session_id, timeout=timeout))
 

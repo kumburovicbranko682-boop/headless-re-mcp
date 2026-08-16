@@ -155,3 +155,24 @@ def test_an_attach_cut_keeps_the_probe_answer(
     assert payload["output_chars"] == len(body)
     assert payload["returned_chars"] == windbg_module._MAX_ATTACH_OUTPUT
     assert len(str(payload["output"])) == windbg_module._MAX_ATTACH_OUTPUT
+
+
+def test_the_attach_tool_names_the_session_cut() -> None:
+    """The reply already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut probe as the whole
+    target version dump.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import windbg as windbg_tools
+
+    tree = ast.parse(inspect.getsource(windbg_tools.build_windbg_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["windbg_attach"]
+    assert "truncated" in docs["windbg_attach"]
