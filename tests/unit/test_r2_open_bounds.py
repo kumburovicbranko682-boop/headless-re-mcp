@@ -53,3 +53,24 @@ class TestR2OpenDescriptionMatchesTheCut:
         finally:
             service.close_all()
         assert "truncated" in doc
+
+
+class TestR2InfoDescriptionMatchesTheCut:
+    """r2.info already cuts at 1000000 bytes, but the tool text hid that.
+
+    Measured: 1000050-byte stdout, raw length 1000000, truncated=true, while
+    the description never mentioned the cut -- so a model treats the slice
+    as the whole identity.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.r2 import build_r2_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_r2_tools(service)}
+            doc = tools["r2.info"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
