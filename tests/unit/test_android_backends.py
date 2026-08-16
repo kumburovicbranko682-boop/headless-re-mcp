@@ -253,6 +253,22 @@ class TestFridaMemoryReadDoesNotPadAShortBuffer:
         assert "truncated" not in result
         assert "note" not in result
 
+    def test_the_tool_description_names_the_short_read_fields(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import frida as frida_mod
+
+        tree = ast.parse(inspect.getsource(frida_mod.build_frida_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["frida_memory_read"]
+        assert "requested" in docs["frida_memory_read"]
+        assert "truncated" in docs["frida_memory_read"]
+
 
 class _FakeCall:
     def __init__(self, index: int) -> None:

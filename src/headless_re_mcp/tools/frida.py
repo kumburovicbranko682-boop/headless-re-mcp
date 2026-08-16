@@ -51,6 +51,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
+        """Read size bytes at address in the authorized process.
+
+        size is the bytes actually returned. Read requested and truncated
+        rather than treating size as the request when the read was short.
+        """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
     @tools.tool(name="frida.hook.template")
