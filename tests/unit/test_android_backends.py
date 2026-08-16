@@ -669,6 +669,41 @@ class TestFridaServerEnsureDoesNotInventARunningServer:
         assert result["running"] is True
 
 
+class TestApkNativeLibsAreBounded:
+    """A fat APK can ship thousands of .so files; the list had no cap.
+
+    Measured: 8000 libs, 229 KiB, no has_more.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{index}.so" for index in range(n)] + ["classes.dex"]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(8000).native_libs(tmp_path / "a.apk", limit=1000)
+        assert result["count"] == 1000
+        assert result["total"] == 8000
+        assert result["has_more"] is True
+        assert result["abis"] == ["arm64-v8a"]
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3).native_libs(tmp_path / "a.apk", limit=1000)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(1000).native_libs(tmp_path / "a.apk", limit=1000)
+        assert result["count"] == 1000
+        assert result["has_more"] is False
+
+
 class TestApkStringsSayWhenTheyStopped:
     """A string page that hit the cap looks exactly like one that ended."""
 
