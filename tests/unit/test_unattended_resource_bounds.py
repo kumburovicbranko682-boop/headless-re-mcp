@@ -3639,3 +3639,66 @@ class TestGhidraExportSaysWhenItStopped:
         assert result["count"] == 3
         assert result["has_more"] is False
 
+
+class TestGhidraDecompileSaysWhenItStopped:
+    """A 200_000 character dump looked like the whole function.
+
+    Measured: the script slices at 200_000 and used to omit truncated/bytes,
+    so a cut dump read as complete.
+    """
+
+    def _client(self, tmp_path: Any, *, text: str, truncated: bool | None) -> Any:
+        import json
+        from pathlib import Path
+
+        from headless_re_mcp.backends.ghidra.client import _EXPORT_SCRIPT, GhidraClient
+
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        client = GhidraClient()
+        client.analyze = binary
+        client.java = binary
+
+        def fake_run(
+            project_dir: Path,
+            *,
+            binary: Path,
+            extra: list[str],
+            timeout: float,
+            max_heap: str,
+            delete_project: bool,
+        ) -> tuple[str, str, int]:
+            del project_dir, binary, timeout, max_heap, delete_project
+            idx = extra.index(_EXPORT_SCRIPT)
+            out_path = Path(extra[idx + 2])
+            payload: dict[str, Any] = {
+                "mode": "decompile",
+                "decompiled": text,
+                "function": "foo",
+            }
+            if truncated is not None:
+                payload["truncated"] = truncated
+                payload["bytes"] = 250_000 if truncated else len(text)
+            out_path.write_text(json.dumps(payload), encoding="utf-8")
+            return "", "", 0
+
+        client._run_headless = fake_run  # type: ignore[method-assign]
+        return client, binary
+
+    def test_a_full_window_without_the_flag_is_not_complete(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, text="x" * 200_000, truncated=None)
+        result = client.decompile(binary, tmp_path / "proj", "0x1000")
+        assert len(result["decompiled"]) == 200_000
+        assert result["truncated"] is True
+
+    def test_the_script_flag_is_kept(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, text="x" * 200_000, truncated=False)
+        result = client.decompile(binary, tmp_path / "proj", "0x1000")
+        assert result["truncated"] is False
+
+    def test_a_short_dump_is_complete(self, tmp_path: Any) -> None:
+        client, binary = self._client(tmp_path, text="int foo() {}", truncated=None)
+        result = client.decompile(binary, tmp_path / "proj", "0x1000")
+        assert result["decompiled"] == "int foo() {}"
+        assert result["truncated"] is False
+

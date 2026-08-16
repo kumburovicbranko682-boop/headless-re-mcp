@@ -100,6 +100,8 @@ elif mode == "decompile":
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
     payload["decompiled"] = text[:200000]
+    payload["bytes"] = len(text)
+    payload["truncated"] = len(text) > 200000
 else:
     payload["error"] = "unknown mode"
 

@@ -77,7 +77,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         A second reading of code IDA decompiled differently, or of code it
-        could not.
+        could not. Read `truncated` and `bytes` rather than assuming the
+        text is the whole function.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

@@ -215,6 +215,14 @@ class GhidraClient:
             and "has_more" not in payload
         ):
             payload["has_more"] = len(items) >= capped
+        # ExportJson.py slices decompilation at 200_000 characters.
+        # Measured: a 250_000 character dump came back as 200_000 with no
+        # truncated or bytes field, so the cut looked like the whole function.
+        if mode == "decompile":
+            text = payload.get("decompiled")
+            if isinstance(text, str) and "truncated" not in payload:
+                payload["truncated"] = len(text) >= 200_000
+                payload.setdefault("bytes", len(text))
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
