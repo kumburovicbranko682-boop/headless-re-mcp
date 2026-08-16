@@ -514,7 +514,7 @@ class TestExportListingsSayWhenTheyStopped:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from headless_re_mcp.backends.jsre import client as jsre
-        from headless_re_mcp.backends.jsre.client import JsClient, _MAX_LISTED_FILES
+        from headless_re_mcp.backends.jsre.client import _MAX_LISTED_FILES, JsClient
 
         out = tmp_path / "jsout"
         out.mkdir()
