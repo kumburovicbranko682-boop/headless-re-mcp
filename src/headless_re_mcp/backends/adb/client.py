@@ -251,10 +251,18 @@ class AdbBackend:
         try:
             # adbutils uninstall() has no deadline. pm uninstall is the same
             # operation and accepts the timeout the library's shell already has.
-            dev.shell(["pm", "uninstall", pkg], timeout=30.0)
+            raw = dev.shell(["pm", "uninstall", pkg], timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
-        return {"uninstalled": True, "package": pkg}
+        text = str(raw)
+        if "Success" in text:
+            return {"uninstalled": True, "package": pkg}
+        snippet = " ".join(text.split())[:240]
+        return {
+            "uninstalled": False,
+            "package": pkg,
+            "note": snippet or "pm uninstall returned but did not report Success",
+        }
 
     def launch(self, serial: str, package: str) -> JsonObject:
         """Start the launcher activity. ``launched`` is True only when monkey

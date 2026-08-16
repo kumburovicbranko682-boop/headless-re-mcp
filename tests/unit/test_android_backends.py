@@ -316,6 +316,40 @@ class TestAdbArgumentValidation:
         assert 180.0 in device.timeouts
         assert result["installed"] is True
 
+    def test_uninstall_is_false_when_pm_did_not_succeed(self) -> None:
+        """A returned pm uninstall used to be reported as uninstalled.
+
+        Measured: Failure [DELETE_FAILED_INTERNAL_ERROR] and Unknown
+        package both came back uninstalled=True.
+        """
+
+        class _Dev:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                return self.text
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        failed = _Backend(_Dev("Failure [DELETE_FAILED_INTERNAL_ERROR]")).uninstall(
+            "emulator-5554", "com.example.app"
+        )
+        assert failed["uninstalled"] is False
+        assert "Failure" in str(failed.get("note"))
+
+        ok = _Backend(_Dev("Success")).uninstall("emulator-5554", "com.example.app")
+        assert ok["uninstalled"] is True
+        assert "note" not in ok
+
     def test_screenshot_does_not_wait_on_adb_forever(self, tmp_path: Path) -> None:
         """adbutils screenshot used to run with no deadline.
 

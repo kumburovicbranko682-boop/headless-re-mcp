@@ -81,7 +81,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.uninstall")
     def device_uninstall(serial: str, package: str) -> dict[str, Any]:
-        """Uninstall a package from the device."""
+        """Uninstall a package from the device.
+
+        uninstalled is True only when pm reports Success. A returned
+        shell is not enough: Failure and unknown-package used to be
+        reported as uninstalled.
+        """
         return _dump(analysis.device_uninstall(serial, package))
 
     @tools.tool(name="device.launch")
