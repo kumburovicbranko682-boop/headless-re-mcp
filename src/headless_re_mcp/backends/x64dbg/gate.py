@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -82,11 +83,20 @@ def run_command_loop_gate(
             daemon=True,
         )
         monitor.start()
+        stdout = ""
+        stderr = ""
         try:
             stdout, stderr = process.communicate(input="state\nexit\n", timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate(timeout=10)
+            from headless_re_mcp.core.process_tree import terminate_process_tree
+
+            terminate_process_tree(process, wait_s=5.0)
+            # Child processes inherit the pipes. Killing only the launcher leaves
+            # those pipes open and this second communicate waits the full drain.
+            with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+                stdout, stderr = process.communicate(timeout=10)
+            stdout = stdout or ""
+            stderr = stderr or ""
         finally:
             monitor_stop.set()
             monitor.join(timeout=2)

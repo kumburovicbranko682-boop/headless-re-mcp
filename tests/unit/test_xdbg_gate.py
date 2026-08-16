@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -107,3 +111,65 @@ def test_command_loop_gate_rejects_wrong_architecture(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="expected x64.*got x86"):
         gate_module.run_command_loop_gate(executable, Architecture.X64)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().split()[2] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def test_command_loop_gate_timeout_kills_the_whole_process_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timeout used to kill only the launcher, then hang draining inherited pipes."""
+    executable = tmp_path / "headless.exe"
+    _write_minimal_pe(executable, 0x8664)
+    child_file = tmp_path / "child.pid"
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(child_file)!r}, 'w').write(str(c.pid))\n"
+        "import time; time.sleep(60)\n"
+    )
+    real_popen = subprocess.Popen
+    launched: dict[str, int] = {}
+
+    def fake_popen(args: object, **kwargs: object) -> subprocess.Popen[str]:
+        proc = real_popen(
+            [sys.executable, str(script)],
+            stdin=kwargs.get("stdin"),
+            stdout=kwargs.get("stdout"),
+            stderr=kwargs.get("stderr"),
+            text=True,
+        )
+        launched["pid"] = proc.pid
+        return proc
+
+    monkeypatch.setattr(gate_module.subprocess, "Popen", fake_popen)
+
+    started = time.monotonic()
+    result = gate_module.run_command_loop_gate(
+        executable,
+        Architecture.X64,
+        timeout=0.4,
+    )
+    elapsed = time.monotonic() - started
+    time.sleep(0.15)
+
+    child_pid = int(child_file.read_text()) if child_file.exists() else -1
+    try:
+        assert result.ok is False
+        assert elapsed < 3.0, f"drain hung for {elapsed:.3f}s after a 0.4s timeout"
+        assert not _alive(launched["pid"])
+        assert child_pid > 0
+        assert not _alive(child_pid), f"child {child_pid} still alive after gate timeout"
+    finally:
+        with suppress(OSError):
+            os.kill(child_pid, 9)
+        with suppress(OSError):
+            os.kill(launched["pid"], 9)
