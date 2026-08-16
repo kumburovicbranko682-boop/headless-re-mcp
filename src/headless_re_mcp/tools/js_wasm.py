@@ -46,7 +46,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat."""
+        """Convert a .wasm module to WAT; read truncated when the text was cut."""
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
     @tools.tool(name="wasm.info")
