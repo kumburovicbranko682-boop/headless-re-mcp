@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -224,6 +225,50 @@ class TestWebConsoleSaysWhenItStopped:
     def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
         result = self._backend(200).console("s", limit=200)
         assert result["count"] == 200
+        assert result["has_more"] is False
+
+
+class TestJsUnpackSaysWhenItStopped:
+    """A files page that hit the cap looks exactly like one that ended.
+
+    Measured: 2500 module files, file_count=2500, files length 2000, no
+    has_more -- so the last 500 module names vanished while the reply
+    looked like the whole unpack.
+    """
+
+    def _result(self, tmp_path: Path, n: int) -> dict[str, Any]:
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "bundle.js"
+        source.write_text("module.exports=1;", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        for index in range(n):
+            (out / f"m{index}.js").write_text("x", encoding="utf-8")
+        client = JsClient(exe)
+        from headless_re_mcp.backends.jsre import client as jsre_mod
+
+        original = jsre_mod._run
+        jsre_mod._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[assignment]
+        try:
+            return client.unpack_bundle(source, out)
+        finally:
+            jsre_mod._run = original
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path, 2500)
+        assert result["file_count"] == 2500
+        assert len(result["files"]) == 2000
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path, 3)
+        assert result["file_count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path, 2000)
+        assert result["file_count"] == 2000
         assert result["has_more"] is False
 
 

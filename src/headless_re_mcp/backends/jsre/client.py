@@ -100,7 +100,15 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        listed = files[:2000]
+        return {
+            "output_dir": str(out_dir),
+            "file_count": len(files),
+            "files": listed,
+            # A caller deciding "these are all the modules" has to know
+            # whether the tree ended or this list merely stopped.
+            "has_more": len(files) > len(listed),
+        }
 
 
 class WasmClient:
