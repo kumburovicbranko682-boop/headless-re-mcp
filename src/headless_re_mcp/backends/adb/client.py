@@ -99,6 +99,13 @@ class AdbBackend:
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
 
     def list_devices(self) -> JsonObject:
+        """List devices the adb server already reported.
+
+        A follow-up ``get_state`` per serial used to run with no deadline.
+        adbutils ``device_list`` only yields transports already in the
+        ``device`` state, so that second hop only held the worker when adb
+        had stopped answering. Use the listing; do not ask again.
+        """
         client = self._client()
         try:
             devices = client.device_list()
@@ -107,11 +114,7 @@ class AdbBackend:
         items = []
         for dev in devices:
             serial = getattr(dev, "serial", "")
-            state = "device"
-            try:
-                state = client.device(serial=serial).get_state()
-            except Exception:  # noqa: BLE001
-                state = "unknown"
+            state = getattr(dev, "state", None) or "device"
             items.append({"serial": serial, "state": state})
         return {"devices": items, "count": len(items)}
 

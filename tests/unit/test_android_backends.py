@@ -272,6 +272,51 @@ class TestAdbArgumentValidation:
         assert device.timeout == 15.0
         assert result["stopped"] is True
 
+    def test_list_devices_does_not_wait_on_get_state(self) -> None:
+        """Each listed serial used to trigger an unbounded get_state.
+
+        Measured: device_list then get_state per device, no timeout.
+        Two serials meant two more adb hops. A wedged adb held the
+        worker; device_list already only yields state=device.
+        """
+
+        class _Listed:
+            def __init__(self, serial: str) -> None:
+                self.serial = serial
+
+        class _Client:
+            def __init__(self) -> None:
+                self.get_state_calls = 0
+
+            def device_list(self) -> list[_Listed]:
+                return [_Listed("emu-1"), _Listed("emu-2")]
+
+            def device(self, serial: str | None = None) -> object:
+                outer = self
+
+                class _Dev:
+                    def get_state(self) -> str:
+                        outer.get_state_calls += 1
+                        return "device"
+
+                return _Dev()
+
+        class _Backend(AdbBackend):
+            def __init__(self, client: _Client) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self._c = client
+
+            def _client(self) -> _Client:
+                return self._c
+
+        client = _Client()
+        result = _Backend(client).list_devices()
+        assert client.get_state_calls == 0
+        assert result["count"] == 2
+        assert [item["state"] for item in result["devices"]] == ["device", "device"]
+
     def test_info_does_not_wait_on_adb_forever(self) -> None:
         """info used six unbounded adbutils calls.
 
