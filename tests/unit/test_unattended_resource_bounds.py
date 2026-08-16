@@ -109,6 +109,47 @@ class TestProxyCaptureIsBounded:
         assert recorder._seq == 4 * 300
 
 
+class TestProxyFlowsSayWhenTheyStopped:
+    """A flow page that hit the cap looked complete except for total.
+
+    Measured: 400 flows came back as count=100, total=400, offset=0 and
+    no has_more.
+    """
+
+    def test_a_page_says_what_was_left_out(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = _FlowRecorder(capacity=500)
+
+        inst = Inst()
+        for index in range(400):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        result = backend.flows("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 400
+        assert result["has_more"] is True
+
+    def test_the_last_page_is_complete(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = _FlowRecorder(capacity=500)
+
+        inst = Inst()
+        for index in range(400):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        result = backend.flows("s", offset=300, limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestProxyStartHonesty:
     def test_port_probe_reports_false_for_a_closed_port(self) -> None:
         # Port 1 on loopback is not something this test suite ever binds.

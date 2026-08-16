@@ -319,8 +319,17 @@ class ProxyBackend:
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        window = items[offset : offset + limit]
-        return {"flows": window, "count": len(window), "total": len(items), "offset": offset}
+        cap = max(1, int(limit))
+        window = items[offset : offset + cap]
+        # Measured: 400 flows came back as count=100, total=400, offset=0
+        # and no has_more.
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+        }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)
