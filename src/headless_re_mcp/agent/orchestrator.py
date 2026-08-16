@@ -229,7 +229,18 @@ class AgentOrchestrator:
         if run is None or run.status in TERMINAL_RUN_STATUSES:
             return
         self.store.transition(run_id, RunStatus.FAILED, error=error[:1000])
-        self.store.append_event(run_id, event, {"status": RunStatus.FAILED.value, "error": error[:1000]})
+        # Measured: a 1500-character failure reason was stored as 1000
+        # on the run.failed event with no error_truncated, so an
+        # overnight SSE reader treated a cut cause as the whole failure.
+        self.store.append_event(
+            run_id,
+            event,
+            {
+                "status": RunStatus.FAILED.value,
+                "error": error[:1000],
+                "error_truncated": len(error) > 1000,
+            },
+        )
 
     async def _finish_cancel(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
