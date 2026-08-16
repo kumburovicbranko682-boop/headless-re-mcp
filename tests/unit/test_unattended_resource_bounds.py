@@ -929,6 +929,96 @@ class TestDeviceCapturesAreRegistered:
             assert "_register_device_capture" in inspect.getsource(method)
 
 
+class _FakeJsUnpack:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def unpack_bundle(self, path: Any, out_dir: Any, timeout: float = 300.0) -> dict[str, Any]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(30):
+            (out_dir / f"m{index}.js").write_bytes(b"Z" * 2000)
+        files = sorted(
+            str(item.relative_to(out_dir)) for item in out_dir.rglob("*") if item.is_file()
+        )
+        return {
+            "output_dir": str(out_dir),
+            "file_count": len(files),
+            "files": files,
+            "has_more": False,
+        }
+
+
+class TestJsUnpackTreesAreRegistered:
+    """An unpacked bundle used to be a directory nothing could reclaim.
+
+    Measured: 8 unpacks wrote 541 KiB / 241 files under the artifact root.
+    artifacts.list total was 0, artifacts.gc collected 0, and 541 KiB was
+    still on disk against a 20 KiB budget.
+    """
+
+    def _service(self, tmp_path: Any, monkeypatch: Any, *, budget: int) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core import service_jsre
+        from headless_re_mcp.core.service import AnalysisService
+
+        monkeypatch.setattr(service_jsre, "JsClient", _FakeJsUnpack)
+        settings = replace(
+            Settings.load(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_max_total_bytes=budget,
+        )
+        return AnalysisService(settings)
+
+    def test_unpacked_files_are_listed_and_stay_inside_the_budget(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        budget = 20_000
+        service = self._service(tmp_path, monkeypatch, budget=budget)
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        try:
+            last = None
+            for _ in range(8):
+                result = service.js_unpack_bundle(str(source))
+                assert result.ok, result.error
+                last = result.data
+            assert last is not None
+            assert last["registered"] > 0
+            assert last["artifact_session"] == "jsre"
+            listed = service.repository.list_artifacts("jsre", offset=0, limit=50)
+            assert listed["total"] > 0
+            # The metadata database is not the leak; the unpack trees are.
+            trees = (tmp_path / "artifacts" / "jsre").resolve()
+            file_bytes = sum(path.stat().st_size for path in trees.rglob("*") if path.is_file())
+            assert file_bytes < 3 * budget
+        finally:
+            service.close_all()
+
+    def test_a_registration_failure_does_not_fail_the_unpack(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from pathlib import Path
+
+        service = self._service(tmp_path, monkeypatch, budget=512 * 1024 * 1024)
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        try:
+
+            def explode(**_: object) -> dict[str, Any]:
+                raise RuntimeError("repository is down")
+
+            service.record_artifact = explode  # type: ignore[method-assign]
+            result = service.js_unpack_bundle(str(source))
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "repository is down" in result.data["artifact_error"]
+            assert Path(str(result.data["output_dir"])).is_dir()
+        finally:
+            service.close_all()
+
+
 def _minimal_pe(path: Any) -> Any:
     image = bytearray(0x200)
     image[:2] = b"MZ"
