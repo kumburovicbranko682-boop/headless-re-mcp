@@ -19,15 +19,46 @@ def _message_size(item: JsonObject) -> int:
         return 1 << 60
 
 
-def _shrink(item: JsonObject, limit: int) -> JsonObject:
-    """Return ``item`` with its content cut to ``limit`` characters, marked."""
-    content = str(item.get("content", ""))
-    if len(content) <= limit:
-        return item
+def _shrink_arguments(arguments: str, limit: int) -> str:
+    if len(arguments) <= limit:
+        return arguments
     kept = max(0, limit - 64)
+    dropped = len(arguments) - kept
+    return f"{arguments[:kept]}\n...[{dropped} characters dropped to fit the context]"
+
+
+def _shrink(item: JsonObject, limit: int) -> JsonObject:
+    """Return ``item`` cut to ``limit`` characters, including tool_calls."""
     trimmed = dict(item)
-    dropped = len(content) - kept
-    trimmed["content"] = f"{content[:kept]}\n...[{dropped} characters dropped to fit the context]"
+    content = str(trimmed.get("content") or "")
+    if len(content) > limit:
+        kept = max(0, limit - 64)
+        dropped = len(content) - kept
+        trimmed["content"] = f"{content[:kept]}\n...[{dropped} characters dropped to fit the context]"
+    if _message_size(trimmed) <= limit:
+        return trimmed
+    calls = trimmed.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        return trimmed
+    remaining = max(64, limit - len(str(trimmed.get("content") or "")))
+    per = max(32, remaining // len(calls))
+    slim: list[JsonObject] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        fn_obj = fn if isinstance(fn, dict) else {}
+        slim.append(
+            {
+                "id": call.get("id"),
+                "type": call.get("type") or "function",
+                "function": {
+                    "name": fn_obj.get("name"),
+                    "arguments": _shrink_arguments(str(fn_obj.get("arguments") or ""), per),
+                },
+            }
+        )
+    trimmed["tool_calls"] = slim
     return trimmed
 
 
