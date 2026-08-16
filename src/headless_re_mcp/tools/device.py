@@ -58,7 +58,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
     ) -> dict[str, Any]:
-        """Return getprop key/value pairs for a device."""
+        """Return getprop key/value pairs for a device.
+
+        Answers with properties (the name-to-value map), count, and has_more
+        so a page that filled the cap is not read as every property. There
+        is no props or items field.
+        """
         return _dump(analysis.device_properties(serial, limit=limit))
 
     @tools.tool(name="device.packages")
