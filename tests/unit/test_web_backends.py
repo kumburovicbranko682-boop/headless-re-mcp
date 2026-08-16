@@ -139,6 +139,26 @@ class TestWebConsolePaging:
         assert complete["total"] == 500
 
 
+class TestWebDomSnapshotDescription:
+    def test_dom_snapshot_description_says_to_read_truncated(self) -> None:
+        """web.dom.snapshot already cuts HTML but its tool text never said so.
+
+        Measured: handler.__doc__ had no truncated while a page over
+        200000 characters is cut and marked. A model that never saw the
+        field treated a cut DOM as the whole document.
+        """
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.web import build_web_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_web_tools(service)}
+            doc = tools["web.dom.snapshot"].handler.__doc__ or ""
+            assert "truncated" in doc
+        finally:
+            service.close_all()
+
+
 class TestWebSessionScoping:
     def test_operations_require_an_open_session(self) -> None:
         backend = WebBackend()
