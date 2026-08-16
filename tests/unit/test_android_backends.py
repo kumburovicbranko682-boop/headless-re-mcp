@@ -581,6 +581,38 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaApplicationsSayWhenTheyStopped:
+    """An application page that filled used to look like every package if count was all you read."""
+
+    def _client(self, count: int) -> FridaClient:
+        class _App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = f"App{index}"
+                self.pid = 0
+
+        class _Dev:
+            def enumerate_applications(self) -> list[_App]:
+                return [_App(index) for index in range(count)]
+
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        client._resolve_device = lambda device_id: _Dev()  # type: ignore[method-assign]
+        return client
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._client(400).applications("usb", limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 400
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._client(3).applications("usb", limit=256)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestFridaModulesSayWhenTheyStopped:
     """A module page that filled used to look like every mapping if count was all you read."""
 

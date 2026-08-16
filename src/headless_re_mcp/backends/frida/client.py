@@ -387,7 +387,14 @@ class FridaClient:
             }
             for app in apps[:capped]
         ]
-        return {"applications": items, "count": len(items), "total": len(apps)}
+        # Measured: 400 apps, limit 256, count=256, total=400, no has_more,
+        # so an agent that only read the page treated it as every package.
+        return {
+            "applications": items,
+            "count": len(items),
+            "total": len(apps),
+            "has_more": len(apps) > capped,
+        }
 
     def spawn(self, device_id: str | None, package: str) -> JsonObject:
         device = self._resolve_device(device_id)
