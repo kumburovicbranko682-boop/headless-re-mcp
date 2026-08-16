@@ -1326,6 +1326,29 @@ class TestDeviceInfoIsBounded:
         with pytest.raises(AdbError) as info:
             self._backend(_Blocker()).info("emulator-5554")
         assert info.value.code == "backend_error"
+
+    def test_a_blocking_get_state_fails_instead_of_waiting_it_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.2)
+
+        class _Wedged:
+            def get_state(self) -> str:
+                time.sleep(5)
+                return "device"
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return "value"
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Wedged()).info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
         assert "timed out" in info.value.message.lower() or "info" in info.value.message
 
 
