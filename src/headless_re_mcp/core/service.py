@@ -408,9 +408,31 @@ class AnalysisService(
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def list_sessions(self) -> Result[JsonObject]:
+    def list_sessions(self, offset: int = 0, limit: int | None = None) -> Result[JsonObject]:
+        """Page the in-process session list.
+
+        Closed sessions are already capped in the registry. Open ones are not,
+        and session.list used to return every one of them. Measured at 3000
+        open web sessions: 878 KiB. A page of 100 is 29 KiB. ``limit=None``
+        keeps the unpaged reply for the web console, which is not the agent.
+        """
         sessions = [_session_json(session) for session in self.registry.list()]
-        return _success({"sessions": sessions, "count": len(sessions)})
+        total = len(sessions)
+        start = max(0, int(offset))
+        if limit is None:
+            page = sessions[start:]
+        else:
+            cap = max(1, min(int(limit), 1000))
+            page = sessions[start : start + cap]
+        return _success(
+            {
+                "sessions": page,
+                "count": len(page),
+                "total": total,
+                "offset": start,
+                "has_more": start + len(page) < total,
+            }
+        )
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_static(session_id)
