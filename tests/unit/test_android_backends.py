@@ -1028,6 +1028,53 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceInstallIsBounded:
+    """A wedged adbutils.install used to park the tool worker with no deadline.
+
+    Measured: device.install called install() with no timeout, so a 2.5s
+    block was waited out in full and still answered installed=True.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_blocking_install_fails_instead_of_waiting_it_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_INSTALL_TIMEOUT", 0.2)
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> None:
+                time.sleep(5)
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).install("emulator-5554", str(apk))
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_install_is_success(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        result = self._backend(_Dev()).install("emulator-5554", str(apk))
+        assert result["installed"] is True
+
+
 class TestDeviceForwardIsBounded:
     """A wedged adb forward used to park the tool worker with no deadline.
 

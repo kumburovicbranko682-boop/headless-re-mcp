@@ -36,6 +36,11 @@ _SHELL_TIMEOUT = 20.0
 # waited out in full and still returned success. Sixty seconds is the tool
 # budget: a large file can use it, a wedged adb cannot keep the worker.
 _PUSH_TIMEOUT = 60.0
+# adbutils.install has no timeout and internally pushes then pm install.
+# Measured: a 2.5s block was waited out in full and still answered
+# installed=True. Three minutes is longer than a normal APK install and
+# shorter than an unattended worker parked until the process dies.
+_INSTALL_TIMEOUT = 180.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -272,13 +277,19 @@ class AdbBackend:
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        def _do_install() -> None:
+            try:
+                dev.install(
+                    str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
+                )
+            except TypeError:
+                # Older adbutils signatures accept only the path.
+                dev.install(str(path))
+
         try:
-            dev.install(
-                str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
-            )
-        except TypeError:
-            # Older adbutils signatures accept only the path.
-            dev.install(str(path))
+            _deadline(_do_install, timeout=_INSTALL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
