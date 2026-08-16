@@ -204,6 +204,7 @@ class FridaClient:
             script.load()
             mods = list(script.exports_sync.modules())
             capped = max(1, min(int(limit), 256))
+            page, has_more = _page(mods, capped)
             items = [
                 {
                     "name": str(item.get("name", "")),
@@ -211,9 +212,16 @@ class FridaClient:
                     "size": int(item.get("size", 0) or 0),
                     "path": str(item.get("path", "")),
                 }
-                for item in mods[:capped]
+                for item in page
             ]
-            return {"modules": items, "count": len(items), "total": len(mods)}
+            # Measured: 200 modules came back as count=64, total=200, and no
+            # has_more. exports already carries that flag; modules did not.
+            return {
+                "modules": items,
+                "count": len(items),
+                "total": len(mods),
+                "has_more": has_more,
+            }
         finally:
             session.detach()
 

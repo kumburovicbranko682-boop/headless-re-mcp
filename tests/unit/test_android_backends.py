@@ -299,6 +299,53 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page(None, 10) == ([], False)
         assert _page([], 10) == ([], False)
 
+    def _modules_client(self, count: int) -> Any:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class FakeExports:
+            def modules(self) -> list[dict[str, object]]:
+                return [
+                    {"name": f"m{index}", "base": "0x1", "size": 1, "path": f"/m{index}"}
+                    for index in range(count)
+                ]
+
+        class FakeScript:
+            exports_sync = FakeExports()
+
+            def load(self) -> None:
+                return None
+
+        class FakeSession:
+            def create_script(self, source: str) -> FakeScript:
+                del source
+                return FakeScript()
+
+            def detach(self) -> None:
+                return None
+
+        class FakeFrida:
+            def attach(self, pid: int) -> FakeSession:
+                del pid
+                return FakeSession()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = FakeFrida()
+        return client
+
+    def test_a_module_page_says_what_was_left_out(self) -> None:
+        result = self._modules_client(200).modules(1, allowed_pid=1, limit=64)
+        assert result["count"] == 64
+        assert result["total"] == 200
+        assert result["has_more"] is True
+        assert len(result["modules"]) == 64
+
+    def test_a_short_module_list_is_complete(self) -> None:
+        result = self._modules_client(3).modules(1, allowed_pid=1, limit=64)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
 
 class TestApkManifestSaysWhenItStopped:
     """The tool text says this is the decoded manifest.
