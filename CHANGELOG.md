@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **APK 超时信封把可重试失败标成永久失败**。`apk.open` 超时后
+  `retryable=False`。agent 不会再试，一整夜任务就此停。现在 `timeout`
+  标 `retryable=True`，与 device/frida 设备路径一致。
 - **`apk.strings` 等 DEX 分析在 androguard 卡住时仍会一直挂着**。轻量
   解析加截止后，`AnalyzeAPK` 睡 8s 时 `strings()` 仍要 8.000s 才回。
   现在完整分析默认 180s 截止，超时报 `timeout`。

@@ -699,6 +699,33 @@ class TestApkOpenHasADeadline:
         release.set()
 
 
+class TestApkTimeoutEnvelopeIsRetryable:
+    """A parse timeout was reported as a permanent failure.
+
+    Measured: ApkError(code=timeout) mapped to retryable=False, so an
+    unattended agent would not retry and the overnight job would stop.
+    Device and Frida timeouts already set retryable.
+    """
+
+    def test_a_timeout_is_retryable(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_apk import _as_rpc
+
+        result = _failure(_as_rpc(ApkError("timeout", "parse did not finish", op="parse")))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+
+    def test_a_backend_error_stays_permanent(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_apk import _as_rpc
+
+        result = _failure(_as_rpc(ApkError("backend_error", "failed to parse APK")))
+        assert result.error is not None
+        assert result.error.retryable is False
+
+
 class TestApkAnalyzeHasADeadline:
     """Full DEX analysis still parked after the light parse had a deadline.
 
