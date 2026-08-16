@@ -36,6 +36,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
+        """List exports of one module in the authorized process (check has_more)."""
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
     @tools.tool(name="frida.memory.read")
