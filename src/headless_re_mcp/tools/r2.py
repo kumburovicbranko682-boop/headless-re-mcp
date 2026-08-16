@@ -25,7 +25,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Binary identity as radare2 sees it: format, arch, bits, endianness, entry.
 
         A second opinion on a file IDA may have loaded differently. Requires
-        radare2 on PATH or HEADLESS_RE_R2.
+        radare2 on PATH or HEADLESS_RE_R2. Oversized `i` output is cut and
+        marked truncated rather than looking like the whole identity dump.
         """
         return _dump(analysis.r2_info(session_id, timeout=timeout))
 
