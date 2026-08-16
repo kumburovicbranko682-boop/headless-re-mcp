@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
-from headless_re_mcp.backends.apk.client import ApkClient
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.jadx.client import JadxClient
@@ -653,6 +653,50 @@ class TestFridaEnumerationsSayWhenTheyStopped:
 
         assert _page(None, 10) == ([], False)
         assert _page([], 10) == ([], False)
+
+
+class TestApkOpenHasADeadline:
+    """A wedged androguard parse used to park the caller for as long as it stayed wedged.
+
+    Measured: ``open()`` against an ``APK()`` that slept 8s returned only
+    after 8.000s. An unattended agent that hits a corrupt or huge zip then
+    holds a worker until the process dies.
+    """
+
+    def test_a_hung_parse_returns_timeout_instead_of_blocking(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import types
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        class _HungAPK:
+            def __init__(self, path: str) -> None:
+                del path
+                entered.set()
+                release.wait()
+
+        andro = types.ModuleType("androguard")
+        core = types.ModuleType("androguard.core")
+        apk_mod = types.ModuleType("androguard.core.apk")
+        apk_mod.APK = _HungAPK
+        monkeypatch.setitem(sys.modules, "androguard", andro)
+        monkeypatch.setitem(sys.modules, "androguard.core", core)
+        monkeypatch.setitem(sys.modules, "androguard.core.apk", apk_mod)
+
+        apk = _apk(tmp_path / "hung.apk")
+        client = ApkClient(timeout=0.3)
+        client._available = True
+        started = time.monotonic()
+        with pytest.raises(ApkError) as info:
+            client.open(apk)
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert entered.is_set()
+        release.set()
 
 
 class TestApkManifestSaysWhenItWasCut:

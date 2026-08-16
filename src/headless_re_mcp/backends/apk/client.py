@@ -10,10 +10,20 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
+
+# A wedged androguard parse used to hold the caller for as long as it stayed
+# wedged. Measured: open() against an APK() that slept 8s returned only after
+# 8.000s. The deadline lives on this side because a stuck zip/xml walk cannot
+# be trusted to honour one of its own.
+_APK_PARSE_TIMEOUT = 30.0
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -54,9 +64,16 @@ class ApkClient:
     _light_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
     _full_cache: OrderedDict[tuple[str, int], _ParsedApk] = OrderedDict()
 
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: float | None = None) -> None:
         self._androguard: Any = None
         self._available = False
+        if timeout is None:
+            self._timeout = _APK_PARSE_TIMEOUT
+        else:
+            value = float(timeout)
+            if value <= 0:
+                raise ApkError("invalid_params", "timeout must be positive", timeout=value)
+            self._timeout = value
         try:
             import androguard  # noqa: F401
 
@@ -69,6 +86,35 @@ class ApkClient:
     @property
     def available(self) -> bool:
         return self._available
+
+    def _call(self, op: str, work: Callable[[], T], *, timeout: float | None = None) -> T:
+        """Run one parse, or return rather than wait it out.
+
+        The thread cannot be interrupted if androguard itself is stuck; it is
+        a daemon, so it costs the process a thread and nothing else. The
+        caller gets a timeout instead of parking a worker for the rest of
+        the process life.
+        """
+        deadline = self._timeout if timeout is None else timeout
+        future: Future[T] = Future()
+
+        def run() -> None:
+            try:
+                future.set_result(work())
+            except BaseException as exc:  # noqa: BLE001 - handed to the caller
+                if not future.done():
+                    future.set_exception(exc)
+
+        threading.Thread(target=run, name=f"apk-{op}", daemon=True).start()
+        try:
+            return future.result(timeout=deadline)
+        except FutureTimeout as exc:
+            raise ApkError(
+                "timeout",
+                f"{op} did not finish within {deadline:g}s",
+                op=op,
+                timeout=deadline,
+            ) from exc
 
     @classmethod
     def release(cls, path: Path) -> bool:
@@ -114,8 +160,13 @@ class ApkClient:
                 return cached
         from androguard.core.apk import APK
 
+        def parse() -> Any:
+            return APK(str(resolved))
+
         try:
-            apk = APK(str(resolved))
+            apk = self._call("parse", parse)
+        except ApkError:
+            raise
         except Exception as exc:  # noqa: BLE001 - androguard raises many types
             raise ApkError("backend_error", f"failed to parse APK: {exc}") from exc
         with self._cache_lock:
