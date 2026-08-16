@@ -46,7 +46,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List captured HTTP flows (method, url, status, content type)."""
+        """List captured HTTP flows (method, url, status, content type).
+
+        Paged; the reply carries total and has_more so a page is not read
+        as every flow the proxy captured.
+        """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="proxy.flow.get")

@@ -279,6 +279,31 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestProxyFlowPaging:
+    def test_a_flow_page_says_when_more_is_retained(self) -> None:
+        """A 100-flow page used to look complete even with total=250.
+
+        Measured: 250 flows, limit 100, count=100 total=250, no has_more.
+        """
+
+        class _Recorder:
+            def snapshot(self) -> list[dict[str, int]]:
+                return [{"id": index} for index in range(250)]
+
+        class _Inst:
+            recorder = _Recorder()
+
+        backend = ProxyBackend()
+        backend._get = lambda _sid: _Inst()  # type: ignore[method-assign]
+        result = backend.flows("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+        rest = backend.flows("s", offset=200, limit=100)
+        assert rest["count"] == 50
+        assert rest["has_more"] is False
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
