@@ -29,6 +29,41 @@ class TestNoArbitraryExecution:
         assert not {"evaluate", "eval", "run_code"} & public
 
 
+class TestWebWasmPaging:
+    def test_wasm_list_says_when_more_is_retained(self) -> None:
+        """250 wasm modules used to look like a complete 200-item list.
+
+        Measured: scripts(wasm_only=True) default limit 200, total=250,
+        has_more True, but web.wasm.list had no limit and its description
+        said nothing about a page.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(250):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "url": f"https://ex/{index}.wasm",
+                "language": "WebAssembly",
+            }
+        backend._sessions["s"] = handle
+        result = backend.scripts("s", wasm_only=True, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.web import build_web_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_web_tools(service)}
+            doc = tools["web.wasm.list"].handler.__doc__ or ""
+            assert "has_more" in doc
+            assert "limit" in tools["web.wasm.list"].handler.__code__.co_varnames
+        finally:
+            service.close_all()
+
+
 class TestWebNetworkPaging:
     def test_a_network_page_says_when_more_is_retained(self) -> None:
         """A 100-request page used to look complete even with total=250.
