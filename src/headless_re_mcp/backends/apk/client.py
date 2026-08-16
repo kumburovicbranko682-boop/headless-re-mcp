@@ -181,17 +181,24 @@ class ApkClient:
             "bytes": len(xml),
         }
 
-    def permissions(self, path: Path) -> JsonObject:
+    def permissions(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
         declared = sorted(apk.get_permissions())
         try:
             requested = sorted(apk.get_requested_permissions())
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested = declared
+        cap = max(1, min(int(limit), 2000))
+        page = declared[:cap]
+        requested_page = requested[:cap]
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
+            "permissions": page,
+            "requested_permissions": requested_page,
+            "count": len(page),
+            "total": len(declared),
+            # A caller deciding "these are all the permissions" has to know
+            # whether the list ended or this page merely stopped.
+            "has_more": len(declared) > cap or len(requested) > cap,
         }
 
     def certificates(self, path: Path) -> JsonObject:

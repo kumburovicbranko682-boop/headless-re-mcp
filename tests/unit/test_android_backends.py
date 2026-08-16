@@ -807,6 +807,46 @@ class TestApkComponentsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkPermissionsAreBounded:
+    """A permission list that hit the cap looks exactly like one that ended.
+
+    Measured: 3000 declared + 3000 requested, 141 KiB, no has_more -- so an
+    unattended caller dumps both full tables in one tool result.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_permissions(self) -> list[str]:
+                return [f"com.example.PERM_{index}" for index in range(n)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return [f"com.example.REQ_{index}" for index in range(n)]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(3000).permissions(tmp_path / "a.apk", limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 3000
+        assert result["has_more"] is True
+        assert len(result["permissions"]) == 500
+        assert len(result["requested_permissions"]) == 500
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3).permissions(tmp_path / "a.apk", limit=500)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(500).permissions(tmp_path / "a.apk", limit=500)
+        assert result["count"] == 500
+        assert result["has_more"] is False
+
+
 class TestApkNativeLibsAreBounded:
     """A fat APK can ship thousands of .so files; the list had no cap.
 
