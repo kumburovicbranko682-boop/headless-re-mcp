@@ -124,7 +124,11 @@ class R2Client:
             ) from exc
         except OSError as exc:
             raise R2Error("backend_error", f"failed to launch r2: {exc}") from exc
-        produced = len(completed.stdout)
+        produced = (
+            int(completed.stdout_bytes)
+            if completed.stdout_bytes is not None
+            else len(completed.stdout)
+        )
         out = completed.stdout[:_MAX_OUTPUT]
         err = completed.stderr[:_MAX_OUTPUT]
         if completed.returncode != 0:
@@ -138,7 +142,7 @@ class R2Client:
             "raw": out.decode("utf-8", errors="replace"),
             "commands": commands,
         }
-        if produced > _MAX_OUTPUT:
+        if produced > _MAX_OUTPUT or completed.truncated:
             # Cut silently, a listing that stopped at the buffer looks like a
             # listing that ended, and this is the analysis text a caller reads
             # to decide where a function finishes.
