@@ -407,14 +407,17 @@ class FridaClient:
                 # Reuse an already-registered remote device. Re-adding it on
                 # every call churns frida's device manager for what is meant to
                 # be a stable connection held for the life of the session.
-                mgr = frida.get_device_manager()
-                with contextlib.suppress(Exception):
-                    return mgr.get_device(device_id, timeout=1)
-                # Measured: add_remote_device sleeping 8s still returned
-                # only after 8.000s even after the public add had a deadline.
-                return self._call(
-                    "resolve_remote", lambda: mgr.add_remote_device(device_id)
-                )
+                # Measured: get_device(timeout=1) that slept 8s still
+                # returned only after 8.000s on this path, before
+                # add_remote was ever reached. The kwarg is not a
+                # deadline this side can enforce.
+                def reuse_or_add() -> Any:
+                    mgr = frida.get_device_manager()
+                    with contextlib.suppress(Exception):
+                        return mgr.get_device(device_id, timeout=1)
+                    return mgr.add_remote_device(device_id)
+
+                return self._call("resolve_remote", reuse_or_add)
             # Measured: get_device(..., timeout=5) that slept 8s still
             # returned only after 8.000s.
             return self._call(

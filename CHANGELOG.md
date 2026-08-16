@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **解析已登记的 Frida `host:port` 设备没有超时**。复用路径上
+  `get_device(timeout=1)` 睡 8s 仍要 8.000s，客户端 0.3s 期限未套上。
+  过夜 `spawn`/`applications` 会在已登记设备上卡死。现在走 `_call`。
 - **agent 工具参数深度界限未执行**。5000 层嵌套参数 `json.dumps` 成功
   （35019 字节，低于字节上限），`_arguments_too_large` 返回 `None`，
   调用会被执行。C 编码器不会抛 RecursionError。现在超过 250 层直接拒绝。
