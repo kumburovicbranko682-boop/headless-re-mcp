@@ -21,12 +21,44 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 
 DEFAULT_TIMEOUT_S = 600.0
+
+
+def _run_isolation_command(
+    command: list[str],
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run the operator's command with a deadline that binds what it started.
+
+    Isolation is a script the operator supplies -- typically a .ps1 that starts
+    the hypervisor's snapshot tool. ``subprocess.run(timeout=...)`` kills that
+    script and nothing else, then on Windows drains the pipes with no timeout.
+    Measured: a 1s deadline returned in 1.0s and left the child running. The
+    CLI tools already go through ``run_bounded`` for that reason; this is the
+    same shape, on the path that runs between every unattended sample.
+    """
+    timeout = float(kwargs.get("timeout") or DEFAULT_TIMEOUT_S)
+    creationflags = int(kwargs.get("creationflags") or 0)
+    try:
+        completed = run_bounded(
+            list(command),
+            timeout=timeout,
+            creationflags=creationflags,
+        )
+    except TimedOut as exc:
+        raise subprocess.TimeoutExpired(cmd=list(command), timeout=timeout) from exc
+    return subprocess.CompletedProcess(
+        args=list(command),
+        returncode=completed.returncode,
+        stdout=completed.stdout.decode("utf-8", errors="replace"),
+        stderr=completed.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +107,9 @@ class IsolationRunner:
     """Invoke the configured isolation command and report honestly."""
 
     policy: IsolationPolicy = field(default_factory=IsolationPolicy)
-    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
+    run: Callable[..., subprocess.CompletedProcess[str]] = field(
+        default=_run_isolation_command
+    )
     clock: Callable[[], float] = time.monotonic
 
     def rotate(self, *, reason: str = "next_sample") -> JsonObject:
