@@ -916,7 +916,9 @@ def _search_bytes(params: JsonObject) -> JsonObject:
             "ida_bytes.bin_search API is unavailable in this IDA build",
         )
 
-    while len(matches) < offset + limit and ea < end_ea:
+    # One extra so a full page is distinguishable from the end.
+    # Measured: 250 hits, limit 100, returned=100, total=100, has_more=false.
+    while len(matches) < offset + limit + 1 and ea < end_ea:
         patterns = compile_vec()
         parsed = parse_pat(patterns, ea, normalized, 16)
         if parsed is False:
@@ -961,7 +963,8 @@ def _search_text(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    # Measured with search.bytes: stop at offset+limit made has_more a lie.
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_text(ea, 0, 0, text, flags)
         if found in {idc.BADADDR, ida_idaapi.BADADDR, -1} or found is None:
             break
@@ -992,7 +995,8 @@ def _search_immediate(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    # Measured with search.bytes: stop at offset+limit made has_more a lie.
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_imm(ea, flags, value)
         # find_imm may return (ea, n) tuple on some builds
         if isinstance(found, tuple):
