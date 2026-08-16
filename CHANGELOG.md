@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`web.*` 超时信封把可重试失败标成永久失败**。`WebError(timeout)`
+  映射 `retryable=False`。agent 不会再试卡住的浏览器。现在 `timeout`
+  标可重试。
 - **JS/WASM 超时信封把可重试失败标成永久失败**。`JsReError(timeout)`
   映射 `retryable=False`。agent 不会再试 webcrack/wabt。现在 `timeout`
   标可重试。

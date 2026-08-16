@@ -500,6 +500,32 @@ class TestProxyScoping:
         assert info.value.code == "invalid_params"
 
 
+class TestWebTimeoutEnvelopeIsRetryable:
+    """A browser timeout was reported as a permanent failure.
+
+    Measured: WebError(code=timeout) mapped to retryable=False, so an
+    unattended agent would not retry a wedged Playwright call.
+    """
+
+    def test_a_timeout_is_retryable(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_web import _as_rpc
+
+        result = _failure(_as_rpc(WebError("timeout", "browser did not respond")))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+
+    def test_a_backend_error_stays_permanent(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_web import _as_rpc
+
+        result = _failure(_as_rpc(WebError("backend_error", "failed")))
+        assert result.error is not None
+        assert result.error.retryable is False
+
+
 class TestJsReTimeoutEnvelopeIsRetryable:
     """A JS/WASM tool timeout was reported as a permanent failure.
 
