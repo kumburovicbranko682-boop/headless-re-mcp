@@ -289,9 +289,26 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_open(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.open cannot run in {session.state.value} state"
+                )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.open(session.require_binary(), timeout=timeout)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.open cannot run in {session.state.value} state"
+                )
             _record_backend(self, session_id, "radare2", endpoint="pipe")
             _timeline_append(self, session_id, "r2.open", "r2 binary open validated")
             return _success(data, session_id=session_id, backend="radare2")
@@ -320,9 +337,26 @@ class ExtAnalysisMixin(UiDriveMixin):
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.disasm cannot run in {session.state.value} state"
+                )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.disasm(session.require_binary(), address, count=count, timeout=timeout)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.disasm cannot run in {session.state.value} state"
+                )
             _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
@@ -333,9 +367,26 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_xrefs(self, session_id: str, address: int, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.xrefs cannot run in {session.state.value} state"
+                )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.xrefs(session.require_binary(), address, timeout=timeout)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.xrefs cannot run in {session.state.value} state"
+                )
             _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
@@ -953,9 +1004,26 @@ def _windbg_client(service: Any) -> WindbgClient:
 def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: float) -> Result[JsonObject]:
     try:
         session = service.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"r2 request cannot run in {session.state.value} state"
+            )
         exe = getattr(service.settings, "r2", None)
         client = R2Client(Path(exe) if exe else None)
         data = client.run(session.require_binary(), commands, timeout=timeout)
+        session = service.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"r2 request cannot run in {session.state.value} state"
+            )
         _record_backend(service, session_id, "radare2", endpoint="pipe")
         _timeline_append(service, session_id, "r2.request", "r2 whitelist command", commands=commands)
         return _success(data, session_id=session_id, backend="radare2")
