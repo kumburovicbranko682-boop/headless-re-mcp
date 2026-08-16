@@ -250,7 +250,10 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
-        if completed.returncode not in {0, 1} and not out:
+        # Measured: exit 2 with stdout "Could not attach\n" still became
+        # attached=True / threads="Could not attach", so an unattended
+        # agent treats the error text as a live probe.
+        if completed.returncode not in {0, 1}:
             raise WindbgError(
                 "backend_error",
                 "cdb user-mode probe failed",

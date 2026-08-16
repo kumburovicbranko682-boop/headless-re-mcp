@@ -126,6 +126,35 @@ def test_a_failed_dump_is_not_saved_by_error_text(
     assert info.value.code == "backend_error"
 
 
+def test_a_failed_live_probe_is_not_an_attach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cdb exit 2 used to report attached=True if it printed anything.
+
+    Measured: returncode=2, stdout "Could not attach\\n", attach returned
+    attached=True and live_threads returned that string as the listing.
+    """
+    import subprocess
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+
+    def failed(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"Could not attach\n",
+            stderr=b"fatal",
+        )
+
+    monkeypatch.setattr(windbg_module, "run_bounded", failed)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    with pytest.raises(WindbgError) as info:
+        WindbgClient(cdb).attach(7, allowed_pid=7)
+    assert info.value.code == "backend_error"
+
+
 def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch) -> None:
     store = r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.0_x64__abc\amd64\cdb.exe"
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
