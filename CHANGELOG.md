@@ -108,6 +108,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **`device.screenshot` / `device.pull` 把未入库的文件叫做 artifact**。截图写入
   `artifact_root/device` 并报成功，但 `artifacts.list` 的 total 是 0。模型接着去
   `artifacts.read` 会落空。描述改为读回包路径，并写明未注册。
+- **抓包列表停在上限却不说丢过**。2500 条进 2000 槽、取 100 条时回 `count=100`
+  `total=2000`，没有 `has_more` / `buffer_full`，满环看起来像整晚的全部流量。
+  现在与浏览器采集列表一样带这两项。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

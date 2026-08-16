@@ -320,7 +320,14 @@ class ProxyBackend:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
         window = items[offset : offset + limit]
-        return {"flows": window, "count": len(window), "total": len(items), "offset": offset}
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+            "buffer_full": len(items) >= _MAX_FLOWS,
+        }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

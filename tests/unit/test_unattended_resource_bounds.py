@@ -108,6 +108,30 @@ class TestProxyCaptureIsBounded:
         # Every write incremented the sequence exactly once.
         assert recorder._seq == 4 * 300
 
+    def test_a_full_flow_page_says_it_is_not_the_whole_capture(self) -> None:
+        """2500 flows into a 2000 slot left total=2000 and count=100, no has_more.
+
+        The ring had already dropped the oldest 500. Without buffer_full that
+        page looks like the whole night.
+        """
+        from headless_re_mcp.backends.proxy.client import ProxyBackend
+
+        backend = ProxyBackend()
+        inst = type("Inst", (), {})()
+        inst.recorder = _FlowRecorder()
+        for index in range(2500):
+            inst.recorder.response(_FakeFlow(index))
+        backend._instances["s"] = inst  # type: ignore[attr-defined]
+
+        page = backend.flows("s", offset=0, limit=100)
+        assert page["count"] == 100
+        assert page["total"] == 2000
+        assert page["has_more"] is True
+        assert page["buffer_full"] is True
+        tail = backend.flows("s", offset=1900, limit=100)
+        assert tail["has_more"] is False
+        assert tail["buffer_full"] is True
+
 
 class TestProxyStartHonesty:
     def test_port_probe_reports_false_for_a_closed_port(self) -> None:
