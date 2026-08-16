@@ -391,7 +391,11 @@ def probe_de4dot_version(executable: Path, *, timeout: float = 5.0) -> tuple[boo
     for args in ([str(exe)], [str(exe), "-h"], [str(exe), "--help"]):
         try:
             completed = run_bounded(args, timeout=timeout, creationflags=flags)
-        except (OSError, TimedOut):
+        except TimedOut:
+            # The same binary hung. Trying -h and --help used to leave two more
+            # children and triple the wait; doctor then called that READY.
+            return False, ""
+        except OSError:
             continue
         text = ((completed.stdout or b"") + b"\n" + (completed.stderr or b"")).decode(
             "utf-8", "replace"
