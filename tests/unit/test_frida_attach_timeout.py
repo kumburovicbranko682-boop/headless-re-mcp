@@ -333,3 +333,32 @@ def test_frida_devices_does_not_wait_forever(monkeypatch: pytest.MonkeyPatch) ->
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_remote_device_does_not_wait_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """frida.device.connect used add_remote_device with no deadline.
+
+    Measured: a 0.8s sleep in that hop held the call 0.8s.
+    """
+    monkeypatch.setattr(frida_client, "_REMOTE_TIMEOUT", 0.4)
+
+    class _Mgr:
+        def add_remote_device(self, endpoint: str) -> object:
+            time.sleep(30)
+            raise AssertionError(endpoint)
+
+    class _Fake:
+        def get_device_manager(self) -> _Mgr:
+            return _Mgr()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.add_remote_device("10.0.0.1:27042")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"
