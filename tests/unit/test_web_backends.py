@@ -413,6 +413,27 @@ def test_the_dom_tool_names_a_cut_document() -> None:
     assert "truncated" in docs["web_dom_snapshot"]
 
 
+def test_the_wat_tool_names_a_cut_listing() -> None:
+    """The reply already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut wat field as the
+    whole module text.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import js_wasm as js_mod
+
+    tree = ast.parse(inspect.getsource(js_mod.build_js_wasm_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["wasm_wat"]
+    assert "truncated" in docs["wasm_wat"]
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()

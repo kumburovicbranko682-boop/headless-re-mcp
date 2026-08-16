@@ -63,7 +63,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
         wasm2wat can exit non-zero after writing usable text. Read partial and
-        exit_code rather than treating the WAT as complete.
+        exit_code rather than treating the WAT as complete. Oversized text is
+        cut and marked truncated.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
