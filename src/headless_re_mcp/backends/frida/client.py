@@ -247,29 +247,33 @@ class FridaClient:
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
-        session = self._frida.attach(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            mods = list(script.exports_sync.modules())
-            capped = max(1, min(int(limit), 256))
-            items = [
-                {
-                    "name": str(item.get("name", "")),
-                    "base": str(item.get("base", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "path": str(item.get("path", "")),
+        capped = max(1, min(int(limit), 256))
+
+        def work() -> JsonObject:
+            session = self._frida.attach(pid)
+            try:
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                mods = list(script.exports_sync.modules())
+                items = [
+                    {
+                        "name": str(item.get("name", "")),
+                        "base": str(item.get("base", "")),
+                        "size": int(item.get("size", 0) or 0),
+                        "path": str(item.get("path", "")),
+                    }
+                    for item in mods[:capped]
+                ]
+                return {
+                    "modules": items,
+                    "count": len(items),
+                    "total": len(mods),
+                    "has_more": len(mods) > len(items),
                 }
-                for item in mods[:capped]
-            ]
-            return {
-                "modules": items,
-                "count": len(items),
-                "total": len(mods),
-                "has_more": len(mods) > len(items),
-            }
-        finally:
-            session.detach()
+            finally:
+                session.detach()
+
+        return self._call("modules", work)
 
     def exports(
         self,
@@ -283,35 +287,39 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._frida.attach(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
-            if not isinstance(raw, dict):
-                raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
-            items = []
-            for item in page:
-                if not isinstance(item, dict):
-                    continue
-                items.append(
-                    {
-                        "name": str(item.get("name", "")),
-                        "address": str(item.get("address", "")),
-                        "type": str(item.get("type", "")),
-                    }
-                )
-            return {
-                "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
-                "base": str(raw.get("base") or ""),
-                "exports": items,
-                "count": len(items),
-                "has_more": has_more,
-            }
-        finally:
-            session.detach()
+
+        def work() -> JsonObject:
+            session = self._frida.attach(pid)
+            try:
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+                if not isinstance(raw, dict):
+                    raise FridaError("backend_error", "unexpected frida exports payload")
+                page, has_more = _page(list(raw.get("exports") or []), capped)
+                items = []
+                for item in page:
+                    if not isinstance(item, dict):
+                        continue
+                    items.append(
+                        {
+                            "name": str(item.get("name", "")),
+                            "address": str(item.get("address", "")),
+                            "type": str(item.get("type", "")),
+                        }
+                    )
+                return {
+                    "found": bool(raw.get("found")),
+                    "module": str(raw.get("module") or module_name),
+                    "base": str(raw.get("base") or ""),
+                    "exports": items,
+                    "count": len(items),
+                    "has_more": has_more,
+                }
+            finally:
+                session.detach()
+
+        return self._call("exports", work)
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
@@ -319,19 +327,23 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._frida.attach(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
-                "address": address,
-                "size": size,
-                "encoding": "hex",
-                "data": data.hex(),
-            }
-        finally:
-            session.detach()
+
+        def work() -> JsonObject:
+            session = self._frida.attach(pid)
+            try:
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                data = bytes(script.exports_sync.read(int(address), int(size)))
+                return {
+                    "address": address,
+                    "size": size,
+                    "encoding": "hex",
+                    "data": data.hex(),
+                }
+            finally:
+                session.detach()
+
+        return self._call("memory_read", work)
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int) -> JsonObject:
         self._require(pid, allowed_pid)
@@ -343,19 +355,23 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
-        session = self._frida.attach(pid)
-        try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": "local",
-                **_PROBE_DISCLOSURE,
-            }
-        finally:
-            session.detach()
+
+        def work() -> JsonObject:
+            session = self._frida.attach(pid)
+            try:
+                script = session.create_script(source)
+                script.load()
+                return {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": "local",
+                    **_PROBE_DISCLOSURE,
+                }
+            finally:
+                session.detach()
+
+        return self._call("hook_template", work)
 
     def _require(self, pid: int, allowed_pid: int) -> None:
         if pid != allowed_pid:

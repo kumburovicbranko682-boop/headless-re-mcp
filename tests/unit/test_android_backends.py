@@ -350,6 +350,40 @@ class TestFridaAttachHasADeadline:
         assert time.monotonic() - started < 0.3
 
 
+class TestFridaLocalReadsShareTheAttachDeadline:
+    """The other local reads still parked on a wedged attach.
+
+    Measured after attach() itself had a deadline: ``modules()`` against
+    the same 8s sleep still returned only after 8.000s and was still
+    running at 2s. exports / memory_read / hook_template take the same
+    attach path.
+    """
+
+    def _client(self, frida: _HungFrida, *, timeout: float = 0.3) -> FridaClient:
+        client = FridaClient(timeout=timeout)
+        client._available = True
+        client._frida = frida
+        return client
+
+    def test_modules_exports_read_and_hook_time_out(self) -> None:
+        calls = (
+            lambda client: client.modules(4242, allowed_pid=4242),
+            lambda client: client.exports(4242, "libc.so", allowed_pid=4242),
+            lambda client: client.memory_read(4242, 0x1000, 16, allowed_pid=4242),
+            lambda client: client.hook_template(4242, "noop", allowed_pid=4242),
+        )
+        for call in calls:
+            frida = _HungFrida()
+            client = self._client(frida)
+            started = time.monotonic()
+            with pytest.raises(FridaError) as info:
+                call(client)
+            assert info.value.code == "timeout"
+            assert time.monotonic() - started < 1.0
+            assert frida.entered.is_set()
+            frida.release.set()
+
+
 class _FakeCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
