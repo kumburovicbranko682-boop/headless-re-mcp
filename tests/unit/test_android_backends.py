@@ -885,12 +885,25 @@ class TestFridaServerEnsureDoesNotReportAGhost:
         assert result["running"] is True
         assert "note" not in result
 
+    def test_a_similarly_named_process_is_not_the_server(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object, timeout: float | None = None) -> str:
+                return "root 1 0 not-frida-server"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554")
+        assert result["running"] is False
+        assert "not in the process list" in result["note"]
+
     def test_already_running_is_still_a_no_op(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
 
         class _Dev:
             def shell(self, args: object, timeout: float | None = None) -> str:
-                return "root 99 1 frida-server"
+                return "root 99 1 /data/local/tmp/frida-server"
 
         backend = AdbBackend()
         backend._device = lambda serial: _Dev()  # type: ignore[method-assign]

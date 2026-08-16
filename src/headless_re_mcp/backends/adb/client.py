@@ -57,6 +57,16 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _looks_like_frida_server(token: str) -> bool:
+    """A process whose name is frida-server, including a path to that binary.
+
+    A substring of 'frida-server' also matches 'not-frida-server' and
+    'frida-server-old'. Measured: those lines were treated as a running
+    server, so an unattended agent attaches to a process that is not one.
+    """
+    return token.rsplit("/", 1)[-1] == "frida-server"
+
+
 def _monkey_launched(message: object) -> bool:
     """monkey prints 'Events injected: N' when it actually started something.
 
@@ -402,11 +412,14 @@ class AdbBackend:
     @staticmethod
     def _frida_server_visible(dev: Any) -> bool:
         try:
-            return "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
+            text = f"{dev.shell('ps -A')}\n{dev.shell('ps')}"
         except Exception:  # noqa: BLE001
             return False
+        return any(
+            _looks_like_frida_server(token)
+            for line in str(text).splitlines()
+            for token in line.split()
+        )
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)
