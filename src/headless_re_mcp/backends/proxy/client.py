@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -21,6 +22,10 @@ from typing import Any
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# Measured: call_soon_threadsafe returned immediately and replay()
+# answered {replayed: True} while the command never ran. An overnight
+# agent then treated a queued replay as traffic that had happened.
+_REPLAY_TIMEOUT = 30.0
 
 
 class ProxyError(RuntimeError):
@@ -374,9 +379,31 @@ class ProxyBackend:
             raise ProxyError("not_found", "unknown flow id", flow_id=flow_id)
         if master is None or inst._loop is None:
             raise ProxyError("invalid_state", "proxy is not running")
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+        def _do() -> None:
+            try:
+                master.commands.call("replay.client", [new_flow])
+            except BaseException as exc:
+                if not done.done():
+                    done.set_exception(exc)
+            else:
+                if not done.done():
+                    done.set_result(None)
+
         try:
             new_flow = flow.copy()
-            inst._loop.call_soon_threadsafe(master.commands.call, "replay.client", [new_flow])
+            inst._loop.call_soon_threadsafe(_do)
+            done.result(timeout=_REPLAY_TIMEOUT)
+        except concurrent.futures.TimeoutError as exc:
+            raise ProxyError(
+                "timeout",
+                "replay did not run in time",
+                flow_id=flow_id,
+                timeout=_REPLAY_TIMEOUT,
+            ) from exc
+        except ProxyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}

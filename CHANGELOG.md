@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`proxy.replay` 在命令未执行时仍报 `replayed: True`**。
+  `call_soon_threadsafe` 入队后立刻成功。过夜任务会把没发出去的重放
+  当已发生的流量。现在等命令跑完，超时报 `timeout`。
 - **`apk.decode` 在 apktool 失败时仍报成功**。exit 1 但目录里已有
   `AndroidManifest.xml`（上次残留）时仍返回 `decoded_dir`。过夜任务会
   去改一个解码失败的树。现在非零退出一律报 `backend_error`。

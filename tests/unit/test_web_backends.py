@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -498,6 +499,70 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
+
+
+class TestProxyReplayDoesNotSucceedBeforeTheCommandRuns:
+    """replay() answered replayed:True after only scheduling the command.
+
+    Measured: call_soon_threadsafe queued the call and replay() returned
+    {replayed: True, flow_id: ...} while the command never ran, so an
+    unattended agent treated a queued replay as traffic that had happened.
+    """
+
+    def _backend(self, loop: object) -> ProxyBackend:
+        class _Flow:
+            def copy(self) -> _Flow:
+                return self
+
+        class _Recorder:
+            def raw(self, flow_id: str) -> _Flow:
+                del flow_id
+                return _Flow()
+
+        class _Inst:
+            recorder = _Recorder()
+            _master = object()
+            _loop = loop
+
+        backend = ProxyBackend()
+        backend._instances["s"] = _Inst()  # type: ignore[assignment]
+        return backend
+
+    def test_a_command_that_never_runs_is_a_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Loop:
+            def call_soon_threadsafe(self, fn: object, *args: object) -> None:
+                del fn, args
+
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.proxy.client._REPLAY_TIMEOUT", 0.3
+        )
+        backend = self._backend(_Loop())
+        started = time.monotonic()
+        with pytest.raises(ProxyError) as info:
+            backend.replay("s", "flow-1")
+        assert info.value.code == "timeout"
+        assert time.monotonic() - started < 1.0
+
+    def test_a_command_that_runs_is_replayed(self) -> None:
+        ran: list[object] = []
+
+        class _Master:
+            class commands:
+                @staticmethod
+                def call(name: str, flows: object) -> None:
+                    ran.append((name, flows))
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn: object, *args: object) -> None:
+                del args
+                fn()  # type: ignore[operator]
+
+        backend = self._backend(_Loop())
+        backend._instances["s"]._master = _Master()  # type: ignore[union-attr]
+        assert backend.replay("s", "flow-1") == {"replayed": True, "flow_id": "flow-1"}
+        assert ran[0][0] == "replay.client"
 
 
 class TestWebTimeoutEnvelopeIsRetryable:
