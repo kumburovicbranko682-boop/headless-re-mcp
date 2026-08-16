@@ -21,6 +21,7 @@ _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_MANIFEST_CHARS = 200_000
 _MAX_COMPONENTS = 2000
+_MAX_PERMISSIONS = 2000
 
 
 class ApkError(RuntimeError):
@@ -183,17 +184,25 @@ class ApkClient:
             "bytes": len(xml),
         }
 
-    def permissions(self, path: Path) -> JsonObject:
+    def permissions(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
+        capped = max(1, min(int(limit), _MAX_PERMISSIONS))
         declared = sorted(apk.get_permissions())
         try:
             requested = sorted(apk.get_requested_permissions())
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested = declared
+        # Measured: 800 permissions came back as one 43 KiB object with no
+        # has_more, so an agent treated the page as every declared grant.
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
+            "permissions": declared[:capped],
+            "requested_permissions": requested[:capped],
+            "count": min(len(declared), capped),
+            "totals": {
+                "permissions": len(declared),
+                "requested_permissions": len(requested),
+            },
+            "has_more": len(declared) > capped or len(requested) > capped,
         }
 
     def certificates(self, path: Path) -> JsonObject:

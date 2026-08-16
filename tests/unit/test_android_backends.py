@@ -226,6 +226,48 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkPermissionsAreBounded:
+    """A permission list used to be the whole manifest with no way to see a cut."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_permissions(self) -> list[str]:
+                return [f"android.permission.P{index}" for index in range(count)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return [f"android.permission.P{index}" for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        return client
+
+    def test_a_large_permission_list_is_cut_and_said_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 800).permissions(tmp_path / "app.apk", limit=500)
+        assert len(result["permissions"]) == 500
+        assert result["count"] == 500
+        assert result["totals"]["permissions"] == 800
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).permissions(tmp_path / "app.apk", limit=500)
+        assert result["has_more"] is False
+        assert result["totals"]["permissions"] == 3
+        assert result["count"] == 3
+
+    def test_a_page_that_exactly_fills_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 500).permissions(tmp_path / "app.apk", limit=500)
+        assert result["count"] == 500
+        assert result["has_more"] is False
+
+
 class TestApkComponentsAreBounded:
     """A component list used to be the whole manifest with no way to see a cut."""
 
