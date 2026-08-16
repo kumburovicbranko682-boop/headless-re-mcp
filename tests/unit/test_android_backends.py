@@ -916,6 +916,34 @@ class TestFridaModulePaging:
         assert complete["has_more"] is False
 
 
+class TestFridaDevicePaging:
+    def test_a_device_page_says_when_more_exist(self) -> None:
+        """A device list used to look complete with only count.
+
+        Measured: five devices, count=5, no total or has_more.
+        """
+
+        class _Dev:
+            def __init__(self, index: int) -> None:
+                self.id = f"dev{index}"
+                self.name = f"Device {index}"
+                self.type = "usb"
+
+        class _Frida:
+            def enumerate_devices(self) -> list[_Dev]:
+                return [_Dev(index) for index in range(5)]
+
+        client = FridaClient()
+        client._frida = _Frida()
+        client._available = True
+        result = client.enumerate_devices(limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        complete = client.enumerate_devices(limit=5)
+        assert complete["has_more"] is False
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
