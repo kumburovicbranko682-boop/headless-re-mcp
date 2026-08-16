@@ -166,12 +166,22 @@ class ApkClient:
         }
 
     def manifest(self, path: Path) -> JsonObject:
+        """Return the decoded manifest. Oversized XML is cut and marked.
+
+        Measured: 200010 bytes of XML came back as 200000 bytes with no
+        truncated flag, so a page looked like the whole manifest.
+        """
         apk = self._apk(path)
         try:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
+        cap = 200_000
+        return {
+            "package": apk.get_package(),
+            "manifest_xml": xml[:cap],
+            "truncated": len(xml) > cap,
+        }
 
     def permissions(self, path: Path, *, limit: int = 200) -> JsonObject:
         """List declared and requested permissions. Each list is capped.

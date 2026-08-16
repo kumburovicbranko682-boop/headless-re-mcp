@@ -1369,6 +1369,43 @@ class TestApkPermissionPaging:
         assert complete["has_more"] is False
 
 
+class TestApkManifestTruncation:
+    def test_a_cut_manifest_says_it_was_cut(self, tmp_path: Path) -> None:
+        """A 200k cap used to look like the whole manifest.
+
+        Measured: 200010 bytes of XML came back as 200000 bytes with no
+        truncated flag.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Axml:
+            def get_xml(self) -> bytes:
+                return b"<manifest/>" + b"x" * 200_010
+
+        class _Apk:
+            def get_android_manifest_axml(self) -> _Axml:
+                return _Axml()
+
+            def get_package(self) -> str:
+                return "com.example"
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.manifest(apk)
+        assert len(result["manifest_xml"]) == 200_000
+        assert result["truncated"] is True
+        short = _Axml()
+        short.get_xml = lambda: b"<manifest/>"  # type: ignore[method-assign]
+        class _Short(_Apk):
+            def get_android_manifest_axml(self) -> _Axml:
+                return short
+        client._apk = lambda path: _Short()  # type: ignore[method-assign]
+        complete = client.manifest(apk)
+        assert complete["truncated"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
