@@ -76,7 +76,11 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        """List analyzed functions with addresses, names, ranges, and flags."""
+        """List analyzed functions with addresses, names, ranges, and flags.
+
+        Read has_more and total rather than treating returned as every
+        function in the database.
+        """
         return _dump(analysis.static_functions(session_id, offset=offset, limit=limit))
 
     def static_strings(
