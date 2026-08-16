@@ -22,11 +22,11 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def ghidra_analyze(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Run Ghidra headless analysis over the session binary.
+        """Run Ghidra headless import/analyze over the session binary.
 
-        A separate analysis from IDA's, worth having when the two disagree or
-        when IDA cannot load the file. Minutes on a large binary, and the other
-        ghidra tools read what this produced, so run it first. Requires
+        One-shot: the project is deleted when this returns. Later ghidra.*
+        tools import the file again and run their own analyzeHeadless. A long
+        timeout here does not pay for those calls. Requires
         HEADLESS_RE_GHIDRA_HOME.
         """
         return _dump(analysis.ghidra_analyze(session_id, timeout=timeout))

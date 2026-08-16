@@ -99,6 +99,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **调试事件库磁盘无淘汰**。每个 x64dbg 会话都会打开 `events.sqlite3`（
   `persist_debug_events` 只控制时间线镜像）。2000 条事件后库是 528_384 字节且
   COUNT 仍是 2000。现在磁盘只留最近 50 万条，读路径把被丢掉的前缀标成 dropped。
+- **`ghidra.analyze` 的描述说后续工具会读它的分析结果**。实现是一次性
+  import/analyze 且 `delete_project=True`，每个 `ghidra.*` 都重新 `-import`。
+  模型因此把长超时花在 analyze 上，再付一次分析。描述改为与实现一致。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
