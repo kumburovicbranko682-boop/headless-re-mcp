@@ -536,6 +536,65 @@ class TestProxyFlowsSayWhenTheyWereCut:
         assert result["total"] == 3
 
 
+class TestProxyFlowGetDoesNotInventAnEmptyBody:
+    """A body read that raised used to look like an empty response.
+
+    Measured: ``raw_content`` raising still answered
+    ``{'status': 200, 'size': 0, 'body': ''}`` with no error. An unattended
+    agent then treats a failed decode as evidence the server sent nothing.
+    """
+
+    def _backend(self, *, body: object, raise_on_read: bool) -> ProxyBackend:
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "text/plain"}
+
+            @property
+            def raw_content(self) -> bytes:
+                if raise_on_read:
+                    raise RuntimeError("content encoding failed")
+                return body  # type: ignore[return-value]
+
+        class _Req:
+            method = "GET"
+            pretty_url = "https://example.test/x"
+            headers: dict[str, str] = {}
+
+        class _Flow:
+            request = _Req()
+            response = _Resp()
+
+        class _Recorder:
+            def raw(self, flow_id: str) -> _Flow:
+                del flow_id
+                return _Flow()
+
+        class _Inst:
+            recorder = _Recorder()
+
+        backend = ProxyBackend()
+        backend._get = lambda session_id: _Inst()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_failed_body_read_is_not_an_empty_response(self, tmp_path: Path) -> None:
+        with pytest.raises(ProxyError) as info:
+            self._backend(body=b"", raise_on_read=True).flow_get("s", "flow-1", tmp_path)
+        assert info.value.code == "backend_error"
+        assert "response body" in info.value.message
+
+    def test_a_real_empty_body_is_still_empty(self, tmp_path: Path) -> None:
+        result = self._backend(body=b"", raise_on_read=False).flow_get("s", "flow-1", tmp_path)
+        assert result["response"]["size"] == 0
+        assert result["response"]["body"] == ""
+
+    def test_a_readable_body_is_returned(self, tmp_path: Path) -> None:
+        result = self._backend(body=b"hello", raise_on_read=False).flow_get(
+            "s", "flow-1", tmp_path
+        )
+        assert result["response"]["size"] == 5
+        assert result["response"]["body"] == "hello"
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
