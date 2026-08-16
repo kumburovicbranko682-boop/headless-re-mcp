@@ -203,3 +203,30 @@ class TestGhidraSaysWhenTheAnalyzeLogWasCut:
         result = _analyze(tmp_path, monkeypatch, "INFO analyze done")
         assert result["stdout_excerpt"] == "INFO analyze done"
         assert "truncated" not in result
+
+    def test_a_buffer_cut_keeps_the_real_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.ghidra import client as ghidra_mod
+        from headless_re_mcp.backends.ghidra.client import _MAX_STDOUT
+
+        body = ("H" * 242_000) + ("T" * 8_000)
+        assert len(body) == 250_000
+        assert len(body) > _MAX_STDOUT
+
+        def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+            return Completed(0, body.encode("utf-8"), b"")
+
+        monkeypatch.setattr(ghidra_mod, "run_bounded", fake_bounded)
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        analyze = tmp_path / "analyzeHeadless"
+        analyze.write_text("x", encoding="utf-8")
+        client = GhidraClient(home=tmp_path, java=tmp_path / "java")
+        client.analyze = analyze
+        result = client.analyze_binary(binary, tmp_path / "proj")
+        assert result["stdout_excerpt"] == "T" * _MAX_ANALYZE_EXCERPT
+        assert result["truncated"] is True
+        assert result["stdout_chars"] == 250_000
+        assert result["returned_chars"] == _MAX_ANALYZE_EXCERPT

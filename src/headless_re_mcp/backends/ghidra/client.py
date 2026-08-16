@@ -70,6 +70,7 @@ class GhidraClient:
         self.home = home
         self.java = java or _which("java")
         self.analyze = _find_analyze_headless(home)
+        self._last_stdout_chars: int | None = None
 
     @property
     def available(self) -> bool:
@@ -89,6 +90,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         project_dir.mkdir(parents=True, exist_ok=True)
+        self._last_stdout_chars = None
         stdout, stderr, code = self._run_headless(
             project_dir,
             binary=binary,
@@ -104,18 +106,22 @@ class GhidraClient:
                 exit_code=code,
                 stderr=stderr[:4000],
             )
+        original = (
+            self._last_stdout_chars if self._last_stdout_chars is not None else len(stdout)
+        )
         excerpt = stdout[-_MAX_ANALYZE_EXCERPT:]
         result: JsonObject = {
             "project_dir": str(project_dir),
             "stdout_excerpt": excerpt,
             "note": "headless import/analyze completed; use ghidra.functions/decompile/symbols/xrefs for exports",
         }
-        if len(stdout) > _MAX_ANALYZE_EXCERPT:
-            # Measured: 20000 characters of analyze log still came back as an
-            # 8000-character excerpt with no mark, so an agent treated the tail
-            # as the whole run.
+        if original > _MAX_ANALYZE_EXCERPT:
+            # Measured: 250000 characters were first sliced to the opening
+            # 200000, then tailed to 8000, so the excerpt was the middle of
+            # the run and stdout_chars said 200000. An agent treated that
+            # middle as the end of analyze.
             result["truncated"] = True
-            result["stdout_chars"] = len(stdout)
+            result["stdout_chars"] = original
             result["returned_chars"] = len(excerpt)
         return result
 
@@ -303,8 +309,16 @@ class GhidraClient:
                 timeout=timeout,
                 killed_pids=exc.killed,
             ) from exc
-        stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
-        stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
+        stdout_text = completed.stdout.decode("utf-8", errors="replace")
+        stderr_text = completed.stderr.decode("utf-8", errors="replace")
+        self._last_stdout_chars = len(stdout_text)
+        # Keep the tail: analyzeHeadless writes the outcome at the end, and
+        # analyze_binary already excerpts stdout[-8000:]. A prefix cut threw
+        # that tail away and then reported the middle as the end of the run.
+        stdout = (
+            stdout_text[-_MAX_STDOUT:] if len(stdout_text) > _MAX_STDOUT else stdout_text
+        )
+        stderr = stderr_text[:50_000]
         return stdout, stderr, int(completed.returncode)
 
 
