@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.connect` 把拒绝当成连上**。判断是 `"connected" in text or "already" in text`。
+  实测 `not connected` 和 `already in use` 都变成 `connected: True`。现在只认
+  `connected to <endpoint>` / `already connected to <endpoint>`，并排除
+  `not/failed/unable to connect`。
 - **`device.launch` 在 monkey 明确失败时仍报 `launched: True`**。包没有 launcher 时
   monkey 写 `No activities found to run, monkey aborted.` 却仍回成功。无人值守的
   agent 随后去操作一个根本没起来的界面。现在识别这段输出并回 `backend_error`。

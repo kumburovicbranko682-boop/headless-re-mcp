@@ -35,6 +35,8 @@ _ADB_TRANSFER_TIMEOUT = 120.0
 _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
+_CONNECT_OK = re.compile(r"(?:^|[\s])(?:already\s+)?connected\s+to\s+\S+")
+_CONNECT_FAIL = re.compile(r"\b(?:not|failed to|unable to)\s+connect")
 _MAX_LOGCAT_LINES = 5000
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
@@ -69,6 +71,18 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _adb_connect_succeeded(message: str) -> bool:
+    """Whether an adb connect reply means the endpoint is actually connected.
+
+    The old check was ``"connected" in text or "already" in text``. Measured:
+    ``not connected`` and ``already in use`` both became connected=True.
+    """
+    text = str(message).lower()
+    if _CONNECT_FAIL.search(text):
+        return False
+    return _CONNECT_OK.search(text) is not None
 
 
 def _frida_running(dev: Any) -> bool:
@@ -198,8 +212,7 @@ class AdbBackend:
             return {
                 "endpoint": endpoint,
                 "result": str(message),
-                "connected": "connected" in str(message).lower()
-                or "already" in str(message).lower(),
+                "connected": _adb_connect_succeeded(str(message)),
             }
 
         return self._call("connect", work)

@@ -572,6 +572,53 @@ class TestDevicePropertiesSayWhenTheyStopped:
         assert page["has_more"] is False
 
 
+class TestDeviceConnectDoesNotInventSuccess:
+    """Substring matching treated a refusal as a connection.
+
+    Measured: ``not connected`` and ``already in use`` both became
+    ``connected: True``, because the check was ``"connected" in text or
+    "already" in text``.
+    """
+
+    def _backend(self, message: str) -> AdbBackend:
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+
+        class _Client:
+            def connect(self, endpoint: str, timeout: float = 10.0) -> str:
+                del endpoint, timeout
+                return message
+
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        return backend
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "not connected",
+            "cannot be connected",
+            "already in use",
+            "failed to connect to 127.0.0.1:5555",
+            "unable to connect to 127.0.0.1:5555: Connection refused",
+        ],
+    )
+    def test_a_refusal_is_not_connected(self, message: str) -> None:
+        payload = self._backend(message).connect("127.0.0.1", 5555)
+        assert payload["connected"] is False, message
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "connected to 127.0.0.1:5555",
+            "already connected to 127.0.0.1:5555",
+        ],
+    )
+    def test_a_real_connection_is_still_connected(self, message: str) -> None:
+        payload = self._backend(message).connect("127.0.0.1", 5555)
+        assert payload["connected"] is True, message
+
+
 class TestDeviceLaunchDoesNotInventSuccess:
     """monkey aborting is not a launched app.
 
