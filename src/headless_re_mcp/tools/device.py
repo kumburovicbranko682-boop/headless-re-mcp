@@ -138,7 +138,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.push")
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
-        """Push a local file to a path on the device."""
+        """Push a local file to a path on the device.
+
+        The write is checked on the way out: a push that did not produce a
+        remote file is an error, not a path.
+        """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
     @tools.tool(name="device.forward")

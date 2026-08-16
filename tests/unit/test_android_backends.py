@@ -1796,6 +1796,21 @@ class TestDevicePushDoesNotReportAGhost:
         assert result["remote"] == "/data/local/tmp/payload.bin"
         assert result["local"].endswith("payload.bin")
 
+    def test_the_tool_description_names_a_missing_remote(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_push"]
+        assert "remote file" in docs["device_push"]
+
 
 class TestDeviceForwardDoesNotReportAGhost:
     """A forward that left no tunnel used to be reported as the port pair.
