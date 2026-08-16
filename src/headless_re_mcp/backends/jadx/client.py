@@ -78,7 +78,7 @@ class JadxClient:
             )
             snippet = stderr.strip()
             if snippet:
-                result["stderr"] = snippet[:_MAX_STDERR]
+                result["stderr"] = snippet[-_MAX_STDERR:]
         return result
 
     def decompile(

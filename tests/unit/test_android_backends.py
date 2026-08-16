@@ -1376,6 +1376,24 @@ class TestJadxKeepsTheHardFailErrorTail:
         assert "ERROR no dex files" in err
         assert len(err) == _MAX_STDERR
 
+    def test_a_partial_tree_keeps_the_error_line(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.jadx.client import _MAX_STDERR, JadxClient
+
+        body = ("I" * 10_000) + "ERROR class X failed\n"
+        exe = tmp_path / "jadx"
+        exe.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "A.java").write_text("class A {}", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        client = JadxClient(exe)
+        client._run = lambda *args, **kwargs: ("", body, 1)  # type: ignore[method-assign]
+        result = client.export_sources(apk, out)
+        assert result["partial"] is True
+        assert "class X failed" in str(result["stderr"])
+        assert len(str(result["stderr"])) == _MAX_STDERR
+
 
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
