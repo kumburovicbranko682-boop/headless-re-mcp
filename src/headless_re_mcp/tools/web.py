@@ -57,8 +57,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests (url, method, status, type).
 
-        The buffer is a window; read `truncated` and `evicted` rather than
-        assuming these are every request the page ever made.
+        The buffer is a window; read `has_more` for this page, and
+        `truncated`/`evicted` for requests the ring already dropped.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

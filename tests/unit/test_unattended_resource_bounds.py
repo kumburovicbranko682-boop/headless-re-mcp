@@ -465,6 +465,42 @@ class TestWebScriptBufferIsBounded:
         assert network["truncated"] is True
 
 
+class TestWebNetworkListSaysWhenItStopped:
+    """truncated meant the ring evicted, not that this page is complete.
+
+    Measured: 500 live requests and limit=100 came back as total=500,
+    truncated=False, evicted=0, and no has_more. The tool text told the
+    caller to read truncated, so the page looked like the whole capture.
+    """
+
+    def test_a_page_says_what_was_left_out(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(500):
+            handle.remember_request({"requestId": str(index), "url": f"https://x/{index}"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.network_list("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 500
+        assert result["has_more"] is True
+        assert result["truncated"] is False
+        assert result["evicted"] == 0
+
+    def test_the_last_page_is_complete(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(500):
+            handle.remember_request({"requestId": str(index)})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.network_list("s", offset=400, limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:
         """Sorting would silently target the highest pid, not the new app."""

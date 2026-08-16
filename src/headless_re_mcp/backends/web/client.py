@@ -348,6 +348,10 @@ class WebBackend:
             items = list(handle.requests.values())
         window = items[offset : offset + limit]
         evicted = handle.requests_evicted
+        # truncated means the ring dropped older requests. has_more means this
+        # page is not the whole current ring. Measured: 500 live requests and
+        # limit=100 came back as total=500, truncated=False, no has_more, so
+        # an agent that follows the tool text treats the page as complete.
         return {
             "requests": window,
             "count": len(window),
@@ -355,6 +359,7 @@ class WebBackend:
             "offset": offset,
             "evicted": evicted,
             "truncated": evicted > 0,
+            "has_more": offset + len(window) < len(items),
         }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
