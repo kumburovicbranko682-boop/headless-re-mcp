@@ -123,6 +123,48 @@ class TestNetworkGetDoesNotInventSuccess:
         assert "body_error" not in result
 
 
+class TestScreenshotDoesNotInventAFile:
+    """A screenshot that wrote nothing used to look like a captured image.
+
+    Measured: page.screenshot returning without creating the file still
+    answered ``{'path': <missing>}``. An unattended agent then treats a
+    missing capture as evidence.
+    """
+
+    def _backend(self, write: bool) -> WebBackend:
+        class _Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                if write:
+                    Path(path).write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        class _Runner:
+            def call(self, work: object, timeout: float = 60.0) -> object:
+                return work()  # type: ignore[operator]
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.page = _Page()
+                self.runner = _Runner()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_missing_file_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        out = tmp_path / "shot.png"
+        with pytest.raises(WebError) as info:
+            self._backend(False).screenshot("s", out)
+        assert info.value.code == "backend_error"
+        assert "did not write" in info.value.message
+        assert not out.exists()
+
+    def test_a_written_file_is_a_screenshot(self, tmp_path: Path) -> None:
+        out = tmp_path / "shot.png"
+        result = self._backend(True).screenshot("s", out)
+        assert result["path"] == str(out)
+        assert out.is_file()
+
+
 class TestWebTargetClassification:
     def test_urls_and_web_assets_classify_as_web(self, tmp_path: Path) -> None:
         assert classify_target("https://example.com/app") is TargetKind.WEB
