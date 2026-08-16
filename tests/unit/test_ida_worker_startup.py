@@ -13,6 +13,7 @@ from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
     _open_database_error,
+    _page_envelope,
     _page_items,
 )
 
@@ -68,6 +69,22 @@ def test_a_static_page_at_the_cap_is_not_the_whole_list() -> None:
     assert page["total"] == 150
     assert page["has_more"] is True
     tail = _page_items(items, 100, 100)
+    assert tail["returned"] == 50
+    assert tail["has_more"] is False
+
+
+def test_a_hand_rolled_function_page_is_not_the_whole_list() -> None:
+    """static.functions built the page itself and omitted has_more.
+
+    The shared pager already carried the flag. functions and strings still
+    assembled the envelope by hand, so a page of 100 of 150 looked complete.
+    """
+    window = [{"n": index} for index in range(100)]
+    page = _page_envelope(window, 0, 100, 150)
+    assert page["returned"] == 100
+    assert page["total"] == 150
+    assert page["has_more"] is True
+    tail = _page_envelope([{"n": index} for index in range(100, 150)], 100, 100, 150)
     assert tail["returned"] == 50
     assert tail["has_more"] is False
 

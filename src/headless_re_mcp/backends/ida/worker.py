@@ -138,16 +138,21 @@ def _capabilities() -> frozenset[str]:
     return frozenset(capabilities)
 
 
-def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
-    window = items[offset : offset + limit]
+def _page_envelope(
+    window: list[JsonObject], offset: int, limit: int, total: int
+) -> JsonObject:
     return {
         "items": window,
         "offset": offset,
         "limit": limit,
         "returned": len(window),
-        "total": len(items),
-        "has_more": offset + len(window) < len(items),
+        "total": total,
+        "has_more": offset + len(window) < total,
     }
+
+
+def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
+    return _page_envelope(items[offset : offset + limit], offset, limit, len(items))
 
 
 def _metadata(_params: JsonObject) -> JsonObject:
@@ -557,13 +562,7 @@ def _functions(params: JsonObject) -> JsonObject:
                 "flags": int(function.flags) if function is not None else 0,
             }
         )
-    return {
-        "items": items,
-        "offset": offset,
-        "limit": limit,
-        "returned": len(items),
-        "total": len(addresses),
-    }
+    return _page_envelope(items, offset, limit, len(addresses))
 
 
 def _strings(params: JsonObject) -> JsonObject:
@@ -591,13 +590,7 @@ def _strings(params: JsonObject) -> JsonObject:
                 "truncated": len(value) > max_length,
             }
         )
-    return {
-        "items": items,
-        "offset": offset,
-        "limit": limit,
-        "returned": len(items),
-        "total": len(strings),
-    }
+    return _page_envelope(items, offset, limit, len(strings))
 
 
 def _decompile(params: JsonObject) -> JsonObject:
