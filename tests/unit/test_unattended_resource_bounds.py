@@ -1704,6 +1704,27 @@ class TestATruncatedListSaysSo:
         assert "items_total" not in payload
 
 
+class TestR2XrefsDescriptionMatchesTheCut:
+    """r2.xrefs already cuts at 4096, but the tool text hid that.
+
+    Measured: 4346 items, count=4096, items_truncated=true, while the
+    description said "references ... as radare2 resolved them" -- so a
+    model treats the page as every xref.
+    """
+
+    def test_the_tool_text_says_to_check_items_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.r2 import build_r2_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_r2_tools(service)}
+            doc = tools["r2.xrefs"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "items_truncated" in doc
+
+
 class TestR2ExportsDescriptionMatchesTheCut:
     """r2.exports already cuts at 4096, but the tool text hid that.
 
