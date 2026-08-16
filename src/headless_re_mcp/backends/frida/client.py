@@ -10,6 +10,7 @@ _ATTACH_TIMEOUT = 15.0
 _SPAWN_TIMEOUT = 15.0
 _RESUME_TIMEOUT = 15.0
 _APPLICATIONS_TIMEOUT = 15.0
+_DEVICES_TIMEOUT = 15.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -320,6 +321,35 @@ class FridaClient:
             raise FridaError("backend_error", "frida applications returned nothing")
         return box[0]
 
+    def _devices_with_deadline(self, frida: Any) -> Any:
+        """List devices with a deadline. ``enumerate_devices`` has none.
+
+        Measured: a 0.8s sleep in that hop held ``enumerate_devices``
+        0.8s. A wedged Frida server pins the worker.
+        """
+        box: list[Any] = []
+        err: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                box.append(frida.enumerate_devices())
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+
+        thread = threading.Thread(target=run, name="frida-devices", daemon=True)
+        thread.start()
+        thread.join(_DEVICES_TIMEOUT)
+        if thread.is_alive():
+            raise FridaError(
+                "timeout",
+                f"frida devices timed out after {_DEVICES_TIMEOUT:g}s",
+            )
+        if err:
+            raise err[0]
+        if not box:
+            raise FridaError("backend_error", "frida devices returned nothing")
+        return box[0]
+
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_with_deadline(pid)
@@ -479,7 +509,9 @@ class FridaClient:
         """
         frida = self._need()
         try:
-            devices = frida.enumerate_devices()
+            devices = self._devices_with_deadline(frida)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
         capped = max(1, min(int(limit), 256))
