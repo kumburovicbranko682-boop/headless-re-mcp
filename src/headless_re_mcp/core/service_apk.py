@@ -182,6 +182,31 @@ class ApkAnalysisMixin:
             getattr(self.settings, "apksigner", None),
         )
 
+    def _register_decode_tree(
+        self, session_id: str, out_dir: Path, payload: JsonObject
+    ) -> JsonObject:
+        """Register every file decode wrote so retention can see them."""
+        ids: list[str] = []
+        artifact_error: str | None = None
+        if out_dir.is_dir():
+            for path in sorted(p for p in out_dir.rglob("*") if p.is_file()):
+                extra = _register_capture(
+                    self,
+                    session_id,
+                    path,
+                    kind="apk_decode",
+                    source="apk.decode",
+                    payload={},
+                )
+                if extra.get("artifact_id"):
+                    ids.append(str(extra["artifact_id"]))
+                elif artifact_error is None and extra.get("artifact_error"):
+                    artifact_error = str(extra["artifact_error"])
+        result = {**payload, "artifact_ids": ids}
+        if artifact_error is not None:
+            result["artifact_error"] = artifact_error
+        return result
+
     def _repack_dir(self, session_id: str) -> Path:
         if not session_id or Path(session_id).name != session_id:
             raise ApkError("invalid_params", "invalid session id")
@@ -200,6 +225,10 @@ class ApkAnalysisMixin:
             )
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(self, session_id, "apk.decode", "apktool decoded apk")
+            # A bare decoded_dir is a dead end: nothing on the tool surface
+            # opens a path, and gc only collects rows. Measured: 2501 files,
+            # 0 artifact rows.
+            data = self._register_decode_tree(session_id, out_dir, data)
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

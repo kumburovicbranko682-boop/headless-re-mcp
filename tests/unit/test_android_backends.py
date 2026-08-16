@@ -1321,6 +1321,60 @@ class TestApktoolBoundaries:
         assert leftover.is_file()
 
 
+class TestApkDecodeIsRegistered:
+    """apk.decode writes a smali tree and never registered it.
+
+    Measured: 2501 files on disk, 0 artifact rows, so the tree cannot be
+    read back or reclaimed after an overnight decode loop.
+    """
+
+    def test_decoded_files_are_readable_artifacts(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+
+            class _Fake:
+                def decode(self, binary: Path, out_dir: Path, **kwargs: object) -> dict[str, Any]:
+                    del binary, kwargs
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    (out_dir / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+                    smali = out_dir / "smali" / "com"
+                    smali.mkdir(parents=True)
+                    for index in range(20):
+                        (smali / f"C{index}.smali").write_text(".class", encoding="utf-8")
+                    return {
+                        "decoded_dir": str(out_dir),
+                        "manifest": str(out_dir / "AndroidManifest.xml"),
+                        "smali_dirs": ["smali"],
+                        "has_resources": False,
+                    }
+
+            service._apktool_client = lambda: _Fake()  # type: ignore[method-assign]
+            result = service.apk_decode(session_id)
+            assert result.ok, result.error
+            assert result.data is not None
+            assert len(result.data["artifact_ids"]) == 21
+
+            listed = service.artifacts_list(session_id, limit=50)
+            assert listed.ok and listed.data is not None
+            assert listed.data["total"] == 21
+            assert listed.data["artifacts"][0]["kind"] == "apk_decode"
+
+            first_id = str(result.data["artifact_ids"][0])
+            read = service.artifacts_read(first_id, offset=0, limit=16)
+            assert read.ok and read.data is not None
+            assert read.data["data"]
+        finally:
+            service.close_all()
+
+
 class TestApkSignIsRegistered:
     """apk.sign writes signed.apk and never registered it.
 
