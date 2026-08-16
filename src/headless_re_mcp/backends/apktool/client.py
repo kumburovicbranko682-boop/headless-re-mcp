@@ -117,16 +117,21 @@ class ApktoolClient:
             [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)],
             timeout=timeout,
         )
-        if code != 0 or not out_apk.is_file():
+        size = out_apk.stat().st_size if out_apk.is_file() else 0
+        if code != 0 or not out_apk.is_file() or size == 0:
+            # Measured: exit 0 writing a 0-byte file still answered
+            # size=0 as a rebuilt APK, so an agent treated an empty file
+            # as the package to sign and install.
             raise ApktoolError(
                 "backend_error",
                 "apktool build failed",
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
+                bytes=size,
             )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }

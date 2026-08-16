@@ -2372,3 +2372,43 @@ class TestApkSignDoesNotInventAPackage:
         result = self._sign(tmp_path, monkeypatch, b"PK\x03\x04signed")
         assert result["signed"] is True
         assert int(result["size"]) > 0
+
+
+class TestApkBuildDoesNotInventAPackage:
+    """A 0-byte apktool output used to look like a rebuilt APK.
+
+    Measured: exit 0 writing an empty file still answered
+    ``{'apk': <empty>, 'size': 0}``. An unattended agent then treats an
+    empty file as the package to sign and install.
+    """
+
+    def _build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes
+    ) -> dict[str, object]:
+        from headless_re_mcp.backends.apktool import client as apktool
+
+        decoded = tmp_path / "tree"
+        decoded.mkdir()
+        (decoded / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        out = tmp_path / "out.apk"
+        tool = tmp_path / "apktool"
+        tool.write_bytes(b"")
+
+        def _run(cmd: list[str], *, timeout: float, redact_from: int | None = None) -> tuple:
+            del cmd, timeout, redact_from
+            out.write_bytes(payload)
+            return "", "", 0
+
+        monkeypatch.setattr(apktool, "_run", _run)
+        return ApktoolClient(tool, None).build(decoded, out)
+
+    def test_empty_apk_is_not_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(ApktoolError) as info:
+            self._build(tmp_path, monkeypatch, b"")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("bytes") == 0
+
+    def test_nonempty_apk_is_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = self._build(tmp_path, monkeypatch, b"PK\x03\x04built")
+        assert int(result["size"]) > 0
+        assert result["signed"] is False
