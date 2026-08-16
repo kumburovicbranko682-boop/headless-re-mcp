@@ -816,6 +816,27 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page(None, 10) == ([], False)
         assert _page([], 10) == ([], False)
 
+    def test_the_tool_descriptions_name_the_page_flag(self) -> None:
+        """exports/classes/methods already returned has_more, but the docs did not.
+
+        An agent that only reads the description treats a full page as the
+        whole module or class.
+        """
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import frida as frida_mod
+
+        tree = ast.parse(inspect.getsource(frida_mod.build_frida_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        for name in ("frida_exports", "frida_java_classes", "frida_java_methods"):
+            assert docs[name], name
+            assert "has_more" in docs[name], name
+
 
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:

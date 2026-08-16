@@ -40,6 +40,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
+        """List exports of one module in the authorized process.
+
+        Capped by limit. Read has_more rather than treating count as every
+        export the module has.
+        """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
     @tools.tool(name="frida.memory.read")
@@ -104,7 +109,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
-        """Enumerate loaded Java classes on the authorized device pid (ART only)."""
+        """Enumerate loaded Java classes on the authorized device pid (ART only).
+
+        Capped by limit. Read has_more rather than treating count as every
+        loaded class.
+        """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
         )
@@ -116,7 +125,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
-        """List declared methods of a Java class on the authorized device pid (ART only)."""
+        """List declared methods of a Java class on the authorized device pid (ART only).
+
+        Capped by limit. Read has_more rather than treating count as every
+        method on the class.
+        """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
     return tools.bindings
