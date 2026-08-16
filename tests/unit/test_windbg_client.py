@@ -71,6 +71,42 @@ def test_a_dump_analysis_cut_at_the_cap_says_it_was_cut(
     assert "truncated" not in {key for key in payload if key == "raw"}
 
 
+def test_a_cut_disasm_says_it_was_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disasm that hit the buffer used to look complete if unread.
+
+    Measured: 500 characters of ``u`` came back as 64 with truncated=True
+    on disasm, while the tool text omitted truncated. An unattended agent
+    that trusted the description treated the fragment as the listing.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(windbg_module, "_MAX_OUTPUT", 64)
+
+    def huge(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(0, b"U" * 500, b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", huge)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    payload = WindbgClient(cdb).disasm(dump, "0x1000", length=16)
+    assert payload["truncated"] is True
+    assert len(str(payload["disasm"])) == 64
+
+
+def test_disasm_tool_description_says_to_read_truncated() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "windbg.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def windbg_disasm(")[1].split("def windbg_attach(")[0]
+    assert "truncated" in block
+
+
 def test_modules_tool_description_says_to_read_truncated() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "windbg.py"
