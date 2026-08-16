@@ -27,9 +27,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
 
     @tools.tool(name="device.list")
-    def device_list() -> dict[str, Any]:
-        """List ADB devices and emulators visible to the local adb server."""
-        return _dump(analysis.device_list())
+    def device_list(limit: Annotated[int, Field(ge=1, le=256)] = 32) -> dict[str, Any]:
+        """List ADB devices; read has_more / total when the page is full."""
+        return _dump(analysis.device_list(limit=limit))
 
     @tools.tool(name="device.connect")
     def device_connect(

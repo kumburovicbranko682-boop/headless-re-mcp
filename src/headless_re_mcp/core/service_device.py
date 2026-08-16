@@ -58,8 +58,8 @@ class DeviceAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def device_list(self) -> Result[JsonObject]:
-        return self._adb_wrap("list_devices")
+    def device_list(self, limit: int = 32) -> Result[JsonObject]:
+        return self._adb_wrap("list_devices", limit=limit)
 
     def device_connect(self, host: str = "127.0.0.1", port: int = 5555) -> Result[JsonObject]:
         return self._adb_wrap("connect", host=host, port=port)

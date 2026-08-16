@@ -1399,6 +1399,44 @@ class TestDeviceListIsBounded:
         assert result["devices"][0]["serial"] == "emulator-5554"
 
 
+class TestDeviceListSaysWhenItWasCut:
+    """A device listing that filled used to look like every device if count was all you read."""
+
+    def test_a_full_page_is_marked(self) -> None:
+        class _Listed:
+            def __init__(self, index: int) -> None:
+                self.serial = f"emulator-{5554 + index}"
+
+        class _Client:
+            def device_list(self) -> list[_Listed]:
+                return [_Listed(index) for index in range(50)]
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        result = backend.list_devices(limit=32)
+        assert result["count"] == 32
+        assert result["total"] == 50
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        class _Listed:
+            serial = "emulator-5554"
+
+        class _Client:
+            def device_list(self) -> list[_Listed]:
+                return [_Listed()]
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        result = backend.list_devices(limit=32)
+        assert result["has_more"] is False
+        assert result["total"] == 1
+
+
 class TestDeviceInfoIsBounded:
     """device.info used to read properties through adbutils getprop with no deadline.
 

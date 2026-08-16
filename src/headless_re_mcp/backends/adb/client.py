@@ -177,7 +177,7 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
 
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, *, limit: int = 32) -> JsonObject:
         client = self._client()
         try:
             # adbutils.device_list talks to the host with no timeout.
@@ -195,7 +195,16 @@ class AdbBackend:
             {"serial": getattr(dev, "serial", ""), "state": "device"}
             for dev in devices
         ]
-        return {"devices": items, "count": len(items)}
+        capped = max(1, min(int(limit), 256))
+        window = items[:capped]
+        # Measured: 50 devices came back as one page with only count, so an
+        # agent that only read the listing treated it as every device.
+        return {
+            "devices": window,
+            "count": len(window),
+            "total": len(items),
+            "has_more": len(items) > capped,
+        }
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
         client = self._client()
