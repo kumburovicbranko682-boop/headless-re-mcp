@@ -1174,6 +1174,41 @@ class TestDevicePushIsBounded:
         assert result["remote"] == "/data/local/tmp/x"
 
 
+class TestDevicePullIsBounded:
+    """A wedged sync.pull used to park the tool worker with no deadline.
+
+    Measured: device.pull called sync.pull with no timeout, so a 2.5s block
+    was waited out in full and still returned a path.
+    """
+
+    def test_a_blocking_pull_fails_instead_of_waiting_it_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PULL_TIMEOUT", 0.2)
+
+        class _Sync:
+            def pull(self, src: str, dst: str) -> int:
+                time.sleep(5)
+                return 0
+
+        class _Dev:
+            sync = _Sync()
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            backend.pull("emulator-5554", "/sdcard/x.bin", tmp_path / "x.bin")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+
 class TestPullDoesNotInventAFile:
     """A pull that wrote nothing used to return a local path as if it had.
 

@@ -36,6 +36,7 @@ _SHELL_TIMEOUT = 20.0
 # waited out in full and still returned success. Sixty seconds is the tool
 # budget: a large file can use it, a wedged adb cannot keep the worker.
 _PUSH_TIMEOUT = 60.0
+_PULL_TIMEOUT = 60.0
 # adbutils.install has no timeout and internally pushes then pm install.
 # Measured: a 2.5s block was waited out in full and still answered
 # installed=True. Three minutes is longer than a normal APK install and
@@ -393,7 +394,14 @@ class AdbBackend:
         dev = self._device(serial)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dev.sync.pull(remote_path, str(local_path))
+            # Measured: a 2.5s block in sync.pull was waited out in full and
+            # still returned a path. The transport opens with timeout=None.
+            _deadline(
+                lambda: dev.sync.pull(remote_path, str(local_path)),
+                timeout=_PULL_TIMEOUT,
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
         # Measured: a pull that wrote nothing still answered
