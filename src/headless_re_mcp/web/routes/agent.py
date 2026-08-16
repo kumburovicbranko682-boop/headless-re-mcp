@@ -269,12 +269,23 @@ def register_agent_routes(
         run_id: str,
         authorization: str | None = Header(default=None),
         after: int = Query(default=0, ge=0),
+        limit: int = Query(default=1000, ge=1, le=5000),
     ) -> JSONResponse:
         authorize(authorization)
         if store.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        items = [event.dump() for event in store.list_events(run_id, after=after, limit=limit)]
+        total = store.count_events(run_id, after=after)
         return JSONResponse(
-            {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
+            {
+                "ok": True,
+                "events": items,
+                "count": len(items),
+                "total": total,
+                "after": after,
+                "limit": limit,
+                "has_more": len(items) < total,
+            }
         )
 
     @app.post("/api/agent/missions", status_code=201)

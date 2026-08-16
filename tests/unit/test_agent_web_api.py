@@ -163,6 +163,36 @@ def test_a_mission_list_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch)
         assert tail["missions"][0]["id"] not in {item["id"] for item in listed["missions"]}
 
 
+def test_an_event_history_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        thread = app.state.agent_store.create_thread()
+        run = app.state.agent_store.create_run(
+            thread.id, provider_profile="p", model=None, deadline_seconds=60
+        )
+        for index in range(3):
+            app.state.agent_store.append_event(run.id, "message.delta", {"n": index})
+        listed = client.get(
+            f"/api/agent/runs/{run.id}/events/history?limit=2", headers=headers
+        ).json()
+        assert listed["count"] == 2
+        assert listed["total"] == 4
+        assert listed["has_more"] is True
+        tail = client.get(
+            f"/api/agent/runs/{run.id}/events/history?after={listed['events'][-1]['seq']}&limit=2",
+            headers=headers,
+        ).json()
+        assert tail["count"] == 2
+        assert tail["has_more"] is False
+        assert {item["seq"] for item in tail["events"]}.isdisjoint(
+            {item["seq"] for item in listed["events"]}
+        )
+
+
 def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = replace(

@@ -264,6 +264,26 @@ def test_a_thread_page_at_the_cap_is_not_the_whole_list(tmp_path: Path) -> None:
     assert {item.id for item in page}.isdisjoint({item.id for item in tail})
 
 
+def test_an_event_page_at_the_cap_is_not_the_whole_log(tmp_path: Path) -> None:
+    """1500 deltas plus the start event used to come back as 1000 items, unmarked.
+
+    GET /api/agent/runs/{id}/events/history is the replay after a restart.
+    A page sitting at the default cap looked like the whole run, so the rest
+    of the log disappeared from whoever was supposed to reconstruct it.
+    """
+    store = AgentStore(tmp_path / "events.db")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    for index in range(1500):
+        store.append_event(run.id, "message.delta", {"n": index})
+    assert store.count_events(run.id) == 1501
+    page = store.list_events(run.id, limit=1000)
+    assert len(page) == 1000
+    tail = store.list_events(run.id, after=page[-1].seq, limit=1000)
+    assert len(tail) == 501
+    assert {event.seq for event in page}.isdisjoint({event.seq for event in tail})
+
+
 def test_a_mission_page_at_the_cap_is_not_the_whole_queue(tmp_path: Path) -> None:
     """150 missions with limit=100 used to come back as count=100, unmarked.
 

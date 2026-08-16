@@ -288,6 +288,14 @@ class AgentStore:
         con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, json.dumps(safe, ensure_ascii=False, default=str), created))
         return RunEvent(run_id, seq, event_type, safe, created)
 
+    def count_events(self, run_id: str, *, after: int = 0) -> int:
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM run_events WHERE run_id=? AND seq>?",
+                (run_id, max(0, after)),
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
         with self._reading() as con:
             rows = con.execute("SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run_id, max(0, after), max(1, min(limit, 5000)))).fetchall()
