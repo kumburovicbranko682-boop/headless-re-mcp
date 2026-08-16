@@ -120,7 +120,10 @@ class ApktoolClient:
             [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)],
             timeout=timeout,
         )
-        if code != 0 or not out_apk.is_file():
+        # Measured: exit 0 plus a 0-byte out_apk still became size=0
+        # success, so an unattended agent treats an empty file as a rebuilt
+        # APK and then tries to sign/install it.
+        if code != 0 or not out_apk.is_file() or out_apk.stat().st_size <= 0:
             raise ApktoolError(
                 "backend_error",
                 "apktool build failed",
