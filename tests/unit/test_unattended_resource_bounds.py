@@ -150,6 +150,49 @@ class TestProxyFlowsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestProxyHarExportSaysWhenItStopped:
+    """A full flow ring exported as a HAR looked like the whole capture.
+
+    Measured: 2011 flows came back as entry_count=2000 with no evicted
+    or truncated.
+    """
+
+    def test_a_full_ring_says_what_was_dropped(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.proxy.client import _MAX_FLOWS, ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = _FlowRecorder()
+
+        inst = Inst()
+        dropped = 11
+        for index in range(_MAX_FLOWS + dropped):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        result = backend.export_har("s", tmp_path / "c.har")
+        assert result["entry_count"] == _MAX_FLOWS
+        assert result["evicted"] == dropped
+        assert result["truncated"] is True
+        assert (tmp_path / "c.har").is_file()
+
+    def test_a_short_capture_is_complete(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = _FlowRecorder()
+
+        inst = Inst()
+        inst.recorder.response(_FakeFlow(0))
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        result = backend.export_har("s", tmp_path / "c.har")
+        assert result["entry_count"] == 1
+        assert result["evicted"] == 0
+        assert result["truncated"] is False
+
+
 class TestProxyReplayDoesNotInventSuccess:
     """call_soon_threadsafe returning is not a completed replay.
 

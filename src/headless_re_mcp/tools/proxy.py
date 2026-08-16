@@ -68,7 +68,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.export_har")
     def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a HAR artifact."""
+        """Export captured flows to a HAR artifact.
+
+        The capture is a ring; read `truncated`/`evicted` rather than assuming
+        the file is every flow the proxy saw.
+        """
         return _dump(analysis.proxy_export_har(session_id))
 
     @tools.tool(name="proxy.ca.install_android")

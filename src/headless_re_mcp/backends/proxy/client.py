@@ -164,6 +164,10 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def evicted(self) -> int:
+        with self._lock:
+            return max(0, self._seq - len(self.flows))
+
 
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
@@ -420,6 +424,8 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
+        items = inst.recorder.snapshot()
+        dropped = inst.recorder.evicted()
         entries = [
             {
                 "request": {"method": f.get("method"), "url": f.get("url")},
@@ -428,14 +434,27 @@ class ProxyBackend:
                     "content": {"mimeType": f.get("content_type") or ""},
                 },
             }
-            for f in inst.recorder.snapshot()
+            for f in items
         ]
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        # Measured: 2011 live flows came back as entry_count=2000 with no
+        # evicted or truncated, so the HAR looked like the whole capture.
+        if not out_path.is_file():
+            raise ProxyError(
+                "backend_error",
+                "HAR export did not write a file",
+                path=str(out_path),
+            )
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "evicted": dropped,
+            "truncated": dropped > 0,
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):
