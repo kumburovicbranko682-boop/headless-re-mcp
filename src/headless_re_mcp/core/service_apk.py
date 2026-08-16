@@ -274,12 +274,37 @@ class ApkAnalysisMixin:
         self, session_id: str, decoded_dir: str = "", timeout: float = 600.0
     ) -> Result[JsonObject]:
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.repack cannot run in {session.state.value} state"
+                )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
             source = self._require_session_path(session_id, source, what="decoded_dir")
             out_apk = root / "repacked.apk"
             data = self._apktool_client().build(source, out_apk, timeout=timeout)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.repack cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a rebuild written
+                # after that is invisible to the next close and to artifacts.gc.
+                with suppress(OSError):
+                    shutil.rmtree(root)
+                raise
             _timeline_append(self, session_id, "apk.repack", "apktool rebuilt apk")
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
