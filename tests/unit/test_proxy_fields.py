@@ -73,6 +73,7 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     assert "Answers with flows" in doc
     assert "content_type" in doc
     assert "total" in doc
+    assert "body_omitted" in doc
 
 
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:

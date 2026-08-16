@@ -316,7 +316,7 @@ def test_unpack_verify_names_pe_and_refuses_universal() -> None:
         / "service_unpack.py"
     ).read_text(encoding="utf-8")
     start = source.index("def unpack_verify")
-    chunk = source[start : start + 1800]
+    chunk = source[start : source.index("def unpack_plan", start)]
     assert '"claims_universal_unpack": False' in chunk
     assert '"pe":' in chunk
 

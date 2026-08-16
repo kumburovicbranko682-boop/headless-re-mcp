@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from headless_re_mcp.backends.frida.client import FridaClient
 from headless_re_mcp.tools.frida import build_frida_tools
@@ -31,7 +32,8 @@ def _tool_docstring(name: str) -> str:
 
 
 class _Exports:
-    def modules(self) -> list[dict[str, Any]]:
+    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
+        del limit
         return [
             {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
             for index in range(25)
@@ -297,24 +299,75 @@ def test_frida_spawn_names_pid_not_process_id() -> None:
     assert payload["pid"] == 4242
     assert payload["package"] == "com.example.app"
     assert payload["device"] == "usb"
+
+
+def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
+    from headless_re_mcp.backends.frida.client import FridaError
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _SpawnDevice()  # type: ignore[method-assign]
+    for package in (r"C:\Windows\notepad.exe", "/system/bin/sh", "notapackage"):
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", package)
+        assert caught.value.code == "invalid_params"
     doc = _tool_docstring("frida.spawn")
     assert "Answers with pid" in doc
     assert "There is no process_id" in doc
 
 
-def test_frida_device_connect_names_connected_and_device() -> None:
+def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:
     """The catalog said bind a device and never named the payload.
 
-    Measured against the service return: connected True and device holding
-    the device info. There is no top-level device_id or ok field. Looking
-    for device_id after a successful connect reads as a bind that returned
-    no device.
+    Measured against the USB path: connected True and device holding the
+    resolved id/name/type, not the usb alias. There is no top-level
+    device_id or ok field. Looking for device_id after a successful
+    connect reads as a bind that returned no device.
     """
     from headless_re_mcp.core.service_frida import FridaDeviceMixin
+    from headless_re_mcp.core.session import SessionRegistry
 
-    source = inspect.getsource(FridaDeviceMixin.frida_device_connect)
-    assert '{"connected": True, "device": info}' in source
-    assert '"ok"' not in source
+    class _UsbDevice:
+        id = "ABCD1234"
+        name = "Pixel 8"
+        type = "usb"
+
+    class _Client:
+        def _resolve_device(self, device_id: str) -> _UsbDevice:
+            assert device_id == "usb"
+            return _UsbDevice()
+
+    class _Repo:
+        def record_backend(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def append_timeline(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+    class _Service(FridaDeviceMixin):
+        def __init__(self) -> None:
+            self.registry = SessionRegistry()
+            self.repository = _Repo()
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient", lambda: _Client()
+    )
+    service = _Service()
+    session = service.registry.create("https://example.invalid")
+    result = service.frida_device_connect(session.id, device_id="usb")
+    assert result.ok
+    assert result.data is not None
+    assert "device_id" not in result.data
+    assert "ok" not in result.data
+    assert result.data["connected"] is True
+    assert result.data["device"] == {
+        "id": "ABCD1234",
+        "name": "Pixel 8",
+        "type": "usb",
+    }
+    auth = service.registry.get(session.id).metadata["frida_authorized"]
+    assert auth["device_id"] == "ABCD1234"
     doc = _tool_docstring("frida.device.connect")
     assert "Answers with connected" in doc
     assert "There is no top-level device_id" in doc
@@ -346,3 +399,41 @@ def test_frida_server_ensure_description_names_running_not_ok() -> None:
     assert "Answers with running" in described
     assert "pushed" in described
     assert "no ok field" in described
+
+
+def test_add_remote_device_reuses_a_device_already_registered() -> None:
+    """Re-adding the same endpoint used to churn the device manager."""
+
+    class _Device:
+        id = "10.0.0.1:27042"
+        name = "remote"
+        type = "remote"
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.added = 0
+
+        def get_device(self, endpoint: str, timeout: int = 1) -> _Device:
+            del endpoint, timeout
+            return _Device()
+
+        def add_remote_device(self, endpoint: str) -> _Device:
+            del endpoint
+            self.added += 1
+            return _Device()
+
+    class _Frida:
+        def __init__(self) -> None:
+            self.manager = _Manager()
+
+        def get_device_manager(self) -> _Manager:
+            return self.manager
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    first = client.add_remote_device("10.0.0.1:27042")
+    second = client.add_remote_device("10.0.0.1:27042")
+    assert first["id"] == "10.0.0.1:27042"
+    assert second["id"] == "10.0.0.1:27042"
+    assert client._frida.manager.added == 0

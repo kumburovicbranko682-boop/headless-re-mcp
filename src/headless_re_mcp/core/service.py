@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from time import monotonic, sleep
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
+from headless_re_mcp.backends.adb import AdbBackend
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
 from headless_re_mcp.backends.proxy import ProxyBackend
@@ -56,6 +58,7 @@ from headless_re_mcp.core.models import (
     Session,
     SessionState,
     TargetKind,
+    TargetMismatch,
 )
 from headless_re_mcp.core.readiness import readiness_report
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
@@ -143,6 +146,7 @@ from headless_re_mcp.workflows.breakpoints import (
 from headless_re_mcp.workflows.engine import (
     WorkflowState,
     WorkflowTransition,
+    cancel_workflow_navigation,
     consume_workflow_events,
     start_workflow_navigation,
     timeout_workflow_navigation,
@@ -226,6 +230,7 @@ class _BackendRuntime:
     event_drain_pump: EventDrainPump | None = None
     # Set when an event batch reports dropped>0; cleared by a fresh modules.list.
     snapshot_resync_required: bool = False
+    navigation_cancel: Event = field(default_factory=Event)
 
 
 @dataclass(slots=True)
@@ -353,6 +358,7 @@ class AnalysisService(
         # nothing: playwright and mitmproxy are only imported on first use.
         self._web_backend = WebBackend()
         self._proxy_backend = ProxyBackend()
+        self._adb_backend = AdbBackend(getattr(self.settings, "adb", None))
         self._runtime_owner: BackendRuntimeOwner[_BackendRuntime] = BackendRuntimeOwner()
         self._workflow_owner: WorkflowStateOwner[WorkflowRuntime] = WorkflowStateOwner()
         self._unpack_owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
@@ -689,8 +695,10 @@ class AnalysisService(
                     drain_cursor = DebugEventCursor()
                     log_dir = self.settings.artifact_root / "debug-events" / session_id
                     event_log = PersistentDebugEventLog(log_dir / "events.sqlite3")
-            except BaseException:
-                self._abandon_open(session_id, kind, opening_session=opening_session)
+            except BaseException as exc:
+                self._abandon_open(
+                    session_id, kind, opening_session=opening_session, cause=exc
+                )
                 raise
 
             with self._lock:
@@ -745,8 +753,10 @@ class AnalysisService(
                         current = self.registry.transition(session_id, SessionState.READY)
                     else:
                         current = self.registry.get(session_id)
-                except BaseException:
-                    self._abandon_open(session_id, kind, opening_session=opening_session)
+                except BaseException as exc:
+                    self._abandon_open(
+                        session_id, kind, opening_session=opening_session, cause=exc
+                    )
                     worker.terminate()
                     raise
             return _success(
@@ -765,19 +775,76 @@ class AnalysisService(
         kind: BackendKind,
         *,
         opening_session: bool,
+        cause: BaseException | None = None,
     ) -> None:
         """Release a claim that will not become a runtime."""
         with self._lock:
             self._runtime_owner.fail(session_id, kind)
             if opening_session:
+                # A refused PE open on an APK/web session is not a crashed
+                # worker. FAILED would brick later tools on that session.
+                target = (
+                    SessionState.CREATED
+                    if isinstance(cause, TargetMismatch)
+                    else SessionState.FAILED
+                )
                 with suppress(KeyError, InvalidStateTransition):
-                    self.registry.transition(session_id, SessionState.FAILED)
+                    self.registry.transition(session_id, target)
 
     def close_session(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.close_session(session_id)
 
+    def _session_work_dir(self, kind: str, session_id: str) -> Path | None:
+        if not session_id or Path(session_id).name != session_id:
+            return None
+        root = self.settings.artifact_root.expanduser().resolve()
+        path = (root / kind / session_id).resolve()
+        try:
+            path.relative_to(root / kind)
+        except ValueError:
+            return None
+        return path
+
+    def _forget_session_work_dirs(self, session_id: str) -> None:
+        """Drop session-keyed work trees that are not registered artifacts.
+
+        jadx / apktool write under ``<root>/<kind>/<session_id>``. Those dirs
+        must not be evicted by pruning the shared parent -- that deletes a
+        still-open sibling session's output. Close is the moment they become
+        reclaimable. Ghidra export JSON *is* registered, so only the headless
+        project remnants go away here.
+        """
+        for kind in ("jadx", "apktool"):
+            path = self._session_work_dir(kind, session_id)
+            if path is not None and path.is_dir():
+                with suppress(OSError):
+                    shutil.rmtree(path)
+        ghidra = self._session_work_dir("ghidra", session_id)
+        if ghidra is not None and ghidra.is_dir():
+            for child in ghidra.iterdir():
+                if child.name.startswith("export_") and child.suffix == ".json":
+                    continue
+                if child.is_dir():
+                    with suppress(OSError):
+                        shutil.rmtree(child)
+                else:
+                    with suppress(OSError):
+                        child.unlink()
+
+    def _forget_session_debug_events(self, session_id: str) -> None:
+        """Remove the per-session debug-event sqlite after its connection is closed."""
+        path = self._session_work_dir("debug-events", session_id)
+        if path is not None and path.is_dir():
+            with suppress(OSError):
+                shutil.rmtree(path)
+
     def _close_session(self, session_id: str) -> Result[JsonObject]:
         result: Result[JsonObject]
+        runtimes: list[tuple[BackendKind, Any]] = []
+        session: Session | None = None
+        web_backend = None
+        proxy_backend = None
+        apk_binary = None
         with self._lock:
             try:
                 session = self.registry.get(session_id)
@@ -801,19 +868,28 @@ class AnalysisService(
                 self._unpack_owner.clear(session_id)
                 self._debuggee_owner.clear(session_id)
                 web_backend = getattr(self, "_web_backend", None)
-                if web_backend is not None:
-                    web_backend.close(session_id)
                 proxy_backend = getattr(self, "_proxy_backend", None)
-                if proxy_backend is not None:
-                    proxy_backend.stop(session_id)
-                # A parsed APK is tens to hundreds of MB; nothing else would
-                # reclaim it until three more APKs happened to be opened.
                 if session.target is TargetKind.APK and session.binary is not None:
-                    ApkClient.release(session.binary)
+                    apk_binary = session.binary
             except BaseException as exc:
                 result = _failure(exc, session_id=session_id)
                 note_session_closed(self, session_id, result)
                 return result
+
+        # Browser/proxy teardown can block for tens of seconds. Doing it under
+        # the service lock froze every other session; a throw after pop_session
+        # also leaked the debugger workers. Both stay outside the lock and
+        # cannot skip the worker-close loop below.
+        if web_backend is not None:
+            with suppress(BaseException):
+                web_backend.close(session_id)
+        if proxy_backend is not None:
+            with suppress(BaseException):
+                proxy_backend.stop(session_id)
+        if apk_binary is not None:
+            with suppress(BaseException):
+                ApkClient.release(apk_binary)
+        self._forget_session_work_dirs(session_id)
 
         close_errors: list[tuple[BackendKind, BaseException]] = []
         for kind, runtime in runtimes:
@@ -841,12 +917,16 @@ class AnalysisService(
         # Cleared only now: the loop above is what finalises and registers a
         # trace whose worker went away, and it needs the state to do it.
         self._trace_owner.clear(session_id)
+        # Drain/log must be closed first -- Windows will not unlink an open
+        # sqlite file. The file is not an artifact, so GC never sees it.
+        self._forget_session_debug_events(session_id)
 
         # A caller that closes sessions one at a time never reaches close_all, so
         # without this the sweep thread outlives every backend it existed for.
         if not self._runtime_owner.snapshot():
             self._health.stop()
 
+        assert session is not None
         try:
             for kind in tuple(session.backends):
                 self.registry.detach_backend(session_id, kind)
@@ -973,6 +1053,10 @@ class AnalysisService(
         proxy_backend = getattr(self, "_proxy_backend", None)
         if proxy_backend is not None:
             proxy_backend.close_all()
+        adb_backend = getattr(self, "_adb_backend", None)
+        if adb_backend is not None:
+            with suppress(BaseException):
+                adb_backend.release_forwards()
         if errors:
             return Result[JsonObject](
                 ok=False,
@@ -1874,6 +1958,7 @@ class AnalysisService(
                 "backend does not provide events.read",
                 details={"capability": "events.read"},
             )
+        runtime.navigation_cancel.clear()
         started = start_workflow_navigation(
             workflow.state,
             pattern,
@@ -1892,6 +1977,21 @@ class AnalysisService(
         cursor = self._require_event_cursor(runtime)
 
         while True:
+            if runtime.navigation_cancel.is_set():
+                cancelled = cancel_workflow_navigation(workflow.state)
+                workflow = self._execute_workflow_transition_locked(
+                    session_id,
+                    runtime,
+                    workflow,
+                    cancelled,
+                    timeout=min(5.0, max(0.1, timeout)),
+                    status=WorkflowRunStatus.CANCELLED,
+                )
+                with suppress(Exception):
+                    self._workflow_ensure_paused_locked(
+                        session_id, runtime, timeout=min(5.0, max(0.1, timeout))
+                    )
+                return {"workflow": workflow.to_dict()}
             navigation = workflow.state.navigation
             if navigation is None or navigation.status != NavigationStatus.WAITING:
                 return {"workflow": workflow.to_dict()}
@@ -1910,11 +2010,26 @@ class AnalysisService(
 
             available_budget = navigation.event_budget - navigation.observed_events
             limit = min(MAX_DEBUG_EVENT_BATCH, max(1, available_budget))
-            batch = dynamic.read_events(
-                cursor.value,
-                limit=limit,
-                timeout=min(5.0, max(0.1, remaining)),
-            )
+            # Drop the session lock while waiting so workflow.cancel can run.
+            runtime.lock.release()
+            try:
+                batch = dynamic.read_events(
+                    cursor.value,
+                    limit=limit,
+                    timeout=min(5.0, max(0.1, remaining)),
+                )
+                if not batch.events and not batch.has_more:
+                    sleep(min(0.05, max(0.0, deadline - monotonic())))
+            finally:
+                runtime.lock.acquire()
+            workflow = self._require_workflow(session_id)
+            # Cancel (or a terminal status) may have landed while the lock
+            # was down. Consuming into a finished navigation raises.
+            if runtime.navigation_cancel.is_set() or (
+                workflow.state.navigation is None
+                or workflow.state.navigation.status != NavigationStatus.WAITING
+            ):
+                continue
             try:
                 cursor.advance(batch)
             except DebugEventProtocolError as exc:
@@ -1929,8 +2044,6 @@ class AnalysisService(
                 timeout=min(remaining, 30.0),
             )
             workflow = self._require_workflow(session_id)
-            if not batch.events and not batch.has_more:
-                sleep(min(0.05, max(0.0, deadline - monotonic())))
 
     def _workflow_state_locked(
         self,
@@ -2461,6 +2574,15 @@ def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path,
         root / "unpack" / session_id,
         root / "dump" / session_id,
         root / "detection" / session_id,
+        root / "web" / session_id,
+        root / "proxy" / session_id,
+        root / "apktool" / session_id,
+        root / "jadx" / session_id,
+        root / "ghidra" / session_id,
+        root / "trace" / session_id,
+        root / "ui" / session_id,
+        root / "reports" / session_id,
+        root / "static" / session_id,
     )
 
 

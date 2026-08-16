@@ -8,6 +8,7 @@ use, so they are asserted directly instead of being left to a soak test.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -63,11 +64,73 @@ class TestProxyCaptureIsBounded:
         assert recorder.raw("flow-499") is not None
         assert recorder.raw("flow-0") is None
 
+    def test_a_huge_body_is_not_kept_in_the_raw_ring(self, monkeypatch: Any) -> None:
+        from headless_re_mcp.backends.proxy import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_STORED_BODY", 8)
+
+        class Huge:
+            def __init__(self) -> None:
+                self.id = "huge"
+                self.request = type(
+                    "Req",
+                    (),
+                    {"method": "GET", "pretty_url": "http://x", "host": "x"},
+                )()
+                self.response = type(
+                    "Resp",
+                    (),
+                    {
+                        "status_code": 200,
+                        "headers": _FakeHeaders(
+                            {"content-type": "application/octet-stream"}
+                        ),
+                        "raw_content": b"x" * 9,
+                    },
+                )()
+
+        recorder = mod._FlowRecorder(capacity=4)
+        recorder.response(Huge())
+        assert recorder.raw("huge") is mod._OMITTED_BODY
+        row = recorder.snapshot()[0]
+        assert row["body_omitted"] is True
+        assert recorder.count() == 1
+
     def test_sequence_numbers_keep_counting_past_the_window(self) -> None:
         recorder = _FlowRecorder(capacity=5)
         for index in range(20):
             recorder.response(_FakeFlow(index))
         assert [item["seq"] for item in recorder.snapshot()] == [16, 17, 18, 19, 20]
+
+    def test_evicted_flows_are_disclosed_on_the_list(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = _FlowRecorder(capacity=5)
+        for index in range(20):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._instances["s"] = inst
+        result = backend.flows("s", offset=0, limit=100)
+        assert result["total"] == 5
+        assert result["dropped"] == 15
+        assert result["has_more"] is False
+
+    def test_a_wrapped_ring_reports_how_many_flows_were_dropped(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        recorder = _FlowRecorder(capacity=5)
+        for index in range(20):
+            recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = recorder
+        backend._instances["s"] = inst
+        result = backend.flows("s", offset=0, limit=2)
+        assert result["dropped"] == 15
+        assert result["total"] == 5
+        assert result["count"] == 2
+        assert result["has_more"] is True
 
     def test_concurrent_writers_and_readers_stay_consistent(self) -> None:
         """mitmproxy writes from its loop thread while tools read from workers."""
@@ -262,6 +325,147 @@ class TestFailedProxyStartLeavesNothingBehind:
         finally:
             logging.getLogger().removeHandler(other)
 
+
+class TestConcurrentStartDoesNotLeakABackend:
+    def test_two_proxy_starts_for_one_session_only_keep_one_instance(
+        self, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.proxy.client import (
+            ProxyBackend,
+            ProxyError,
+            _ProxyInstance,
+        )
+
+        created: list[object] = []
+        first_entered = threading.Event()
+        release = threading.Event()
+
+        def slow_start(self: Any, timeout: float = 15.0) -> None:
+            del timeout
+            created.append(self)
+            first_entered.set()
+            release.wait(2.0)
+
+        monkeypatch.setattr(_ProxyInstance, "start", slow_start)
+        backend = ProxyBackend()
+        backend._check_available = lambda: None  # type: ignore[method-assign]
+
+        def first() -> None:
+            backend.start("s", port=18080)
+
+        thread = threading.Thread(target=first)
+        thread.start()
+        try:
+            assert first_entered.wait(2.0)
+            with pytest.raises(ProxyError) as caught:
+                backend.start("s", port=18081)
+            assert caught.value.code == "invalid_state"
+            assert len(created) == 1
+        finally:
+            release.set()
+            thread.join(2.0)
+        assert list(backend._instances) == ["s"]
+        backend.stop("s")
+
+    def test_a_failed_proxy_start_releases_the_reservation(
+        self, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.proxy.client import (
+            ProxyBackend,
+            ProxyError,
+            _ProxyInstance,
+        )
+
+        def boom(self: Any, timeout: float = 15.0) -> None:
+            del timeout
+            raise ProxyError("timeout", "did not listen")
+
+        monkeypatch.setattr(_ProxyInstance, "start", boom)
+        monkeypatch.setattr(_ProxyInstance, "stop", lambda self: None)
+        backend = ProxyBackend()
+        backend._check_available = lambda: None  # type: ignore[method-assign]
+        with pytest.raises(ProxyError):
+            backend.start("s", port=18080)
+        assert backend._instances == {}
+
+    def test_a_second_web_open_is_refused_while_the_first_is_reserved(self) -> None:
+        from headless_re_mcp.backends.web.client import _OPENING, WebBackend, WebError
+
+        backend = WebBackend()
+        backend._check_available = lambda: None  # type: ignore[method-assign]
+        backend._sessions["s"] = _OPENING  # type: ignore[assignment]
+        with pytest.raises(WebError) as caught:
+            backend.open("s", "http://example.com")
+        assert caught.value.code == "invalid_state"
+        assert backend._sessions["s"] is _OPENING
+
+    def test_a_closed_open_does_not_install_over_a_later_reservation(
+        self, monkeypatch: Any
+    ) -> None:
+        import sys
+        import types
+        from threading import Event, Thread
+
+        from headless_re_mcp.backends.web.client import WebBackend, WebError
+
+        fake_pw = types.ModuleType("playwright")
+        fake_sync = types.ModuleType("playwright.sync_api")
+        fake_sync.sync_playwright = lambda: None  # type: ignore[method-assign]
+        monkeypatch.setitem(sys.modules, "playwright", fake_pw)
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync)
+
+        first_blocked = Event()
+        release_first = Event()
+
+        class FakeRunner:
+            def __init__(self, name: str) -> None:
+                del name
+                self.wedged = False
+
+            def call(self, work: Any, *, timeout: float = 60.0) -> Any:
+                del work, timeout
+                if not first_blocked.is_set():
+                    first_blocked.set()
+                    assert release_first.wait(5)
+                handle = types.SimpleNamespace(runner=None, driver_pid=None)
+                return handle, {
+                    "opened": True,
+                    "url": "http://example.com",
+                    "title": "",
+                    "headless": True,
+                }
+
+            def shutdown(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.web.client._Runner", FakeRunner
+        )
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.web.client._reap_web_session", lambda handle: None
+        )
+
+        backend = WebBackend()
+        backend._check_available = lambda: None  # type: ignore[method-assign]
+        errors: list[WebError] = []
+
+        def first_open() -> None:
+            try:
+                backend.open("s", "http://example.com")
+            except WebError as exc:
+                errors.append(exc)
+
+        thread = Thread(target=first_open)
+        thread.start()
+        assert first_blocked.wait(5)
+        backend.close("s")
+        later = object()
+        backend._sessions["s"] = later  # type: ignore[assignment]
+        release_first.set()
+        thread.join(5)
+        assert errors and errors[0].code == "invalid_state"
+        assert backend._sessions["s"] is later
+
     def test_repeated_refused_starts_leave_no_residue(self) -> None:
         """Twenty failed captures in a row must cost the process nothing.
 
@@ -399,6 +603,54 @@ class TestBrowserCallsAreThreadConfinedAndBounded:
             time.sleep(0.02)
         assert threading.active_count() == before
 
+    def test_closing_a_wedged_session_kills_the_driver_tree(self, monkeypatch: Any) -> None:
+        """Playwright objects cannot be closed from this thread once it is stuck.
+
+        The node driver is what still holds Chromium. Leaving it running is a
+        process leak per hung navigation, for the rest of the service's life.
+        """
+        import subprocess
+        import sys
+        import time
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.web import client as web_mod
+        from headless_re_mcp.backends.web.client import WebBackend, _Runner
+        from headless_re_mcp.core.process_tree import terminate_pid_tree
+
+        monkeypatch.setattr(web_mod, "process_image_path", lambda pid: r"C:\node.exe")
+
+        process = subprocess.Popen(
+            [sys.executable, "-c", _LAUNCHER],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        assert process.stdout is not None
+        child = int(process.stdout.readline().strip())
+        runner = _Runner("test-reap")
+        runner._wedged = True
+        backend = WebBackend()
+        backend._sessions["s"] = SimpleNamespace(  # type: ignore[assignment]
+            runner=runner,
+            driver_pid=process.pid,
+            close=lambda: None,
+        )
+        try:
+            result = backend.close("s")
+            assert result["closed"] is True
+            assert result["clean"] is False
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if not _pid_is_alive(process.pid) and not _pid_is_alive(child):
+                    break
+                time.sleep(0.05)
+            assert not _pid_is_alive(process.pid)
+            assert not _pid_is_alive(child)
+        finally:
+            terminate_pid_tree(process.pid)
+            runner.shutdown()
+
 
 class TestWebScriptBufferIsBounded:
     def test_parsed_scripts_do_not_grow_without_bound(self) -> None:
@@ -414,10 +666,172 @@ class TestWebScriptBufferIsBounded:
         assert str(_MAX_SCRIPTS + 499) in handle.scripts
         assert "0" not in handle.scripts
 
+    def test_a_full_script_buffer_says_older_scripts_were_dropped(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_SCRIPTS + 10):
+            handle.scripts[str(index)] = {"scriptId": str(index)}
+            while len(handle.scripts) > _MAX_SCRIPTS:
+                handle.scripts.popitem(last=False)
+                handle.scripts_dropped += 1
+        backend._sessions["s"] = handle
+        result = backend.scripts("s")
+        assert result["count"] == _MAX_SCRIPTS
+        assert result["has_more"] is True
+        assert handle.scripts_dropped == 10
+
+    def test_a_full_script_buffer_says_older_wasm_modules_were_dropped(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_SCRIPTS + 10):
+            handle.scripts[str(index)] = {
+                "scriptId": str(index),
+                "language": "WebAssembly" if index % 2 else "JavaScript",
+            }
+            while len(handle.scripts) > _MAX_SCRIPTS:
+                handle.scripts.popitem(last=False)
+                handle.scripts_dropped += 1
+        backend._sessions["s"] = handle
+        result = backend.scripts("s", wasm_only=True)
+        assert result["count"] == _MAX_SCRIPTS // 2
+        assert result["has_more"] is True
+        assert handle.scripts_dropped == 10
+
+    def test_a_script_buffer_that_never_evicted_is_not_labelled_truncated(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.scripts["1"] = {"scriptId": "1"}
+        backend._sessions["s"] = handle
+        result = backend.scripts("s")
+        assert result["count"] == 1
+        assert result["has_more"] is False
+
+    def test_evicted_requests_are_counted_as_dropped(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.requests["a"] = {"requestId": "a"}
+        handle.requests_dropped = 7
+        backend._sessions["s"] = handle
+        result = backend.network_list("s")
+        assert result["dropped"] == 7
+        assert result["has_more"] is False
+
     def test_request_and_console_buffers_are_bounded_types(self) -> None:
         handle = _WebSession(object(), object(), object(), object(), object())
         assert handle.console.maxlen is not None
         assert isinstance(handle.requests, OrderedDict)
+
+    def test_a_console_page_says_when_older_lines_remain(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.console.extend({"text": str(index)} for index in range(10))
+        backend._sessions["s"] = handle
+        result = backend.console("s", limit=4)
+        assert result["count"] == 4
+        assert result["has_more"] is True
+        assert result["console"][0]["text"] == "6"
+
+    def test_a_console_page_that_fits_is_not_labelled_truncated(self) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.console.extend({"text": str(index)} for index in range(3))
+        backend._sessions["s"] = handle
+        result = backend.console("s", limit=10)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+        assert result["dropped"] == 0
+
+    def test_a_huge_console_line_is_cut_in_the_ring(self) -> None:
+        from headless_re_mcp.backends.web.client import _MAX_CONSOLE_TEXT, WebBackend
+
+        class Cdp:
+            def __init__(self) -> None:
+                self.handlers: dict[str, Any] = {}
+
+            def send(self, method: str, params: Any = None) -> None:
+                del method, params
+
+            def on(self, event: str, callback: Any) -> None:
+                self.handlers[event] = callback
+
+        cdp = Cdp()
+        handle = _WebSession(object(), object(), object(), object(), cdp)
+        WebBackend()._wire_events(handle)
+        cdp.handlers["Runtime.consoleAPICalled"](
+            {"type": "log", "args": [{"value": "x" * (_MAX_CONSOLE_TEXT + 40)}]}
+        )
+        row = handle.console[0]
+        assert len(row["text"]) == _MAX_CONSOLE_TEXT
+        assert row["text_truncated"] is True
+
+    def test_a_response_body_over_the_capture_cap_is_not_written(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.web import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 50)
+
+        class Immediate:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        class Cdp:
+            def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                del method, params
+                return {"body": "z" * 60, "base64Encoded": False}
+
+        class Handle:
+            lock = threading.Lock()
+            requests = {"r1": {"requestId": "r1", "url": "https://x"}}
+            cdp = Cdp()
+
+        backend = mod.WebBackend()
+        backend._get = lambda session_id: Handle()  # type: ignore[method-assign]
+        backend._runner = lambda handle: Immediate()  # type: ignore[method-assign]
+        with pytest.raises(mod.WebError) as caught:
+            backend.network_get("s", "r1", tmp_path)
+        assert caught.value.code == "too_large"
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_script_source_over_the_capture_cap_is_not_written(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.web import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 50)
+
+        class Immediate:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        class Cdp:
+            def send(self, method: str, params: dict[str, Any]) -> dict[str, str]:
+                del method, params
+                return {"scriptSource": "y" * 60}
+
+        backend = mod.WebBackend()
+        backend._get = lambda session_id: SimpleNamespace(cdp=Cdp())  # type: ignore[method-assign]
+        backend._runner = lambda handle: Immediate()  # type: ignore[method-assign]
+        with pytest.raises(mod.WebError) as caught:
+            backend.script_source("s", "42", tmp_path)
+        assert caught.value.code == "too_large"
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestFridaAuthorizationWindow:
@@ -461,12 +875,14 @@ class TestLongLivedBackendsAreSingletons:
         try:
             seen_web: list[int] = []
             seen_proxy: list[int] = []
+            seen_adb: list[int] = []
             barrier = threading.Barrier(8)
 
             def touch() -> None:
                 barrier.wait()
                 seen_web.append(id(service._web))
                 seen_proxy.append(id(service._proxy))
+                seen_adb.append(id(service._backend()))
 
             threads = [threading.Thread(target=touch) for _ in range(8)]
             for thread in threads:
@@ -476,6 +892,7 @@ class TestLongLivedBackendsAreSingletons:
 
             assert len(set(seen_web)) == 1
             assert len(set(seen_proxy)) == 1
+            assert len(set(seen_adb)) == 1
         finally:
             service.close_all()
 
@@ -486,6 +903,7 @@ class TestLongLivedBackendsAreSingletons:
         try:
             assert service._web is service._web_backend
             assert service._proxy is service._proxy_backend
+            assert service._backend() is service._adb_backend
         finally:
             service.close_all()
 
@@ -927,6 +1345,151 @@ class TestPerSessionStateDiesWithTheSession:
         finally:
             service.close_all()
 
+    def test_closing_a_session_removes_its_work_dirs_not_a_siblings(self, tmp_path: Any) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            import zipfile
+
+            apk = tmp_path / "app.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+            created = service.create_session(str(apk), target="apk")
+            session_id = str(created.data["session"]["id"])
+            own = tmp_path / "artifacts" / "jadx" / session_id
+            sibling = tmp_path / "artifacts" / "jadx" / "other-session"
+            own.mkdir(parents=True)
+            (own / "Main.java").write_text("class Main {}", encoding="utf-8")
+            sibling.mkdir(parents=True)
+            (sibling / "Other.java").write_text("class Other {}", encoding="utf-8")
+
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            assert not own.exists()
+            assert sibling.is_dir(), "pruning the shared jadx parent deleted another session"
+        finally:
+            service.close_all()
+
+    def test_closing_a_session_keeps_registered_ghidra_exports(self, tmp_path: Any) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            import zipfile
+
+            apk = tmp_path / "app.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+            created = service.create_session(str(apk), target="apk")
+            session_id = str(created.data["session"]["id"])
+            project = tmp_path / "artifacts" / "ghidra" / session_id
+            project.mkdir(parents=True)
+            export = project / "export_functions.json"
+            export.write_text("[]", encoding="utf-8")
+            remnant = project / "session.gpr"
+            remnant.write_text("project", encoding="utf-8")
+            (project / "session.rep").mkdir()
+            service.record_artifact(
+                session_id=session_id,
+                kind="ghidra_functions",
+                path=export,
+                sha256="a" * 64,
+                source="ghidra.functions",
+                size=export.stat().st_size,
+            )
+
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            assert export.is_file(), "registered ghidra export was deleted with the work dir"
+            assert not remnant.exists()
+            assert not (project / "session.rep").exists()
+        finally:
+            service.close_all()
+
+    def test_closing_a_session_removes_its_debug_event_log(self, tmp_path: Any) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            import zipfile
+
+            apk = tmp_path / "app.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+            created = service.create_session(str(apk), target="apk")
+            session_id = str(created.data["session"]["id"])
+            log_dir = tmp_path / "artifacts" / "debug-events" / session_id
+            log_dir.mkdir(parents=True)
+            (log_dir / "events.sqlite3").write_bytes(b"sqlite")
+
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            assert not log_dir.exists()
+        finally:
+            service.close_all()
+
+    def test_a_web_close_that_throws_still_closes_the_debugger_worker(
+        self, tmp_path: Any
+    ) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.models import BackendKind
+        from headless_re_mcp.core.service import AnalysisService, _BackendRuntime
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+
+        class _Worker:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self, *, timeout: float = 15.0) -> None:
+                del timeout
+                self.closed = True
+
+            def terminate(self) -> None:
+                return None
+
+        class _ExplodingWeb:
+            def close(self, session_id: str) -> None:
+                del session_id
+                raise RuntimeError("browser thread wedged")
+
+            def close_all(self) -> None:
+                return None
+
+        worker = _Worker()
+        try:
+            created = service.create_session(str(_minimal_pe(tmp_path / "target.exe")))
+            session_id = str(created.data["session"]["id"])
+            service._runtime_owner.begin_open(session_id, BackendKind.X64DBG)
+            service._runtime_owner.put(
+                session_id,
+                BackendKind.X64DBG,
+                _BackendRuntime(worker=worker),  # type: ignore[arg-type]
+            )
+            service._web_backend = _ExplodingWeb()  # type: ignore[assignment]
+
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            assert worker.closed is True
+        finally:
+            service.close_all()
+
 
 class TestTheArtifactRootCanDisappearUnderTheService:
     """Operators clean disks, scanners quarantine, volumes come back unmounted.
@@ -1204,6 +1767,40 @@ _LAUNCHER = (
     "while True: time.sleep(0.2)\n"
 )
 
+_EXIT0_LAUNCHER = (
+    "import subprocess, sys\n"
+    "child = subprocess.Popen(\n"
+    "    [sys.executable, '-c', 'import time\\nwhile True: time.sleep(0.2)'],\n"
+    "    stdin=subprocess.DEVNULL,\n"
+    "    stdout=subprocess.DEVNULL,\n"
+    "    stderr=subprocess.DEVNULL,\n"
+    "    close_fds=True,\n"
+    ")\n"
+    "print(child.pid, flush=True)\n"
+    "raise SystemExit(0)\n"
+)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    import ctypes
+    import os
+
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
 
 class TestStuckToolCallsStopPilingUp:
     """A cancelled tool call does not stop running, it stops being waited for.
@@ -1350,6 +1947,32 @@ class TestATimeoutBindsWhatTheToolStarted:
             with suppress(Exception):
                 process.kill()
 
+    def test_a_pid_without_a_popen_handle_is_still_bound(self) -> None:
+        import os
+        import time
+
+        from headless_re_mcp.core.process_tree import terminate_pid_tree
+
+        if os.name != "nt":
+            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
+
+        process, grandchild = self._launcher()
+        try:
+            assert self._alive(grandchild) is True
+            terminate_pid_tree(int(process.pid))
+            deadline = time.monotonic() + 5.0
+            while (
+                self._alive(process.pid) or self._alive(grandchild)
+            ) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert self._alive(process.pid) is False
+            assert self._alive(grandchild) is False
+        finally:
+            from contextlib import suppress
+
+            with suppress(Exception):
+                process.kill()
+
     def test_a_tool_that_overruns_is_reported_with_what_was_killed(self) -> None:
         import os
         import sys
@@ -1385,6 +2008,85 @@ class TestATimeoutBindsWhatTheToolStarted:
         )
         assert completed.returncode == 3
         assert completed.stdout.strip() == b"done"
+
+    def test_a_chatty_tool_does_not_keep_an_unbounded_stdout(self) -> None:
+        import sys
+
+        from headless_re_mcp.backends.common.bounded_run import run_bounded
+
+        completed = run_bounded(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x' * 2_000_000)",
+            ],
+            timeout=30.0,
+            max_output=1000,
+        )
+        assert completed.returncode == 0
+        assert completed.stdout == b"x" * 1000
+        assert completed.stdout_truncated is True
+        assert len(completed.stderr) == 0
+
+    def test_a_launcher_that_exits_zero_does_not_kill_its_helper(self) -> None:
+        import os
+        import sys
+        from contextlib import suppress
+
+        from headless_re_mcp.backends.common.bounded_run import run_bounded
+        from headless_re_mcp.core.process_tree import terminate_pid_tree
+
+        if os.name != "nt":
+            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
+
+        completed = run_bounded(
+            [sys.executable, "-c", _EXIT0_LAUNCHER],
+            timeout=3.0,
+            drain_s=0.4,
+        )
+        assert completed.returncode == 0
+        child = int(completed.stdout.strip().split()[0])
+        try:
+            assert self._alive(child) is True
+        finally:
+            with suppress(Exception):
+                terminate_pid_tree(child)
+
+    def test_capture_process_kills_leftover_children(self) -> None:
+        import os
+        import sys
+        from contextlib import suppress
+
+        from headless_re_mcp.core.process_tree import terminate_pid_tree
+        from headless_re_mcp.dotnet.de4dot import _capture_process
+
+        if os.name != "nt":
+            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
+
+        capture = _capture_process(
+            [sys.executable, "-c", _EXIT0_LAUNCHER],
+            timeout=3.0,
+            max_output_size=4096,
+        )
+        child = int(capture.stdout.strip().split()[0])
+        try:
+            assert self._alive(child) is False
+        finally:
+            with suppress(Exception):
+                terminate_pid_tree(child)
+
+
+def test_kill_walk_is_not_clamped_to_the_ui_page_size() -> None:
+    from headless_re_mcp.core.process_tree import (
+        _MAX_CHILD_PIDS,
+        _MAX_KILL_DESCENDANTS,
+        _child_enum_limit,
+    )
+
+    assert _MAX_KILL_DESCENDANTS > _MAX_CHILD_PIDS
+    assert _child_enum_limit(_MAX_CHILD_PIDS) == _MAX_CHILD_PIDS
+    assert _child_enum_limit(_MAX_KILL_DESCENDANTS) == _MAX_KILL_DESCENDANTS
+    assert _child_enum_limit(_MAX_KILL_DESCENDANTS + 10) == _MAX_KILL_DESCENDANTS
 
 
 class TestOnlyAMissingSessionSaysSessionNotFound:
@@ -2032,6 +2734,1120 @@ class TestSessionChurnStaysBounded:
             assert usage.bytes < 3 * budget
         finally:
             service.close_all()
+
+
+class TestUnregisteredCaptureDirsStayCapped:
+    def test_oldest_files_go_when_the_count_is_passed(self, tmp_path: Any) -> None:
+        from headless_re_mcp.core.limits import prune_capped_dir
+
+        root = tmp_path / "device"
+        root.mkdir()
+        for index in range(10):
+            path = root / f"{index}.png"
+            path.write_bytes(b"x" * 10)
+            os.utime(path, (index + 1, index + 1))
+        removed = prune_capped_dir(root, max_entries=4, max_bytes=10_000)
+        assert removed == 6
+        assert sorted(path.name for path in root.iterdir()) == ["6.png", "7.png", "8.png", "9.png"]
+
+    def test_the_newest_file_is_kept_even_when_it_alone_exceeds_the_budget(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.core.limits import prune_capped_dir
+
+        root = tmp_path / "device"
+        root.mkdir()
+        huge = root / "huge.bin"
+        huge.write_bytes(b"x" * 1000)
+        prune_capped_dir(root, max_entries=8, max_bytes=100)
+        assert huge.is_file(), "deleting the file just written is the bug this exists to prevent"
+
+    def test_oldest_directories_go_the_same_way(self, tmp_path: Any) -> None:
+        from headless_re_mcp.core.limits import prune_capped_dir
+
+        root = tmp_path / "jsre"
+        root.mkdir()
+        for index in range(6):
+            folder = root / f"unpack-{index}"
+            folder.mkdir()
+            (folder / "out.js").write_text("x", encoding="utf-8")
+            os.utime(folder, (index + 1, index + 1))
+        prune_capped_dir(root, max_entries=2, max_bytes=10_000)
+        left = sorted(path.name for path in root.iterdir())
+        assert left == ["unpack-4", "unpack-5"]
+
+
+class TestAdbForwardsAreReleased:
+    def test_a_successful_forward_is_remembered(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result["local"] == "tcp:27042"
+        assert backend._forwards == [("emulator-5554", "tcp:27042")]
+
+    def test_new_forwards_are_refused_once_the_table_is_full(
+        self, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_FORWARDS", 2)
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        backend.forward("emulator-5554", "tcp:1", "tcp:1")
+        backend.forward("emulator-5554", "tcp:2", "tcp:2")
+        with pytest.raises(mod.AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:3", "tcp:3")
+        assert caught.value.code == "invalid_state"
+        assert backend._forwards == [
+            ("emulator-5554", "tcp:1"),
+            ("emulator-5554", "tcp:2"),
+        ]
+
+    def test_a_failed_forward_is_not_kept_in_the_table(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                raise RuntimeError("adb refused")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:1", "tcp:1")
+        assert caught.value.code == "backend_error"
+        assert backend._forwards == []
+
+    def test_a_device_lookup_failure_does_not_consume_a_forward_slot(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        backend = AdbBackend()
+
+        def boom(serial: str) -> Any:
+            del serial
+            raise AdbError("capability_unavailable", "adbutils is not installed")
+
+        backend._device = boom  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:1", "tcp:1")
+        assert caught.value.code == "capability_unavailable"
+        assert backend._forwards == []
+
+    def test_release_removes_every_forward_this_process_created(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        removed: list[str] = []
+
+        class Dev:
+            def forward_remove(self, local: str) -> None:
+                removed.append(local)
+
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        backend._forwards = [("emu", "tcp:1"), ("emu", "tcp:2")]
+        result = backend.release_forwards()
+        assert result["count"] == 2
+        assert removed == ["tcp:1", "tcp:2"]
+        assert backend._forwards == []
+
+    def test_a_failed_release_is_remembered_for_the_next_attempt(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def forward_remove(self, local: str) -> None:
+                raise RuntimeError(f"device offline ({local})")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        backend._forwards = [("emu", "tcp:1"), ("emu", "tcp:2")]
+        result = backend.release_forwards()
+        assert result["count"] == 0
+        assert len(result["failed"]) == 2
+        assert backend._forwards == [("emu", "tcp:1"), ("emu", "tcp:2")]
+
+    def test_close_all_asks_the_owned_backend_to_release(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+
+        service = AnalysisService()
+        called: list[bool] = []
+        service._adb_backend.release_forwards = lambda: called.append(True) or {  # type: ignore[method-assign]
+            "removed": [],
+            "failed": [],
+            "count": 0,
+        }
+        try:
+            service.close_all()
+            assert called == [True]
+        finally:
+            pass
+
+    def test_ca_install_and_frida_ensure_use_the_owned_backend(self, tmp_path: Any) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session("https://example.com", target="web")
+            assert created.data is not None
+            session_id = str(created.data["session"]["id"])
+            pushed: list[tuple[str, str]] = []
+            ensured: list[str] = []
+            cert = tmp_path / "mitmproxy-ca-cert.pem"
+            cert.write_text("x", encoding="utf-8")
+            service._adb_backend.push = (  # type: ignore[method-assign]
+                lambda serial, local_path, remote_path: pushed.append((serial, remote_path))
+                or {"local": local_path, "remote": remote_path}
+            )
+            service._proxy_backend.ca_cert_path = lambda: cert  # type: ignore[method-assign]
+            result = service.proxy_ca_install_android(session_id, "emulator-5554")
+            assert result.ok
+            assert pushed == [("emulator-5554", "/data/local/tmp/mitmproxy-ca-cert.pem")]
+
+            service._adb_backend.ensure_frida_server = (  # type: ignore[method-assign]
+                lambda serial, server_binary=None, port=27042: ensured.append(serial)
+                or {"running": True, "pushed": False, "port": port}
+            )
+            result = service.frida_server_ensure(session_id, "emulator-5554")
+            assert result.ok
+            assert ensured == ["emulator-5554"]
+        finally:
+            service.close_all()
+
+
+class TestUnpackProbesKillWhatTheyStart:
+    def test_scylla_timeout_is_not_availability_after_the_tree_is_dead(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import TimedOut
+        from headless_re_mcp.unpack import scylla as mod
+
+        seen: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            del kwargs
+            seen.append(cmd)
+            raise TimedOut(0.5, [11, 22])
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "Scylla.exe"
+        exe.write_bytes(b"MZ")
+        ok, output = mod.probe_scylla(exe, timeout=0.5)
+        assert ok is False
+        assert output == "timeout_after_start"
+        assert seen == [[str(exe)]]
+
+    def test_xvlkc_timeout_is_not_availability(self, tmp_path: Any, monkeypatch: Any) -> None:
+        from headless_re_mcp.backends.common.bounded_run import TimedOut
+        from headless_re_mcp.unpack import xvlkc as mod
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            del cmd, kwargs
+            raise TimedOut(0.5, [])
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "xvlkc.exe"
+        exe.write_bytes(b"MZ")
+        ok, output = mod.probe_xvlkc(exe, timeout=0.5)
+        assert ok is False
+        assert output == ""
+
+    def test_de4dot_timeout_does_not_count_as_a_hanging_probe(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import TimedOut
+        from headless_re_mcp.dotnet import de4dot as mod
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            del cmd, kwargs
+            raise TimedOut(0.5, [])
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "de4dot.exe"
+        exe.write_bytes(b"MZ")
+        ok, output = mod.probe_de4dot_version(exe, timeout=0.5)
+        assert ok is False
+        assert output == ""
+
+
+class TestDeviceListsDiscloseTruncation:
+    """pm list / getprop used to return everything they found, or cut silently.
+
+    A busy emulator easily has more packages than an agent should ingest in one
+    reply, and a cap with no has_more is the same lie as the r2/frida lists:
+    the caller concludes "that is all of them".
+    """
+
+    def _backend(self, raw: str) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return raw
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_package_list_past_the_cap_says_so(self) -> None:
+        raw = "\n".join(f"package:com.app{index}" for index in range(20))
+        result = self._backend(raw).packages("emulator-5554", limit=5)
+        assert result["count"] == 5
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 5
+
+    def test_a_package_list_that_fits_is_not_labelled_truncated(self) -> None:
+        raw = "\n".join(f"package:com.app{index}" for index in range(5))
+        result = self._backend(raw).packages("emulator-5554", limit=5)
+        assert result["count"] == 5
+        assert result["has_more"] is False
+
+    def test_properties_past_the_cap_say_so(self) -> None:
+        raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))
+        result = self._backend(raw).properties("emulator-5554", limit=4)
+        assert result["count"] == 4
+        assert result["has_more"] is True
+        assert "ro.item4" not in result["properties"]
+
+    def test_frida_application_list_past_the_cap_says_so(self) -> None:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = str(index)
+                self.pid = 0
+
+        class Dev:
+            def enumerate_applications(self) -> list[App]:
+                return [App(index) for index in range(10)]
+
+        client = FridaClient()
+        client._resolve_device = lambda device_id: Dev()  # type: ignore[method-assign]
+        result = client.applications("usb", limit=3)
+        assert result["count"] == 3
+        assert result["total"] == 10
+        assert result["has_more"] is True
+
+    def test_a_failed_resume_kills_the_spawned_pid(self) -> None:
+        from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+        killed: list[int] = []
+
+        class Dev:
+            def spawn(self, argv: list[str]) -> int:
+                del argv
+                return 4242
+
+            def resume(self, pid: int) -> None:
+                del pid
+                raise RuntimeError("not permitted")
+
+            def kill(self, pid: int) -> None:
+                killed.append(pid)
+
+        client = FridaClient()
+        client._resolve_device = lambda device_id: Dev()  # type: ignore[method-assign]
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", "com.example.app")
+        assert caught.value.details["pid"] == 4242
+        assert killed == [4242]
+        assert "resume failed" in caught.value.message
+
+    def test_native_libs_past_the_cap_say_so(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_NATIVE_LIBS, ApkClient
+
+        class FakeApk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{index}.so" for index in range(_MAX_NATIVE_LIBS + 40)]
+
+        client = ApkClient()
+        client._apk = lambda path: FakeApk()  # type: ignore[method-assign]
+        result = client.native_libs(tmp_path / "app.apk")
+        assert result["count"] == _MAX_NATIVE_LIBS
+        assert result["has_more"] is True
+        assert len(result["native_libs"]) == _MAX_NATIVE_LIBS
+
+    def test_apk_strings_do_not_materialise_an_unbounded_set(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.apk import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_STRINGS_COLLECT", 8)
+
+        class Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class Analysis:
+            def get_strings(self) -> list[Item]:
+                return [Item(f"s{index:04d}") for index in range(40)]
+
+        class Parsed:
+            analysis = Analysis()
+
+        client = mod.ApkClient()
+        client._parsed = lambda path: Parsed()  # type: ignore[method-assign]
+        result = client.strings(tmp_path / "app.apk", offset=0, limit=3)
+        assert result["count"] == 3
+        assert result["total"] == 8
+        assert result["has_more"] is True
+        assert result["scan_capped"] is True
+        exhausted = client.strings(tmp_path / "app.apk", offset=8, limit=3)
+        assert exhausted["count"] == 0
+        assert exhausted["has_more"] is False
+        assert exhausted["scan_capped"] is True
+
+    def test_apk_classes_do_not_materialise_an_unbounded_name_list(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.apk import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_CLASSES_COLLECT", 6)
+
+        class Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class Analysis:
+            def get_classes(self) -> list[Klass]:
+                return [Klass(f"Lfoo/C{index};") for index in range(20)]
+
+        class Parsed:
+            analysis = Analysis()
+
+        client = mod.ApkClient()
+        client._parsed = lambda path: Parsed()  # type: ignore[method-assign]
+        result = client.classes(tmp_path / "app.apk", offset=0, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 6
+        assert result["has_more"] is True
+        assert result["scan_capped"] is True
+        exhausted = client.classes(tmp_path / "app.apk", offset=6, limit=2)
+        assert exhausted["count"] == 0
+        assert exhausted["has_more"] is False
+        assert exhausted["scan_capped"] is True
+
+    def test_apk_methods_stop_collecting_at_the_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.apk import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_METHODS_COLLECT", 5)
+
+        class Method:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class Klass:
+            name = "Lfoo/C;"
+
+            def get_methods(self) -> list[Method]:
+                return [Method(f"m{index}") for index in range(20)]
+
+        class Analysis:
+            def get_classes(self) -> list[Klass]:
+                return [Klass()]
+
+        class Parsed:
+            analysis = Analysis()
+
+        client = mod.ApkClient()
+        client._parsed = lambda path: Parsed()  # type: ignore[method-assign]
+        result = client.methods(tmp_path / "app.apk", "Lfoo/C;", offset=0, limit=3)
+        assert result["count"] == 3
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        assert result["scan_capped"] is True
+        exhausted = client.methods(tmp_path / "app.apk", "Lfoo/C;", offset=5, limit=3)
+        assert exhausted["count"] == 0
+        assert exhausted["has_more"] is False
+        assert exhausted["scan_capped"] is True
+
+    def test_components_past_the_cap_say_so(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_COMPONENT_NAMES, ApkClient
+
+        class FakeApk:
+            def get_activities(self) -> list[str]:
+                return [f"A{index}" for index in range(_MAX_COMPONENT_NAMES + 10)]
+
+            def get_services(self) -> list[str]:
+                return ["S"]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "A0"
+
+        client = ApkClient()
+        client._apk = lambda path: FakeApk()  # type: ignore[method-assign]
+        result = client.components(tmp_path / "app.apk")
+        assert len(result["activities"]) == _MAX_COMPONENT_NAMES
+        assert result["has_more"] is True
+        assert result["main_activity"] == "A0"
+
+    def test_a_cut_manifest_says_it_was_cut(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+
+        class Body:
+            def get_xml(self) -> bytes:
+                return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)
+
+        class FakeApk:
+            def get_android_manifest_axml(self) -> Body:
+                return Body()
+
+            def get_package(self) -> str:
+                return "com.example.app"
+
+        client = ApkClient()
+        client._apk = lambda path: FakeApk()  # type: ignore[method-assign]
+        result = client.manifest(tmp_path / "app.apk")
+        assert result["truncated"] is True
+        assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+        assert result["package"] == "com.example.app"
+
+
+class TestExportedFileListsDiscloseTruncation:
+    def test_jadx_source_list_past_the_cap_says_so(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.jadx import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 4)
+        out = tmp_path / "out"
+        sources = out / "sources"
+        sources.mkdir(parents=True)
+        for index in range(6):
+            (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+        client = mod.JadxClient(tmp_path / "jadx.bat")
+        (tmp_path / "jadx.bat").write_text("x", encoding="utf-8")
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        result = client.export_sources(tmp_path / "app.apk", out)
+        assert result["java_file_count"] == 6
+        assert len(result["java_files"]) == 4
+        assert result["has_more"] is True
+
+    def test_jadx_decompile_does_not_return_a_homonym_class(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.jadx import client as mod
+        from headless_re_mcp.backends.jadx.client import JadxError
+
+        out = tmp_path / "out"
+        foo = out / "sources" / "com" / "foo"
+        bar = out / "sources" / "com" / "bar"
+        foo.mkdir(parents=True)
+        bar.mkdir(parents=True)
+        (foo / "Main.java").write_text("package com.foo; class Main {}", encoding="utf-8")
+        (bar / "Main.java").write_text("package com.bar; class Main {}", encoding="utf-8")
+        client = mod.JadxClient(tmp_path / "jadx.bat")
+        (tmp_path / "jadx.bat").write_text("x", encoding="utf-8")
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        found = client.decompile(tmp_path / "app.apk", out, "com.foo.Main")
+        assert found["path"].replace("\\", "/").endswith("sources/com/foo/Main.java")
+        with pytest.raises(JadxError) as caught:
+            client.decompile(tmp_path / "app.apk", out, "com.missing.Main")
+        assert caught.value.code == "not_found"
+
+    def test_webcrack_unpack_list_past_the_cap_says_so(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 3)
+        monkeypatch.setattr(
+            mod.JsClient,
+            "_require_input",
+            lambda self, path: path,
+        )
+        monkeypatch.setattr(mod, "_run", lambda cmd, timeout: ("", "", 0))
+        out = tmp_path / "unpacked"
+        out.mkdir()
+        for index in range(5):
+            (out / f"{index}.js").write_text("x", encoding="utf-8")
+        result = mod.JsClient(tmp_path / "webcrack").unpack_bundle(tmp_path / "app.js", out)
+        assert result["file_count"] == 5
+        assert len(result["files"]) == 3
+        assert result["has_more"] is True
+
+
+class TestGhidraExportDisclosesTruncation:
+    def test_the_headless_script_marks_cut_lists_and_cut_decompilation(self) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.ghidra import client as ghidra
+
+        script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.py"
+        text = script.read_text(encoding="utf-8")
+        assert 'payload["has_more"] = True' in text
+        assert 'payload["truncated"] = len(text) > 200000' in text
+
+
+class TestAdbShellCallsAreBounded:
+    def test_a_stalled_shell_is_a_timeout_not_a_hung_worker(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        seen: list[float | None] = []
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args
+                seen.append(timeout)
+                raise TimeoutError("device stalled")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.packages("emulator-5554")
+        assert caught.value.code == "timeout"
+        assert seen == [30.0]
+
+    def test_older_adbutils_without_a_timeout_argument_still_runs(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any) -> str:
+                del args
+                return "package:com.example.app"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.packages("emulator-5554")
+        assert result["packages"] == ["com.example.app"]
+        assert result["has_more"] is False
+
+    def test_a_type_error_from_shell_is_not_retried_without_a_deadline(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        seen: list[float | None] = []
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args
+                seen.append(timeout)
+                raise TypeError("internal")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.packages("emulator-5554")
+        assert caught.value.code == "backend_error"
+        assert seen == [30.0]
+
+
+class TestFridaServerEnsureIsHonest:
+    def test_a_launch_that_does_not_show_in_ps_is_not_reported_running(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, str) and args.startswith("su"):
+                    return ""
+                return "root 1 init"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554")
+        assert result["running"] is False
+        assert "not visible" in str(result.get("note", ""))
+
+    def test_an_already_running_server_is_left_alone(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                return "root 99 /data/local/tmp/frida-server"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554")
+        assert result == {"running": True, "pushed": False, "port": 27042}
+
+
+class TestDeviceLaunchIsHonest:
+    def test_monkey_without_the_app_in_foreground_is_not_reported_launched(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Current:
+            package = "com.other.app"
+            activity = "Other"
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return ""
+
+            def app_current(self, timeout: float | None = None) -> Current:
+                del timeout
+                return Current()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.launch("emulator-5554", "com.example.app")
+        assert result["launched"] is False
+        assert result["foreground"] == "com.other.app"
+
+    def test_the_foreground_package_matching_is_reported_launched(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Current:
+            package = "com.example.app"
+            activity = "Main"
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return ""
+
+            def app_current(self, timeout: float | None = None) -> Current:
+                del timeout
+                return Current()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.launch("emulator-5554", "com.example.app")
+        assert result["launched"] is True
+        assert result["foreground"] == "com.example.app"
+
+
+class TestAdbHostCallsAreBounded:
+    def test_list_devices_passes_a_socket_timeout_to_the_client(self) -> None:
+        from headless_re_mcp.backends.adb.client import _ADB_PROBE_TIMEOUT_S, AdbBackend
+
+        seen: dict[str, float | None] = {}
+
+        class FakeAdb:
+            class AdbClient:
+                def __init__(
+                    self,
+                    host: str = "127.0.0.1",
+                    port: int = 5037,
+                    socket_timeout: float | None = None,
+                ) -> None:
+                    del host, port
+                    seen["socket_timeout"] = socket_timeout
+
+                def list(self) -> list[Any]:
+                    return []
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = FakeAdb
+        result = backend.list_devices()
+        assert seen["socket_timeout"] == _ADB_PROBE_TIMEOUT_S
+        assert result == {"devices": [], "count": 0, "has_more": False}
+
+    def test_list_includes_offline_devices_and_does_not_probe_get_state(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Info:
+            def __init__(self, serial: str, state: str) -> None:
+                self.serial = serial
+                self.state = state
+
+        class FakeAdb:
+            class AdbClient:
+                def __init__(self, **kwargs: Any) -> None:
+                    del kwargs
+
+                def list(self) -> list[Info]:
+                    return [Info("emulator-5554", "offline"), Info("ZY223KDTM7", "device")]
+
+                def device(self, serial: str | None = None) -> None:
+                    del serial
+                    raise AssertionError("list must not fall back to per-device get_state")
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = FakeAdb
+        result = backend.list_devices()
+        assert result["count"] == 2
+        assert result["devices"][0]["state"] == "offline"
+        assert result["has_more"] is False
+
+    def test_open_transport_default_is_not_ten_minutes(self) -> None:
+        from headless_re_mcp.backends.adb.client import (
+            _ADB_TRANSPORT_TIMEOUT_S,
+            _bind_open_transport,
+        )
+
+        seen: list[float | None] = []
+
+        class Dev:
+            def open_transport(self, command: Any = None, timeout: float = 600.0) -> str:
+                del command
+                seen.append(timeout)
+                return "ok"
+
+        bound = _bind_open_transport(Dev(), _ADB_TRANSPORT_TIMEOUT_S)
+        bound.open_transport()
+        assert seen == [_ADB_TRANSPORT_TIMEOUT_S]
+
+
+class TestDeviceInstallUninstallAreHonest:
+    def test_install_that_does_not_show_in_pm_path_is_not_success(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        monkeypatch.setattr(mod, "_apk_package_name", lambda path: "com.example.app")
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+
+        class Dev:
+            sync = Sync()
+
+            def install(self, path: str, **kwargs: Any) -> None:
+                del path, kwargs
+
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return ""
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.install("emulator-5554", str(apk))
+        assert result["installed"] is False
+        assert result["package"] == "com.example.app"
+        assert "not visible" in str(result.get("note", ""))
+
+    def test_install_visible_to_pm_path_is_success(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        monkeypatch.setattr(mod, "_apk_package_name", lambda path: "com.example.app")
+
+        class Dev:
+            def install(self, path: str, **kwargs: Any) -> None:
+                del path, kwargs
+
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if args == ["pm", "path", "com.example.app"]:
+                    return "package:/data/app/com.example.app/base.apk"
+                return ""
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.install("emulator-5554", str(apk))
+        assert result["installed"] is True
+        assert result["package"] == "com.example.app"
+
+    def test_uninstall_that_leaves_pm_path_is_not_success(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def uninstall(self, package: str, timeout: float | None = None) -> None:
+                del package, timeout
+
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:2] == ["pm", "path"]:
+                    return "package:/data/app/still/base.apk"
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.uninstall("emulator-5554", "com.example.app")
+        assert result["uninstalled"] is False
+        assert "still visible" in str(result.get("note", ""))
+
+
+class TestDeviceForceStopIsHonest:
+    def test_a_process_still_in_pidof_is_not_reported_stopped(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return "4242"
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is False
+        assert result["remaining_pids"] == [4242]
+
+    def test_empty_pidof_is_reported_stopped(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is True
+        assert result["remaining_pids"] == []
+
+
+class TestDevicePullRefusesTreesAndHugeFiles:
+    def test_a_directory_is_refused_before_copy(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Info:
+            mode = 0o040755
+            size = 0
+
+        pulled: list[str] = []
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del local, timeout
+                pulled.append(remote)
+                raise AssertionError("must not copy a remote directory")
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard", tmp_path / "out")
+        assert caught.value.code == "invalid_params"
+        assert pulled == []
+
+    def test_a_file_over_the_capture_cap_is_refused(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+        from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
+        class Info:
+            mode = 0o100644
+            size = UNREGISTERED_CAPTURE_MAX_BYTES + 1
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, *args: Any, **kwargs: Any) -> None:
+                raise AssertionError("must not copy an oversized remote file")
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/huge.bin", tmp_path / "huge.bin")
+        assert caught.value.code == "too_large"
+
+    def test_a_local_file_over_the_capture_cap_is_not_pushed(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 4)
+        huge = tmp_path / "huge.bin"
+        huge.write_bytes(b"12345")
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                raise AssertionError("must not push an oversized local file")
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.push("emulator-5554", str(huge), "/data/local/tmp/huge.bin")
+        assert caught.value.code == "too_large"
+
+    def test_a_huge_screenshot_is_deleted_not_kept(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 4)
+        out = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"12345")
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.screenshot("emulator-5554", out)
+        assert caught.value.code == "too_large"
+        assert out.exists() is False
+
+
+class TestProxyReplayWaitsForTheCommand:
+    def test_a_failed_replay_command_is_not_reported_replayed(self) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError
+
+        class Loop:
+            def call_soon_threadsafe(self, callback: Any, *args: Any) -> None:
+                callback(*args)
+
+        class Commands:
+            def call(self, name: str, args: Any) -> None:
+                del name, args
+                raise RuntimeError("no such flow")
+
+        flow = SimpleNamespace(copy=lambda: SimpleNamespace())
+        inst = SimpleNamespace(
+            recorder=SimpleNamespace(raw=lambda flow_id: flow),
+            _master=SimpleNamespace(commands=Commands()),
+            _loop=Loop(),
+        )
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        with pytest.raises(ProxyError) as caught:
+            backend.replay("s", "flow-1")
+        assert caught.value.code == "backend_error"
+
+    def test_a_queued_replay_that_never_runs_is_a_timeout(
+        self, monkeypatch: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy import client as mod
+
+        monkeypatch.setattr(mod, "_REPLAY_WAIT_S", 0.2)
+
+        class Loop:
+            def call_soon_threadsafe(self, callback: Any, *args: Any) -> None:
+                del callback, args
+
+        flow = SimpleNamespace(copy=lambda: SimpleNamespace())
+        inst = SimpleNamespace(
+            recorder=SimpleNamespace(raw=lambda flow_id: flow),
+            _master=SimpleNamespace(commands=SimpleNamespace(call=lambda *a, **k: None)),
+            _loop=Loop(),
+        )
+        backend = mod.ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        with pytest.raises(mod.ProxyError) as caught:
+            backend.replay("s", "flow-1")
+        assert caught.value.code == "timeout"
+
+
+class TestFridaJavaEnumerationStopsEarly:
+    def test_class_enumeration_script_stops_at_the_cap(self) -> None:
+        from headless_re_mcp.backends.frida.client import _JAVA_SCRIPT
+
+        assert "enumerateLoadedClassesSync" not in _JAVA_SCRIPT
+        assert "headless-re-mcp:class-cap" in _JAVA_SCRIPT
+        assert "enumerateLoadedClasses" in _JAVA_SCRIPT
+
+
+class TestFridaModuleEnumerationCapsRpc:
+    def test_module_script_does_not_serialize_the_whole_table(self) -> None:
+        from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
+
+        assert "return {modules: items, total: all.length}" in _ENUM_SCRIPT
+        assert ".map(function (m)" not in _ENUM_SCRIPT
+
+
+class TestIsolationKillsWhatItStarted:
+    """The isolation command is the step between samples on an unattended box.
+
+    It is typically a script that starts a hypervisor tool. subprocess.run's
+    timeout kills the script and then drains with no deadline, so a child that
+    inherited the pipes holds the worker forever -- and the VM is left dirty.
+    """
+
+    def test_production_path_uses_the_bounded_runner(self, monkeypatch: Any) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
+
+        seen: list[tuple[list[str], float]] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            seen.append((cmd, float(kwargs["timeout"])))
+            return Completed(0, b"", b"")
+
+        monkeypatch.setattr("headless_re_mcp.core.isolation.run_bounded", fake_run)
+        outcome = IsolationRunner(
+            IsolationPolicy(command=("revert.ps1",), timeout_s=7.0)
+        ).rotate()
+        assert outcome["ok"] is True and outcome["performed"] is True
+        assert seen == [(["revert.ps1"], 7.0)]
+
+    def test_a_snapshot_script_that_starts_a_child_is_reaped(self) -> None:
+        import ast
+        import os
+        import re
+        import sys
+        import time
+
+        from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
+
+        if os.name != "nt":
+            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
+
+        started = time.monotonic()
+        outcome = IsolationRunner(
+            IsolationPolicy(
+                command=(sys.executable, "-c", _LAUNCHER),
+                timeout_s=0.8,
+                required=False,
+            )
+        ).rotate()
+        elapsed = time.monotonic() - started
+        assert elapsed < 10.0
+        assert outcome["ok"] is False
+        assert "TimedOut" in str(outcome["detail"])
+        match = re.search(r"killed (\[.*\])", str(outcome["detail"]))
+        assert match is not None
+        killed = ast.literal_eval(match.group(1))
+        assert len(killed) >= 2
+        for pid in killed:
+            assert _pid_is_alive(int(pid)) is False
 
 
 def _session_keyed_dicts(root: Any) -> list[tuple[str, dict[Any, Any]]]:

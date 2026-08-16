@@ -155,3 +155,22 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     decompile = _tool_docstring("ghidra.decompile")
     assert "decompiled" in decompile
     assert "truncated" in decompile
+
+
+def test_ghidra_refuses_an_oversized_export_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ghidra_client, "_MAX_EXPORT_BYTES", 64)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text('{"items": ["' + ("x" * 80) + '"]}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "too_large"

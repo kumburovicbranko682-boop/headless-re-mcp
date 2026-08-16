@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apktool.client import ApktoolClient
+import pytest
+
+from headless_re_mcp.backends.apktool.client import ApktoolClient, ApktoolError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -71,3 +73,37 @@ def test_apk_sign_names_apk_not_signed_apk(
     doc = _tool_docstring("apk.sign")
     assert "Answers with apk" in doc
     assert "debug_keystore" in doc
+    assert "verify" in doc
+
+
+def test_apk_sign_does_not_claim_signed_when_verify_fails(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "debug.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        if "verify" in cmd:
+            return "", "DOES NOT VERIFY", 1
+        out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(
+            apk,
+            out,
+            keystore=keystore,
+            keystore_password="android",
+            key_alias="androiddebugkey",
+        )
+    assert caught.value.code == "backend_error"
+    assert "not signed" in caught.value.message

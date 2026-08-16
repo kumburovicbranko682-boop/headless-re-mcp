@@ -17,6 +17,15 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+def _child_enum_limit(max_pids: int) -> int:
+    """UI discovery defaults to 16; kill walks may ask for more.
+
+    The hard cap is the kill-walk bound so a Chromium tree is not silently
+    truncated to the UI page size.
+    """
+    return max(1, min(int(max_pids), _MAX_KILL_DESCENDANTS))
+
+
 _TH32CS_SNAPPROCESS = 0x00000002
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_TERMINATE = 0x0001
@@ -63,7 +72,7 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
     """Return direct child PIDs of ``parent_pid`` (bounded, Toolhelp32)."""
     if os.name != "nt" or type(parent_pid) is not int or parent_pid <= 0:
         return []
-    limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
+    limit = _child_enum_limit(max_pids)
     kernel32 = ctypes.windll.kernel32
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1, 0xFFFFFFFF):
@@ -142,6 +151,30 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
 
     # Deepest last on the way in, so kill in reverse: a parent that respawns its
     # child cannot outlive the sweep.
+    for child in reversed(descendants):
+        with suppress(Exception):
+            _kill_pid(child)
+            killed.append(child)
+    return killed
+
+
+def terminate_pid_tree(pid: int) -> list[int]:
+    """Kill ``pid`` and its descendants when there is no Popen handle left.
+
+    Playwright's driver is started inside the library, so a wedged browser
+    session has a PID and nothing else. Enumerate first: once the parent is
+    gone the relationship is no longer in the snapshot.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    descendants: list[int] = []
+    if os.name == "nt":
+        with suppress(Exception):
+            descendants = collect_descendants(pid)
+    killed: list[int] = []
+    with suppress(Exception):
+        _kill_pid(pid)
+        killed.append(pid)
     for child in reversed(descendants):
         with suppress(Exception):
             _kill_pid(child)

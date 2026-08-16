@@ -60,11 +60,16 @@ async def stdio_server_with_parse_replies() -> Any:
 
     import anyio
     import anyio.lowlevel
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
     from mcp.shared.message import SessionMessage
     from mcp.types import JSONRPCMessage as RpcMessage
 
     stdin = anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace"))
     stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
+    read_stream_writer: MemoryObjectSendStream[SessionMessage]
+    read_stream: MemoryObjectReceiveStream[SessionMessage]
+    write_stream: MemoryObjectSendStream[SessionMessage]
+    write_stream_reader: MemoryObjectReceiveStream[SessionMessage]
     read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
     write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
     error_writer = write_stream.clone()

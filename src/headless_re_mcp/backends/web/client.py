@@ -24,6 +24,9 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
+from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
+
 JsonObject = dict[str, Any]
 T = TypeVar("T")
 
@@ -31,10 +34,12 @@ _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
+_MAX_CONSOLE_TEXT = 8 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
 _CALL_TIMEOUT = 60.0
+_OPENING = object()
 
 
 class WebError(RuntimeError):
@@ -43,6 +48,83 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
+    """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
+
+    A page that ``console.log``s a whole document would otherwise store that
+    string in the ring for as long as the session lives. Slice each argument
+    before joining so the huge original is not copied into the buffer.
+    """
+    parts: list[str] = []
+    remaining = _MAX_CONSOLE_TEXT
+    truncated = False
+    for argument in params.get("args") or []:
+        if remaining <= 0:
+            truncated = True
+            break
+        if not isinstance(argument, dict):
+            continue
+        if "value" in argument:
+            raw = argument["value"]
+        elif argument.get("description"):
+            raw = argument["description"]
+        else:
+            raw = argument.get("type", "")
+        piece = raw if isinstance(raw, str) else str(raw)
+        if parts:
+            if remaining <= 1:
+                truncated = True
+                break
+            remaining -= 1
+        if len(piece) > remaining:
+            piece = piece[:remaining]
+            remaining = 0
+            truncated = True
+        else:
+            remaining -= len(piece)
+        parts.append(piece)
+        if truncated:
+            break
+    return " ".join(parts), truncated
+
+
+def _spill_text(
+    text: str,
+    *,
+    artifact_dir: Path,
+    filename: str,
+    kind: str,
+) -> tuple[str, Path | None, bool]:
+    """Inline a prefix, spill the rest, or refuse when the capture cap is hit.
+
+    CDP already delivered the whole payload. Writing it to the session artifact
+    dir still fills the disk before retention runs: a single media response is
+    enough. Returns ``(inline, spill_path_or_none, truncated)``.
+    """
+    size = len(text)
+    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=size,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    if size <= _MAX_INLINE_BODY:
+        return text, None, False
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_text(text, encoding="utf-8", errors="replace")
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    return text[:_MAX_INLINE_BODY], out, True
 
 
 class _Runner:
@@ -108,7 +190,9 @@ class _Runner:
 
     def shutdown(self) -> None:
         self._closed = True
-        self._queue.put(None)
+        with contextlib.suppress(Exception):
+            self._queue.put(None)
+        self._thread.join(timeout=2.0)
 
 
 class _WebSession:
@@ -122,14 +206,21 @@ class _WebSession:
         self.cdp = cdp
         self.requests: OrderedDict[str, JsonObject] = OrderedDict()
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
+        self.requests_dropped = 0
+        self.console_dropped = 0
         # Bounded like the other two: scriptParsed fires for every script a page
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
+        self.scripts_dropped = 0
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
         self.runner: _Runner | None = None
+        # Node driver that owns Chromium. Playwright does not expose a PID;
+        # close from another thread cannot talk to the objects, so this is
+        # what a wedged session has to kill.
+        self.driver_pid: int | None = None
 
     def close(self) -> None:
         for closer in (self.context.close, self.browser.close, self.playwright.stop):
@@ -159,7 +250,7 @@ class WebBackend:
     def _get(self, session_id: str) -> _WebSession:
         with self._lock:
             handle = self._sessions.get(session_id)
-        if handle is None:
+        if not isinstance(handle, _WebSession):
             raise WebError(
                 "invalid_state", "web session not open; call web.open first", session_id=session_id
             )
@@ -175,22 +266,35 @@ class WebBackend:
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
         self._check_available()
-        from playwright.sync_api import sync_playwright
 
         with self._lock:
             if session_id in self._sessions:
                 raise WebError("invalid_state", "web session already open", session_id=session_id)
+            # Per-open token, not the shared _OPENING sentinel: close() pops
+            # the reservation, and a second open() must not look like the
+            # first launch still owns the slot.
+            opening = object()
+            self._sessions[session_id] = opening  # type: ignore[assignment]
+
+        from playwright.sync_api import sync_playwright
 
         runner = _Runner(f"playwright-{session_id[:8]}")
+        # Filled as soon as the node driver exists, so a timeout in launch or
+        # goto can still kill the tree from this thread.
+        pid_box: list[int] = []
 
         def build() -> tuple[_WebSession, JsonObject]:
             pw = sync_playwright().start()
+            pid = _playwright_driver_pid(pw)
+            if isinstance(pid, int) and pid > 0:
+                pid_box.append(pid)
             try:
                 browser = pw.chromium.launch(headless=headless)
                 context = browser.new_context(ignore_https_errors=True)
                 page = context.new_page()
                 cdp = context.new_cdp_session(page)
                 handle = _WebSession(pw, browser, context, page, cdp)
+                handle.driver_pid = pid
                 self._wire_events(handle)
                 if url:
                     page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
@@ -215,9 +319,18 @@ class WebBackend:
             handle, summary = runner.call(build, timeout=timeout + 30.0)
         except BaseException:
             runner.shutdown()
+            for pid in pid_box:
+                _reap_driver_pid(pid)
+            with self._lock:
+                if self._sessions.get(session_id) is opening:
+                    self._sessions.pop(session_id, None)
             raise
         handle.runner = runner
         with self._lock:
+            if self._sessions.get(session_id) is not opening:
+                runner.shutdown()
+                _reap_web_session(handle)
+                raise WebError("invalid_state", "web session was closed while opening")
             self._sessions[session_id] = handle
         return summary
 
@@ -241,6 +354,7 @@ class WebBackend:
                 }
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
+                    handle.requests_dropped += 1
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
@@ -259,22 +373,23 @@ class WebBackend:
                 }
                 while len(handle.scripts) > _MAX_SCRIPTS:
                     handle.scripts.popitem(last=False)
+                    handle.scripts_dropped += 1
 
         def on_console(params: JsonObject) -> None:
-            parts: list[str] = []
-            for argument in params.get("args") or []:
-                if not isinstance(argument, dict):
-                    continue
-                if "value" in argument:
-                    parts.append(str(argument["value"]))
-                elif argument.get("description"):
-                    parts.append(str(argument["description"]))
-                else:
-                    parts.append(str(argument.get("type", "")))
+            text, text_truncated = _clip_console_text(params)
+            entry: JsonObject = {
+                "type": str(params.get("type") or "log"),
+                "text": text,
+            }
+            if text_truncated:
+                entry["text_truncated"] = True
             with handle.lock:
-                handle.console.append(
-                    {"type": str(params.get("type") or "log"), "text": " ".join(parts)}
-                )
+                if (
+                    handle.console.maxlen is not None
+                    and len(handle.console) == handle.console.maxlen
+                ):
+                    handle.console_dropped += 1
+                handle.console.append(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
@@ -303,6 +418,10 @@ class WebBackend:
             handle = self._sessions.pop(session_id, None)
         if handle is None:
             return {"closed": False, "note": "no web session was open"}
+        # Opening reservations are bare object() tokens. Anything else is a
+        # live handle (or a test double) and must be torn down.
+        if type(handle) is object:
+            return {"closed": True, "note": "open was aborted"}
         runner = handle.runner
         if runner is None:
             handle.close()
@@ -316,6 +435,11 @@ class WebBackend:
                 runner.call(handle.close, timeout=20.0)
         if runner.wedged:
             clean = False
+            # Playwright objects cannot be touched from this thread, and a
+            # wedged runner will never run handle.close. The node driver is
+            # what still holds Chromium; killing it is the only close that
+            # works from here.
+            _reap_web_session(handle)
         runner.shutdown()
         return {"closed": True, "clean": clean}
 
@@ -323,8 +447,16 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.requests.values())
+            dropped = handle.requests_dropped
         window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+            "dropped": dropped,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
@@ -342,25 +474,35 @@ class WebBackend:
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
             return {**entry, "body_error": str(exc)}
+        if not isinstance(body, str):
+            body = str(body)
+        inline, spill, cut = _spill_text(
+            body,
+            artifact_dir=artifact_dir,
+            filename=f"body-{request_id.replace('.', '_')}.bin",
+            kind="response body",
+        )
         result = dict(entry)
-        if len(body) > _MAX_INLINE_BODY:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"body-{request_id.replace('.', '_')}.bin"
-            out.write_text(body, encoding="utf-8", errors="replace")
-            result["body_path"] = str(out)
-            result["body_truncated"] = True
-            result["body"] = body[:_MAX_INLINE_BODY]
-        else:
-            result["body"] = body
-            result["body_truncated"] = False
+        result["body"] = inline
+        result["body_truncated"] = cut
+        if spill is not None:
+            result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
+        capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
-            items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            held = list(handle.console)
+            dropped = handle.console_dropped
+        page = held[-capped:]
+        return {
+            "console": page,
+            "count": len(page),
+            "has_more": len(held) > capped,
+            "dropped": dropped,
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)
@@ -368,7 +510,11 @@ class WebBackend:
             values = list(handle.scripts.values())
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        return {
+            "scripts": values,
+            "count": len(values),
+            "has_more": handle.scripts_dropped > 0,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
@@ -383,17 +529,22 @@ class WebBackend:
                 "not_found", f"cannot fetch script source: {exc}", script_id=script_id
             ) from exc
         source = resp.get("scriptSource", "")
-        result: JsonObject = {"scriptId": script_id, "bytes": len(source)}
-        if len(source) > _MAX_INLINE_BODY:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"script-{script_id}.js"
-            out.write_text(source, encoding="utf-8", errors="replace")
-            result["source_path"] = str(out)
-            result["truncated"] = True
-            result["source"] = source[:_MAX_INLINE_BODY]
-        else:
-            result["source"] = source
-            result["truncated"] = False
+        if not isinstance(source, str):
+            source = str(source)
+        inline, spill, cut = _spill_text(
+            source,
+            artifact_dir=artifact_dir,
+            filename=f"script-{script_id}.js",
+            kind="script source",
+        )
+        result: JsonObject = {
+            "scriptId": script_id,
+            "bytes": len(source),
+            "source": inline,
+            "truncated": cut,
+        }
+        if spill is not None:
+            result["source_path"] = str(spill)
         return result
 
     def dom_snapshot(self, session_id: str) -> JsonObject:
@@ -422,7 +573,15 @@ class WebBackend:
                 handle.page.screenshot(path=str(out_path), full_page=full_page)
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"screenshot failed: {exc}") from exc
-            return {"path": str(out_path)}
+            size, over = capped_file_size(out_path, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+            if over:
+                raise WebError(
+                    "too_large",
+                    "screenshot exceeds capture cap",
+                    size=size,
+                    cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+                )
+            return {"path": str(out_path), "size": size}
 
         return self._runner(handle).call(work)
 
@@ -462,3 +621,35 @@ def _safe_title(page: Any) -> str:
         return str(page.title())
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _playwright_driver_pid(playwright: Any) -> int | None:
+    """PID of the node driver that owns Chromium.
+
+    Playwright does not publish this. The private chain is the only handle a
+    wedged session has left, because the objects themselves cannot be touched
+    from any thread other than the one that created them.
+    """
+    current: Any = playwright
+    for attr in ("_impl_obj", "_connection", "_transport", "_proc"):
+        current = getattr(current, attr, None)
+        if current is None:
+            return None
+    pid = getattr(current, "pid", None)
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
+_DRIVER_IMAGE_MARKERS = ("node", "chromium", "chrome", "playwright")
+
+
+def _reap_driver_pid(pid: int | None) -> None:
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    image = (process_image_path(pid) or "").casefold()
+    if not image or not any(marker in image for marker in _DRIVER_IMAGE_MARKERS):
+        return
+    terminate_pid_tree(pid)
+
+
+def _reap_web_session(handle: _WebSession) -> None:
+    _reap_driver_pid(getattr(handle, "driver_pid", None))

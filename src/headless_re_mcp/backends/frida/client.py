@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Iterable
 from typing import Any
 
 JsonObject = dict[str, Any]
+_ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -80,19 +82,27 @@ rpc.exports = { ping: function () { return 'root_bypass_loaded'; } };
 
 _ENUM_SCRIPT = """
 rpc.exports = {
-  modules: function () {
-    return Process.enumerateModules().map(function (m) {
-      return {name: m.name, base: m.base.toString(), size: m.size, path: m.path};
-    });
+  modules: function (limit) {
+    var all = Process.enumerateModules();
+    var items = [];
+    var cap = Math.max(0, limit);
+    for (var i = 0; i < all.length && items.length < cap; i++) {
+      var m = all[i];
+      items.push({name: m.name, base: m.base.toString(), size: m.size, path: m.path});
+    }
+    return {modules: items, total: all.length};
   },
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
       return {found: false, exports: []};
     }
-    var items = mod.enumerateExports().slice(0, limit).map(function (e) {
-      return {name: e.name, address: e.address.toString(), type: e.type};
-    });
+    var all = mod.enumerateExports();
+    var items = [];
+    for (var i = 0; i < all.length && items.length < limit; i++) {
+      var e = all[i];
+      items.push({name: e.name, address: e.address.toString(), type: e.type});
+    }
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
@@ -106,11 +116,24 @@ rpc.exports = {
   classes: function (filter, limit) {
     var out = [];
     Java.perform(function () {
-      Java.enumerateLoadedClassesSync().forEach(function (name) {
-        if (out.length < limit && (!filter || name.indexOf(filter) !== -1)) {
-          out.push(name);
+      try {
+        Java.enumerateLoadedClasses({
+          onMatch: function (name) {
+            if (filter && name.indexOf(filter) === -1) {
+              return;
+            }
+            out.push(name);
+            if (out.length >= limit) {
+              throw 'headless-re-mcp:class-cap';
+            }
+          },
+          onComplete: function () {}
+        });
+      } catch (e) {
+        if (String(e) !== 'headless-re-mcp:class-cap') {
+          throw e;
         }
-      });
+      }
     });
     return out;
   },
@@ -202,8 +225,14 @@ class FridaClient:
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            mods = list(script.exports_sync.modules())
             capped = max(1, min(int(limit), 256))
+            raw = script.exports_sync.modules(capped)
+            if isinstance(raw, dict):
+                held = list(raw.get("modules") or [])
+                total = int(raw.get("total") or len(held))
+            else:
+                held = list(raw or [])
+                total = len(held)
             items = [
                 {
                     "name": str(item.get("name", "")),
@@ -211,9 +240,15 @@ class FridaClient:
                     "size": int(item.get("size", 0) or 0),
                     "path": str(item.get("path", "")),
                 }
-                for item in mods[:capped]
+                for item in held[:capped]
+                if isinstance(item, dict)
             ]
-            return {"modules": items, "count": len(items), "total": len(mods)}
+            return {
+                "modules": items,
+                "count": len(items),
+                "total": total,
+                "has_more": total > len(items),
+            }
         finally:
             session.detach()
 
@@ -357,7 +392,12 @@ class FridaClient:
     def add_remote_device(self, endpoint: str) -> JsonObject:
         frida = self._need()
         try:
-            device = frida.get_device_manager().add_remote_device(endpoint)
+            mgr = frida.get_device_manager()
+            device = None
+            with contextlib.suppress(Exception):
+                device = mgr.get_device(endpoint, timeout=1)
+            if device is None:
+                device = mgr.add_remote_device(endpoint)
         except Exception as exc:  # noqa: BLE001
             raise FridaError(
                 "backend_error", f"failed to add remote device: {exc}", endpoint=endpoint
@@ -379,18 +419,41 @@ class FridaClient:
             }
             for app in apps[:capped]
         ]
-        return {"applications": items, "count": len(items), "total": len(apps)}
+        return {
+            "applications": items,
+            "count": len(items),
+            "total": len(apps),
+            "has_more": len(apps) > capped,
+        }
 
     def spawn(self, device_id: str | None, package: str) -> JsonObject:
         device = self._resolve_device(device_id)
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
+        pkg = package.strip()
+        if not _ANDROID_PACKAGE_RE.match(pkg):
+            raise FridaError(
+                "invalid_params",
+                "package must be an Android package id",
+                package=pkg,
+            )
+        pid: int | None = None
         try:
-            pid = device.spawn([package.strip()])
+            pid = int(device.spawn(pkg))
+        except Exception as exc:  # noqa: BLE001
+            raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
+        try:
             device.resume(pid)
         except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
-        return {"package": package.strip(), "pid": int(pid), "device": str(device_id or "local")}
+            with contextlib.suppress(Exception):
+                device.kill(pid)
+            raise FridaError(
+                "backend_error",
+                f"spawned pid {pid} but resume failed; process was killed: {exc}",
+                package=pkg,
+                pid=pid,
+            ) from exc
+        return {"package": pkg, "pid": pid, "device": str(device_id or "local")}
 
     def java_enumerate(
         self,

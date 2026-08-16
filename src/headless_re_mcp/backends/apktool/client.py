@@ -191,6 +191,21 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=scrubbed[:_MAX_STDERR],
             )
+        verify_timeout = min(60.0, max(5.0, float(timeout)))
+        _, verify_stderr, verify_code = _run(
+            [str(self.apksigner), "verify", str(out_apk)],
+            timeout=verify_timeout,
+        )
+        if verify_code != 0:
+            scrubbed = (
+                verify_stderr.replace(password, "***") if password else verify_stderr
+            )
+            raise ApktoolError(
+                "backend_error",
+                "apksigner reported the output is not signed",
+                exit_code=verify_code,
+                stderr=scrubbed[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
             "size": out_apk.stat().st_size,

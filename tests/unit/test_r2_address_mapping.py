@@ -108,6 +108,21 @@ def test_parse_r2_json_trailing_array() -> None:
     assert parsed[0]["name"] == "entry0"
 
 
+def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> None:
+    """pdj emits ``mov eax, dword [rbp+0x10]``. rfind('[') used to slice there."""
+    raw = json.dumps(
+        [
+            {"offset": 0x140001000, "opcode": "mov eax, dword [rbp+0x10]"},
+            {"offset": 0x140001007, "opcode": "ret"},
+        ]
+    )
+    parsed = parse_r2_json("Cannot find function\n" + raw)
+    assert isinstance(parsed, list)
+    assert len(parsed) == 2
+    assert parsed[0]["opcode"].endswith("[rbp+0x10]")
+    assert parsed[1]["opcode"] == "ret"
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,

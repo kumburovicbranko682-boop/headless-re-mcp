@@ -26,6 +26,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -445,22 +446,14 @@ def probe_vmp_dumper(executable: Path, *, timeout: float = 5.0) -> tuple[bool, s
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = subprocess.run([str(exe)], **options)
-    except (OSError, subprocess.TimeoutExpired):
+        completed = run_bounded([str(exe)], timeout=timeout, creationflags=flags)
+    except (OSError, TimedOut):
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = ((completed.stdout or b"") + b"\n" + (completed.stderr or b"")).decode(
+        "utf-8", "replace"
+    ).strip()
     lowered = text.casefold()
     markers = (
         "vmp",

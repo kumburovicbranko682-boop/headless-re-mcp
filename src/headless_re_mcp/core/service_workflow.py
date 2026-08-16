@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
@@ -168,6 +169,8 @@ class WorkflowAnalysisMixin:
 
         def _require_event_cursor(self, runtime: _BackendRuntime) -> DebugEventCursor: ...
 
+        def _runtime(self, session_id: str, kind: BackendKind) -> _BackendRuntime: ...
+
     def workflow_status(self, session_id: str) -> Result[JsonObject]:
         try:
             self.registry.get(session_id)
@@ -233,6 +236,12 @@ class WorkflowAnalysisMixin:
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
 
+        try:
+            runtime = self._runtime(session_id, BackendKind.X64DBG)
+            runtime.navigation_cancel.set()
+        except Exception:
+            pass
+
         def action(runtime: _BackendRuntime) -> JsonObject:
             workflow = self._require_mutable_workflow(session_id)
             transition = cancel_workflow_navigation(workflow.state)
@@ -244,6 +253,10 @@ class WorkflowAnalysisMixin:
                 timeout=validated,
                 status=WorkflowRunStatus.CANCELLED,
             )
+            with suppress(Exception):
+                self._workflow_ensure_paused_locked(
+                    session_id, runtime, timeout=validated
+                )
             return {"workflow": updated.to_dict()}
 
         return self._workflow_request(session_id, action)

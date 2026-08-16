@@ -95,6 +95,27 @@ def _align(value: int, alignment: int) -> int:
     return (value + alignment - 1) // alignment * alignment
 
 
+def _rva_to_file_offset(
+    headers: JsonObject, rva: int, *, length: int, image: bytes | bytearray
+) -> int:
+    """File offset of an RVA range that already exists in the image."""
+    if type(rva) is not int or rva < 0 or type(length) is not int or length <= 0:
+        raise PeRebuildError("IAT range is not a usable file offset")
+    for section in headers["sections"]:
+        va = int(section["virtual_address"])
+        raw_size = int(section["raw_size"])
+        raw_offset = int(section["raw_offset"])
+        if raw_size <= 0:
+            continue
+        if va <= rva and rva + length <= va + raw_size:
+            offset = raw_offset + (rva - va)
+            if offset >= 0 and offset + length <= len(image):
+                return offset
+    raise PeRebuildError(
+        f"IAT RVA {rva:#x} size {length:#x} is not a writable file range in the dump"
+    )
+
+
 def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     """Parse DOS/NT/section headers from a runtime module image or file."""
     if len(image) < 0x40 or image[:2] != b"MZ":
@@ -420,22 +441,35 @@ def rebuild_imports(
 
     ilt_size = thunk_slots * pointer_size
     iat_size = ilt_size
-    names_rva_base = new_va + descriptor_size + ilt_size + iat_size
+    placed_iat_rva = iat_rva
+    in_place_iat = placed_iat_rva is not None
+    iat_file_off = 0
+    if placed_iat_rva is not None:
+        iat_file_off = _rva_to_file_offset(
+            headers, placed_iat_rva, length=iat_size, image=out
+        )
     # Pad name blob
     while len(name_blob) % 2:
         name_blob.append(0)
+    iat_in_section = 0 if in_place_iat else iat_size
+    names_rva_base = new_va + descriptor_size + ilt_size + iat_in_section
 
-    section_payload = bytearray(descriptor_size + ilt_size + iat_size + len(name_blob))
+    section_payload = bytearray(descriptor_size + ilt_size + iat_in_section + len(name_blob))
 
     ilt_cursor = descriptor_size
     iat_cursor = descriptor_size + ilt_size
+    in_place_cursor = 0
     desc_cursor = 0
-    first_iat_rva = new_va + iat_cursor
+    first_iat_rva = placed_iat_rva if placed_iat_rva is not None else new_va + iat_cursor
 
     for module_name, apis in modules:
         key = module_name.lower()
         ilt_rva = new_va + ilt_cursor
-        iat_rva_local = new_va + iat_cursor
+        iat_rva_local = (
+            placed_iat_rva + in_place_cursor
+            if placed_iat_rva is not None
+            else new_va + iat_cursor
+        )
         name_rva = names_rva_base + dll_offsets[key]
         struct.pack_into(
             "<IIIII",
@@ -456,15 +490,29 @@ def rebuild_imports(
                 value = names_rva_base + name_offsets[api_key]
             if pe32_plus:
                 struct.pack_into("<Q", section_payload, ilt_cursor, value)
-                struct.pack_into("<Q", section_payload, iat_cursor, value)
+                if in_place_iat:
+                    struct.pack_into("<Q", out, iat_file_off + in_place_cursor, value)
+                else:
+                    struct.pack_into("<Q", section_payload, iat_cursor, value)
             else:
                 struct.pack_into("<I", section_payload, ilt_cursor, value & 0xFFFFFFFF)
-                struct.pack_into("<I", section_payload, iat_cursor, value & 0xFFFFFFFF)
+                if in_place_iat:
+                    struct.pack_into(
+                        "<I", out, iat_file_off + in_place_cursor, value & 0xFFFFFFFF
+                    )
+                else:
+                    struct.pack_into("<I", section_payload, iat_cursor, value & 0xFFFFFFFF)
             ilt_cursor += pointer_size
-            iat_cursor += pointer_size
+            if in_place_iat:
+                in_place_cursor += pointer_size
+            else:
+                iat_cursor += pointer_size
         # null terminator
         ilt_cursor += pointer_size
-        iat_cursor += pointer_size
+        if in_place_iat:
+            in_place_cursor += pointer_size
+        else:
+            iat_cursor += pointer_size
 
     # null descriptor already zeroed
     section_payload[descriptor_size + ilt_size + iat_size :] = name_blob
@@ -504,12 +552,17 @@ def rebuild_imports(
     # Point import + IAT directories at new section.
     pe32_plus_flag = headers["architecture"] == "x64"
     dir_off = pe_offset + 24 + (112 if pe32_plus_flag else 96)
+    dir_count = len(headers["directories"])
+    if dir_count < 13:
+        raise PeRebuildError(
+            f"NumberOfRvaAndSizes is {dir_count}; import rebuild needs at least 13"
+        )
     struct.pack_into("<II", out, dir_off + _DIR_IMPORT * 8, new_va, descriptor_size)
     struct.pack_into(
         "<II",
         out,
         dir_off + _DIR_IAT * 8,
-        first_iat_rva if iat_rva is None else iat_rva,
+        first_iat_rva,
         iat_size,
     )
     # Clear bound import.
@@ -519,13 +572,13 @@ def rebuild_imports(
     report.changes.append(f"import directory -> RVA {new_va:#x} size {descriptor_size:#x}")
     report.changes.append(f"IAT directory -> RVA {first_iat_rva:#x} size {iat_size:#x}")
     report.changes.append(f"modules={len(modules)} unresolved_thunks={unresolved}")
-    if iat_rva is not None and iat_rva != first_iat_rva:
-        report.warnings.append(
-            f"caller-supplied iat_rva={iat_rva:#x} recorded; "
-            f"rebuilt IAT lives at {first_iat_rva:#x}"
+    if in_place_iat:
+        report.changes.append(
+            f"patched IAT in-place at RVA {first_iat_rva:#x} size {iat_size:#x}"
         )
+    else:
+        report.unfixed.append("original IAT bytes at runtime VA are not patched in-place")
     report.unfixed.append("forwarded exports are not expanded")
-    report.unfixed.append("original IAT bytes at runtime VA are not patched in-place")
     report.unfixed.append("PE checksum not recalculated")
     return bytes(out), report
 

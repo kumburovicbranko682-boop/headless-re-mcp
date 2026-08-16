@@ -36,8 +36,8 @@ class ModuleIdentity:
     @classmethod
     def from_session(cls, session: Session) -> ModuleIdentity:
         return cls(
-            name=session.require_binary().name,
-            path=str(session.require_binary()),
+            name=session.require_pe().name,
+            path=str(session.require_pe()),
             sha256=session.sha256 or "",
             architecture=session.require_architecture(),
         )

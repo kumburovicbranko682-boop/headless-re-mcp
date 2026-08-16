@@ -52,6 +52,11 @@ _TOOL_THREADS = 8
 # exactly that shape. Past this many still running, saying so beats adding to it.
 _MAX_STUCK_TOOL_THREADS = 32
 
+# AgentStore rejects a message above this size. Enforce the same ceiling while
+# text is arriving so a peer cannot make the run retain an arbitrarily large
+# response only to have the finished message rejected by the store.
+_MAX_ASSISTANT_RESPONSE_BYTES = 1_048_576
+
 
 class AgentOrchestrator:
     def __init__(
@@ -241,6 +246,7 @@ class AgentOrchestrator:
                 raise RuntimeError(RUN_ROUNDS_EXHAUSTED)
             compacted = compact_messages(conversation, threshold_percent=profile.context_compression_threshold_percent)
             text_parts: list[str] = []
+            text_bytes = 0
             completed_calls: tuple[ProviderToolCall, ...] = ()
             stream_completed = False
             async for event in provider.stream_chat(
@@ -254,6 +260,12 @@ class AgentOrchestrator:
                     await self._finish_cancel(run_id)
                     return
                 if event.type == "text_delta" and event.text:
+                    text_bytes += len(event.text.encode("utf-8"))
+                    if text_bytes > _MAX_ASSISTANT_RESPONSE_BYTES:
+                        raise RuntimeError(
+                            "provider_response_too_large: assistant response exceeded "
+                            f"{_MAX_ASSISTANT_RESPONSE_BYTES:,} bytes"
+                        )
                     text_parts.append(event.text)
                     self.store.append_event(run_id, "message.delta", {"delta": event.text})
                 elif event.type == "completed":

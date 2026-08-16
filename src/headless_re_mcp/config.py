@@ -251,7 +251,7 @@ class Settings:
                 os.environ.get("HEADLESS_RE_WATCHDOG_AUTO_RECOVER_BACKENDS"),
                 data.get("watchdog_auto_recover_backends", False),
             ),
-            isolation_command=_as_tuple(
+            isolation_command=_as_command(
                 os.environ.get("HEADLESS_RE_ISOLATION_COMMAND"),
                 data.get("isolation_command", ()),
             ),
@@ -465,6 +465,25 @@ def _as_bool(raw: str | None, default: object) -> bool:
     if raw is None:
         return bool(default)
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _as_command(raw: str | None, default: object) -> tuple[str, ...]:
+    """Read an isolation command as argv.
+
+    A string (env var or JSON string) is split the way an operator would write
+    it, including Windows paths. A JSON array is already argv. ``_as_tuple``
+    is the wrong tool: it splits on commas and de-duplicates, so
+    ``pwsh -File C:\\vm\\revert.ps1`` becomes one un-runnable program name.
+    """
+    from headless_re_mcp.core.isolation import _split_command
+
+    if raw is not None:
+        return _split_command(raw)
+    if isinstance(default, str):
+        return _split_command(default)
+    if isinstance(default, (list, tuple)):
+        return tuple(str(part) for part in default if str(part).strip())
+    return ()
 
 
 def _as_tuple(raw: str | None, default: object) -> tuple[str, ...]:

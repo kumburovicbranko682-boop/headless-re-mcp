@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import sys
+from contextlib import suppress
+from pathlib import Path
 
 # Longest any single bounded debugger wait may be asked to run.
 MAX_WORKFLOW_TIMEOUT = 300.0
@@ -32,6 +35,16 @@ MAX_STATIC_INLINE_TEXT = 64 * 1024
 
 # Commands accepted by one static.batch call.
 MAX_STATIC_BATCH_COMMANDS = 32
+
+# Capture directories that never enter the artifact table. Device screenshots
+# and jsre unpack trees are keyed by serial or by a throwaway uuid, so the
+# retention walker cannot see them; without a local cap they grow for as long
+# as the service lives.
+UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
+UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+JSRE_UNPACK_MAX_ENTRIES = 8
+JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
+_DIR_SIZE_FILE_CAP = 4096
 
 
 class _MemoryStatusEx(ctypes.Structure):
@@ -81,3 +94,91 @@ def rebuild_would_exhaust_memory(dump_bytes: int) -> tuple[bool, int, int | None
     if available is None:
         return False, estimate, None
     return estimate > available * PE_REBUILD_MEMORY_HEADROOM, estimate, available
+
+
+def capped_file_size(path: Path, *, cap: int) -> tuple[int, bool]:
+    """Size of a just-written file, deleting it when it is over ``cap``.
+
+    Capture directories keep the newest entry even when it alone exceeds the
+    byte budget, so a single huge screenshot or pull would sit on disk for the
+    life of the process. Callers that just wrote a path should refuse it.
+    Returns ``(size, over_cap)``.
+    """
+    try:
+        size = int(path.stat().st_size)
+    except OSError:
+        return 0, False
+    if size > cap:
+        with suppress(OSError):
+            path.unlink()
+        return size, True
+    return size, False
+
+
+def prune_capped_dir(
+    directory: Path,
+    *,
+    max_entries: int,
+    max_bytes: int,
+) -> int:
+    """Delete oldest children until both caps hold. Never removes the newest.
+
+    Capture directories that are not in the artifact table otherwise grow for
+    as long as the service lives, and the retention walker cannot see them.
+    The newest entry is kept so a caller that just wrote a path still finds it.
+    """
+    try:
+        if not directory.is_dir():
+            return 0
+        children = list(directory.iterdir())
+    except OSError:
+        return 0
+    entries: list[tuple[float, Path, int]] = []
+    total = 0
+    for child in children:
+        try:
+            stat = child.stat()
+            size = int(stat.st_size) if child.is_file() else _dir_size(child)
+            entries.append((float(stat.st_mtime), child, size))
+            total += size
+        except OSError:
+            continue
+    if not entries:
+        return 0
+    entries.sort(key=lambda item: item[0])
+    removed = 0
+    while len(entries) > 1 and (len(entries) > max_entries or total > max_bytes):
+        _mtime, path, size = entries.pop(0)
+        if _remove_entry(path):
+            total = max(0, total - size)
+            removed += 1
+    return removed
+
+
+def _dir_size(directory: Path) -> int:
+    total = 0
+    seen = 0
+    try:
+        for child in directory.rglob("*"):
+            try:
+                if child.is_file():
+                    total += child.stat().st_size
+                    seen += 1
+                    if seen >= _DIR_SIZE_FILE_CAP:
+                        break
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def _remove_entry(path: Path) -> bool:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return True
+    except OSError:
+        return False

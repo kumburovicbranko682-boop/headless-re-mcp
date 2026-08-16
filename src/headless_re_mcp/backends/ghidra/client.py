@@ -13,6 +13,7 @@ JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
+_MAX_EXPORT_BYTES = 2_000_000
 
 
 class GhidraError(RuntimeError):
@@ -200,6 +201,18 @@ class GhidraClient:
                 "backend_error",
                 "export JSON missing after postScript",
                 stderr=stderr[:2000],
+            )
+        try:
+            size = int(out_path.stat().st_size)
+        except OSError as exc:
+            raise GhidraError("backend_error", f"export JSON unreadable: {exc}") from exc
+        if size > _MAX_EXPORT_BYTES:
+            raise GhidraError(
+                "too_large",
+                "export JSON exceeds cap",
+                path=str(out_path),
+                size=size,
+                cap=_MAX_EXPORT_BYTES,
             )
         try:
             payload = json.loads(out_path.read_text(encoding="utf-8"))

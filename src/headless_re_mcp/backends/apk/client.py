@@ -19,6 +19,14 @@ JsonObject = dict[str, Any]
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
+_MAX_STRINGS_COLLECT = 5000
+_MAX_CLASSES_COLLECT = 10_000
+_MAX_METHODS_COLLECT = 2000
+_MAX_NATIVE_LIBS = 256
+_MAX_COMPONENT_NAMES = 256
+_MAX_PERMISSIONS = 256
+_MAX_CERTIFICATES = 32
+_MAX_MANIFEST_CHARS = 200_000
 
 
 class ApkError(RuntimeError):
@@ -27,6 +35,18 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
+    items: list[str] = []
+    has_more = False
+    for item in values or []:
+        if len(items) >= limit:
+            has_more = True
+            break
+        items.append(str(item))
+    items.sort()
+    return items, has_more
 
 
 class _ParsedApk:
@@ -171,19 +191,26 @@ class ApkClient:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
+        return {
+            "package": apk.get_package(),
+            "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+        }
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared = sorted(apk.get_permissions())
+        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
         try:
-            requested = sorted(apk.get_requested_permissions())
+            requested, requested_more = _cap_names(
+                apk.get_requested_permissions(), _MAX_PERMISSIONS
+            )
         except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested = declared
+            requested, requested_more = declared, declared_more
         return {
             "permissions": declared,
             "requested_permissions": requested,
             "count": len(declared),
+            "has_more": declared_more or requested_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:
@@ -193,7 +220,18 @@ class ApkClient:
             names = apk.get_signature_names()
         except Exception:  # noqa: BLE001
             names = []
+        sig_files: list[str] = []
+        files_more = False
+        for name in names or []:
+            if len(sig_files) >= _MAX_CERTIFICATES:
+                files_more = True
+                break
+            sig_files.append(str(name))
+        certs_more = False
         for cert in apk.get_certificates():
+            if len(items) >= _MAX_CERTIFICATES:
+                certs_more = True
+                break
             try:
                 items.append(
                     {
@@ -208,42 +246,71 @@ class ApkClient:
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
         return {
-            "signature_files": list(names),
+            "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            "has_more": certs_more or files_more,
         }
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
+        services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
+        receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
+        providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities,
+            "services": services,
+            "receivers": receivers,
+            "providers": providers,
             "main_activity": apk.get_main_activity(),
+            "has_more": a_more or s_more or r_more or p_more,
         }
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        libs = sorted(name for name in apk.get_files() if name.startswith("lib/"))
-        abis = sorted(
-            {name.split("/")[1] for name in libs if len(name.split("/")) >= 3}
-        )
-        return {"native_libs": libs, "abis": abis, "count": len(libs)}
+        libs: list[str] = []
+        abis: set[str] = set()
+        has_more = False
+        for name in apk.get_files() or []:
+            text = str(name)
+            if not text.startswith("lib/"):
+                continue
+            parts = text.split("/")
+            if len(parts) >= 3:
+                abis.add(parts[1])
+            if len(libs) >= _MAX_NATIVE_LIBS:
+                has_more = True
+                continue
+            libs.append(text)
+        libs.sort()
+        return {
+            "native_libs": libs,
+            "abis": sorted(abis),
+            "count": len(libs),
+            "has_more": has_more,
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
-        names = sorted(
-            klass.name
-            for klass in parsed.analysis.get_classes()
-            if not klass.is_external()
-        )
+        names: list[str] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if len(names) >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            names.append(klass.name)
+        names.sort()
         window = names[offset : offset + limit]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
             "offset": offset,
+            "has_more": offset + len(window) < len(names),
+            "scan_capped": scan_more,
         }
 
     def methods(
@@ -266,8 +333,12 @@ class ApkClient:
         if not found:
             raise ApkError("not_found", "class not found", class_name=class_name)
         methods: list[JsonObject] = []
+        scan_more = False
         for klass in found:
             for method in klass.get_methods():
+                if len(methods) >= _MAX_METHODS_COLLECT:
+                    scan_more = True
+                    break
                 methods.append(
                     {
                         "name": method.name,
@@ -275,6 +346,8 @@ class ApkClient:
                         "access": str(getattr(method, "access", "")),
                     }
                 )
+            if scan_more:
+                break
         window = methods[offset : offset + limit]
         return {
             "class_name": found[0].name,
@@ -282,22 +355,28 @@ class ApkClient:
             "count": len(window),
             "total": len(methods),
             "offset": offset,
+            "has_more": offset + len(window) < len(methods),
+            "scan_capped": scan_more,
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        values = sorted(
-            {
-                str(item.get_value())[:_MAX_STRING_LEN]
-                for item in parsed.analysis.get_strings()
-            }
-        )
+        seen: set[str] = set()
+        scan_more = False
+        for item in parsed.analysis.get_strings():
+            if len(seen) >= _MAX_STRINGS_COLLECT:
+                scan_more = True
+                break
+            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+        values = sorted(seen)
         window = values[offset : offset + limit]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
             "offset": offset,
+            "has_more": offset + len(window) < len(values),
+            "scan_capped": scan_more,
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

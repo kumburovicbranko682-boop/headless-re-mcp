@@ -67,11 +67,15 @@ class FridaDeviceMixin:
             client = FridaClient()
             if endpoint.strip():
                 info = client.add_remote_device(endpoint.strip())
-                resolved_id = endpoint.strip()
+                resolved_id = str(info.get("id") or endpoint.strip())
             else:
-                client._resolve_device(device_id)
-                resolved_id = device_id
-                info = {"id": device_id}
+                device = client._resolve_device(device_id)
+                resolved_id = str(getattr(device, "id", "") or device_id)
+                info = {
+                    "id": resolved_id,
+                    "name": str(getattr(device, "name", "")),
+                    "type": str(getattr(device, "type", "")),
+                }
             self._save_auth(session_id, {"device_id": resolved_id, "pids": [], "packages": []})
             _record_backend(self, session_id, "frida", endpoint=resolved_id)
             _timeline_append(
@@ -98,7 +102,9 @@ class FridaDeviceMixin:
     ) -> Result[JsonObject]:
         try:
             self.registry.get(session_id)
-            backend = AdbBackend(getattr(self.settings, "adb", None))
+            backend = getattr(self, "_adb_backend", None) or AdbBackend(
+                getattr(self.settings, "adb", None)
+            )
             binary = server_binary.strip() or (
                 str(self.settings.frida_server)
                 if getattr(self.settings, "frida_server", None)

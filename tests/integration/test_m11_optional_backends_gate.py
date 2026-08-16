@@ -168,9 +168,7 @@ def test_m11_doctor_optional_backends_do_not_block_core_ready() -> None:
     required = {
         "python",
         "ida_idalib",
-        "x64dbg_source",
         "x64dbg_headless_binaries",
-        "native_toolchain",
     }
     core = tuple(
         Probe(name, ProbeStatus.READY, f"{name} ready") for name in sorted(required)

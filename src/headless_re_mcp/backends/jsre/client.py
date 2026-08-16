@@ -18,6 +18,29 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
+_MAX_LISTED_FILES = 2000
+_MAX_COUNTED_FILES = 50_000
+
+
+def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
+    names: list[str] = []
+    total = 0
+    has_more = False
+    if not root.is_dir():
+        return [], 0, False
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        total += 1
+        if len(names) < cap:
+            names.append(str(path.relative_to(root)))
+        else:
+            has_more = True
+        if total >= _MAX_COUNTED_FILES:
+            has_more = True
+            break
+    names.sort()
+    return names, total, has_more
 
 
 class JsReError(RuntimeError):
@@ -88,11 +111,7 @@ class JsClient:
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )
-        files = (
-            sorted(str(p.relative_to(out_dir)) for p in out_dir.rglob("*") if p.is_file())
-            if out_dir.is_dir()
-            else []
-        )
+        files, file_count, has_more = _capped_file_listing(out_dir, cap=_MAX_LISTED_FILES)
         if code != 0 and not files:
             raise JsReError(
                 "backend_error",
@@ -100,7 +119,12 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        return {
+            "output_dir": str(out_dir),
+            "file_count": file_count,
+            "files": files,
+            "has_more": has_more,
+        }
 
 
 class WasmClient:

@@ -72,9 +72,9 @@ def test_doctor_ready_ignores_optional_backend_missing() -> None:
         probes=(
             Probe("python", ProbeStatus.READY, "ok"),
             Probe("ida_idalib", ProbeStatus.READY, "ok"),
-            Probe("x64dbg_source", ProbeStatus.READY, "ok"),
             Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ok"),
-            Probe("native_toolchain", ProbeStatus.READY, "ok"),
+            Probe("x64dbg_source", ProbeStatus.MISSING, "missing"),
+            Probe("native_toolchain", ProbeStatus.MISSING, "missing"),
             Probe("radare2", ProbeStatus.MISSING, "missing"),
             Probe("ghidra", ProbeStatus.MISSING, "missing"),
             Probe("frida", ProbeStatus.MISSING, "missing"),

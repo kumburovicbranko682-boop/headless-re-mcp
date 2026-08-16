@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -21,6 +22,12 @@ from typing import Any
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+_REPLAY_WAIT_S = 15.0
+# The ring is count-capped, but each slot can still hold a multi-megabyte
+# request or response. Two thousand of those is the overnight OOM the count
+# cap was supposed to prevent.
+_MAX_STORED_BODY = 2 * 1024 * 1024
+_OMITTED_BODY = object()
 
 
 class ProxyError(RuntimeError):
@@ -106,6 +113,24 @@ def _uninstall_master_logging(
                 root.removeHandler(candidate)
 
 
+def _content_len(part: Any) -> int:
+    if part is None:
+        return 0
+    content = getattr(part, "raw_content", None)
+    if not content:
+        return 0
+    try:
+        return len(content)
+    except TypeError:
+        return 0
+
+
+def _flow_stored_bytes(flow: Any) -> int:
+    return _content_len(getattr(flow, "request", None)) + _content_len(
+        getattr(flow, "response", None)
+    )
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -126,25 +151,27 @@ class _FlowRecorder:
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
         req = flow.request
         resp = flow.response
+        omitted = _flow_stored_bytes(flow) > _MAX_STORED_BODY
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
-            self._raw[flow_id] = flow
+            self._raw[flow_id] = _OMITTED_BODY if omitted else flow
             # Evict oldest raw flows in lockstep with the summary ring so the
             # two views can never disagree about which flows are retrievable.
             while len(self._raw) > self._capacity:
                 self._raw.popitem(last=False)
-            self.flows.append(
-                {
-                    "id": flow_id,
-                    "seq": self._seq,
-                    "method": req.method,
-                    "url": req.pretty_url,
-                    "host": req.host,
-                    "status": getattr(resp, "status_code", None),
-                    "content_type": resp.headers.get("content-type", "") if resp else "",
-                }
-            )
+            entry: JsonObject = {
+                "id": flow_id,
+                "seq": self._seq,
+                "method": req.method,
+                "url": req.pretty_url,
+                "host": req.host,
+                "status": getattr(resp, "status_code", None),
+                "content_type": resp.headers.get("content-type", "") if resp else "",
+            }
+            if omitted:
+                entry["body_omitted"] = True
+            self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -289,11 +316,30 @@ class ProxyBackend:
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")
-        inst = _ProxyInstance(host, port)
-        inst.start()
-        with self._lock:
+            # Reserve before listen: two workers racing start() used to each
+            # bind a port, and only the last write to this dict was tracked.
+            inst = _ProxyInstance(host, port)
             self._instances[session_id] = inst
-        return {"running": True, "host": host, "port": port, "endpoint": f"{host}:{port}"}
+        try:
+            inst.start()
+        except BaseException:
+            with self._lock:
+                if self._instances.get(session_id) is inst:
+                    self._instances.pop(session_id, None)
+            with contextlib.suppress(Exception):
+                inst.stop()
+            raise
+        with self._lock:
+            if self._instances.get(session_id) is inst:
+                return {
+                    "running": True,
+                    "host": host,
+                    "port": port,
+                    "endpoint": f"{host}:{port}",
+                }
+        with contextlib.suppress(Exception):
+            inst.stop()
+        raise ProxyError("invalid_state", "proxy was stopped while starting")
 
     def stop(self, session_id: str) -> JsonObject:
         with self._lock:
@@ -320,7 +366,17 @@ class ProxyBackend:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
         window = items[offset : offset + limit]
-        return {"flows": window, "count": len(window), "total": len(items), "offset": offset}
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+            "dropped": dropped,
+        }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)
@@ -329,6 +385,12 @@ class ProxyBackend:
             raise ProxyError(
                 "not_found",
                 "unknown flow id (it may have been evicted from the capture ring)",
+                flow_id=flow_id,
+            )
+        if flow is _OMITTED_BODY:
+            raise ProxyError(
+                "too_large",
+                "flow body was not retained",
                 flow_id=flow_id,
             )
         req = flow.request
@@ -366,11 +428,36 @@ class ProxyBackend:
         master = inst._master
         if flow is None:
             raise ProxyError("not_found", "unknown flow id", flow_id=flow_id)
+        if flow is _OMITTED_BODY:
+            raise ProxyError(
+                "too_large",
+                "flow body was not retained; cannot replay",
+                flow_id=flow_id,
+            )
         if master is None or inst._loop is None:
             raise ProxyError("invalid_state", "proxy is not running")
         try:
             new_flow = flow.copy()
-            inst._loop.call_soon_threadsafe(master.commands.call, "replay.client", [new_flow])
+            done: concurrent.futures.Future[Any] = concurrent.futures.Future()
+
+            def _run() -> None:
+                try:
+                    master.commands.call("replay.client", [new_flow])
+                except Exception as exc:  # noqa: BLE001
+                    if not done.done():
+                        done.set_exception(exc)
+                    return
+                if not done.done():
+                    done.set_result(True)
+
+            inst._loop.call_soon_threadsafe(_run)
+            done.result(timeout=_REPLAY_WAIT_S)
+        except concurrent.futures.TimeoutError as exc:
+            raise ProxyError(
+                "timeout", "replay did not complete", flow_id=flow_id
+            ) from exc
+        except ProxyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}

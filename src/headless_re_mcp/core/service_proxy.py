@@ -111,7 +111,9 @@ class ProxyAnalysisMixin:
                     "not_found",
                     "mitmproxy CA not found; start the proxy once to generate ~/.mitmproxy",
                 )
-            backend = AdbBackend(getattr(self.settings, "adb", None))
+            backend = getattr(self, "_adb_backend", None) or AdbBackend(
+                getattr(self.settings, "adb", None)
+            )
             remote_tmp = "/data/local/tmp/mitmproxy-ca-cert.pem"
             backend.push(serial, str(cert), remote_tmp)
             data = {

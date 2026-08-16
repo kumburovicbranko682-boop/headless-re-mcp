@@ -17,6 +17,8 @@ from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any, Final
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
 JsonObject = dict[str, Any]
 
 DEFAULT_TIMEOUT: Final[float] = 120.0
@@ -278,6 +280,9 @@ def _capture_process(
 ) -> _ProcessCapture:
     try:
         process = subprocess.Popen(argv, **_creation_options())
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        assign_to_process_group(process.pid)
     except FileNotFoundError as exc:
         raise De4dotError(
             De4dotErrorCode.EXECUTABLE_NOT_FOUND,
@@ -335,6 +340,17 @@ def _capture_process(
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    leftover_children = False
+    if not timed_out:
+        leftover_children = stdout_thread.is_alive() or stderr_thread.is_alive()
+        if not leftover_children and process.pid:
+            from headless_re_mcp.core.process_tree import collect_descendants
+
+            leftover_children = bool(collect_descendants(int(process.pid)))
+    if leftover_children:
+        _terminate_process(process)
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
     with suppress(OSError):
         stdout_pipe.close()
     with suppress(OSError):
@@ -371,24 +387,16 @@ def probe_de4dot_version(executable: Path, *, timeout: float = 5.0) -> tuple[boo
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     for args in ([str(exe)], [str(exe), "-h"], [str(exe), "--help"]):
         try:
-            completed = subprocess.run(args, **options)
-        except (OSError, subprocess.TimeoutExpired):
+            completed = run_bounded(args, timeout=timeout, creationflags=flags)
+        except (OSError, TimedOut):
             continue
-        text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        text = ((completed.stdout or b"") + b"\n" + (completed.stderr or b"")).decode(
+            "utf-8", "replace"
+        ).strip()
         lowered = text.casefold()
         if "de4dot" in lowered or completed.returncode in {0, 1}:
             return True, text[:2000]
-    return True, ""
+    return False, ""

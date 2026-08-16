@@ -376,3 +376,86 @@ class TestApktoolBoundaries:
             client.decode(apk, out)
         assert info.value.code == "backend_error"
         assert info.value.details.get("exit_code") == 1
+
+
+class TestPeOnlyToolsRefuseApkSessions:
+    def test_detect_dotnet_and_unpack_return_target_mismatch(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            assert created.ok, created.error
+            session_id = str(created.data["session"]["id"])
+            detect = service.detect_scan(session_id, use_die=False)
+            assert detect.ok is False
+            assert detect.error is not None
+            assert detect.error.code == "target_mismatch"
+            dotnet = service.dotnet_inspect(session_id)
+            assert dotnet.ok is False
+            assert dotnet.error is not None
+            assert dotnet.error.code == "target_mismatch"
+            unpack = service.unpack_upx_test(session_id)
+            assert unpack.ok is False
+            assert unpack.error is not None
+            assert unpack.error.code == "target_mismatch"
+        finally:
+            service.close_all()
+
+    def test_static_and_dynamic_open_leave_an_apk_session_created(
+        self, tmp_path: Path
+    ) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+            static = service.open_static(session_id)
+            assert static.ok is False
+            assert static.error is not None
+            assert static.error.code == "target_mismatch"
+            assert service.get_session(session_id).data["session"]["state"] == "created"
+            dynamic = service.open_dynamic(session_id)
+            assert dynamic.ok is False
+            assert dynamic.error is not None
+            assert dynamic.error.code == "target_mismatch"
+            assert service.get_session(session_id).data["session"]["state"] == "created"
+        finally:
+            service.close_all()
+
+    def test_apk_repack_and_sign_refuse_host_paths(self, tmp_path: Path) -> None:
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        service = AnalysisService(
+            Settings(
+                ida_home=None,
+                x64dbg_source=None,
+                x64dbg_headless_x64=None,
+                x64dbg_headless_x86=None,
+                artifact_root=tmp_path / "artifacts",
+            )
+        )
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+            outside = tmp_path / "host-decoded"
+            outside.mkdir()
+            (outside / "apktool.yml").write_text("x\n", encoding="utf-8")
+            host_apk = tmp_path / "host.apk"
+            host_apk.write_bytes(b"PK")
+            host_ks = tmp_path / "host.keystore"
+            host_ks.write_bytes(b"ks")
+            repack = service.apk_repack(session_id, decoded_dir=str(outside))
+            assert repack.ok is False
+            assert repack.error is not None
+            assert repack.error.code == "invalid_params"
+            signed = service.apk_sign(
+                session_id, apk_path=str(host_apk), keystore=str(host_ks)
+            )
+            assert signed.ok is False
+            assert signed.error is not None
+            assert signed.error.code == "invalid_params"
+        finally:
+            service.close_all()

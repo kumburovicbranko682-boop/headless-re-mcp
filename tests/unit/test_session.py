@@ -96,6 +96,15 @@ def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> No
     assert registry.get(survivor.id).state == SessionState.READY
 
 
+def test_opening_may_return_to_created(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    registry = SessionRegistry()
+    session = registry.create(binary)
+    registry.transition(session.id, SessionState.OPENING)
+    assert registry.transition(session.id, SessionState.CREATED).state == SessionState.CREATED
+
+
 def test_registry_rejects_invalid_transition(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary, 0x014C)

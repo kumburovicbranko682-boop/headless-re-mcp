@@ -18,6 +18,29 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
+_MAX_LISTED_FILES = 2000
+_MAX_COUNTED_FILES = 50_000
+
+
+def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
+    names: list[str] = []
+    total = 0
+    has_more = False
+    if not root.is_dir():
+        return [], 0, False
+    for path in root.rglob("*.java"):
+        if not path.is_file():
+            continue
+        total += 1
+        if len(names) < cap:
+            names.append(str(path.relative_to(root)))
+        else:
+            has_more = True
+        if total >= _MAX_COUNTED_FILES:
+            has_more = True
+            break
+    names.sort()
+    return names, total, has_more
 
 
 class JadxError(RuntimeError):
@@ -52,16 +75,15 @@ class JadxClient:
             timeout=timeout,
         )
         sources_root = out_dir / "sources"
-        java_files = (
-            sorted(str(p.relative_to(out_dir)) for p in out_dir.rglob("*.java"))
-            if out_dir.is_dir()
-            else []
+        java_files, java_file_count, has_more = _capped_java_listing(
+            out_dir, cap=_MAX_LISTED_FILES
         )
         return {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
-            "java_file_count": len(java_files),
-            "java_files": java_files[:2000],
+            "java_file_count": java_file_count,
+            "java_files": java_files,
+            "has_more": has_more,
         }
 
     def decompile(
@@ -80,25 +102,35 @@ class JadxClient:
         rel = _class_to_java_path(target)
         candidate = out_dir / "sources" / rel
         if not candidate.is_file():
-            matches = (
-                [p for p in (out_dir / "sources").rglob(candidate.name)]
-                if (out_dir / "sources").is_dir()
-                else []
-            )
-            if not matches:
+            match = None
+            sources = out_dir / "sources"
+            if sources.is_dir():
+                # A simple-name walk used to return the first Main.java in the
+                # tree, which is whoever jadx happened to emit first -- not
+                # necessarily the class the caller named.
+                matches = [path for path in sources.rglob(candidate.name) if path.is_file()]
+                if len(matches) == 1:
+                    match = matches[0]
+            if match is None:
                 raise JadxError(
                     "not_found",
                     "decompiled class not found",
                     class_name=class_name,
                     expected=str(rel),
                 )
-            candidate = matches[0]
-        source = candidate.read_text(encoding="utf-8", errors="replace")
+            candidate = match
+        try:
+            with candidate.open("rb") as handle:
+                raw = handle.read(_MAX_SOURCE_BYTES + 1)
+        except OSError as exc:
+            raise JadxError("backend_error", f"failed to read source: {exc}") from exc
+        truncated = len(raw) > _MAX_SOURCE_BYTES
+        source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
         return {
             "class_name": target,
             "path": str(candidate),
-            "source": source[:_MAX_SOURCE_BYTES],
-            "truncated": len(source) > _MAX_SOURCE_BYTES,
+            "source": source,
+            "truncated": truncated,
         }
 
     def _run(

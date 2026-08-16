@@ -262,7 +262,9 @@ def test_cleanly_closed_sessions_are_dropped_and_unclean_ones_are_not(tmp_path: 
     assert store.get_session("live") is not None
     assert store.get_session("crash") is not None
     remaining_closed = [
-        sid for sid in (f"closed-{index}" for index in range(6)) if store.get_session(sid) is not None
+        sid
+        for sid in (f"closed-{index}" for index in range(6))
+        if store.get_session(sid) is not None
     ]
     assert remaining_closed == ["closed-3", "closed-4", "closed-5"]
     assert store.list_knowledge("live")["total"] == 1
@@ -271,6 +273,103 @@ def test_cleanly_closed_sessions_are_dropped_and_unclean_ones_are_not(tmp_path: 
     unclean, total = store.list_unclean_sessions()
     assert total == 2
     assert {row["id"] for row in unclean} == {"live", "crash"}
+
+
+def test_dropping_a_closed_session_removes_its_timeline_too(tmp_path: Path) -> None:
+    """Sqlite row trim left sessions/<id>/timeline.jsonl behind.
+
+    Measured at 250 closed sessions: 250 directories and 60 KB of timeline
+    still on disk after the rows were gone. A disk-usage walk then visits
+    every one for the life of the artifact root.
+    """
+    root = tmp_path / "timeline-quota"
+    repository = SqliteAnalysisRepository(root)
+    repository.store.retained_closed_sessions = 2
+    for index in range(5):
+        sid = f"closed-{index}"
+        repository.note_session_created(
+            "t.exe",
+            Result(
+                ok=True,
+                data={
+                    "session": {
+                        "id": sid,
+                        "binary": "t.exe",
+                        "sha256": "",
+                        "architecture": "x86_64",
+                        "state": "created",
+                    }
+                },
+            ),
+        )
+        repository.note_session_closed(sid, None, Result(ok=True, data={"closed": True}))
+
+    sessions = root / "sessions"
+    remaining = (
+        sorted(path.name for path in sessions.iterdir() if path.is_dir())
+        if sessions.exists()
+        else []
+    )
+    assert remaining == ["closed-3", "closed-4"]
+    assert not (sessions / "closed-0" / "timeline.jsonl").exists()
+    assert (sessions / "closed-4" / "timeline.jsonl").is_file()
+
+
+def test_inmemory_trim_forgets_the_dropped_session_timeline(tmp_path: Path) -> None:
+    """InMemory trim unlinked a file it never wrote and left events in RAM."""
+    repository = InMemoryAnalysisRepository(tmp_path)
+    repository.retained_closed_sessions = 2
+    for index in range(5):
+        sid = f"closed-{index}"
+        repository.note_session_created(
+            "t.exe",
+            Result(
+                ok=True,
+                data={
+                    "session": {
+                        "id": sid,
+                        "binary": "t.exe",
+                        "sha256": "",
+                        "architecture": "x86_64",
+                        "state": "created",
+                    }
+                },
+            ),
+        )
+        repository.append_timeline(sid, "contract.event", "recorded", value=index)
+        repository.note_session_closed(sid, None, Result(ok=True, data={"closed": True}))
+
+    assert repository.list_timeline("closed-0")["total"] == 0
+    assert repository.list_timeline("closed-4")["total"] >= 1
+
+
+def test_inmemory_gc_does_not_delete_the_newest_artifact(tmp_path: Path) -> None:
+    """SQLite skips the newest file; InMemory used to collect it immediately."""
+    repository = InMemoryAnalysisRepository(tmp_path)
+    oldest = tmp_path / "old.bin"
+    newest = tmp_path / "new.bin"
+    oldest.write_bytes(b"O" * 64)
+    newest.write_bytes(b"N" * 64)
+    repository.register_artifact(
+        session_id="s",
+        kind="dump",
+        path=oldest,
+        sha256="1" * 64,
+        source="test",
+        size=64,
+    )
+    kept = repository.register_artifact(
+        session_id="s",
+        kind="dump",
+        path=newest,
+        sha256="2" * 64,
+        source="test",
+        size=64,
+    )
+    result = repository.gc_artifacts(max_total_bytes=1)
+    assert kept["id"] not in result["removed"]
+    assert newest.is_file()
+    assert result["skipped_count"] == 0
 
 
 def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:

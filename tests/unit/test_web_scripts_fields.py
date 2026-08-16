@@ -62,3 +62,22 @@ def test_web_scripts_says_when_older_scripts_were_dropped(monkeypatch: Any) -> N
     doc = _tool_docstring("web.scripts")
     assert "Answers with scripts" in doc
     assert "has_more" in doc
+
+
+def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) -> None:
+    """wasm.list filters the same ring; eviction is not a JS-only event.
+
+    Measured: 4 held WASM modules, scripts_dropped 3 -> count 4, has_more
+    True. Treating wasm_only as a complete list hid the same eviction
+    web.scripts already discloses.
+    """
+    backend = WebBackend()
+    handle = _FakeHandle(4, dropped=3)
+    for row in handle.scripts.values():
+        row["language"] = "WebAssembly"
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    payload = backend.scripts("s", wasm_only=True)
+    assert payload["count"] == 4
+    assert payload["has_more"] is True
+    doc = _tool_docstring("web.wasm.list")
+    assert "has_more" in doc

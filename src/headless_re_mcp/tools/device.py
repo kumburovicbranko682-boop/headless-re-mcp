@@ -28,7 +28,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.list")
     def device_list() -> dict[str, Any]:
-        """List ADB devices and emulators visible to the local adb server."""
+        """List ADB devices and emulators visible to the local adb server.
+
+        Answers with devices (serial and state), count, and has_more. Offline
+        and unauthorized serials are included; a missing device is not the
+        same as an offline one.
+        """
         return _dump(analysis.device_list())
 
     @tools.tool(name="device.connect")
@@ -52,30 +57,59 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.device_properties(serial, limit=limit))
 
     @tools.tool(name="device.packages")
-    def device_packages(serial: str, third_party_only: bool = False) -> dict[str, Any]:
-        """List installed package names, optionally only third-party ones."""
-        return _dump(analysis.device_packages(serial, third_party_only=third_party_only))
+    def device_packages(
+        serial: str,
+        third_party_only: bool = False,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 500,
+    ) -> dict[str, Any]:
+        """List installed package names, optionally only third-party ones.
+
+        Answers with packages, count, has_more, and third_party_only so a
+        page that filled the cap is not read as every package.
+        """
+        return _dump(
+            analysis.device_packages(
+                serial, third_party_only=third_party_only, limit=limit
+            )
+        )
 
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
     ) -> dict[str, Any]:
-        """Install a local APK onto the device (reinstall keeps data)."""
+        """Install a local APK onto the device (reinstall keeps data).
+
+        Answers with installed (true/false, or null when it could not be
+        verified), path and serial, plus package when the APK's id was
+        readable. A return from adb is not by itself a successful install.
+        """
         return _dump(analysis.device_install(serial, apk_path, reinstall=reinstall))
 
     @tools.tool(name="device.uninstall")
     def device_uninstall(serial: str, package: str) -> dict[str, Any]:
-        """Uninstall a package from the device."""
+        """Uninstall a package from the device.
+
+        Answers with uninstalled (true/false, or null when it could not be
+        verified) and package. A return from adb is not by itself removal.
+        """
         return _dump(analysis.device_uninstall(serial, package))
 
     @tools.tool(name="device.launch")
     def device_launch(serial: str, package: str) -> dict[str, Any]:
-        """Launch a package's main launcher activity."""
+        """Launch a package's main launcher activity.
+
+        Answers with launched (true/false, or null when the foreground could
+        not be read), package, and foreground when known.
+        """
         return _dump(analysis.device_launch(serial, package))
 
     @tools.tool(name="device.force_stop")
     def device_force_stop(serial: str, package: str) -> dict[str, Any]:
-        """Force-stop a running package."""
+        """Force-stop a running package.
+
+        Answers with stopped (true/false, or null when the process list could
+        not be read), package, and remaining_pids when known.
+        """
         return _dump(analysis.device_force_stop(serial, package))
 
     @tools.tool(name="device.current_activity")
@@ -87,27 +121,47 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_logcat(
         serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200
     ) -> dict[str, Any]:
-        """Return the last N lines of logcat (non-streaming snapshot)."""
+        """Return the last N lines of logcat (non-streaming snapshot).
+
+        Answers with lines, requested, and truncated when the dump was cut
+        at the character cap.
+        """
         return _dump(analysis.device_logcat(serial, lines=lines))
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:
-        """Capture a device screenshot to a PNG artifact."""
+        """Capture a device screenshot to a PNG artifact.
+
+        Answers with path, serial and size. A capture over the cap is refused
+        rather than left in the unregistered screenshot directory.
+        """
         return _dump(analysis.device_screenshot(serial))
 
     @tools.tool(name="device.pull")
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
-        """Pull a file from the device into a local artifact."""
+        """Pull a file from the device into a local artifact.
+
+        Answers with remote, local and size. Directories and files over the
+        capture cap are refused rather than copied onto the host.
+        """
         return _dump(analysis.device_pull(serial, remote_path))
 
     @tools.tool(name="device.push")
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
-        """Push a local file to a path on the device."""
+        """Push a local file to a path on the device.
+
+        Answers with local, remote and size. Files over the capture cap are
+        refused rather than copied onto the device.
+        """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
     @tools.tool(name="device.forward")
     def device_forward(serial: str, local: str, remote: str) -> dict[str, Any]:
-        """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server)."""
+        """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
+
+        Answers with local and remote. Forwards stay on the adb server until
+        close_all; this process will refuse a new one once the table is full.
+        """
         return _dump(analysis.device_forward(serial, local, remote))
 
     return tools.bindings

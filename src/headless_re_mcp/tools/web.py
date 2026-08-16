@@ -66,8 +66,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured network requests.
 
         Answers with requests (url, method, status, resourceType), count,
-        total, and offset so a page that filled the limit is not read as
-        the whole capture. There is no type field.
+        total, offset, has_more, and dropped so a page that filled the
+        limit is not read as the whole capture, and ring eviction is
+        visible. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -77,7 +78,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated.
+        not truncated. A body over the capture cap is refused rather than
+        written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -87,8 +89,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
-        Answers with console, count, and has_more so a page that filled the
-        limit is not read as the whole buffer.
+        Answers with console, count, has_more, and dropped so a page that
+        filled the limit is not read as the whole buffer, and ring
+        eviction is visible. A line longer than the per-message cap is
+        cut and marked text_truncated.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
@@ -107,7 +111,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with scriptId, bytes and source, plus truncated and
         source_path when the text was cut at the buffer. There is no code
-        or text field.
+        or text field. A source over the capture cap is refused rather
+        than written to disk.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
@@ -115,8 +120,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_wasm_list(session_id: str) -> dict[str, Any]:
         """List WebAssembly modules loaded by the page.
 
-        Answers with scripts (scriptId, url, language), plus count. There is
-        no modules field.
+        Answers with scripts (scriptId, url, language), count, and has_more
+        when older scripts were dropped from the shared capture buffer. There
+        is no modules field.
         """
         return _dump(analysis.web_wasm_list(session_id))
 
@@ -133,8 +139,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
 
-        Answers with path, plus artifact_id when the PNG was registered.
-        There is no screenshot or png field.
+        Answers with path and size, plus artifact_id when the PNG was
+        registered. There is no screenshot or png field. A full-page capture
+        over the cap is refused rather than left on disk.
         """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 

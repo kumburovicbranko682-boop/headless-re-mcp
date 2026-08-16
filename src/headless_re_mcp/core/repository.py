@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -491,10 +492,23 @@ class InMemoryAnalysisRepository:
         )
         for sid in closed[keep:]:
             self._sessions.pop(sid, None)
-            for key in [item for item in self._knowledge if item[0] == sid]:
-                self._knowledge.pop(key, None)
-            for key in [item for item in self._backends if item[0] == sid]:
-                self._backends.pop(key, None)
+            self._timeline.pop(sid, None)
+            for knowledge_key in [item for item in self._knowledge if item[0] == sid]:
+                self._knowledge.pop(knowledge_key, None)
+            for backend_key in [item for item in self._backends if item[0] == sid]:
+                self._backends.pop(backend_key, None)
+            path = session_timeline_path(self.artifact_root, sid)
+            with suppress(OSError):
+                if path.is_file():
+                    path.unlink()
+            parent = path.parent
+            if parent != self.artifact_root:
+                with suppress(OSError):
+                    parent.rmdir()
+            events = self.artifact_root / "debug-events" / sid
+            if Path(sid).name == sid and events.is_dir():
+                with suppress(OSError):
+                    shutil.rmtree(events)
 
     def record_backend(self, session_id: str, kind: str, **fields: object) -> None:
         with self.transaction():
@@ -581,17 +595,33 @@ class InMemoryAnalysisRepository:
             ordered = sorted(self._artifacts.values(), key=lambda item: str(item["created_at"]))
             total = sum(int(item["size"]) for item in ordered)
             removed: list[str] = []
-            for item in ordered:
+            skipped: list[JsonObject] = []
+            # Same newest-file skip as SessionStore: collection now also runs
+            # right after registration, and a single dump larger than the
+            # budget would otherwise delete the file its caller is about to
+            # return the path of.
+            for item in ordered[:-1]:
                 if total <= max_total_bytes:
                     break
-                Path(str(item["path"])).unlink(missing_ok=True)
+                path = Path(str(item["path"]))
+                size = int(item["size"])
+                if path.is_file():
+                    try:
+                        path.unlink()
+                    except OSError as exc:
+                        skipped.append(
+                            {"id": str(item["id"]), "reason": f"{type(exc).__name__}: {exc}"}
+                        )
+                        continue
                 artifact_id = str(item["id"])
                 self._artifacts.pop(artifact_id, None)
                 removed.append(artifact_id)
-                total -= int(item["size"])
+                total -= size
         return {
             "removed": removed,
             "count": len(removed),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
             "bytes_remaining_estimate": max(0, total),
         }
 

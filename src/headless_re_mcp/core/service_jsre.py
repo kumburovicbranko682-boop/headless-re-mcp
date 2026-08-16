@@ -15,6 +15,11 @@ from uuid import uuid4
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.limits import (
+    JSRE_UNPACK_MAX_BYTES,
+    JSRE_UNPACK_MAX_ENTRIES,
+    prune_capped_dir,
+)
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
 
@@ -60,6 +65,11 @@ class JsReAnalysisMixin:
             out_dir = self._jsre_out_dir("unpack")
             data = JsClient(getattr(self.settings, "webcrack", None)).unpack_bundle(
                 Path(path), out_dir, timeout=timeout
+            )
+            prune_capped_dir(
+                out_dir.parent,
+                max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:

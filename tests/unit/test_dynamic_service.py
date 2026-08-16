@@ -1303,6 +1303,74 @@ def test_workflow_navigation_budget_exhaustion_ensures_paused(tmp_path: Path) ->
     )
 
 
+def test_workflow_cancel_stops_in_flight_navigation(tmp_path: Path) -> None:
+    from threading import Event, Thread
+    from time import monotonic
+
+    entered = Event()
+    release = Event()
+
+    class BlockingWorker(FakeDynamicWorker):
+        def read_events(
+            self,
+            cursor: int,
+            *,
+            limit: int = 100,
+            timeout: float = 10.0,
+        ) -> DebugEventBatch:
+            self.event_reads.append((cursor, limit, timeout))
+            entered.set()
+            assert release.wait(10)
+            return DebugEventBatch(
+                events=(),
+                cursor=cursor,
+                next_cursor=cursor,
+                oldest_sequence=1 if cursor else 0,
+                latest_sequence=cursor,
+                dropped=0,
+                dropped_total=0,
+                has_more=False,
+                capacity=1024,
+            )
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = BlockingWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    outcome: dict[str, object] = {}
+
+    def navigate() -> None:
+        outcome["nav"] = service.workflow_navigate_to_event(
+            session_id,
+            "breakpoint.hit",
+            timeout=8.0,
+            event_budget=8,
+        )
+
+    thread = Thread(target=navigate)
+    thread.start()
+    assert entered.wait(5)
+    started = monotonic()
+    cancelled = service.workflow_cancel(session_id, timeout=3.0)
+    elapsed = monotonic() - started
+    assert cancelled.ok, cancelled.error
+    assert elapsed < 2.0
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    navigated = outcome["nav"]
+    assert navigated.ok
+    workflow = cancelled.data["workflow"]
+    assert isinstance(workflow, dict)
+    assert workflow.get("status") == "cancelled" or _workflow_state(workflow).get(
+        "navigation", {}
+    ).get("status") in {"cancelled", "canceled"}
+
+
 def test_workflow_acknowledges_breakpoint_already_removed_by_debugger(
     tmp_path: Path,
 ) -> None:

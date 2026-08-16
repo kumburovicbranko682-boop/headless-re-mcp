@@ -80,6 +80,46 @@ until 1.0 the tool surface may still change between minor versions.
 - **APK 解析缓存在会话关闭后不释放**。上限 4 份，但每份完整 DEX 分析可达数百 MB，空闲进程会
   一直占着。会话关闭时按路径显式回收。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
+- **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
+  字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
+- **杀进程树被 UI 页大小卡住**。`collect_descendants` 要 64 个，直接子进程枚举硬封 16，
+  Chromium 会留下渲染进程。杀路径改用同一上限。
+- **隔离命令在 Windows 上拆不出 argv**。POSIX `shlex` 吃掉反斜杠，配置还按逗号切；
+  `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
+- **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
+  工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
+  调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
+- **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
+- **PE 专属工具对 APK 会话不会返回 `target_mismatch`**。`detect` / `dotnet` / `unpack`
+  入口改用 `require_pe()`。
+- **内存仓库的回收/裁剪和 SQLite 不一致**。InMemory GC 会删掉刚登记的那份、裁剪关闭
+  会话时不丢掉 RAM 里的 timeline。两边现在同一条规矩。
+- **健康监控 `stop` 超时后再 `start` 可能再也起不来**。旧巡检线程还活着时 `start`
+  直接返回；它退出后没有人补一条。现在记下重启请求，旧线程收尾后再拉起来。
+- **`parse_r2_json` 会把带括号的 opcode 当成 JSON 起点**。`rfind("[")` 切到
+  `mov eax, dword [rbp+0x10]` 里，整表解析失败后只留下最后一个对象。现在从第一个
+  `[`/`{` 做 `raw_decode`。
+- **`doctor` 把源码树和 MSVC 当成必选项**。二进制包部署没有它们也会报 NOT READY。
+  必选探针只剩 `python` / `ida_idalib` / `x64dbg_headless_binaries`。
+- **resume/step 在事件环溢出时会报成功**。`wait_for_state` 把 `dropped > 0` 当成
+  过渡事件，目标其实还停着。现在只认点名的 event kind。
+- **对 APK/Web 会话误开 PE 后端会把会话打成 FAILED**。`target_mismatch` 现在退回
+  `CREATED`，同一会话还能继续用对口工具。
+- **`web.open` 用共享哨兵占位，close 后再 open 会装错浏览器**。每次 open 用独立
+  token；close 掉第一次后，第一次启动完成不能覆盖第二次的预约。
+- **`workflow.cancel` 拿不到导航等待时的锁**。等待 `events.read` 时放下 runtime
+  锁；回来后若已取消就不再往已结束的 navigation 里灌事件。
+- **`run_bounded` 会把成功退出的隔离/doctor 助手杀掉**。启动器 exit 0 后只排空
+  管道，不再杀残留子进程。de4dot 的 `_capture_process` 则相反：父进程走了还挂着
+  子进程时必须收掉。
+- **Frida `spawn` 把包名当成 argv 列表，也接受路径**。现在只接受 Android 包名，
+  并按字符串交给 `device.spawn`。
+- **`apk.repack` / `apk.sign` / `unpack.verify` 吃会话外的主机路径**。必须落在
+  当前会话产物树里。`note_verified` 也不能再从 `OEP_CANDIDATE` 直接跳到
+  `VERIFIED`。
+- **IAT 重建只写新的 `.himps`，代码还在读原来的 IAT**。有确认的 `iat_va` 时按
+  RVA 原地打补丁，并把 FirstThunk / IAT 目录指回去。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
@@ -267,6 +307,106 @@ until 1.0 the tool surface may still change between minor versions.
   调用（含调用方已经放弃的）单独计数；到 32 条仍未返回时，新调用立刻以 `tool_workers_stuck`
   拒绝并写进 run 事件，而不是再开一条。计数跟着线程走、不跟着调用方走：后端一旦真正回来，
   计数就降，新调用可以继续。
+- **卡住的浏览器会话关不掉 Chromium**。`web.close` 在 runner 已 wedged 时不再调用
+  Playwright（对象有线程亲和性），于是 node 驱动和它拉起的浏览器一直活到进程退出。
+  现在打开时记下驱动 PID，关闭时从当前线程杀整棵进程树。
+- **`device.forward` 建完就忘**。转发活在 adb server 上，关会话不会拆掉；长跑的 agent
+  反复给 frida 或调试端口做转发，最终绑不上新端口。现在由服务持有的 AdbBackend 记住
+  `(serial, local)`，`close_all` 时按记录拆除。
+- **设备截图 / pull 和 jsre unpack 目录不进产物表**。它们按 serial 或一次性 uuid 落盘，
+  回收器看不见，目录随调用次数单调增长。写入后按条数和字节量淘汰最旧的，刚写入的那份保留。
+- **Scylla / XVLKC / VMP dumper / de4dot / NETReactorSlayer 的 doctor 探针仍走 `subprocess.run`**。
+  Scylla 在超时后把「启动过」当成可用，却不杀进程，GUI 探针会把窗口留在机器上；其余超时在
+  Windows 上可能让 `communicate()` 永不返回。全部改走同一个有界执行器。
+- **apktool / jadx / ghidra 按会话落盘的树不进产物表**。解码、导出源码和分析工程会留下
+  整棵目录，关会话也不删。写入后按会话目录数和体积淘汰最旧的（刚写入的那份保留）。
+- **样本间隔离步骤仍走 `subprocess.run`**。无人值守的入口正是这里：配置的命令通常是
+  拉起 hypervisor 工具的脚本，超时只杀到脚本，子进程继承管道后 Windows 上的排空没有
+  截止时间，工作线程就停在那次轮换上，而虚拟机还是脏的。改走同一个有界执行器。
+- **`device.packages` 一次回完整包列表，`device.properties` 截断却不说**。忙碌的模拟器
+  轻轻松松超过一次工具回包该装下的量；停在上限的列表和「到此为止」看起来一样。两者都
+  带回 `has_more`，包列表默认 500、硬上限 2000。`apk.native_libs` 同样封顶并披露。
+- **ADB 调用在设备卡住时没有截止时间**。adbutils 的 `shell` / `install` / `sync` 默认
+  一直等到设备应答；一个假死的模拟器就能永久占住一条工具线程。能传 `timeout` 的路径
+  都带上截止（探测 8 秒、shell 30 秒、传输 120 秒），老版本 adbutils 不认该参数时回退。
+- **APK 组件/权限列表和 manifest 截断不说话**。加壳样本可以塞进几千个空组件；manifest
+  超过 200k 字符时只切一刀、回包仍像完整 XML。组件与权限封顶并回 `has_more`，manifest
+  回 `truncated`。
+- **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
+  `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
+  `has_more`。
+- **`web.console` 默认只回最后 200 行，不说前面还有**。缓冲区本身有界，这一页再切一刀
+  之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
+- **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
+  切一刀。脚本补上 `has_more` / `truncated`。
+- **`proxy.ca.install_android` 和 `frida.server.ensure` 每次新建一个 AdbBackend**。
+  那个实例记不住本进程建过的转发，`close_all` 拆不掉它们。改为走服务持有的那一个。
+- **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
+  只有 total，没有 `has_more`**。total 能算出来，但和相邻工具的字段不一致，只读 count
+  的调用方仍会当成完整一页。一律补上。
+- **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
+  样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
+  `has_more`，不再为了计数去物化全集。
+- **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
+  adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
+  的项重新挂回跟踪列表。
+- **`frida.server.ensure` 在 su 命令返回后就报 `running: True`**，并不再看 ps。启动器
+  成功而 frida-server 立刻退出时，调用方会以为钩子已经能连上。启动后再查一次进程表，
+  看不见就如实回 `running: False`。
+- **并发的 `proxy.start` / `web.open` 会各起一份实例**。检查「已经有了」和写入跟踪表
+  不在同一把锁里，两个工作线程会各自绑定端口或拉起 Chromium，后写入的那份把先起来的
+  弄丢，泄漏到进程退出。现在先在表里占位再启动，失败或中途被关则清掉占位并回收。
+- **`apk.classes` 同样为了 total 把全部类名排序进一份列表**。加壳样本可以有几十万个
+  类。采集上限 10000，超出回 `has_more`。单个类的 methods 采集上限 2000。
+- **`web.scripts` 缓冲区满了也不说**。脚本表有上限，旧的被挤掉之后回包看起来仍像
+  「页面只解析了这些」。满员且确有淘汰时回 `has_more`。网络请求与抓包 flows 回
+  `dropped`（被环挤掉的条数），分页另回 `has_more`。console 同样记 `dropped`。
+  `web.wasm.list` / `web.scripts(wasm_only=True)` 原先把 `has_more` 硬写成 False，
+  共享环淘汰后 WASM 列表仍像完整。两种模式现在都披露淘汰。
+- **`frida.device.connect` 在 USB/本机路径上丢掉已解析的设备**。远程分支回
+  `id`/`name`/`type`，USB 分支只回调用方传入的别名（`{"id": "usb"}`）。现在两边
+  都回真实设备信息，授权记录也钉在解析后的 id 上。
+- **Frida `spawn` 成功而 `resume` 失败时，暂停的进程被留下，错误里也不带 pid**。
+  无人值守循环会在设备上堆暂停的应用。现在 resume 失败会杀掉该 pid，并把 pid 放进
+  错误详情。
+- **`device.launch` 在 monkey 返回后就报 `launched: True`**，不管应用有没有到前台。
+  启动后再读一次当前 activity，对不上就如实回 `launched: False` 并带上 `foreground`。
+- **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
+  `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
+  停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
+  600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
+  offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
+  列出来，并给 `open_transport` 换上 120 秒的挂起上限。
+- **`device.packages` 仍会为了排序把完整包列表装进内存**。采集停在 limit 上。jadx / webcrack
+  的文件列表同样不再为了 `file_count` 物化全部路径。
+- **`device.pull` 会把整棵目录拷到宿主机**。adbutils 在远端是目录时递归拉取，没有体积上限；
+  一次 `/sdcard` 就能把磁盘写满，而产物表看不见这些文件。目录和超过捕获上限的文件在拷贝前
+  拒绝。`device.push` 同样拒绝超过上限的本地文件。
+- **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
+  `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
+- **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
+  先物化全集再截断；加壳应用可以有十几万个类，这一次 RPC 就能把目标拖死。改为边枚举边停。
+- **jadx 反编译会把整个 .java 读进内存再切**。生成器吐出的单文件可以到几十 MB。按上限读。
+- **有界执行器仍会把工具的全部 stdout/stderr 读进内存**。Ghidra / jadx 的进度输出可以到
+  上百 MB，调用方只用其中几 KB。现在每个流最多保留 8 MB，多出的丢弃以免撑满管道。
+- **Ghidra 导出 JSON 没有体积检查**。postScript 写出的文件被整份 `read_text`；脚本自己的
+  列表上限挡不住一份被写爆的导出。超过 2 MB 拒绝，而不是把进程读满。
+- **截图可以单独超过捕获目录的字节上限**。淘汰从不删最新的那一份，于是一张超大的
+  `device.screenshot` / `web.screenshot`（尤其是 full_page）会永远留在磁盘上。写入后若超限
+  则删掉并拒绝。
+- **抓包环形缓冲按条数封顶，但每条仍可带着整份报文体**。两千条各几十 MB 的响应照样能把
+  内存吃光。超过 2 MB 的请求/响应体不再留在 `_raw` 里，列表上回 `body_omitted`，取正文或
+  重放会如实报 `too_large`。
+- **`web.network.get` / `web.script.source` 会把 CDP 送来的整份正文写进产物目录**。超过
+  内联上限就落盘，没有捕获上限；一条媒体响应就能在 retention 跑起来之前把磁盘写满。超过
+  捕获上限改为拒绝，不写文件。console 单行同样封顶，超长回 `text_truncated`。
+- **`apk.sign` 只看 apksigner 退出码就报 `signed: True`**。写出文件但签名无效时，调用方会
+  把未签名包当已签名去装。签名后再跑 `apksigner verify`，核不上就报错。
+- **`device.forward` 的跟踪表没有上限**。转发记在 adb server 上，单次 `close_session` 拆
+  不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
+- **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
+  脚本里按 limit 停，并带回 `total`。
 
 ## [0.2.1] - 2026-08-12
 

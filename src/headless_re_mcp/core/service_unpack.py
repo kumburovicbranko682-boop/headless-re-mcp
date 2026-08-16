@@ -39,6 +39,7 @@ from headless_re_mcp.unpack.oep import score_oep_candidates
 from headless_re_mcp.unpack.pause_quality import assess_pause_quality
 from headless_re_mcp.unpack.pe_rebuild import (
     PeRebuildError,
+    parse_runtime_headers,
     rebuild_imports,
     remap_dump_to_file,
     write_rebuilt_pe,
@@ -659,7 +660,14 @@ class UnpackMixin:
             except PeRebuildError:
                 pe_bytes = raw
                 remap_report = None
-            rebuilt, report = rebuild_imports(pe_bytes, entries)
+            headers = parse_runtime_headers(pe_bytes)
+            image_base = int(headers["image_base"])
+            confirmed_iat_rva = iat_va - image_base if iat_va >= image_base else iat_va
+            if type(confirmed_iat_rva) is not int or confirmed_iat_rva < 0:
+                raise PeRebuildError("iat_va does not map to a usable IAT RVA")
+            rebuilt, report = rebuild_imports(
+                pe_bytes, entries, iat_rva=confirmed_iat_rva
+            )
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild_advance")
             if blocked is not None:
                 return blocked
@@ -827,6 +835,22 @@ class UnpackMixin:
         """
         try:
             target = Path(path).expanduser().resolve(strict=True)
+            from headless_re_mcp.core.service import _session_owns_artifact_path
+
+            if not _session_owns_artifact_path(
+                self.settings.artifact_root, session_id, target
+            ):
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="invalid_params",
+                        message=(
+                            "path must be inside the current session artifact "
+                            "directory (unpack/dump/dotnet/detection)"
+                        ),
+                        details={"path": str(target), "session_id": session_id},
+                    ),
+                )
             bounded_timeout = _detection_timeout(timeout)
             pe_report = scan_pe(target)
             payload: JsonObject = {
@@ -1026,7 +1050,7 @@ class UnpackMixin:
             if not isinstance(candidates, list):
                 candidates = []
             session = self.registry.get(session_id)
-            pe_report = scan_pe(session.require_binary())
+            pe_report = scan_pe(session.require_pe())
             pe_vm_like = pe_suggests_vm_protector(
                 finding_ids=tuple(item.id for item in pe_report.findings),
                 section_names=tuple(section.name for section in pe_report.pe.sections),
@@ -1133,7 +1157,7 @@ class UnpackMixin:
             state = add_artifact(
                 state,
                 kind="input_binary",
-                path=str(session.require_binary()),
+                path=str(session.require_pe()),
                 sha256=session.sha256 or "",
                 phase=UnpackPhase.DETECTED,
             )

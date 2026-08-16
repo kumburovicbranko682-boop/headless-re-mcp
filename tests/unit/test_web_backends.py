@@ -81,6 +81,24 @@ class TestWebTargetClassification:
         finally:
             service.close_all()
 
+    def test_static_and_dynamic_open_leave_a_web_session_created(self) -> None:
+        service = AnalysisService()
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+            static = service.open_static(session_id)
+            assert static.ok is False
+            assert static.error is not None
+            assert static.error.code == "target_mismatch"
+            assert service.get_session(session_id).data["session"]["state"] == "created"
+            dynamic = service.open_dynamic(session_id)
+            assert dynamic.ok is False
+            assert dynamic.error is not None
+            assert dynamic.error.code == "target_mismatch"
+            assert service.get_session(session_id).data["session"]["state"] == "created"
+        finally:
+            service.close_all()
+
 
 class _FakeWebBackend:
     """Writes the files a real capture writes, without a browser."""

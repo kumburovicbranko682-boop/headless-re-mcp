@@ -103,6 +103,18 @@ def test_the_timeout_is_passed_to_the_command() -> None:
     assert seen["check"] is False
 
 
+def test_a_required_timeout_refuses_to_continue() -> None:
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        raise subprocess.TimeoutExpired(cmd="revert.ps1", timeout=1.0)
+
+    runner = IsolationRunner(IsolationPolicy(command=("revert.ps1",)), run=run)
+
+    with pytest.raises(IsolationError) as caught:
+        runner.rotate()
+    assert "Timeout" in str(caught.value)
+
+
 def test_policy_reads_a_string_command_as_a_shell_style_argv(tmp_path) -> None:  # type: ignore[no-untyped-def]
     from dataclasses import replace
 
@@ -115,6 +127,41 @@ def test_policy_reads_a_string_command_as_a_shell_style_argv(tmp_path) -> None: 
 
     assert policy.command == ("pwsh", "-File", "C:/vm/revert.ps1")
     assert policy.configured is True
+
+
+def test_policy_keeps_windows_paths_intact(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """POSIX shlex eats backslashes: C:\\vm\\revert.ps1 becomes C:vmrevert.ps1."""
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core import isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod.os, "name", "nt")
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    policy = IsolationPolicy.from_settings(
+        replace(base, isolation_command=r'pwsh -File "C:\Program Files\vm\revert.ps1"')
+    )
+
+    assert policy.command == ("pwsh", "-File", r"C:\Program Files\vm\revert.ps1")
+
+
+def test_settings_load_splits_an_env_command_as_argv(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The env var is a command line, not a comma-separated set."""
+    from headless_re_mcp.config import Settings
+
+    monkeypatch.setenv(
+        "HEADLESS_RE_ISOLATION_COMMAND",
+        r'pwsh -File "C:\Program Files\vm\revert.ps1" --snapshot clean',
+    )
+    monkeypatch.delenv("HEADLESS_RE_ISOLATION_REQUIRED", raising=False)
+    settings = Settings.load()
+    assert settings.isolation_command == (
+        "pwsh",
+        "-File",
+        r"C:\Program Files\vm\revert.ps1",
+        "--snapshot",
+        "clean",
+    )
 
 
 def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]

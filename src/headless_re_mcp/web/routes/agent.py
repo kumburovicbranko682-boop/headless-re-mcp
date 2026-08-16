@@ -275,15 +275,26 @@ def register_agent_routes(
         thread_id = body.get("thread_id")
         if thread_id is not None and not isinstance(thread_id, str):
             raise HTTPException(status_code=400, detail="invalid_thread_id")
+        profile = body.get("profile_id") if isinstance(body.get("profile_id"), str) else None
+        model = body.get("model") if isinstance(body.get("model"), str) else None
+        try:
+            text, profile, model, max_runs = store.validate_mission(
+                objective,
+                provider_profile=profile,
+                model=model,
+                max_runs=int(body.get("max_runs", 8)),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if thread_id is None:
-            thread_id = store.create_thread(title=objective.strip()[:80]).id
+            thread_id = store.create_thread(title=text[:80]).id
         try:
             mission = store.create_mission(
                 thread_id,
-                objective,
-                provider_profile=body.get("profile_id") if isinstance(body.get("profile_id"), str) else None,
-                model=body.get("model") if isinstance(body.get("model"), str) else None,
-                max_runs=int(body.get("max_runs", 8)),
+                text,
+                provider_profile=profile,
+                model=model,
+                max_runs=max_runs,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="thread_not_found") from exc

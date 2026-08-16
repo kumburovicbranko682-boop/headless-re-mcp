@@ -24,19 +24,22 @@ def _write_pe(path: Path) -> None:
     struct.pack_into("<I", image, 0x3C, pe_offset)
     image[pe_offset : pe_offset + 4] = b"PE\0\0"
     file_header = pe_offset + 4
-    struct.pack_into("<HHIIIHH", image, file_header, 0x8664, 1, 0, 0, 0, 0xF0, 0x2022)
+    struct.pack_into("<HHIIIHH", image, file_header, 0x8664, 2, 0, 0, 0, 0xF0, 0x2022)
     optional = file_header + 20
     struct.pack_into("<HBB", image, optional, 0x20B, 14, 0)
     struct.pack_into("<I", image, optional + 16, 0x1000)
     struct.pack_into("<Q", image, optional + 24, 0x140000000)
     struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
-    struct.pack_into("<II", image, optional + 56, 0x2000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x3000, 0x200)
     struct.pack_into("<HH", image, optional + 68, 3, 0x8160)
     struct.pack_into("<I", image, optional + 108, 16)
     section = optional + 0xF0
     image[section : section + 8] = b".text\0\0\0"
     struct.pack_into("<IIII", image, section + 8, 0x100, 0x1000, 0x200, 0x200)
     struct.pack_into("<I", image, section + 36, 0x60000020)
+    image[section + 40 : section + 48] = b".rdata\0\0"
+    struct.pack_into("<IIII", image, section + 48, 0x200, 0x2000, 0x200, 0)
+    struct.pack_into("<I", image, section + 76, 0x40000040)
     image[0x200:0x202] = b"\xC3\x90"
     path.write_bytes(image)
 
@@ -155,7 +158,7 @@ def test_iat_rebuild_advances_from_oep_candidate_with_dump_artifact(
     dump_file.parent.mkdir(parents=True, exist_ok=True)
     # Memory-layout dump: .text at RVA 0x1000 must be non-zero for rebuild_gate.
     pe = binary.read_bytes()
-    mem_image = bytearray(0x2100)
+    mem_image = bytearray(0x3000)
     mem_image[: len(pe)] = pe
     mem_image[0x1000:0x1100] = b"\x90" * 0x100
     dump_file.write_bytes(mem_image)

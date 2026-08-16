@@ -48,9 +48,7 @@ REQUIRED_PROBES: frozenset[str] = frozenset(
     {
         "python",
         "ida_idalib",
-        "x64dbg_source",
         "x64dbg_headless_binaries",
-        "native_toolchain",
     }
 )
 

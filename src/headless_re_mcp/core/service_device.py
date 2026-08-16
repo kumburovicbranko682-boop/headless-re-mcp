@@ -14,6 +14,11 @@ from uuid import uuid4
 from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.limits import (
+    UNREGISTERED_CAPTURE_MAX_BYTES,
+    UNREGISTERED_CAPTURE_MAX_ENTRIES,
+    prune_capped_dir,
+)
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
 
@@ -28,8 +33,14 @@ class DeviceAnalysisMixin:
     """Bounded ADB operations exposed as device.* tools."""
 
     settings: Settings
+    # Owned by AnalysisService so forwards created here can be removed on
+    # close_all. Constructing a backend per call would forget every forward.
+    _adb_backend: AdbBackend
 
     def _backend(self) -> AdbBackend:
+        owned = getattr(self, "_adb_backend", None)
+        if isinstance(owned, AdbBackend):
+            return owned
         return AdbBackend(getattr(self.settings, "adb", None))
 
     def _device_artifact_path(self, name: str, suffix: str) -> Path:
@@ -60,9 +71,11 @@ class DeviceAnalysisMixin:
         return self._adb_wrap("properties", serial=serial, limit=limit)
 
     def device_packages(
-        self, serial: str, third_party_only: bool = False
+        self, serial: str, third_party_only: bool = False, limit: int = 500
     ) -> Result[JsonObject]:
-        return self._adb_wrap("packages", serial=serial, third_party_only=third_party_only)
+        return self._adb_wrap(
+            "packages", serial=serial, third_party_only=third_party_only, limit=limit
+        )
 
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
@@ -86,11 +99,23 @@ class DeviceAnalysisMixin:
 
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        result = self._adb_wrap("screenshot", serial=serial, out_path=out)
+        prune_capped_dir(
+            out.parent,
+            max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
+            max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+        return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        prune_capped_dir(
+            out.parent,
+            max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
+            max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+        return result
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str

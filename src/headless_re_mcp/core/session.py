@@ -23,7 +23,12 @@ _ALLOWED_TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
         {SessionState.OPENING, SessionState.CLOSING, SessionState.FAILED}
     ),
     SessionState.OPENING: frozenset(
-        {SessionState.READY, SessionState.SUSPENDED, SessionState.FAILED}
+        {
+            SessionState.CREATED,
+            SessionState.READY,
+            SessionState.SUSPENDED,
+            SessionState.FAILED,
+        }
     ),
     SessionState.READY: frozenset(
         {SessionState.RUNNING, SessionState.SUSPENDED, SessionState.CLOSING, SessionState.FAILED}

@@ -95,29 +95,26 @@ def address_dict(
 
 
 def parse_r2_json(raw: str) -> Any | None:
-    """Extract the last JSON value from r2 -q0 output (may include banners)."""
+    """Extract the first JSON value from r2 -q0 output (may include banners).
+
+    ``rfind("[")`` is wrong here: ``pdj`` / ``axj`` / ``izj`` put ``[`` inside
+    opcodes (``mov eax, dword [rbp+0x10]``), C++ names, and strings. That
+    slice is not the root array, so the ``{…}`` fallback loaded only the last
+    object and ``enrich_r2_payload`` reported ``parsed: True`` with no items.
+    """
     text = (raw or "").strip()
     if not text:
         return None
-    # Prefer trailing JSON array/object.
-    for opener, closer in (("[", "]"), ("{", "}")):
-        start = text.rfind(opener)
-        if start < 0:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
             continue
-        chunk = text[start:]
-        end = chunk.rfind(closer)
-        if end < 0:
-            continue
-        candidate = chunk[: end + 1]
         try:
-            return json.loads(candidate)
+            value, _end = decoder.raw_decode(text, index)
         except json.JSONDecodeError:
             continue
-    # Fallback: whole text
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+        return value
+    return None
 
 
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:

@@ -120,3 +120,69 @@ def test_pe_rebuild_report_always_lists_checksum_unfixed() -> None:
     import_dict = import_report.to_dict()
     assert import_dict["claims_universal_unpack"] is False
     assert any("checksum" in item.lower() for item in import_dict["unfixed"])
+    assert any("original IAT bytes" in item for item in import_dict["unfixed"])
+
+
+def _make_runtime_dump_with_rdata() -> bytes:
+    image = bytearray(0x3000)
+    pe_offset = 0x80
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<HHIIIHH", image, file_header, 0x8664, 2, 0, 0, 0, 0xF0, 0x22)
+    optional = file_header + 20
+    struct.pack_into("<HBB", image, optional, 0x20B, 14, 0)
+    struct.pack_into("<I", image, optional + 16, 0x1000)
+    struct.pack_into("<Q", image, optional + 24, 0x140000000)
+    struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x3000, 0x400)
+    struct.pack_into("<HH", image, optional + 68, 3, 0)
+    struct.pack_into("<I", image, optional + 108, 16)
+    section = optional + 0xF0
+    image[section : section + 8] = b".text\0\0\0"
+    struct.pack_into("<IIII", image, section + 8, 0x200, 0x1000, 0, 0)
+    struct.pack_into("<I", image, section + 36, 0x60000020)
+    image[section + 40 : section + 48] = b".rdata\0\0"
+    struct.pack_into("<IIII", image, section + 48, 0x200, 0x2000, 0, 0)
+    struct.pack_into("<I", image, section + 76, 0x40000040)
+    image[0x1000:0x1002] = b"\xC3\x90"
+    image[0x2000:0x2018] = b"\xAA" * 0x18
+    return bytes(image)
+
+
+def test_rebuild_imports_patches_the_original_iat_when_rva_is_known() -> None:
+    dump = _make_runtime_dump_with_rdata()
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "VirtualAlloc",
+            "ordinal": 0,
+            "thunk_va": 0x140002000,
+        },
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "VirtualProtect",
+            "ordinal": 0,
+            "thunk_va": 0x140002008,
+        },
+        {"kind": "null", "thunk_va": 0x140002010, "value": 0},
+    ]
+    rebuilt, report = rebuild_imports(remapped, entries, iat_rva=0x2000)
+    assert any("in-place" in change for change in report.changes)
+    assert not any("original IAT bytes" in item for item in report.unfixed)
+    headers = parse_runtime_headers(rebuilt)
+    iat_dir = headers["directories"][12]
+    assert iat_dir["rva"] == 0x2000
+    offset = None
+    for section in headers["sections"]:
+        if int(section["virtual_address"]) == 0x2000:
+            offset = int(section["raw_offset"])
+            break
+    assert offset is not None
+    assert rebuilt[offset : offset + 8] != b"\xAA" * 8
+    first_thunk = struct.unpack_from("<Q", rebuilt, offset)[0]
+    assert first_thunk != 0

@@ -162,6 +162,25 @@ def test_restarting_after_a_timed_out_stop_does_not_leave_two_sweepers() -> None
         first.join(timeout=2.0)
 
 
+def test_a_timed_out_stop_then_start_brings_the_sweeper_back() -> None:
+    worker = FakeWorker()
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    monitor.interval_s = 0.01
+    monitor.start()
+    first = monitor._thread
+    assert first is not None
+
+    monitor.stop(timeout=0.0)
+    monitor.start()
+    first.join(timeout=2.0)
+    try:
+        assert monitor._thread is not None
+        assert monitor._thread.is_alive()
+        assert monitor._thread is not first
+    finally:
+        monitor.stop(timeout=2.0)
+
+
 def test_the_background_sweep_repairs_without_being_asked() -> None:
     worker = FakeWorker(connected=False)
     monitor = _monitor(("s1", BackendKind.X64DBG, worker))

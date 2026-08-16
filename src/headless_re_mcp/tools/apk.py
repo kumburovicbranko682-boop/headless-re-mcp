@@ -89,7 +89,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List internal (non-external) DEX classes with pagination.
 
         Answers with classes, count, total, offset, and has_more so a page
-        that filled the limit is not read as the whole list.
+        that filled the limit is not read as the whole collected list.
+        total is the number collected, capped at 10000; scan_capped is true
+        when the real class count may be higher. has_more only means a
+        larger offset still has collected rows.
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
@@ -104,7 +107,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with methods (name, descriptor, access), class_name, count,
         total, offset, and has_more so a page that filled the limit is not
-        read as the whole class.
+        read as the whole collected class. total is the number collected,
+        capped at 2000; scan_capped is true when more methods may exist.
+        has_more only means a larger offset still has collected rows.
         """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
@@ -119,8 +124,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List distinct DEX string constants with pagination.
 
         Answers with strings, count, total, offset, and has_more so a page
-        that filled the limit is not read as the whole DEX. There is no
-        items or constants field.
+        that filled the limit is not read as the whole collected DEX. total
+        is the number collected, capped at 5000; scan_capped is true when
+        more unique strings may exist. has_more only means a larger offset
+        still has collected rows. There is no items or constants field.
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
@@ -188,8 +195,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore).
 
-        Answers with apk, size, signed, keystore, and debug_keystore. There
-        is no output, path or signed_apk field.
+        Answers with apk, size, signed, keystore, and debug_keystore.
+        signed is true only after apksigner verify succeeds. There is no
+        output, path or signed_apk field.
         """
         return _dump(
             analysis.apk_sign(

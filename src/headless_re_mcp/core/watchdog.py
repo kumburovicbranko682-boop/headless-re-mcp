@@ -75,6 +75,9 @@ class Watchdog:
     # How many consecutive sweeps each (session, backend) has been found dead.
     # Pruned every sweep, so it holds one entry per currently-dead backend.
     _dead_streak: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Which (session, backend) pairs have already been reported disconnected.
+    # Pruned the same way, so it holds one entry per currently-dropped pipe.
+    _reported_disconnected: set[tuple[str, str]] = field(default_factory=set)
 
     def sweep(self) -> JsonObject:
         """One pass. Never raises: a watchdog that dies stops watching."""
@@ -103,14 +106,21 @@ class Watchdog:
         still_dead = {self._key(row) for row in dead}
         for key in [key for key in self._dead_streak if key not in still_dead]:
             del self._dead_streak[key]
+        still_disconnected = {self._key(row) for row in disconnected}
+        self._reported_disconnected.intersection_update(still_disconnected)
 
         actions: list[JsonObject] = []
         for row in dead:
             actions.append(self._handle_dead(row))
         for row in disconnected:
-            # The health monitor rebuilds connections itself; this is only worth
-            # saying out loud, because a backend that keeps dropping is a signal
-            # even when every reconnect succeeds.
+            # Same once-per-outage rule as a dead worker. The health monitor
+            # rebuilds connections itself; this is only worth saying out loud
+            # the first time a pipe stays down, because a backend that keeps
+            # dropping is a signal even when every reconnect succeeds.
+            key = self._key(row)
+            if key in self._reported_disconnected:
+                continue
+            self._reported_disconnected.add(key)
             self._alert(
                 "backend_disconnected",
                 session_id=str(row.get("session_id") or ""),

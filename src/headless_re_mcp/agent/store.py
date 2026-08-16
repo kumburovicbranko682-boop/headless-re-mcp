@@ -593,17 +593,20 @@ class AgentStore:
         data["status"] = MissionStatus(data["status"])
         return AgentMission(**data)
 
-    def create_mission(
+    def validate_mission(
         self,
-        thread_id: str,
         objective: str,
         *,
         provider_profile: str | None = None,
         model: str | None = None,
         max_runs: int = 8,
-    ) -> AgentMission:
-        if self.get_thread(thread_id) is None:
-            raise KeyError(thread_id)
+    ) -> tuple[str, str | None, str | None, int]:
+        """Refuse a mission that cannot be stored, before any inbox exists.
+
+        The HTTP route used to create a thread and then fail here, so twelve
+        oversize objectives left twelve empty threads that finished-thread
+        trim never reclaims.
+        """
         text = objective.strip()
         if not text:
             raise ValueError("mission objective must not be empty")
@@ -627,9 +630,27 @@ class AgentStore:
                     f"run model is {len(model)} characters, "
                     f"over the {model_limit} character limit"
                 )
+        return text, provider_profile, model, max(1, min(int(max_runs), 128))
+
+    def create_mission(
+        self,
+        thread_id: str,
+        objective: str,
+        *,
+        provider_profile: str | None = None,
+        model: str | None = None,
+        max_runs: int = 8,
+    ) -> AgentMission:
+        text, provider_profile, model, bounded = self.validate_mission(
+            objective,
+            provider_profile=provider_profile,
+            model=model,
+            max_runs=max_runs,
+        )
+        if self.get_thread(thread_id) is None:
+            raise KeyError(thread_id)
         mission_id = uuid.uuid4().hex
         now = utc_now()
-        bounded = max(1, min(int(max_runs), 128))
         with self.transaction() as con:
             con.execute(
                 "INSERT INTO missions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",

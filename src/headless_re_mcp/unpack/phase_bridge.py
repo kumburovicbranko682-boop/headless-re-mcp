@@ -189,33 +189,15 @@ def note_verified(
     """Advance to VERIFIED / REANALYZED after unpack.verify."""
     target_path = str(path)
     updated = state
-    if can_transition(updated.phase, UnpackPhase.VERIFIED):
-        # Hop through missing phases with explicit timeline notes (honest shortcuts).
-        if updated.phase == UnpackPhase.OEP_CANDIDATE:
-            updated = transition(
-                updated,
-                UnpackPhase.DUMPED,
-                event="verify_implies_dumped",
-                message="verify without dumped phase; recording implied dump",
-                details={"path": target_path},
-            )
-        if updated.phase == UnpackPhase.DUMPED:
-            updated = transition(
-                updated,
-                UnpackPhase.IMPORTS_REBUILT,
-                event="verify_implies_imports",
-                message="verify without imports_rebuilt; recording implied rebuild",
-                details={"path": target_path},
-            )
-        if updated.phase == UnpackPhase.IMPORTS_REBUILT:
-            updated = transition(
-                updated,
-                UnpackPhase.VERIFIED,
-                event="verified",
-                message="rebuilt PE structural verify completed",
-                output_sha256=sha256,
-                details={"path": target_path},
-            )
+    if updated.phase == UnpackPhase.IMPORTS_REBUILT:
+        updated = transition(
+            updated,
+            UnpackPhase.VERIFIED,
+            event="verified",
+            message="rebuilt PE structural verify completed",
+            output_sha256=sha256,
+            details={"path": target_path},
+        )
     elif updated.phase == UnpackPhase.VERIFIED:
         updated = append_timeline(
             updated,

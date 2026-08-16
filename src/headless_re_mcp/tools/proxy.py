@@ -55,10 +55,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured HTTP flows (method, url, status, content type).
 
         Answers with flows (id, seq, method, url, host, status, content_type),
-        count, total, offset, has_more, and dropped. The list field is flows,
-        not items or requests, and the type column is content_type. dropped is
-        how many the capture ring already evicted; a page that filled the
-        limit is not the whole log.
+        count, total, offset, has_more, and dropped. body_omitted is set on a
+        row whose request/response body was over the retain cap. The list
+        field is flows, not items or requests, and the type column is
+        content_type. dropped is how many the capture ring already evicted;
+        a page that filled the limit is not the whole log.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
@@ -75,7 +76,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.replay")
     def proxy_replay(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Replay a captured request through the proxy."""
+        """Replay a captured request through the proxy.
+
+        Answers with replayed and flow_id after the mitmproxy command has
+        actually run, not merely after it was queued on the proxy thread.
+        """
         return _dump(analysis.proxy_replay(session_id, flow_id))
 
     @tools.tool(name="proxy.export_har")

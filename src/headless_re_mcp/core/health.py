@@ -91,39 +91,56 @@ class BackendHealthMonitor:
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
     _previous: threading.Thread | None = None
+    _restart_pending: bool = False
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
-        # A sweep can sit inside a reconnect for far longer than stop() waits, so
-        # the previous thread may still be running. Clearing the stop flag now
-        # would un-cancel it and leave two sweepers running forever.
-        if self._previous is not None and self._previous.is_alive():
-            return
-        self._previous = None
-        self._stop.clear()
-        thread = threading.Thread(target=self._run, name="backend-health", daemon=True)
-        self._thread = thread
-        thread.start()
+        with self._lock:
+            if self._thread is not None:
+                return
+            # A sweep can sit inside a reconnect for far longer than stop() waits,
+            # so the previous thread may still be running. Clearing the stop flag
+            # now would un-cancel it and leave two sweepers running forever.
+            # Remember the request and start the replacement from _run's finally
+            # once that thread has observed the stop flag.
+            if self._previous is not None and self._previous.is_alive():
+                self._restart_pending = True
+                return
+            self._launch_unlocked()
 
     def stop(self, *, timeout: float = 2.0) -> None:
-        self._stop.set()
-        thread = self._thread
-        self._thread = None
+        with self._lock:
+            self._restart_pending = False
+            self._stop.set()
+            thread = self._thread
+            self._thread = None
         if thread is None:
             return
         thread.join(timeout=timeout)
         # Remembered rather than discarded: it is still winding down and must be
         # allowed to see the stop flag before a restart clears it.
-        self._previous = thread if thread.is_alive() else None
+        with self._lock:
+            self._previous = thread if thread.is_alive() else None
+
+    def _launch_unlocked(self) -> None:
+        self._previous = None
+        self._restart_pending = False
+        self._stop.clear()
+        thread = threading.Thread(target=self._run, name="backend-health", daemon=True)
+        self._thread = thread
+        thread.start()
 
     def _run(self) -> None:
-        while not self._stop.is_set():
-            # A monitor that can raise would take down the session it exists to
-            # protect; per-backend failures are already recorded in the report.
-            with suppress(Exception):
-                self.check_once()
-            self._stop.wait(self.interval_s)
+        try:
+            while not self._stop.is_set():
+                # A monitor that can raise would take down the session it exists to
+                # protect; per-backend failures are already recorded in the report.
+                with suppress(Exception):
+                    self.check_once()
+                self._stop.wait(self.interval_s)
+        finally:
+            with self._lock:
+                if self._restart_pending and self._thread is None:
+                    self._launch_unlocked()
 
     def check_once(self) -> list[BackendHealth]:
         """Inspect every open backend once, repairing what can be repaired."""

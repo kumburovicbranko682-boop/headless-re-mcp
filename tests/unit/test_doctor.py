@@ -167,6 +167,18 @@ def test_doctor_requires_runtime_gated_x64dbg_binaries() -> None:
     ).ready
 
 
+def test_doctor_ready_does_not_require_source_tree_or_msvc() -> None:
+    assert DoctorReport(
+        (
+            Probe("python", ProbeStatus.READY, "ready"),
+            Probe("ida_idalib", ProbeStatus.READY, "ready"),
+            Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
+            Probe("x64dbg_source", ProbeStatus.MISSING, "optional"),
+            Probe("native_toolchain", ProbeStatus.MISSING, "optional"),
+        )
+    ).ready
+
+
 def test_die_probe_is_optional_when_unconfigured(tmp_path: Path) -> None:
     probe = probe_die(_settings(None, tmp_path / "artifacts"))
 
@@ -424,16 +436,14 @@ def _all_required_ready() -> tuple[Probe, ...]:
         for name in (
             "python",
             "ida_idalib",
-            "x64dbg_source",
             "x64dbg_headless_binaries",
-            "native_toolchain",
         )
     )
 
 
 def test_format_report_ready_lists_required_count() -> None:
     text = format_report(DoctorReport(_all_required_ready()))
-    assert text.splitlines()[0] == "Overall: READY (required 5/5 ready)"
+    assert text.splitlines()[0] == "Overall: READY (required 3/3 ready)"
     assert "Required backends:" in text
     assert "Blocking required backends" not in text
 
@@ -447,14 +457,12 @@ def test_format_report_flags_blocking_required_and_groups_optional() -> None:
             "IDA not found",
             remediation="Set HEADLESS_RE_IDA_HOME.",
         ),
-        Probe("x64dbg_source", ProbeStatus.READY, "ok"),
         Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ok"),
-        Probe("native_toolchain", ProbeStatus.READY, "ok"),
     )
     optional = (Probe("diec", ProbeStatus.MISSING, "optional DIE not set"),)
     text = format_report(DoctorReport((*required, *optional)))
 
-    assert text.splitlines()[0] == "Overall: NOT READY (required 4/5 ready)"
+    assert text.splitlines()[0] == "Overall: NOT READY (required 2/3 ready)"
     assert "Optional backends:" in text
     assert "Blocking required backends (resolve these first):" in text
     assert "- ida_idalib (missing)" in text

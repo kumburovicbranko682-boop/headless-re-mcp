@@ -32,7 +32,7 @@ def _tool_docstring(name: str) -> str:
 
 
 class _FakeHandle:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, *, dropped: int = 0) -> None:
         self.lock = Lock()
         self.console = deque({"text": str(index)} for index in range(count))
         self.requests = {
@@ -54,7 +54,9 @@ class _FakeHandle:
             }
             for index in range(count)
         }
-        self.scripts_dropped = 0
+        self.scripts_dropped = dropped
+        self.console_dropped = 0
+        self.requests_dropped = 0
 
 
 def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
@@ -74,9 +76,12 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["console"]) == 10
     assert payload["has_more"] is True
+    assert payload["dropped"] == 0
     doc = _tool_docstring("web.console")
     assert "Answers with console" in doc
     assert "has_more" in doc
+    assert "dropped" in doc
+    assert "text_truncated" in doc
 
 
 def test_web_network_list_puts_the_page_in_requests_not_type(
@@ -94,10 +99,11 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     payload = backend.network_list("s", offset=0, limit=10)
     assert "network" not in payload
     assert "items" not in payload
-    assert "has_more" not in payload
     assert payload["count"] == 10
     assert payload["total"] == 25
     assert payload["offset"] == 0
+    assert payload["has_more"] is True
+    assert payload["dropped"] == 0
     assert len(payload["requests"]) == 10
     row = payload["requests"][0]
     assert "type" not in row
@@ -106,6 +112,8 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "Answers with requests" in doc
     assert "resourceType" in doc
     assert "total" in doc
+    assert "has_more" in doc
+    assert "dropped" in doc
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
@@ -118,13 +126,15 @@ def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     reads as the page loading none.
     """
     backend = WebBackend()
-    monkeypatch.setattr(backend, "_get", lambda session_id: _FakeHandle(10))
+    monkeypatch.setattr(backend, "_get", lambda session_id: _FakeHandle(10, dropped=3))
     payload = backend.scripts("s", wasm_only=True)
     assert "modules" not in payload
     assert "wasm" not in payload
     assert payload["count"] == 5
     assert len(payload["scripts"]) == 5
     assert all(row["language"] == "WebAssembly" for row in payload["scripts"])
+    assert payload["has_more"] is True
     doc = _tool_docstring("web.wasm.list")
     assert "Answers with scripts" in doc
     assert "no modules field" in doc
+    assert "has_more" in doc

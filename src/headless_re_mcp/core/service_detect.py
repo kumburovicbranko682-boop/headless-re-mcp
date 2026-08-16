@@ -117,7 +117,7 @@ class DetectAnalysisMixin:
             if type(use_exeinfope) is not bool:
                 raise ValueError("use_exeinfope must be a boolean")
 
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -132,7 +132,7 @@ class DetectAnalysisMixin:
                     ),
                 )
 
-            report = scan_pe(session.require_binary(), mode=parsed_mode)
+            report = scan_pe(session.require_pe(), mode=parsed_mode)
             findings = list(report.findings)
             sources = list(report.sources)
             warnings = list(report.warnings)
@@ -159,7 +159,7 @@ class DetectAnalysisMixin:
                 try:
                     die_result = self._die_scanner(
                         self.settings.diec,
-                        session.require_binary(),
+                        session.require_pe(),
                         mode=parsed_mode,
                         timeout=bounded_timeout,
                     )
@@ -222,7 +222,7 @@ class DetectAnalysisMixin:
                     log_path = _exeinfope_log_path(self.settings.artifact_root, session_id)
                     exeinfo_result = self._exeinfope_scanner(
                         self.settings.exeinfope,
-                        session.require_binary(),
+                        session.require_pe(),
                         log_path=log_path,
                         mode=parsed_mode,
                         timeout=bounded_timeout,
@@ -419,7 +419,7 @@ class DetectAnalysisMixin:
             candidates = []
         try:
             session = self.registry.get(session_id)
-            pe_report = scan_pe(session.require_binary())
+            pe_report = scan_pe(session.require_pe())
             pe_vm_like = pe_suggests_vm_protector(
                 finding_ids=tuple(item.id for item in pe_report.findings),
                 section_names=tuple(section.name for section in pe_report.pe.sections),

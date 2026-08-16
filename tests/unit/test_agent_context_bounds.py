@@ -41,3 +41,26 @@ def test_compaction_counts_tool_call_arguments_toward_the_context_budget() -> No
     assert after < 8_000, f"8,000-character budget still produced {after} characters"
     assert compacted != messages, "the oversized non-content fields must trigger compaction"
     assert any(item.get("role") == "user" for item in compacted), "keep the task"
+
+
+def test_compaction_reserves_room_for_its_own_system_messages() -> None:
+    """The tail may not consume space the compactor adds afterwards.
+
+    Measured with an 8,000-character budget: the selected tail fit by itself,
+    then the preserved system prompt and compaction notice made the final wire
+    request 8,115 characters. A request reported as bounded was still over the
+    provider boundary.
+    """
+    messages = [
+        {"role": "system", "content": "fixed system instruction"},
+        {"role": "user", "content": "old:" + "o" * 1_000},
+        {"role": "user", "content": "latest:" + "x" * 7_900},
+    ]
+
+    compacted = compact_messages(messages, threshold_percent=10, max_chars=20_000)
+    wire_chars = len(
+        json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+    )
+
+    assert wire_chars <= 8_000, f"8,000-character budget produced {wire_chars}"
+    assert str(compacted[-1].get("content", "")).startswith("latest:")

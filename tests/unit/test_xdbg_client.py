@@ -480,6 +480,66 @@ def test_wait_for_state_samples_state_after_transition_event(
     assert operations == ["events.read", "debug.state", "debug.state"]
 
 
+def test_wait_for_state_does_not_treat_a_dropped_batch_as_the_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(XdbgClient)
+
+    def read_events(
+        cursor: int,
+        *,
+        limit: int,
+        timeout: float,
+    ) -> DebugEventBatch:
+        del limit, timeout
+        return DebugEventBatch(
+            events=(),
+            cursor=cursor,
+            next_cursor=cursor + 8,
+            oldest_sequence=9,
+            latest_sequence=16,
+            dropped=8,
+            dropped_total=8,
+            has_more=False,
+            capacity=1024,
+        )
+
+    def request(
+        method: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float,
+    ) -> JsonObject:
+        del params, timeout
+        assert method == "debug.state"
+        return {"state": "paused"}
+
+    now = [0.0]
+
+    def fake_monotonic() -> float:
+        now[0] += 0.6
+        return now[0]
+
+    client._process = FakeProcess()
+    client._stdout_log = deque()
+    client._stderr_log = deque()
+    monkeypatch.setattr(client, "_diagnostics", lambda: {})
+    monkeypatch.setattr(client, "read_events", read_events)
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(client_module.time, "monotonic", fake_monotonic)
+
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client.wait_for_state(
+            {"paused", "idle"},
+            timeout=1.0,
+            after_event_sequence=8,
+            transition_event_kinds=frozenset({"debug.resumed"}),
+        )
+
+    assert exc_info.value.code == "debug_state_timeout"
+
+
 def test_close_sends_exit_before_disconnecting_and_cleans_runtime_directory() -> None:
     events: list[str] = []
     transport = ScriptedTransport(

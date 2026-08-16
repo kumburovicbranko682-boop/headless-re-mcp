@@ -178,6 +178,18 @@ class ApkAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def _require_session_path(self, session_id: str, path: Path, *, what: str) -> Path:
+        from headless_re_mcp.core.service import _session_owns_artifact_path
+
+        resolved = path.expanduser().resolve()
+        if not _session_owns_artifact_path(self.settings.artifact_root, session_id, resolved):
+            raise ApkError(
+                "invalid_params",
+                f"{what} must be inside the session artifact tree",
+                path=str(resolved),
+            )
+        return resolved
+
     def apk_repack(
         self, session_id: str, decoded_dir: str = "", timeout: float = 600.0
     ) -> Result[JsonObject]:
@@ -185,6 +197,7 @@ class ApkAnalysisMixin:
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
+            source = self._require_session_path(session_id, source, what="decoded_dir")
             out_apk = root / "repacked.apk"
             data = self._apktool_client().build(source, out_apk, timeout=timeout)
             _timeline_append(self, session_id, "apk.repack", "apktool rebuilt apk")
@@ -207,11 +220,19 @@ class ApkAnalysisMixin:
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
+            source = self._require_session_path(session_id, source, what="apk_path")
             out_apk = root / "signed.apk"
+            keystore_path = (
+                self._require_session_path(
+                    session_id, Path(keystore).expanduser(), what="keystore"
+                )
+                if keystore.strip()
+                else None
+            )
             data = self._apktool_client().sign(
                 source,
                 out_apk,
-                keystore=Path(keystore).expanduser() if keystore.strip() else None,
+                keystore=keystore_path,
                 keystore_password=keystore_password,
                 key_alias=key_alias,
                 timeout=timeout,

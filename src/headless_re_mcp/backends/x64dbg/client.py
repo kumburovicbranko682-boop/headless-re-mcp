@@ -1046,7 +1046,10 @@ class XdbgClient:
                     timeout=min(5.0, max(0.1, remaining)),
                 )
                 event_cursor = batch.next_cursor
-                transition_observed = batch.dropped > 0 or any(
+                # A wrap-around is not proof the command ran. Resume/step wait
+                # for a named transition; treating dropped>0 as that event
+                # reports success while the target is still paused.
+                transition_observed = any(
                     event.kind in transition_event_kinds for event in batch.events
                 )
             last_state = self.request("debug.state", timeout=min(5.0, max(0.1, remaining)))

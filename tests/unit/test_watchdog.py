@@ -224,3 +224,62 @@ def test_a_backend_that_comes_back_and_dies_again_is_treated_as_new() -> None:
     watchdog.sweep()
 
     assert len(health.recover_calls) == 2, "a fresh failure deserves a fresh attempt"
+
+
+def test_one_disconnected_backend_is_reported_once_not_on_every_sweep() -> None:
+    """A pipe that stays down is one alert, the same as a worker that stays dead.
+
+    The health monitor backs a failing reconnect off to one attempt per sixty
+    checks and then stops changing anything, so ``worker_alive`` true with
+    ``connected`` false is a state a backend sits in indefinitely rather than
+    passes through. At the default thirty-second sweep that was 2,880 identical
+    alerts a day.
+    """
+    health = FakeHealth([_row("s1", "x64dbg", alive=True, connected=False)])
+    watchdog = Watchdog(health, policy=WatchdogPolicy(interval_s=30.0))
+
+    for _ in range(120):  # an hour
+        report = watchdog.sweep()
+
+    assert watchdog.raised == 1, f"raised {watchdog.raised} alerts for one dropped pipe"
+    assert report["disconnected"] == 1, "it must still be reported as disconnected every sweep"
+
+
+def test_a_stuck_pipe_does_not_evict_the_alerts_that_matter() -> None:
+    """The ring holds 128 entries, so a repeating alert is a delete of the rest.
+
+    One unreachable backend filled it in 64 minutes, and a night of sweeps left
+    ``/api/agent/watchdog`` serving 128 copies of the same line -- with the dead
+    worker that is the reason anyone would look overwritten hours earlier.
+    """
+    health = FakeHealth(
+        [
+            _row("s1", "x64dbg", alive=True, connected=False),
+            _row("s2", "ida", alive=False, connected=False),
+        ]
+    )
+    watchdog = Watchdog(health, policy=WatchdogPolicy(interval_s=30.0))
+
+    for _ in range(960):  # eight hours
+        watchdog.sweep()
+
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts(limit=200)]
+    assert "backend_dead" in kinds, f"the dead worker was buried under {len(kinds)} alerts"
+
+
+def test_a_pipe_that_recovers_and_drops_again_is_reported_again() -> None:
+    """Saying it once applies to one outage, not to the backend forever."""
+    row = _row("s1", "x64dbg", alive=True, connected=False)
+    watchdog = Watchdog(FakeHealth([row]), policy=WatchdogPolicy(interval_s=30.0))
+
+    watchdog.sweep()
+    watchdog.sweep()
+    assert watchdog.raised == 1
+
+    row["connected"] = True
+    watchdog.sweep()
+
+    row["connected"] = False
+    watchdog.sweep()
+
+    assert watchdog.raised == 2, "a fresh drop is a fresh signal"

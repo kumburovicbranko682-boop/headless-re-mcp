@@ -45,6 +45,15 @@ def test_phase_bridge_advances_dumped_imports_verified() -> None:
     assert state.to_dict()["claims_universal_unpack"] is False
 
 
+def test_note_verified_does_not_hop_from_oep_candidate() -> None:
+    state = create_unpack_session("s1", route="generic_dynamic")
+    state = transition(state, UnpackPhase.RUNNING, event="run", message="run")
+    state = transition(state, UnpackPhase.OEP_CANDIDATE, event="oep", message="oep")
+    updated = note_verified(state, path="C:/sample/tmp/dump.bin", sha256="a" * 64)
+    assert updated.phase == UnpackPhase.OEP_CANDIDATE
+    assert any(item.event == "verify_phase_skipped" for item in updated.timeline)
+
+
 def _write_pe(path: Path) -> None:
     image = bytearray(0x400)
     pe_offset = 0x80

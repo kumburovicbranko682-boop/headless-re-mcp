@@ -58,7 +58,11 @@ def test_a_failed_usage_walk_is_reported_and_throttled(
     assert alerts == ["artifact_usage_measurement_failing"]
 
     healthy = True
-    time.sleep(0.06)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() - cache._at < cache.ttl_s:
+        if time.monotonic() >= deadline:
+            raise AssertionError("failed measurement did not leave the TTL window")
+        time.sleep(0.01)
     cache.get(tmp_path)
     wait_until_idle()
 

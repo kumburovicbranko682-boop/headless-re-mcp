@@ -14,6 +14,7 @@ one outcome that produces cross-contaminated results nobody can spot later.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import time
@@ -21,12 +22,29 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 
 DEFAULT_TIMEOUT_S = 600.0
+_NUL = "\x00"
+
+
+def _split_command(raw: str) -> tuple[str, ...]:
+    """Split an operator-written command without eating Windows path slashes.
+
+    POSIX ``shlex`` treats ``\\`` as an escape, so ``C:\\vm\\revert.ps1``
+    becomes ``C:vmrevert.ps1``. Windows ``shlex`` (posix=False) keeps the
+    quote characters. Protect backslashes, split the POSIX way so quotes
+    still group arguments, then put the slashes back.
+    """
+    if os.name != "nt":
+        return tuple(shlex.split(raw))
+    if _NUL in raw:
+        raise ValueError("isolation command must not contain NUL")
+    return tuple(part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +64,7 @@ class IsolationPolicy:
         # A single string is read the way an operator would write it in a config
         # file; a sequence is taken as an argv that is already split.
         command = (
-            tuple(shlex.split(raw))
+            _split_command(raw)
             if isinstance(raw, str)
             else tuple(str(part) for part in raw)
         )
@@ -75,7 +93,10 @@ class IsolationRunner:
     """Invoke the configured isolation command and report honestly."""
 
     policy: IsolationPolicy = field(default_factory=IsolationPolicy)
-    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
+    # None means the production path: run_bounded, so a snapshot script that
+    # starts a hypervisor tool is killed with its children. Tests inject a
+    # fake here and keep the subprocess.run calling convention.
+    run: Callable[..., subprocess.CompletedProcess[str]] | None = None
     clock: Callable[[], float] = time.monotonic
 
     def rotate(self, *, reason: str = "next_sample") -> JsonObject:
@@ -92,15 +113,13 @@ class IsolationRunner:
         started = self.clock()
         command: Sequence[str] = self.policy.command
         try:
-            completed = self.run(
-                list(command),
-                capture_output=True,
-                text=True,
-                timeout=self.policy.timeout_s,
-                check=False,
-                # Runs once per sample on an unattended box; a console window
-                # per rotation would pile up on the desktop.
-                **no_window_popen_kwargs(),
+            completed = self._invoke(list(command))
+        except TimedOut as exc:
+            return self._failed(
+                f"TimedOut: timed out after {exc.timeout:g}s; killed {list(exc.killed)}",
+                command=command,
+                elapsed=self.clock() - started,
+                reason=reason,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._failed(
@@ -127,6 +146,31 @@ class IsolationRunner:
             "elapsed_s": round(elapsed, 3),
             "reason": reason,
         }
+
+    def _invoke(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if self.run is not None:
+            return self.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.policy.timeout_s,
+                check=False,
+                # Runs once per sample on an unattended box; a console window
+                # per rotation would pile up on the desktop.
+                **no_window_popen_kwargs(),
+            )
+        flags = int(no_window_popen_kwargs().get("creationflags") or 0)
+        bounded = run_bounded(
+            command,
+            timeout=self.policy.timeout_s,
+            creationflags=flags,
+        )
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=bounded.returncode,
+            stdout=bounded.stdout.decode("utf-8", errors="replace"),
+            stderr=bounded.stderr.decode("utf-8", errors="replace"),
+        )
 
     def _failed(
         self,

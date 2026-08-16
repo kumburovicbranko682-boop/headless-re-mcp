@@ -90,7 +90,7 @@ class UnpackCliMixin:
                         details={"hint": "set HEADLESS_RE_UPX to the official upx executable"},
                     ),
                 )
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -106,7 +106,7 @@ class UnpackCliMixin:
                 )
             result = self._upx_tester(
                 self.settings.upx,
-                session.require_binary(),
+                session.require_pe(),
                 input_sha256=session.sha256,
                 timeout=bounded_timeout,
             )
@@ -140,7 +140,7 @@ class UnpackCliMixin:
                         details={"hint": "set HEADLESS_RE_UPX to the official upx executable"},
                     ),
                 )
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -155,13 +155,13 @@ class UnpackCliMixin:
                     ),
                 )
 
-            before = scan_pe(session.require_binary())
+            before = scan_pe(session.require_pe())
             output_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / f"upx-unpacked-{uuid4().hex}.exe"
             result = self._upx_unpacker(
                 self.settings.upx,
-                session.require_binary(),
+                session.require_pe(),
                 output_path,
                 input_sha256=session.sha256,
                 timeout=bounded_timeout,
@@ -255,7 +255,7 @@ class UnpackCliMixin:
                     "upx": result.to_dict(),
                     "comparison": comparison,
                     "output_path": str(result.output_path),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
                     "die_rescan": die_rescan,
                     "reanalyze": reanalyze,
                     "claims_universal_unpack": False,
@@ -376,7 +376,7 @@ class UnpackCliMixin:
                         details={"hint": "set HEADLESS_RE_XVLKC to a user-owned executable"},
                     ),
                 )
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -395,7 +395,7 @@ class UnpackCliMixin:
             out_path = out_dir / f"xvlkc-{uuid4().hex}.exe"
             result = self._xvlkc_runner(
                 self.settings.xvlkc,
-                session.require_binary(),
+                session.require_pe(),
                 out_path,
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
@@ -404,7 +404,7 @@ class UnpackCliMixin:
                 {
                     "xvlkc": result.to_dict(),
                     "output_path": str(result.output_path),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
                     "claims_universal_unpack": False,
                 },
                 session_id=session_id,
@@ -454,7 +454,7 @@ class UnpackCliMixin:
                         },
                     ),
                 )
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -504,15 +504,15 @@ class UnpackCliMixin:
             resolved_module = (
                 module_name
                 if module_name is not None
-                else Path(session.require_binary()).name
+                else Path(session.require_pe()).name
             )
             out_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"vmp-dump-{uuid4().hex}.exe"
-            search_roots = [Path(session.require_binary()).resolve().parent, out_dir]
+            search_roots = [Path(session.require_pe()).resolve().parent, out_dir]
             result = self._vmp_dumper_runner(
                 self.settings.vmp_dumper,
-                session.require_binary(),
+                session.require_pe(),
                 out_path,
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
@@ -531,7 +531,7 @@ class UnpackCliMixin:
                     "vm_restored": result.vm_restored,
                     "pid": debuggee_pid,
                     "module_name": resolved_module,
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
                     "claims_universal_unpack": False,
                 },
                 session_id=session_id,
@@ -566,7 +566,7 @@ class UnpackCliMixin:
                         details={"hint": "set HEADLESS_RE_SCYLLA to a user-owned executable"},
                     ),
                 )
-            current_sha = file_sha256(session.require_binary())
+            current_sha = file_sha256(session.require_pe())
             if current_sha != session.sha256:
                 return Result[JsonObject](
                     ok=False,
@@ -585,7 +585,7 @@ class UnpackCliMixin:
             out_path = out_dir / f"scylla-iat-rebuilt-{uuid4().hex}.exe"
             result = self._scylla_runner(
                 self.settings.scylla,
-                session.require_binary(),
+                session.require_pe(),
                 out_path,
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
@@ -594,7 +594,7 @@ class UnpackCliMixin:
                 {
                     "scylla": result.to_dict(),
                     "output_path": str(result.output_path),
-                    "input_unchanged": file_sha256(session.require_binary()) == session.sha256,
+                    "input_unchanged": file_sha256(session.require_pe()) == session.sha256,
                     "claims_universal_unpack": False,
                 },
                 session_id=session_id,

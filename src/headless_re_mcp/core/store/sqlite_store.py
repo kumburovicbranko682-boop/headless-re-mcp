@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -9,6 +10,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from uuid import uuid4
+
+from headless_re_mcp.core.store.timeline import session_timeline_path
 
 JsonObject = dict[str, Any]
 
@@ -248,6 +251,28 @@ class SessionStore:
         conn.execute(f"DELETE FROM knowledge WHERE session_id IN ({placeholders})", ids)
         conn.execute(f"DELETE FROM backends WHERE session_id IN ({placeholders})", ids)
         conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", ids)
+        for session_id in ids:
+            self._forget_closed_session_files(session_id)
+
+    def _forget_closed_session_files(self, session_id: str) -> None:
+        """Remove the timeline a closed session leaves under the artifact root.
+
+        Measured at 250 closed sessions: 250 directories and 60 KB of
+        timeline.jsonl still on disk after the sqlite rows were gone. The file
+        is rewritten in place for the life of the session, then nobody reads it.
+        """
+        if self.db_path.parent.name != "meta":
+            return
+        path = session_timeline_path(self.db_path.parent.parent, session_id)
+        with suppress(OSError):
+            if path.is_file():
+                path.unlink()
+        self._prune_emptied_parent(path)
+        if Path(session_id).name == session_id:
+            events = self.db_path.parent.parent / "debug-events" / session_id
+            with suppress(OSError):
+                if events.is_dir():
+                    shutil.rmtree(events)
 
     def get_session(self, session_id: str) -> JsonObject | None:
         """The stored row, or None if this id was never created."""
