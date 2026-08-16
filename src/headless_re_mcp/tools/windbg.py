@@ -85,7 +85,7 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def windbg_live_modules(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Loaded module list of this session's live debuggee, read non-invasively."""
+        """Live module list; read truncated when the listing was cut."""
         return _dump(analysis.windbg_live_modules(session_id, timeout=timeout))
 
     @tools.tool(name="windbg.live_disasm")
