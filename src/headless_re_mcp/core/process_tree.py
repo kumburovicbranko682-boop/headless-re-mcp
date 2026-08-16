@@ -60,9 +60,11 @@ def process_image_path(pid: int) -> str | None:
 
 
 def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PIDS) -> list[int]:
-    """Return direct child PIDs of ``parent_pid`` (bounded, Toolhelp32)."""
-    if os.name != "nt" or type(parent_pid) is not int or parent_pid <= 0:
+    """Return direct child PIDs of ``parent_pid`` (bounded)."""
+    if type(parent_pid) is not int or parent_pid <= 0:
         return []
+    if os.name != "nt":
+        return _enumerate_direct_children_proc(parent_pid, max_pids=max_pids)
     limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
     kernel32 = ctypes.windll.kernel32
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
@@ -87,6 +89,79 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
         kernel32.CloseHandle(snap)
     children.sort()
     return children
+
+
+_MAX_PROC_SCAN = 4096
+
+
+def _enumerate_direct_children_proc(parent_pid: int, *, max_pids: int) -> list[int]:
+    """Read children from procfs. Toolhelp32 does not exist here.
+
+    Measured: run_bounded killed the launcher and left its child alive, so a
+    timed-out analysis returned while an orphan kept a core.
+    """
+    limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
+    fast = _children_file(parent_pid, limit)
+    if fast is not None:
+        return fast
+    children: list[int] = []
+    scanned = 0
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return []
+    with entries:
+        for entry in entries:
+            if scanned >= _MAX_PROC_SCAN:
+                break
+            if not entry.name.isdigit():
+                continue
+            scanned += 1
+            pid = int(entry.name)
+            if pid <= 0 or pid == parent_pid:
+                continue
+            try:
+                with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+                    stat = handle.read()
+            except OSError:
+                continue
+            rparen = stat.rfind(")")
+            if rparen < 0:
+                continue
+            fields = stat[rparen + 2 :].split()
+            if len(fields) < 2:
+                continue
+            try:
+                ppid = int(fields[1])
+            except ValueError:
+                continue
+            if ppid == parent_pid:
+                children.append(pid)
+                if len(children) >= limit:
+                    break
+    children.sort()
+    return children
+
+
+def _children_file(parent_pid: int, limit: int) -> list[int] | None:
+    path = f"/proc/{parent_pid}/task/{parent_pid}/children"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    out: list[int] = []
+    for part in raw.split():
+        try:
+            child = int(part)
+        except ValueError:
+            continue
+        if child > 0 and child != parent_pid:
+            out.append(child)
+            if len(out) >= limit:
+                break
+    out.sort()
+    return out
 
 
 def collect_descendants(parent_pid: int) -> list[int]:
@@ -128,7 +203,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
-    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
 

@@ -2032,6 +2032,48 @@ class TestATimeoutBindsWhatTheToolStarted:
         assert completed.returncode == 3
         assert completed.stdout.strip() == b"done"
 
+    def test_a_launcher_child_is_killed_on_this_host(self, tmp_path: Any) -> None:
+        """run_bounded used to kill the launcher and leave the child.
+
+        Measured: killed=[launcher] and the child was still alive after the
+        timeout returned.
+        """
+        import os
+        import sys
+        import time
+        from contextlib import suppress
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        pidfile = tmp_path / "child.pid"
+        script = tmp_path / "launcher.py"
+        script.write_text(
+            "import subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time\\nwhile True: time.sleep(0.2)'])\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "while True:\n"
+            "    time.sleep(0.2)\n",
+            encoding="utf-8",
+        )
+        child = 0
+        try:
+            with pytest.raises(TimedOut) as caught:
+                run_bounded([sys.executable, str(script)], timeout=0.8)
+            deadline = time.monotonic() + 2.0
+            while not pidfile.is_file() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            child = int(pidfile.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 5.0
+            while self._alive(child) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert self._alive(child) is False, "the launcher's child outlived the timeout"
+            assert child in caught.value.killed
+        finally:
+            if child and self._alive(child):
+                with suppress(OSError):
+                    os.kill(child, 9)
+
 
 class TestOnlyAMissingSessionSaysSessionNotFound:
     """Any KeyError used to be reported as a missing session.
