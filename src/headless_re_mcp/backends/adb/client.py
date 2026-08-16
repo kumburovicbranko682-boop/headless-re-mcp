@@ -528,9 +528,19 @@ class AdbBackend:
         def work() -> JsonObject:
             dev = self._device(serial)
             try:
-                dev.forward(local, remote)
+                result = dev.forward(local, remote)
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"forward failed: {exc}") from exc
+            # adbutils returns None on success. Measured: an explicit False
+            # was still reported as a successful forward.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "forward was refused",
+                    local=local,
+                    remote=remote,
+                    forwarded=False,
+                )
             return {"local": local, "remote": remote}
 
         return self._call("forward", work)

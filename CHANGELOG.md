@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.forward` 在转发被拒绝时仍报成功**。假设备 `forward()` 返回
+  `False` 时仍回 `{local, remote}`。agent 会把没建起来的端口当可用。现在
+  显式 `False` 报 `backend_error`；`None` 仍算成功。
 - **`apk.certificates` 一次回完整证书表**。2000 张证书整包返回（417 KiB），没有
   `has_more`。现在默认 500，截断时标 `totals` / `has_more`。
 - **IDA 反汇编行截断后看起来仍是完整指令**。800 字符的一行被切成 512 且没有

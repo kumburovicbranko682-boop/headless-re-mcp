@@ -1334,3 +1334,36 @@ class TestDeviceLogcatSaysWhenItStopped:
         page = self._backend(3).logcat("emulator-5554", lines=20)
         assert page["count"] == 3
         assert page["has_more"] is False
+
+
+class TestDeviceForwardDoesNotInventSuccess:
+    """A refused forward was still reported as a successful tool call.
+
+    Measured: a device whose forward() returned False still answered
+    {local, remote} with no error. An unattended agent then talks through
+    a port that was never opened. adbutils itself returns None on success,
+    so only an explicit False is a refusal.
+    """
+
+    def _backend(self, result: object) -> AdbBackend:
+        class _Dev:
+            def forward(self, *args: object, **kwargs: object) -> object:
+                del args, kwargs
+                return result
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_refused_forward_is_a_failure(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend(False).forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("forwarded") is False
+
+    def test_a_none_return_is_still_success(self) -> None:
+        page = self._backend(None).forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert page["local"] == "tcp:27042"
+        assert page["remote"] == "tcp:27042"
