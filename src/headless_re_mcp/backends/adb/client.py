@@ -473,7 +473,11 @@ class AdbBackend:
         if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
             raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
         try:
-            dev.forward(local, remote)
+            # Measured: a 2.5s block in forward() was waited out in full and
+            # still returned the mapping. The host command has no timeout.
+            _deadline(lambda: dev.forward(local, remote), timeout=_SHELL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
         return {"local": local, "remote": remote}

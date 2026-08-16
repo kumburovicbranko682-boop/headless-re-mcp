@@ -988,6 +988,48 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceForwardIsBounded:
+    """A wedged adb forward used to park the tool worker with no deadline.
+
+    Measured: device.forward called adbutils.forward with no timeout, so a
+    2.5s block was waited out in full and still returned the mapping.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_blocking_forward_fails_instead_of_waiting_it_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.2)
+
+        class _Dev:
+            def forward(self, local: str, remote: str) -> None:
+                time.sleep(5)
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_forward_is_success(self) -> None:
+        class _Dev:
+            def forward(self, local: str, remote: str) -> None:
+                return None
+
+        result = self._backend(_Dev()).forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result["local"] == "tcp:27042"
+
+
 class TestDevicePushIsBounded:
     """A wedged sync.push used to park the tool worker for as long as adb liked.
 
