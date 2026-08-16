@@ -16,11 +16,16 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# replay.client runs on mitmproxy's loop. Waiting forever for that thread is
+# how an unattended replay parks a worker after the proxy has already died.
+_REPLAY_TIMEOUT = 30.0
 
 
 class ProxyError(RuntimeError):
@@ -384,7 +389,32 @@ class ProxyBackend:
             raise ProxyError("invalid_state", "proxy is not running")
         try:
             new_flow = flow.copy()
-            inst._loop.call_soon_threadsafe(master.commands.call, "replay.client", [new_flow])
+        except Exception as exc:  # noqa: BLE001
+            raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
+        done: Future[Any] = Future()
+
+        def _replay() -> None:
+            try:
+                result = master.commands.call("replay.client", [new_flow])
+            except BaseException as exc:  # noqa: BLE001 - handed to the caller
+                if not done.done():
+                    done.set_exception(exc)
+                return
+            if not done.done():
+                done.set_result(result)
+
+        try:
+            inst._loop.call_soon_threadsafe(_replay)
+            done.result(timeout=_REPLAY_TIMEOUT)
+        except FutureTimeout as exc:
+            raise ProxyError(
+                "timeout",
+                "replay did not finish",
+                timeout=_REPLAY_TIMEOUT,
+                flow_id=flow_id,
+            ) from exc
+        except ProxyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}

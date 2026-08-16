@@ -259,6 +259,87 @@ class TestProxyStartHonesty:
         assert not hasattr(proxy_client._ProxyInstance, "_run_fallback")
 
 
+class TestProxyReplayDoesNotReportAGhost:
+    """Scheduling replay.client used to be reported as replayed=True.
+
+    Measured: call_soon_threadsafe queued a command that raises
+    'replay.client refused' and the reply still said replayed=True. An
+    unattended agent then treats a refused replay as sent.
+    """
+
+    def _backend(self, loop: object, commands: object) -> Any:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        class _Flow:
+            def copy(self) -> object:
+                return self
+
+        class _Recorder:
+            def raw(self, flow_id: str) -> object:
+                return _Flow()
+
+        class _Master:
+            def __init__(self) -> None:
+                self.commands = commands
+
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 8080)
+        inst.recorder = _Recorder()  # type: ignore[assignment]
+        inst._loop = loop  # type: ignore[assignment]
+        inst._master = _Master()
+        backend._instances["s"] = inst
+        return backend
+
+    def test_a_refused_command_is_not_replayed(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyError
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                fn(*args)
+
+        class _Commands:
+            def call(self, name: str, flows: object) -> None:
+                raise RuntimeError("replay.client refused")
+
+        backend = self._backend(_Loop(), _Commands())
+        with pytest.raises(ProxyError) as caught:
+            backend.replay("s", "flow-1")
+        assert caught.value.code == "backend_error"
+        assert "refused" in caught.value.message
+
+    def test_a_finished_command_is_replayed(self) -> None:
+        class _Loop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                fn(*args)
+
+        class _Commands:
+            def call(self, name: str, flows: object) -> str:
+                assert name == "replay.client"
+                return "ok"
+
+        backend = self._backend(_Loop(), _Commands())
+        assert backend.replay("s", "flow-1") == {"replayed": True, "flow_id": "flow-1"}
+
+    def test_a_dead_loop_is_not_replayed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.proxy import client as proxy_client
+        from headless_re_mcp.backends.proxy.client import ProxyError
+
+        monkeypatch.setattr(proxy_client, "_REPLAY_TIMEOUT", 0.2)
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                return None
+
+        class _Commands:
+            def call(self, name: str, flows: object) -> None:
+                raise AssertionError("dead loop must not run the command")
+
+        backend = self._backend(_Loop(), _Commands())
+        with pytest.raises(ProxyError) as caught:
+            backend.replay("s", "flow-1")
+        assert caught.value.code == "timeout"
+
+
 class TestFailedProxyStartLeavesNothingBehind:
     """mitmproxy installs a root-logger handler in ``Master.__init__``.
 
