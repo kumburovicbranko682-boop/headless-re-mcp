@@ -199,3 +199,54 @@ def test_an_exact_byte_search_page_is_complete() -> None:
     assert result["returned"] == 100
     assert result["total"] == 100
     assert result["has_more"] is False
+
+
+def _install_fake_text_search(hits: list[int]) -> None:
+    import sys
+    import types
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x10000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_idaapi = types.ModuleType("ida_idaapi")
+    ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    sys.modules["ida_idaapi"] = ida_idaapi
+
+    idc = types.ModuleType("idc")
+    idc.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    sys.modules["idc"] = idc
+
+    ida_search = types.ModuleType("ida_search")
+    ida_search.SEARCH_DOWN = 1  # type: ignore[attr-defined]
+
+    def find_text(ea: int, y: int, x: int, text: str, flags: int) -> int:
+        for hit in hits:
+            if hit >= ea:
+                return hit
+        return int(idc.BADADDR)
+
+    ida_search.find_text = find_text  # type: ignore[attr-defined]
+    sys.modules["ida_search"] = ida_search
+
+
+def test_a_full_text_search_page_is_not_every_hit() -> None:
+    """150 hits with limit=100 used to come back total=100 has_more=False."""
+    from headless_re_mcp.backends.ida.worker import _search_text
+
+    _install_fake_text_search(list(range(0x1000, 0x1000 + 150)))
+    result = _search_text({"text": "hello", "offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["has_more"] is True
+    assert result["total"] > 100
+
+
+def test_an_exact_text_search_page_is_complete() -> None:
+    from headless_re_mcp.backends.ida.worker import _search_text
+
+    _install_fake_text_search(list(range(0x1000, 0x1000 + 100)))
+    result = _search_text({"text": "hello", "offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 100
+    assert result["has_more"] is False
