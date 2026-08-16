@@ -27,7 +27,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         host: str = "127.0.0.1",
         port: Annotated[int, Field(ge=1, le=65535)] = 8080,
     ) -> dict[str, Any]:
-        """Start an HTTP(S) interception proxy bound to this session."""
+        """Start an HTTP(S) interception proxy bound to this session.
+
+        Answers with running, host, port and endpoint. There is no ok,
+        started or url field.
+        """
         return _dump(analysis.proxy_start(session_id, host=host, port=port))
 
     @tools.tool(name="proxy.stop")
