@@ -95,27 +95,36 @@ def address_dict(
 
 
 def parse_r2_json(raw: str) -> Any | None:
-    """Extract the last JSON value from r2 -q0 output (may include banners)."""
+    """Extract the last JSON value from r2 -q0 output (may include banners).
+
+    A cut array must not fall through to the last object inside it.
+    Measured: 50 aflj rows with the closing ] removed parsed as
+    info={last function}, parsed=True, no items. That looked like a
+    complete listing of one function.
+    """
     text = (raw or "").strip()
     if not text:
         return None
-    # Prefer trailing JSON array/object.
-    for opener, closer in (("[", "]"), ("{", "}")):
-        start = text.rfind(opener)
-        if start < 0:
-            continue
-        chunk = text[start:]
-        end = chunk.rfind(closer)
-        if end < 0:
-            continue
-        candidate = chunk[: end + 1]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-    # Fallback: whole text
+    array_start = text.rfind("[")
+    object_start = text.rfind("{")
+    if array_start >= 0 and (object_start < 0 or array_start < object_start):
+        return _load_json_span(text[array_start:], "]")
+    if object_start >= 0:
+        loaded = _load_json_span(text[object_start:], "}")
+        if loaded is not None:
+            return loaded
     try:
         return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _load_json_span(chunk: str, closer: str) -> Any | None:
+    end = chunk.rfind(closer)
+    if end < 0:
+        return None
+    try:
+        return json.loads(chunk[: end + 1])
     except json.JSONDecodeError:
         return None
 

@@ -100,6 +100,25 @@ def test_output_that_fits_is_not_labelled_truncated(
     assert payload["raw"] == "[]"
 
 
+def test_a_cut_function_array_is_not_the_last_function(tmp_path: Path) -> None:
+    """A truncated aflj used to parse as one complete function.
+
+    Measured: 50 rows with the closing ] removed became
+    info={last function}, parsed=True, no items.
+    """
+    items = [{"name": f"fcn.{index}", "offset": index, "size": 16} for index in range(50)]
+    cut = json.dumps(items)[:-1]
+    assert parse_r2_json(cut) is None
+    binary = _minimal_pe(tmp_path)
+    enriched = enrich_r2_payload(
+        {"raw": cut, "commands": ["aa", "aflj"], "truncated": True},
+        binary=binary,
+    )
+    assert enriched["parsed"] is False
+    assert "info" not in enriched
+    assert "items" not in enriched
+
+
 def test_parse_r2_json_trailing_array() -> None:
     raw = "warning stuff\n" + json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 16}])
     parsed = parse_r2_json(raw)
