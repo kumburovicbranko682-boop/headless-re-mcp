@@ -404,6 +404,33 @@ class TestJsUnpackSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestJsUnpackDoesNotTrustLeftovers:
+    """A failed webcrack used to succeed if the last unpack left files behind.
+
+    Measured: exit 1, leftover old.js still on disk, unpack returned
+    file_count=1 as if this run had written it.
+    """
+
+    def test_a_failed_unpack_is_not_saved_by_yesterdays_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_mod
+
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "bundle.js"
+        source.write_text("module.exports=1;", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        leftover = out / "old.js"
+        leftover.write_text("yesterday", encoding="utf-8")
+        monkeypatch.setattr(jsre_mod, "_run", lambda *args, **kwargs: ("", "webcrack failed", 1))
+        with pytest.raises(JsReError) as info:
+            JsClient(exe).unpack_bundle(source, out)
+        assert info.value.code == "backend_error"
+        assert leftover.is_file()
+
+
 class TestWasmInfoDescriptionMatchesTheCut:
     """wasm.info already cuts at 400000 bytes, but the tool text hid that.
 

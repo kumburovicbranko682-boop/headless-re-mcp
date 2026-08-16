@@ -93,7 +93,10 @@ class JsClient:
             if out_dir.is_dir()
             else []
         )
-        if code != 0 and not files:
+        # Measured: exit 1 with yesterday's old.js still in out_dir still
+        # became a successful unpack, so an unattended agent then reads
+        # last night's modules as this run's output.
+        if code != 0:
             raise JsReError(
                 "backend_error",
                 "webcrack unpack failed",
