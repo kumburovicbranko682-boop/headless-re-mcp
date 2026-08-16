@@ -33,11 +33,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_open(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Open the session binary in radare2 and run its own analysis pass.
+        """Check that r2 can open the session binary. One-shot: no pipe is kept.
 
-        Independent of the IDA database; the other r2 tools read what this
-        produced. Analysis cost scales with the binary, so give a packed or
-        large sample a longer timeout.
+        Later r2.* tools reopen the file and run their own analysis. A long
+        timeout here does not pay for those calls. The reply's `note` says the
+        same thing.
         """
         return _dump(analysis.r2_open(session_id, timeout=timeout))
 

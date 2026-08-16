@@ -143,6 +143,25 @@ def test_enrich_functions_payload(tmp_path: Path) -> None:
     assert enriched["items"][1]["address"]["va"] == 0x140002000
 
 
+def test_r2_open_description_does_not_promise_a_kept_analysis() -> None:
+    """The docstring used to say later r2 tools read what open produced.
+
+    They do not: each call starts a new process and r2.functions/disasm run
+    `aa` themselves. An unattended agent that spent a long timeout on open
+    then expected cached analysis was paying twice and reading a lie.
+    """
+    from unittest.mock import MagicMock
+
+    from headless_re_mcp.tools.r2 import build_r2_tools
+
+    tools = {item.name: item for item in build_r2_tools(MagicMock())}
+    doc = tools["r2.open"].handler.__doc__ or ""
+    lowered = doc.casefold()
+    assert "one-shot" in lowered or "reopen" in lowered
+    assert "read what this produced" not in lowered
+    assert "analysis pass" not in lowered
+
+
 def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     raw = json.dumps([{"offset": 0x140001000, "opcode": "nop"}])

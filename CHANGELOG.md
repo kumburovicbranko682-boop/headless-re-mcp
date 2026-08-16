@@ -70,6 +70,9 @@ until 1.0 the tool surface may still change between minor versions.
   现在两处都拒绝。
 - **浏览器采集列表停在上限却不说**。console 2500 条进 2000 槽、取 200 条时只回 `count=200`，
   scripts 满 2000 条看起来像全部。现在回 `total` / `has_more` / `buffer_full`。
+- **`r2.open` 的描述说后续工具会读它的分析结果**。实现是一次性打开校验（只跑 `i`），每个
+  `r2.*` 都重新开文件并自己跑 `aa`。模型因此把长超时花在 open 上，再付一次分析。描述改为
+  与回包里的 `note` 一致。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
