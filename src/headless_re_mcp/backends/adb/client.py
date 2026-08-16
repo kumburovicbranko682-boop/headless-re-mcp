@@ -171,11 +171,14 @@ class AdbBackend:
             "has_more": total > len(props),
         }
 
-    def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
+    def packages(
+        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+    ) -> JsonObject:
         dev = self._device(serial)
+        capped = max(1, min(int(limit), 2000))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
-            raw = dev.shell(args)
+            raw = dev.shell(args, timeout=15.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pm list failed: {exc}") from exc
         pkgs = sorted(
@@ -183,7 +186,15 @@ class AdbBackend:
             for line in str(raw).splitlines()
             if line.startswith("package:")
         )
-        return {"packages": pkgs, "count": len(pkgs), "third_party_only": third_party_only}
+        total = len(pkgs)
+        page = pkgs[:capped]
+        return {
+            "packages": page,
+            "count": len(page),
+            "total": total,
+            "has_more": total > len(page),
+            "third_party_only": third_party_only,
+        }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)

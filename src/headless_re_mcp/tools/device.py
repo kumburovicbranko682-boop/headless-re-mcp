@@ -56,9 +56,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.device_properties(serial, limit=limit))
 
     @tools.tool(name="device.packages")
-    def device_packages(serial: str, third_party_only: bool = False) -> dict[str, Any]:
-        """List installed package names, optionally only third-party ones."""
-        return _dump(analysis.device_packages(serial, third_party_only=third_party_only))
+    def device_packages(
+        serial: str,
+        third_party_only: bool = False,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 500,
+    ) -> dict[str, Any]:
+        """List installed package names, optionally only third-party ones.
+
+        Capped; the reply carries total and has_more so a page is not read
+        as every package on the device.
+        """
+        return _dump(
+            analysis.device_packages(
+                serial, third_party_only=third_party_only, limit=limit
+            )
+        )
 
     @tools.tool(name="device.install")
     def device_install(

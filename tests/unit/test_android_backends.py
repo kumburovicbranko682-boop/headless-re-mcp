@@ -108,6 +108,40 @@ class TestAdbArgumentValidation:
         assert whole["has_more"] is False
         assert whole["total"] == 10
 
+    def test_packages_at_the_cap_say_so_and_pm_is_bounded(self) -> None:
+        """pm list used to return every package and wait on adb forever.
+
+        Measured: 80 packages, no limit in the reply, timeout=None. A busy
+        emulator listing is a full page that looks complete, and a wedged
+        adb holds the worker.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeout = timeout
+                return "\n".join(f"package:com.app{index}" for index in range(80))
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).packages("emulator-5554", limit=10)
+        assert device.timeout == 15.0
+        assert result["count"] == 10
+        assert result["total"] == 80
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 10
+
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
         if backend.available:
