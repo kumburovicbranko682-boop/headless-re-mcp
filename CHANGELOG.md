@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 事件 history 停在 1000 条时看起来像完整时间线**。1500 条事件回 1000
+  条且 `ok=True`，没有 `has_more`。过夜 run 后面的 `tool.completed` 会消失。
+  现在截断时标 `has_more`。
 - **`r2.open` 截断 `i` 输出后看起来仍是完整信息**。12,000 字符被切成 8,000 且
   没有 `truncated`。agent 会把切到一半的 listing 当成整份 `i`。现在带回
   `truncated` 与 `bytes`。

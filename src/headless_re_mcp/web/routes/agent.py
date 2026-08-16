@@ -257,8 +257,19 @@ def register_agent_routes(
         authorize(authorization)
         if store.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        # Default list_events cap is 1000. Measured: 1500 events came back as
+        # 1000 with ok=True and no has_more, so an overnight run's later
+        # tool.completed events disappeared.
+        batch = store.list_events(run_id, after=after, limit=1001)
+        has_more = len(batch) > 1000
+        events = batch[:1000]
         return JSONResponse(
-            {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
+            {
+                "ok": True,
+                "events": [event.dump() for event in events],
+                "count": len(events),
+                "has_more": has_more,
+            }
         )
 
     @app.post("/api/agent/missions", status_code=201)

@@ -133,3 +133,41 @@ def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) 
     # The point of the endpoint: see exactly which writes were opened up.
     assert body["auto_executable_write_count"] > 0
     assert "dynamic.launch" in body["auto_executable_writes"]
+
+
+def test_event_history_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The history endpoint stopped at 1000 events and said the run was complete.
+
+    Measured: 1500 events came back as 1000 with ok=True and no has_more, so
+    an overnight run's later tool.completed events disappeared.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    for index in range(1001):
+        store.append_event(run.id, "message.delta", {"n": index})
+
+    with TestClient(app) as client:
+        first = client.get(
+            f"/api/agent/runs/{run.id}/events/history", headers=headers
+        ).json()
+        assert first["ok"] is True
+        assert first["count"] == 1000
+        assert first["has_more"] is True
+        assert first["events"][-1]["seq"] == 1000
+
+        tail = client.get(
+            f"/api/agent/runs/{run.id}/events/history",
+            headers=headers,
+            params={"after": 1000},
+        ).json()
+        assert tail["has_more"] is False
+        assert tail["count"] >= 1
+        assert tail["events"][0]["seq"] == 1001
