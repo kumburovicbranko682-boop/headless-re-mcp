@@ -916,6 +916,26 @@ class TestFridaModulePaging:
         assert complete["has_more"] is False
 
 
+class TestFridaJavaClassesDescription:
+    def test_java_classes_description_says_to_read_has_more(self) -> None:
+        """frida.java.classes already paged but its tool text never said so.
+
+        Measured: handler.__doc__ had no has_more while the reply carries
+        it. A model that never saw the field treated one page as every
+        loaded class.
+        """
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.java.classes"].handler.__doc__ or ""
+            assert "has_more" in doc
+        finally:
+            service.close_all()
+
+
 class TestFridaExportsDescription:
     def test_exports_description_says_to_read_has_more(self) -> None:
         """frida.exports already paged but its tool text was empty.
