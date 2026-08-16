@@ -643,6 +643,15 @@ def _decompile(params: JsonObject) -> JsonObject:
             address=int(function.start_ea),
         )
     text = str(cfunc)
+    # Measured: decompile() returning "" still answered {'code': ''}, so
+    # an agent treated a failed decompile as empty source. None already
+    # failed; a blank string did not.
+    if not text.strip():
+        raise WorkerRequestError(
+            "decompilation_failed",
+            f"decompiler produced no code for 0x{int(function.start_ea):X}",
+            address=int(function.start_ea),
+        )
     return {
         "address": int(function.start_ea),
         "end": int(function.end_ea),

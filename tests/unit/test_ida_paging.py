@@ -893,3 +893,56 @@ class TestStaticBasicBlocksDescriptionSaysWhenItWasCut:
         ).read_text(encoding="utf-8")
         block = source.split("def static_basic_blocks(")[1].split("def static_cfg(")[0]
         assert "has_more" in block
+
+
+class TestIdaDecompileDoesNotInventEmptySource:
+    """An empty Hex-Rays result used to look like a finished decompile.
+
+    Measured: decompile() returning ``""`` still answered ``{'code': ''}``.
+    ``None`` already failed. An unattended agent then treats a failed
+    decompile as empty source.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, result: object) -> None:
+        import sys
+        import types
+
+        class _Fn:
+            start_ea = 0x1000
+            end_ea = 0x1100
+
+        ida_funcs = types.ModuleType("ida_funcs")
+        ida_funcs.get_func = lambda ea: _Fn()  # type: ignore[attr-defined]
+        ida_hexrays = types.ModuleType("ida_hexrays")
+        ida_hexrays.init_hexrays_plugin = lambda: True  # type: ignore[attr-defined]
+        ida_hexrays.decompile = lambda ea: result  # type: ignore[attr-defined]
+        idautils = types.ModuleType("idautils")
+        idautils.Functions = lambda: [0x1000]  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        monkeypatch.setitem(sys.modules, "ida_hexrays", ida_hexrays)
+        monkeypatch.setitem(sys.modules, "idautils", idautils)
+
+    def test_empty_code_is_not_a_decompile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, "")
+        with pytest.raises(worker.WorkerRequestError) as info:
+            worker._decompile({"address": 0x1000})
+        assert info.value.code == "decompilation_failed"
+        assert "no code" in str(info.value)
+
+    def test_whitespace_code_is_not_a_decompile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, "   \n")
+        with pytest.raises(worker.WorkerRequestError) as info:
+            worker._decompile({"address": 0x1000})
+        assert info.value.code == "decompilation_failed"
+
+    def test_real_code_is_a_decompile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, "void foo(void) {}")
+        page = worker._decompile({"address": 0x1000})
+        assert page["code"] == "void foo(void) {}"
+        assert page["address"] == 0x1000
