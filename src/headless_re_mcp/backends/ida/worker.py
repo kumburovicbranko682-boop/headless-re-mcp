@@ -1201,6 +1201,15 @@ def _function_delete(params: JsonObject) -> JsonObject:
             f"failed to delete function at 0x{start:X}",
             address=start,
         )
+    # Measured: del_func True, get_func still finds the function,
+    # deleted=true -- so a caller treats a no-op as a removed function.
+    leftover = ida_funcs.get_func(start)
+    if leftover is not None and int(leftover.start_ea) == start:
+        raise WorkerRequestError(
+            "write_failed",
+            f"function delete reported success but lookup still finds 0x{start:X}",
+            address=start,
+        )
     return {
         "address": start,
         "end": end,
