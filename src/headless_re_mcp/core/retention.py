@@ -165,6 +165,7 @@ class UsageCache:
     _at: float = field(default=0.0)
     _lock: Lock = field(default_factory=Lock)
     _refreshing: bool = field(default=False)
+    _failing: bool = field(default=False)
 
     def get(self, root: Path, *, now: float | None = None) -> DiskUsage:
         moment = time.monotonic() if now is None else now
@@ -190,9 +191,31 @@ class UsageCache:
     def _refresh(self, root: Path) -> None:
         try:
             measured = measure_usage(root)
-        finally:
+        except Exception as exc:
+            # The walk runs on a daemon thread. An exception there used to
+            # vanish: _refreshing cleared, the value stayed at the unmeasured
+            # floor, and nothing said the number had stopped updating.
             with self._lock:
                 self._refreshing = False
+                first = not self._failing
+                self._failing = True
+            if first:
+                record_alert(
+                    "artifact_usage_walk_failing",
+                    fields={
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "consequence": "disk use is no longer being measured",
+                    },
+                )
+            return
         with self._lock:
+            self._refreshing = False
             self._value = measured
             self._at = time.monotonic()
+            recovered = self._failing
+            self._failing = False
+        if recovered:
+            record_alert(
+                "artifact_usage_walk_recovered",
+                fields={"detail": "usage walk succeeded"},
+            )

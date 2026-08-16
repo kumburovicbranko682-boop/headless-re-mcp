@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **产物目录用量遍历失败时谁也不知道**。`UsageCache` 的 walk 跑在守护线程上，异常只
+  把 `_refreshing` 清掉，就绪探针一直回截断的零，没有告警。现在首次失败发
+  `artifact_usage_walk_failing`，恢复发 `artifact_usage_walk_recovered`。
 - **`device.connect` 连不上仍回 `ok=True`**。拒绝已经被认出来之后，回包仍是成功信封加
   `connected: False`。只看 `ok` 的无人值守 agent 会当成已经连上。现在连不上就
   `backend_error`。

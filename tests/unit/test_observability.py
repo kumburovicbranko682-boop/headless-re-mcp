@@ -307,6 +307,55 @@ def test_routine_stdio_logs_do_not_go_on_the_pipe_a_client_may_not_read(
             handler.close()
 
 
+def test_a_usage_walk_that_fails_says_so(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken walk used to fail on a daemon thread and tell nobody.
+
+    The caller already gets the unmeasured floor. That is right. But the
+    exception never left the thread, so readiness kept reporting truncated
+    zeros with nothing to explain why the number had stopped moving.
+    """
+    from headless_re_mcp.core import retention as module
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    def boom(root: Path, *, file_limit: int = 0) -> module.DiskUsage:
+        del root, file_limit
+        raise RuntimeError("walk exploded")
+
+    monkeypatch.setattr(module, "measure_usage", boom)
+    cache = module.UsageCache(ttl_s=0.05)
+    cache.get(tmp_path)
+    for _ in range(50):
+        if alerts:
+            break
+        time.sleep(0.02)
+    assert alerts == ["artifact_usage_walk_failing"]
+
+    time.sleep(0.06)
+    cache.get(tmp_path)
+    time.sleep(0.05)
+    assert alerts == ["artifact_usage_walk_failing"], f"once, not per refresh: {alerts}"
+
+    monkeypatch.setattr(
+        module,
+        "measure_usage",
+        lambda root, **kwargs: module.DiskUsage(bytes=1, files=1, truncated=False),
+    )
+    time.sleep(0.06)
+    cache.get(tmp_path)
+    for _ in range(50):
+        if "artifact_usage_walk_recovered" in alerts:
+            break
+        time.sleep(0.02)
+    assert alerts[-1] == "artifact_usage_walk_recovered"
+
+
 def test_the_readiness_probe_never_waits_for_the_disk_walk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
