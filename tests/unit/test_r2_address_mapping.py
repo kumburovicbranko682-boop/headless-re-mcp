@@ -79,6 +79,57 @@ def test_output_cut_at_the_buffer_says_it_was_cut(
     assert len(str(payload["raw"])) == 64
 
 
+def test_open_cut_info_says_it_was_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r2.open used to slice info at 8000 characters with no truncated.
+
+    Measured: 20_000 characters of ``i`` still answered
+    ``{'opened': True, 'info': <8000 chars>}`` and no truncated. An
+    unattended agent then treats the fragment as the binary identity.
+    """
+    binary = _minimal_pe(tmp_path)
+
+    def huge(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"I" * 20_000, stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", huge)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.open(binary)
+
+    assert payload["opened"] is True
+    assert len(payload["info"]) == 8000
+    assert payload["truncated"] is True
+    assert payload["output_chars"] == 20_000
+    assert payload["returned_chars"] == 8000
+
+
+def test_open_info_that_fits_is_not_labelled_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = _minimal_pe(tmp_path)
+
+    def small(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"arch x86", stderr=b"")
+
+    monkeypatch.setattr(r2_client.subprocess, "run", small)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.open(binary)
+
+    assert payload["info"] == "arch x86"
+    assert "truncated" not in payload
+
+
+def test_open_tool_description_says_to_read_truncated() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "r2.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def r2_open(")[1].split("def r2_functions(")[0]
+    assert "truncated" in block
+
+
 def test_output_that_fits_is_not_labelled_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

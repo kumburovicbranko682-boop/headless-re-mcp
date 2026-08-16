@@ -10,6 +10,7 @@ from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+_MAX_OPEN_INFO = 8000
 _ALLOWED = frozenset(
     {
         "i",
@@ -50,12 +51,21 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         data = self.run(binary, ["i"], timeout=timeout)
-        return {
+        raw = str(data.get("raw") or "")
+        # Measured: 20_000 characters of `i` still answered info[:8000]
+        # with no truncated, so an agent treated the fragment as the
+        # binary identity.
+        payload: JsonObject = {
             "opened": True,
             "binary": str(binary),
-            "info": data.get("raw", "")[:8000],
+            "info": raw[:_MAX_OPEN_INFO],
             "note": "r2.open is one-shot validation; subsequent tools reopen the binary",
         }
+        if len(raw) > _MAX_OPEN_INFO:
+            payload["truncated"] = True
+            payload["output_chars"] = len(raw)
+            payload["returned_chars"] = _MAX_OPEN_INFO
+        return payload
 
     def disasm(
         self,
