@@ -214,6 +214,22 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        # Measured: exit 1 with {"items":[],"count":0} still became a
+        # successful empty page, so an unattended agent treats a failed
+        # export as "Ghidra found nothing".
+        if code != 0:
+            items = payload.get("items")
+            text = payload.get("decompiled")
+            has_items = isinstance(items, list) and len(items) > 0
+            has_text = isinstance(text, str) and bool(text)
+            if not has_items and not has_text:
+                raise GhidraError(
+                    "backend_error",
+                    "analyzeHeadless export failed",
+                    exit_code=code,
+                    stderr=stderr[:4000],
+                    stdout_excerpt=stdout[-4000:],
+                )
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         if mode == "decompile":
