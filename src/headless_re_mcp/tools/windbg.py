@@ -65,7 +65,11 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         length: Annotated[int, Field(ge=1, le=256)] = 16,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 60.0,
     ) -> dict[str, Any]:
-        """Disassemble length instructions at address inside a crash dump."""
+        """Disassemble length instructions at address inside a crash dump.
+
+        The session excerpt is capped: read truncated rather than treating
+        disasm as the whole u listing.
+        """
         return _dump(analysis.windbg_disasm(dump_path, address, length=length, timeout=timeout))
 
     @tools.tool(name="windbg.attach")
