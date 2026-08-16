@@ -165,3 +165,73 @@ def test_doctor_reports_de4dot_missing(tmp_path: Path) -> None:
     assert report is not None
     probes = {item["name"]: item for item in report["probes"]}
     assert probes["de4dot"]["status"] == "missing"
+
+
+def _pid_is_running(pid: int) -> bool:
+    """True only for a live process. A zombie after SIGKILL counts as dead."""
+    import os
+
+    if os.name != "nt":
+        stat = Path(f"/proc/{pid}/stat")
+        if not stat.is_file():
+            return False
+        try:
+            return stat.read_text(encoding="ascii").split()[2] != "Z"
+        except OSError:
+            return False
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    exit_code = ctypes.c_ulong(0)
+    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return exit_code.value == 259
+
+
+def test_a_hung_de4dot_probe_is_a_failure_and_kills_what_it_started(tmp_path: Path) -> None:
+    """A wedged de4dot used to look available and leave its children running.
+
+    Measured: three argv attempts at 0.4s each returned ok=True with empty text
+    in 1.205s and left three sleeper children in state S. Doctor then marked
+    the CLI READY. A hang is not an unknown flag.
+    """
+    import os
+    import stat
+    import sys
+    import time
+
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    markers = tmp_path / "pids"
+    markers.mkdir()
+    fake = tmp_path / ("de4dot.cmd" if os.name == "nt" else "de4dot")
+    body = tmp_path / "fake_de4dot.py"
+    body.write_text(
+        "import os, subprocess, sys, time\n"
+        f"d = {str(markers)!r}\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "open(os.path.join(d, f'{os.getpid()}-{child.pid}'), 'w').write('1')\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake.write_text(f'@echo off\n"{sys.executable}" "{body}" %*\n', encoding="utf-8")
+    else:
+        script = f"#!{sys.executable}\n" + body.read_text(encoding="utf-8")
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    started = time.monotonic()
+    ok, text = probe_de4dot_version(fake, timeout=0.4)
+    elapsed = time.monotonic() - started
+
+    assert ok is False
+    assert text == ""
+    assert elapsed < 1.0, "a hang must not walk the rest of the flag list"
+    children = [int(path.name.split("-")[1]) for path in markers.iterdir()]
+    assert children, "the wrapper must have started a child"
+    assert all(_pid_is_running(pid) is False for pid in children)
