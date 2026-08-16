@@ -342,7 +342,22 @@ class AgentStore:
         safe = redact(result)
         encoded = json.dumps(safe, ensure_ascii=False, default=str)
         if len(encoded.encode("utf-8")) > 262_144:
-            safe = {"truncated": True, "summary": encoded[:16_384], "original_bytes": len(encoded.encode("utf-8"))}
+            # The status column already knows ok, but readers of result_json
+            # used the same missing-ok-means-success rule as the orchestrator.
+            # Measured: a 300 KiB backend_error stored as failed, then read back
+            # with no ok and no error -- only truncated/summary/original_bytes.
+            cut: JsonObject = {
+                "truncated": True,
+                "summary": encoded[:16_384],
+                "original_bytes": len(encoded.encode("utf-8")),
+                "ok": ok,
+            }
+            error = safe.get("error") if isinstance(safe, dict) else None
+            if isinstance(error, dict):
+                code = error.get("code")
+                if isinstance(code, str) and code:
+                    cut["error"] = {"code": code, "truncated": True}
+            safe = cut
             encoded = json.dumps(safe, ensure_ascii=False)
         with self.transaction() as con:
             con.execute("UPDATE tool_calls SET status=?,result_json=?,updated_at=? WHERE id=? AND run_id=?", ("completed" if ok else "failed", encoded, utc_now(), tool_call_id, run_id))

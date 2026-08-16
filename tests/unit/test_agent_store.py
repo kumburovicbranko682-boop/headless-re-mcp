@@ -285,3 +285,32 @@ def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         store.create_mission(thread.id, "will not fit on disk")
+
+
+def test_an_oversized_failed_tool_result_keeps_its_verdict(tmp_path: Path) -> None:
+    """The second cut dropped ok from result_json.
+
+    Status was already 'failed', but anything that reads the stored result
+    (SSE, a later run reconstructing the call) saw no ok and no error.
+    Measured: 300 KiB backend_error stored, read back keys were only
+    truncated / summary / original_bytes.
+    """
+    store = AgentStore(tmp_path / "cut.db")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model="x", deadline_seconds=30)
+    store.propose_tool_call(run.id, "c1", "test.tool", {}, ["read_only"])
+    store.complete_tool_call(
+        run.id,
+        "c1",
+        {
+            "ok": False,
+            "error": {"code": "backend_error", "message": "worker died"},
+            "blob": "x" * 300_000,
+        },
+        ok=False,
+    )
+    got = store.get_tool_call(run.id, "c1")
+    assert got["status"] == "failed"
+    assert got["result"]["ok"] is False
+    assert got["result"]["truncated"] is True
+    assert got["result"]["error"]["code"] == "backend_error"

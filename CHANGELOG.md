@@ -75,6 +75,8 @@ until 1.0 the tool surface may still change between minor versions.
   与回包里的 `note` 一致。
 - **样本间隔离超时只杀启动器**。包装脚本起 sleeper 时 0.40 秒返回失败，子进程仍是 S，下一
   个样本在上一次回滚还没结束时就开始跑。现在走有界执行，被杀 pid 进失败详情。
+- **入库的超限失败结果会丢掉 ok**。`complete_tool_call` 的第二刀切掉整份信封：300 KiB 的
+  `backend_error` 状态是 failed，读回来却没有 ok / error。截断后仍保留裁决和错误码。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
