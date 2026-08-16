@@ -150,3 +150,41 @@ def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) 
     # The point of the endpoint: see exactly which writes were opened up.
     assert body["auto_executable_write_count"] > 0
     assert "dynamic.launch" in body["auto_executable_writes"]
+
+
+def test_a_thread_page_says_when_more_messages_exist(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """GET /threads/{id} used to return a 500-message array and nothing else.
+
+    Measured at the store: 520 messages came back as 500 with no total.
+    The HTTP envelope had only ok/thread/messages, so the console looked
+    like the thread started at message 20.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        created = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
+        thread_id = created.json()["thread"]["id"]
+        for index in range(5):
+            client.post(
+                f"/api/agent/threads/{thread_id}/messages",
+                headers=headers,
+                json={"content": f"m{index}"},
+            )
+        page = client.get(
+            f"/api/agent/threads/{thread_id}?limit=2",
+            headers=headers,
+        ).json()
+        assert page["count"] == 2
+        assert page["total"] == 5
+        assert page["has_more"] is True
+        assert [item["content"] for item in page["messages"]] == ["m3", "m4"]
+        rest = client.get(
+            f"/api/agent/threads/{thread_id}?offset=2&limit=10",
+            headers=headers,
+        ).json()
+        assert rest["count"] == 3
+        assert rest["has_more"] is False
+        assert [item["content"] for item in rest["messages"]] == ["m0", "m1", "m2"]

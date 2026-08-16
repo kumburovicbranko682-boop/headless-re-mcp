@@ -347,3 +347,21 @@ def test_a_capped_thread_list_says_what_it_left_out(tmp_path: Path) -> None:
     assert len(first) == 100
     assert len(second) == 20
     assert {item.id for item in first}.isdisjoint({item.id for item in second})
+
+
+def test_a_capped_message_list_says_what_it_left_out(tmp_path: Path) -> None:
+    """A 500-message window used to look like the whole thread.
+
+    Measured: 520 messages, list_messages() returned 500 (m20..m519) and
+    there was no count. The first twenty looked like they were never said.
+    """
+    store = AgentStore(tmp_path / "messages.db")
+    thread = store.create_thread(title="t")
+    for index in range(520):
+        store.add_message(thread.id, "user", f"m{index}")
+    assert store.count_messages(thread.id) == 520
+    recent = store.list_messages(thread.id, limit=500, offset=0)
+    older = store.list_messages(thread.id, limit=500, offset=500)
+    assert [item.content for item in recent] == [f"m{index}" for index in range(20, 520)]
+    assert [item.content for item in older] == [f"m{index}" for index in range(20)]
+    assert len(recent) + len(older) == 520

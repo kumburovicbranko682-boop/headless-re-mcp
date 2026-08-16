@@ -214,7 +214,17 @@ class AgentStore:
             con.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
-    def list_messages(self, thread_id: str, *, limit: int = 500) -> list[AgentMessage]:
+    def count_messages(self, thread_id: str) -> int:
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def list_messages(
+        self, thread_id: str, *, limit: int = 500, offset: int = 0
+    ) -> list[AgentMessage]:
         """The most recent `limit` messages, oldest first.
 
         The window has to be the recent end. Taking the oldest `limit` instead
@@ -226,13 +236,14 @@ class AgentStore:
         "not met within N runs". Both are silent on a thread that only grows.
         """
         capped = max(1, min(limit, 2000))
+        start = max(0, int(offset))
         with self._reading() as con:
             rows = con.execute(
                 "SELECT * FROM ("
                 "  SELECT * FROM messages WHERE thread_id=?"
-                "  ORDER BY created_at DESC, id DESC LIMIT ?"
+                "  ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
                 ") ORDER BY created_at, id",
-                (thread_id, capped),
+                (thread_id, capped, start),
             ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 

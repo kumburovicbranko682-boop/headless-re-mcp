@@ -147,12 +147,32 @@ def register_agent_routes(
         return JSONResponse({"ok": True, "thread": item.dump()}, status_code=201)
 
     @app.get("/api/agent/threads/{thread_id}")
-    def get_thread(thread_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:
+    def get_thread(
+        thread_id: str,
+        authorization: str | None = Header(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> JSONResponse:
         authorize(authorization)
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
-        return JSONResponse({"ok": True, "thread": item.dump(), "messages": [message.dump() for message in store.list_messages(thread_id)]})
+        messages = [
+            message.dump()
+            for message in store.list_messages(thread_id, offset=offset, limit=limit)
+        ]
+        total = store.count_messages(thread_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "thread": item.dump(),
+                "messages": messages,
+                "count": len(messages),
+                "total": total,
+                "offset": offset,
+                "has_more": offset + len(messages) < total,
+            }
+        )
 
     @app.post("/api/agent/threads/{thread_id}/messages", status_code=201)
     def add_message(thread_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
