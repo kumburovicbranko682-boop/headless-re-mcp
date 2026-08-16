@@ -213,7 +213,15 @@ class FridaClient:
                 }
                 for item in mods[:capped]
             ]
-            return {"modules": items, "count": len(items), "total": len(mods)}
+            # Measured: 100 modules, limit 64, count=64, total=100, no
+            # has_more, so an agent that only read the page treated it as
+            # every mapped module.
+            return {
+                "modules": items,
+                "count": len(items),
+                "total": len(mods),
+                "has_more": len(mods) > capped,
+            }
         finally:
             session.detach()
 

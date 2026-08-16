@@ -581,6 +581,51 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaModulesSayWhenTheyStopped:
+    """A module page that filled used to look like every mapping if count was all you read."""
+
+    def _client(self, count: int) -> FridaClient:
+        class _Exports:
+            def modules(self) -> list[dict[str, object]]:
+                return [
+                    {"name": f"m{index}", "base": "0x1", "size": 1, "path": f"/lib/{index}"}
+                    for index in range(count)
+                ]
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                return _Session()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = _Frida()
+        return client
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._client(100).modules(1, allowed_pid=1, limit=64)
+        assert result["count"] == 64
+        assert result["total"] == 100
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._client(3).modules(1, allowed_pid=1, limit=64)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
