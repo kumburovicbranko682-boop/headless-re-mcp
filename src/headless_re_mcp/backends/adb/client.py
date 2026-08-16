@@ -230,13 +230,18 @@ class AdbBackend:
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"getprop failed: {exc}") from exc
             props: dict[str, str] = {}
+            has_more = False
             for line in str(raw).splitlines():
                 match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
-                if match:
-                    props[match.group(1)] = match.group(2)
+                if not match:
+                    continue
                 if len(props) >= limit:
+                    # Only set once something was actually left out, so a
+                    # result that happens to fill the page is not partial.
+                    has_more = True
                     break
-            return {"properties": props, "count": len(props)}
+                props[match.group(1)] = match.group(2)
+            return {"properties": props, "count": len(props), "has_more": has_more}
 
         return self._call("properties", work)
 

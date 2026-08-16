@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.properties` 停在上限时看起来和“到此为止”完全一样**。80 条属性、limit=10 时回
+  `count=10` 且没有 `has_more`，agent 会当成整张 getprop 表。现在留下的才标 `has_more`，
+  刚好填满一页且后面没有了的不会被误标。
 - **`frida.server.ensure` 在进程根本没起来时报告 `running: True`**。`su` 命令返回就被当成
   成功，不再看 `ps`。对一个 `ps` 里从未出现 frida-server、启动 shell 只回空串的设备，回包
   仍是 `running: True`。无人值守的 agent 随后去 attach，永远等不到服务。现在启动后再读一次

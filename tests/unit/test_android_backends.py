@@ -505,3 +505,39 @@ class TestEnsureFridaServerDoesNotInventAProcess:
 
         payload = self._backend(_Starts()).ensure_frida_server("emulator-5554")
         assert payload["running"] is True
+
+
+class TestDevicePropertiesSayWhenTheyStopped:
+    """A page that hit the cap looks exactly like one that ended.
+
+    Measured: 80 properties with limit=10 came back as count=10 and no
+    has_more, so a caller reading the reply would conclude that was the
+    whole getprop table.
+    """
+
+    def _backend(self, n: int) -> AdbBackend:
+        class _Props:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return "\n".join(f"[ro.p.{i}]: [{i}]" for i in range(n))
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Props()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(80).properties("emulator-5554", limit=10)
+        assert page["count"] == 10
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).properties("emulator-5554", limit=10)
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        page = self._backend(10).properties("emulator-5554", limit=10)
+        assert page["count"] == 10
+        assert page["has_more"] is False
