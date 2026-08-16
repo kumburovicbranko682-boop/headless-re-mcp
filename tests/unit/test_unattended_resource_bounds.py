@@ -657,6 +657,43 @@ class TestWebNetworkListSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebHarExportSaysWhenItStopped:
+    """A full request ring exported as a HAR looked like the whole capture.
+
+    Measured: 3011 requests came back as entry_count=3000 with no evicted
+    or truncated.
+    """
+
+    def test_a_full_ring_says_what_was_dropped(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import _MAX_REQUESTS, WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        dropped = 11
+        for index in range(_MAX_REQUESTS + dropped):
+            handle.remember_request(
+                {"requestId": str(index), "url": f"https://x/{index}", "method": "GET"}
+            )
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.har_export("s", tmp_path / "c.har")
+        assert result["entry_count"] == _MAX_REQUESTS
+        assert result["evicted"] == dropped
+        assert result["truncated"] is True
+        assert (tmp_path / "c.har").is_file()
+
+    def test_a_short_capture_is_complete(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        handle.remember_request({"requestId": "1", "url": "https://x", "method": "GET"})
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.har_export("s", tmp_path / "c.har")
+        assert result["entry_count"] == 1
+        assert result["evicted"] == 0
+        assert result["truncated"] is False
+
+
 class TestWebNetworkGetDoesNotInventABody:
     """A CDP failure used to come back as a completed get.
 

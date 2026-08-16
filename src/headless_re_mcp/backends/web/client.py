@@ -518,6 +518,7 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            evicted = handle.requests_evicted
             entries = [
                 {
                     "request": {"method": e.get("method"), "url": e.get("url")},
@@ -536,7 +537,20 @@ class WebBackend:
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        # Measured: 3011 live requests came back as entry_count=3000 with no
+        # evicted or truncated, so the HAR looked like the whole capture.
+        if not out_path.is_file():
+            raise WebError(
+                "backend_error",
+                "HAR export did not write a file",
+                path=str(out_path),
+            )
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "evicted": evicted,
+            "truncated": evicted > 0,
+        }
 
     def close_all(self) -> None:
         with self._lock:
