@@ -476,6 +476,47 @@ class TestDeviceConnectDoesNotReportAGhost:
             assert result["endpoint"] == "127.0.0.1:5555"
 
 
+class TestDeviceLogcatSaysWhenItIsATail:
+    """200 requested lines used to come back as 200 lines and no has_more.
+
+    Measured: a buffer with 250 lines, asked for 200, reply had only lines and
+    requested. An unattended agent treats that as the whole log and never
+    asks for more of a crash that scrolled off the page.
+    """
+
+    def _logcat(self, available: int, *, lines: int = 200) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def shell(self, args: object) -> str:
+                asked = int(args[3])  # type: ignore[index]
+                buf = [f"line {index}" for index in range(available)]
+                return "\n".join(buf[-asked:])
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.logcat("emulator-5554", lines=lines)
+
+    def test_a_tail_past_the_request_reports_more(self) -> None:
+        result = self._logcat(250, lines=200)
+        assert result["count"] == 200
+        assert result["requested"] == 200
+        assert result["has_more"] is True
+        assert result["lines"][0] == "line 50"
+        assert result["lines"][-1] == "line 249"
+
+    def test_a_log_that_fits_is_complete(self) -> None:
+        result = self._logcat(3, lines=200)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+        assert result["lines"] == ["line 0", "line 1", "line 2"]
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._logcat(200, lines=200)
+        assert result["count"] == 200
+        assert result["has_more"] is False
+
+
 class TestDevicePackagesSayWhenTheyStopped:
     """5000 packages used to come back as count=5000 with no limit and no has_more.
 
