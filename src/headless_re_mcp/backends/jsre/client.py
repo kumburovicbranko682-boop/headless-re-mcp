@@ -68,7 +68,10 @@ class JsClient:
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
         stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
-        if code != 0 and not stdout:
+        # Measured: exit 1 with stdout "Error: boom\n" still became
+        # code="Error: boom\n", so an unattended agent treats the error
+        # text as the deobfuscated program.
+        if code != 0:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )

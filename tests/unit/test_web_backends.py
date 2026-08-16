@@ -515,6 +515,30 @@ class TestJsDeobfuscateDescriptionMatchesTheCut:
         assert "truncated" in doc
 
 
+class TestJsDeobfuscateDoesNotTreatStderrAsCode:
+    """A failed webcrack used to succeed if it printed anything to stdout.
+
+    Measured: exit 1, stdout "Error: boom\\n", deobfuscate returned that
+    string as code. An unattended agent then analyses the error text.
+    """
+
+    def test_a_failed_run_is_not_saved_by_error_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_mod
+
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        monkeypatch.setattr(
+            jsre_mod, "_run", lambda *args, **kwargs: ("Error: boom\n", "failed", 1)
+        )
+        with pytest.raises(JsReError) as info:
+            JsClient(exe).deobfuscate(source)
+        assert info.value.code == "backend_error"
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
