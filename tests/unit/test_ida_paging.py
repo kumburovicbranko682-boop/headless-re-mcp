@@ -456,3 +456,47 @@ class TestIdaDisassembleSaysWhenALineWasCut:
         insn = page["instructions"][0]
         assert insn["text"] == "retn"
         assert insn["truncated"] is False
+
+
+class TestStaticImportsDescriptionSaysWhenItWasCut:
+    """The imports page already carries has_more; the tool text did not say so.
+
+    Measured: 250 imports, limit 100, returned=100, total=250, has_more=True,
+    while the description was only ``List imported symbols (...)``. An
+    unattended agent that trusted the description treated the page as every
+    import.
+    """
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        ida_nalt = types.ModuleType("ida_nalt")
+        ida_nalt.get_import_module_qty = lambda: 1  # type: ignore[attr-defined]
+        ida_nalt.get_import_module_name = lambda index: "kernel32"  # type: ignore[attr-defined]
+
+        def _enum(index: int, callback: object) -> None:
+            for ordinal in range(250):
+                callback(0x1000 + ordinal, f"Fn{ordinal}", ordinal)  # type: ignore[operator]
+
+        ida_nalt.enum_import_names = _enum  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_nalt", ida_nalt)
+        page = worker._imports({"offset": 0, "limit": 100})
+        assert page["returned"] == 100
+        assert page["total"] == 250
+        assert page["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "core.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def static_imports(")[1].split("def static_exports(")[0]
+        assert "has_more" in block
