@@ -371,16 +371,20 @@ def _disassemble(params: JsonObject) -> JsonObject:
             partial = True
             break
         text = idc.generate_disasm_line(ea, 0) or ""
-        instructions.append(
-            {
-                "ea": int(ea),
-                "size": length,
-                "text": text[:512],
-            }
-        )
+        # Measured: 1000-char line, text length 512, no truncated -- a
+        # caller reading instructions[].text thinks the mnemonic ended.
+        line = text[:512]
+        item: JsonObject = {
+            "ea": int(ea),
+            "size": length,
+            "text": line,
+        }
+        if len(text) > 512:
+            item["truncated"] = True
+        instructions.append(item)
         consumed += length
         ea = int(ea) + length
-    return {
+    payload: JsonObject = {
         "address": address,
         "count_requested": count,
         "instructions": instructions,
@@ -390,6 +394,9 @@ def _disassemble(params: JsonObject) -> JsonObject:
         "partial": partial,
         "note": "bounded linear disassembly; not a full CFG",
     }
+    if any(item.get("truncated") for item in instructions):
+        payload["truncated"] = True
+    return payload
 
 
 def _xref_type_name(xref_type: int) -> str:
