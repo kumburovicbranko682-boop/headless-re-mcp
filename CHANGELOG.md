@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.pull` 把裸路径说成 artifact**。文档写 “local artifact”，回包只有
+  `local` / `remote`，没有登记。agent 会拿去 `artifacts.read` 并当成已纳入回收。
+  现在写明这是本地路径，不是登记产物。
 - **`device.screenshot` 把裸路径说成 artifact**。文档写 “PNG artifact”，回包
   只有 `path` / `serial`，没有登记。agent 会拿去 `artifacts.read` 并当成已纳入
   回收。现在写明这是本地路径，不是登记产物。

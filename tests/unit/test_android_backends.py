@@ -1106,3 +1106,37 @@ class TestDeviceScreenshotDoesNotClaimAnArtifact:
         doc = docs["device.screenshot"]
         assert "not a registered artifact" in doc
         assert "PNG artifact" not in doc
+
+
+class TestDevicePullDoesNotClaimAnArtifact:
+    """The tool described a registered artifact and returned a bare path.
+
+    Measured: the docstring said "local artifact"; the reply keys were
+    local and remote, with no artifact_id.
+    """
+
+    def test_the_reply_is_a_path(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> None:
+                del remote
+                Path(local).write_bytes(b"data")
+
+        class _Dev:
+            sync = _Sync()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        page = backend.pull("emulator-5554", "/sdcard/x.bin", tmp_path / "x.bin")
+        assert page["local"] == str(tmp_path / "x.bin")
+        assert "artifact_id" not in page
+
+    def test_the_tool_doc_says_it_is_not_registered(self) -> None:
+        docs = {
+            binding.name: binding.handler.__doc__ or ""
+            for binding in build_device_tools(object())  # type: ignore[arg-type]
+        }
+        doc = docs["device.pull"]
+        assert "not a registered artifact" in doc
+        assert "local artifact" not in doc
