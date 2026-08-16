@@ -148,19 +148,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:
-        """Capture a device screenshot to a PNG artifact.
+        """Capture a device screenshot to a PNG under artifact_root/device/.
 
-        Answers with path, serial and size. A capture over the cap is refused
-        rather than left in the unregistered screenshot directory.
+        Answers with path, serial and size. The file is not a registered
+        artifact -- artifacts.read cannot open it -- and only the newest 32
+        device captures are kept. A capture over the cap is refused rather
+        than left in the unregistered screenshot directory.
         """
         return _dump(analysis.device_screenshot(serial))
 
     @tools.tool(name="device.pull")
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
-        """Pull a file from the device into a local artifact.
+        """Pull a device file to artifact_root/device/.
 
-        Answers with remote, local and size. Directories and files over the
-        capture cap are refused rather than copied onto the host.
+        Answers with remote, local and size. The file is not a registered
+        artifact -- artifacts.read cannot open it -- and only the newest 32
+        device captures are kept. Directories and files over the capture cap
+        are refused rather than copied onto the host.
         """
         return _dump(analysis.device_pull(serial, remote_path))
 
