@@ -265,3 +265,40 @@ class TestGhidraKeepsTheAnalyzeErrorTail:
         err = str(caught.value.details.get("stderr") or "")
         assert "ERROR analyze failed at the end" in err
         assert len(err) == 4000
+
+
+class TestGhidraXrefsSayTheyAreIncoming:
+    """The tool said 'to and from' while the script only walks getReferencesTo.
+
+    Measured: ExportJson.py has getReferencesTo and no getReferencesFrom, but
+    the description promised both directions. An agent then treats an empty
+    incoming page as 'this address has no callees either'.
+    """
+
+    def test_the_tool_description_matches_the_script(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import ghidra as ghidra_tools
+
+        script = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "backends"
+            / "ghidra"
+            / "scripts"
+            / "ExportJson.py"
+        ).read_text(encoding="utf-8")
+        assert "getReferencesTo" in script
+        assert "getReferencesFrom" not in script
+
+        tree = ast.parse(inspect.getsource(ghidra_tools.build_ghidra_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["ghidra_xrefs"]
+        assert "to and from" not in docs["ghidra_xrefs"]
+        assert "getReferencesTo" in docs["ghidra_xrefs"]
