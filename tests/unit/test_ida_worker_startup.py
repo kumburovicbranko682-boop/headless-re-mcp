@@ -31,6 +31,8 @@ from headless_re_mcp.backends.ida.worker import (
     _search_text,
     _strings,
     _types,
+    _xrefs_from,
+    _xrefs_to,
 )
 
 
@@ -610,6 +612,71 @@ def test_an_export_page_does_not_build_the_whole_table(monkeypatch: Any) -> None
 
     monkeypatch.setattr(worker, "_page_items", boom)
     result = _exports({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def _install_xrefs(monkeypatch: Any, count: int, *, direction: str) -> None:
+    import sys
+    import types
+
+    class Xref:
+        def __init__(self, index: int) -> None:
+            self.frm = 0x2000 + index
+            self.to = 0x1000
+            self.type = 17
+            self.iscode = True
+
+    idautils = types.ModuleType("idautils")
+    sequence = [Xref(index) for index in range(count)]
+    if direction == "to":
+        idautils.XrefsTo = lambda address: sequence  # type: ignore[attr-defined]
+    else:
+        idautils.XrefsFrom = lambda address: sequence  # type: ignore[attr-defined]
+    ida_xref = types.ModuleType("ida_xref")
+    ida_xref.fl_CF = 16  # type: ignore[attr-defined]
+    ida_xref.fl_CN = 17  # type: ignore[attr-defined]
+    ida_xref.fl_JF = 18  # type: ignore[attr-defined]
+    ida_xref.fl_JN = 19  # type: ignore[attr-defined]
+    ida_xref.fl_F = 21  # type: ignore[attr-defined]
+    ida_xref.dr_O = 1  # type: ignore[attr-defined]
+    ida_xref.dr_W = 2  # type: ignore[attr-defined]
+    ida_xref.dr_R = 3  # type: ignore[attr-defined]
+    ida_xref.dr_T = 4  # type: ignore[attr-defined]
+    ida_xref.dr_I = 5  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_xref", ida_xref)
+
+
+def test_an_xref_page_does_not_build_the_whole_list(monkeypatch: Any) -> None:
+    """5000 xrefs and limit=100 still built 5000 dicts before slicing."""
+    import headless_re_mcp.backends.ida.worker as worker
+
+    _install_xrefs(monkeypatch, 5000, direction="to")
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} xref dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _xrefs_to({"address": 0x1000, "offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_an_xref_from_page_does_not_build_the_whole_list(monkeypatch: Any) -> None:
+    import headless_re_mcp.backends.ida.worker as worker
+
+    _install_xrefs(monkeypatch, 5000, direction="from")
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} xref dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _xrefs_from({"address": 0x1000, "offset": 0, "limit": 100})
     assert result["returned"] == 100
     assert result["total"] == 5000
     assert result["has_more"] is True

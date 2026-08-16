@@ -497,20 +497,31 @@ def _xrefs_to(params: JsonObject) -> JsonObject:
 
     address = _integer(params.get("address"), "address")
     offset, limit = _paging(params)
+    # Measured: 5000 xrefs and limit=100 still built 5000 dicts before the
+    # window was taken. A busy import then paid that on every page.
     items: list[JsonObject] = []
+    total = 0
     for xref in idautils.XrefsTo(address):
-        items.append(
-            {
-                "frm": int(xref.frm),
-                "to": int(xref.to),
-                "type": int(xref.type),
-                "type_name": _xref_type_name(int(xref.type)),
-                "iscode": bool(xref.iscode),
-            }
-        )
-    payload = _page_items(items, offset, limit)
-    payload["address"] = address
-    return payload
+        if offset <= total < offset + limit:
+            items.append(
+                {
+                    "frm": int(xref.frm),
+                    "to": int(xref.to),
+                    "type": int(xref.type),
+                    "type_name": _xref_type_name(int(xref.type)),
+                    "iscode": bool(xref.iscode),
+                }
+            )
+        total += 1
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+        "address": address,
+    }
 
 
 def _xrefs_from(params: JsonObject) -> JsonObject:
@@ -519,19 +530,28 @@ def _xrefs_from(params: JsonObject) -> JsonObject:
     address = _integer(params.get("address"), "address")
     offset, limit = _paging(params)
     items: list[JsonObject] = []
+    total = 0
     for xref in idautils.XrefsFrom(address):
-        items.append(
-            {
-                "frm": int(xref.frm),
-                "to": int(xref.to),
-                "type": int(xref.type),
-                "type_name": _xref_type_name(int(xref.type)),
-                "iscode": bool(xref.iscode),
-            }
-        )
-    payload = _page_items(items, offset, limit)
-    payload["address"] = address
-    return payload
+        if offset <= total < offset + limit:
+            items.append(
+                {
+                    "frm": int(xref.frm),
+                    "to": int(xref.to),
+                    "type": int(xref.type),
+                    "type_name": _xref_type_name(int(xref.type)),
+                    "iscode": bool(xref.iscode),
+                }
+            )
+        total += 1
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+        "address": address,
+    }
 
 
 def _callers(params: JsonObject) -> JsonObject:
