@@ -119,6 +119,9 @@ until 1.0 the tool surface may still change between minor versions.
   仍是 S。整晚会留下调试目标。现在关会话杀整树。
 - **IDA 关闭只杀启动器**。包装脚本起 sleeper 时，terminate 后父进程已死、子
   进程仍是 S。idalib 工作进程以 GB 计，孤儿会占着库锁。现在杀整树。
+- **IDA 探针超时只杀启动器，排空再卡 10 秒后抛异常**。包装脚本起 sleeper
+  时，0.4 秒截止变成 10.4 秒 TimeoutExpired，父进程变 Z、子进程仍是 S。
+  现在杀整树并回结构化超时，不再把异常抛出探针。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

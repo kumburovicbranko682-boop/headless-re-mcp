@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -87,12 +88,21 @@ def run_idalib_gate(
     monitor.start()
 
     timed_out = False
+    stdout = ""
+    stderr = ""
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        process.kill()
-        stdout, stderr = process.communicate(timeout=10)
+        from headless_re_mcp.core.process_tree import terminate_process_tree
+
+        terminate_process_tree(process, wait_s=5.0)
+        # Child processes inherit the pipes. Killing only the launcher leaves
+        # those pipes open and this second communicate waits the full drain.
+        with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+            stdout, stderr = process.communicate(timeout=10)
+        stdout = stdout or ""
+        stderr = stderr or ""
     finally:
         monitor_stop.set()
         monitor.join(timeout=2)
