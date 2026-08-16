@@ -219,19 +219,30 @@ class AdbBackend:
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
+        """Push and ``pm install``. The package manager hop is bounded.
+
+        adbutils ``install()`` used to run with the library's 600s socket
+        default, print to the console, and retry. A wedged adb held the
+        worker. Push is still the sync API; ``pm install`` is the long wait.
+        """
         dev = self._device(serial)
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        remote = "/data/local/tmp/headless-re-install.apk"
+        flags = ["-r"] if reinstall else []
         try:
-            dev.install(
-                str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
-            )
-        except TypeError:
-            # Older adbutils signatures accept only the path.
-            dev.install(str(path))
+            dev.sync.push(str(path), remote)
+            raw = dev.shell(["pm", "install", *flags, remote], timeout=180.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
+        if "Success" not in str(raw):
+            snippet = " ".join(str(raw).split())[:240]
+            raise AdbError(
+                "backend_error",
+                f"install failed: {snippet or 'pm install did not report Success'}",
+                path=str(path),
+            )
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
     def uninstall(self, serial: str, package: str) -> JsonObject:

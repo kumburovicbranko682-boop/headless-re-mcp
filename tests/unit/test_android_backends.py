@@ -273,6 +273,49 @@ class TestAdbArgumentValidation:
         assert injected["launched"] is True
         assert "note" not in injected
 
+    def test_install_does_not_wait_on_pm_forever(self, tmp_path: Path) -> None:
+        """adbutils install used to run with no deadline.
+
+        Measured: install(path, ...) was invoked with no timeout. A wedged
+        adb held the worker; the library also prints to the console.
+        """
+
+        class _Sync:
+            def push(self, local: str, remote: str) -> None:
+                self.local = local
+                self.remote = remote
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.sync = _Sync()
+                self.timeouts: list[object] = []
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeouts.append(timeout)
+                if isinstance(cmd, list) and cmd and cmd[0] == "pm":
+                    return "Success"
+                return ""
+
+            def install(self, *args: object, **kwargs: object) -> None:
+                raise AssertionError("unbounded install")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"apk")
+        device = _Dev()
+        result = _Backend(device).install("emulator-5554", str(apk))
+        assert 180.0 in device.timeouts
+        assert result["installed"] is True
+
     def test_screenshot_does_not_wait_on_adb_forever(self, tmp_path: Path) -> None:
         """adbutils screenshot used to run with no deadline.
 
