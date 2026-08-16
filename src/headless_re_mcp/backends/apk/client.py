@@ -22,6 +22,7 @@ _MAX_STRING_LEN = 2000
 _MAX_MANIFEST_CHARS = 200_000
 _MAX_COMPONENTS = 2000
 _MAX_PERMISSIONS = 2000
+_MAX_NATIVE_LIBS = 2000
 
 
 class ApkError(RuntimeError):
@@ -261,13 +262,22 @@ class ApkClient:
             "has_more": activity_more or service_more or receiver_more or provider_more,
         }
 
-    def native_libs(self, path: Path) -> JsonObject:
+    def native_libs(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
+        capped = max(1, min(int(limit), _MAX_NATIVE_LIBS))
         libs = sorted(name for name in apk.get_files() if name.startswith("lib/"))
         abis = sorted(
             {name.split("/")[1] for name in libs if len(name.split("/")) >= 3}
         )
-        return {"native_libs": libs, "abis": abis, "count": len(libs)}
+        # Measured: 2500 .so paths came back as one 62 KiB object with no
+        # has_more, so an agent treated the page as every bundled library.
+        return {
+            "native_libs": libs[:capped],
+            "abis": abis,
+            "count": min(len(libs), capped),
+            "total": len(libs),
+            "has_more": len(libs) > capped,
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

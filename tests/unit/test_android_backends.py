@@ -226,6 +226,46 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkNativeLibsAreBounded:
+    """A native-lib list used to be every .so in the APK with no way to see a cut."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{index}.so" for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        return client
+
+    def test_a_large_lib_list_is_cut_and_said_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 2500).native_libs(tmp_path / "app.apk", limit=500)
+        assert len(result["native_libs"]) == 500
+        assert result["count"] == 500
+        assert result["total"] == 2500
+        assert result["has_more"] is True
+        assert result["abis"] == ["arm64-v8a"]
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).native_libs(tmp_path / "app.apk", limit=500)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+        assert result["count"] == 3
+
+    def test_a_page_that_exactly_fills_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 500).native_libs(tmp_path / "app.apk", limit=500)
+        assert result["count"] == 500
+        assert result["has_more"] is False
+
+
 class TestApkPermissionsAreBounded:
     """A permission list used to be the whole manifest with no way to see a cut."""
 
