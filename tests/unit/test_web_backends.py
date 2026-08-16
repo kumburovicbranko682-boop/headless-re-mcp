@@ -498,3 +498,30 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
+
+
+class TestJsReTimeoutEnvelopeIsRetryable:
+    """A JS/WASM tool timeout was reported as a permanent failure.
+
+    Measured: JsReError(code=timeout) mapped to retryable=False, so an
+    unattended agent would not retry webcrack/wabt and the overnight job
+    would stop.
+    """
+
+    def test_a_timeout_is_retryable(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_jsre import _as_rpc
+
+        result = _failure(_as_rpc(JsReError("timeout", "tool timed out")))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+
+    def test_a_backend_error_stays_permanent(self) -> None:
+        from headless_re_mcp.core.results import _failure
+        from headless_re_mcp.core.service_jsre import _as_rpc
+
+        result = _failure(_as_rpc(JsReError("backend_error", "failed")))
+        assert result.error is not None
+        assert result.error.retryable is False

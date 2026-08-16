@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **JS/WASM 超时信封把可重试失败标成永久失败**。`JsReError(timeout)`
+  映射 `retryable=False`。agent 不会再试 webcrack/wabt。现在 `timeout`
+  标可重试。
 - **`apk.open` 在读不到包名时仍报 `opened: True`**。假解析
   `get_package()` 返回 `None` 时仍成功。agent 会把不是 APK 的 zip 当已
   打开的包。现在空包名报 `backend_error`。
