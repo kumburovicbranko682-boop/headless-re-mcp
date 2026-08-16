@@ -455,6 +455,49 @@ class TestDeviceScreenshotIsNotARegisteredArtifact:
             service.close_all()
 
 
+class TestDevicePullIsNotARegisteredArtifact:
+    def test_description_matches_the_empty_artifact_table(self, tmp_path: Path) -> None:
+        """The tool said local artifact; artifacts.list stayed empty.
+
+        Measured: device.pull wrote a file and returned local, with no
+        artifact_id. list_artifacts count=0.
+        """
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.device import build_device_tools
+
+        class _Fake(AdbBackend):
+            def __init__(self) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+
+            def pull(self, serial: str, remote_path: str, local_path: Path) -> dict[str, Any]:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(b"data")
+                return {"remote": remote_path, "local": str(local_path)}
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            service._backend = lambda: _Fake()  # type: ignore[method-assign]
+            result = service.device_pull("emulator-5554", "/sdcard/x.bin")
+            assert result.ok and result.data is not None
+            assert "artifact_id" not in result.data
+            listed = service.repository.list_artifacts()
+            assert listed["count"] == 0
+            assert listed["total"] == 0
+
+            tools = {item.name: item for item in build_device_tools(service)}
+            doc = tools["device.pull"].handler.__doc__ or ""
+            assert "not a registered artifact" in doc
+            assert "local" in doc
+        finally:
+            service.close_all()
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()

@@ -123,7 +123,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.pull")
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
-        """Pull a file from the device into a local artifact."""
+        """Pull a file from the device. The reply carries local and remote.
+
+        This is not a registered artifact: artifacts.list and artifacts.read
+        will not see it. The tool has no session_id, so the file cannot be
+        entered in the artifact table.
+        """
         return _dump(analysis.device_pull(serial, remote_path))
 
     @tools.tool(name="device.push")
