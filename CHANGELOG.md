@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.export_sources` 在 jadx 失败时仍报成功**。exit 1 但目录里
+  已有上次的 `.java` 时仍返回 `java_file_count=1`。过夜任务会把失败
+  的反编译当恢复后的源码。现在只认本次新写入的文件。
 - **agent 运行失败事件截断后看起来仍是完整原因**。1500 字符的
   error 在 `run.failed` 事件里存成 1000 且没有 `error_truncated`。
   过夜 SSE 会把被切掉的失败当全因。现在事件标截断。

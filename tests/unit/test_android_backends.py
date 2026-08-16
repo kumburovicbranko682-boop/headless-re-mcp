@@ -1159,6 +1159,41 @@ class TestApkNativeLibsAreCapped:
         assert page["abis"] == ["arm64-v8a"]
 
 
+class TestJadxExportSourcesDoesNotSucceedOnLeftoverSources:
+    """jadx exit 1 still answered java_file_count if leftover .java existed.
+
+    Measured: export_sources against a leftover Leftover.java returned
+    java_file_count=1 with no error, so an unattended agent would treat
+    a failed decompile as recovered sources.
+    """
+
+    def test_exit_1_with_only_leftovers_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jadx.client as jadx_mod
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx.client import JadxError
+
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        out = tmp_path / "out"
+        leftover = out / "sources" / "Leftover.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Leftover {}\n", encoding="utf-8")
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            jadx_mod,
+            "run_bounded",
+            lambda *args, **kwargs: Completed(returncode=1, stdout=b"", stderr=b"ERROR"),
+        )
+        client = JadxClient(executable=stub)
+        with pytest.raises(JadxError) as info:
+            client.export_sources(apk, out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+
 class TestJadxExportSourcesSayWhenTheListStopped:
     """The java_files index was cut at 2000 with no signal that it had stopped.
 

@@ -117,6 +117,7 @@ class JadxClient:
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)
+        before = _java_fingerprints(out_dir)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
         try:
@@ -130,8 +131,13 @@ class JadxClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")
         stderr = completed.stderr.decode("utf-8", errors="replace")
         # jadx exits non-zero on partial decompile failures but still writes
-        # usable sources, so only fail hard when nothing landed on disk.
-        if completed.returncode != 0 and not any(out_dir.rglob("*.java")):
+        # usable sources, so only fail hard when this run landed nothing.
+        # Measured: exit 1 with a leftover Leftover.java still answered
+        # java_file_count=1, so an unattended agent treated a failed
+        # decompile as recovered sources.
+        after = _java_fingerprints(out_dir)
+        produced = any(after.get(path) != before.get(path) for path in after)
+        if completed.returncode != 0 and not produced:
             raise JadxError(
                 "backend_error",
                 "jadx produced no sources",
@@ -139,6 +145,19 @@ class JadxClient:
                 stderr=stderr[:_MAX_STDERR],
             )
         return stdout, stderr, int(completed.returncode)
+
+
+def _java_fingerprints(root: Path) -> dict[Path, tuple[int, int]]:
+    if not root.is_dir():
+        return {}
+    found: dict[Path, tuple[int, int]] = {}
+    for path in root.rglob("*.java"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        found[path] = (stat.st_mtime_ns, stat.st_size)
+    return found
 
 
 def _class_to_java_path(class_name: str) -> Path:
