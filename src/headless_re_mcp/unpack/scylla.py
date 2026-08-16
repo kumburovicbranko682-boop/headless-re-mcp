@@ -286,7 +286,7 @@ def probe_scylla(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
 
     ``subprocess.run(timeout=...)`` killed only the process it spawned.
     Measured: a launcher that started a sleeper, timeout 0.4s, left one
-    orphan reparented to pid 1. Timeout-as-success is a separate defect.
+    orphan reparented to pid 1. Timeout is not readiness.
     """
     exe = Path(executable)
     if not exe.is_file():
@@ -294,8 +294,9 @@ def probe_scylla(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
     try:
         completed = _probe_run([str(exe)], timeout)
     except subprocess.TimeoutExpired:
-        # GUI Scylla often never exits; treat startability as probe success.
-        return True, "timeout_after_start"
+        # GUI Scylla often never exits. Startability is not readiness:
+        # measured a sleeper, timeout 0.4s, ok=True, doctor then READY.
+        return False, "timeout_after_start"
     except OSError:
         return False, ""
     text = (

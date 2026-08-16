@@ -619,6 +619,8 @@ def test_scylla_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) ->
     )
     launcher.chmod(0o755)
     _ok, _output = probe_scylla(launcher, timeout=0.4)
+    assert _ok is False
+    assert _output == "timeout_after_start"
     assert pid_path.is_file()
     pids = [int(line) for line in pid_path.read_text().split() if line.strip()]
     assert pids
