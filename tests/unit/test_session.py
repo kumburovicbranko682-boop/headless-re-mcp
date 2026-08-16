@@ -95,6 +95,35 @@ def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> No
     assert registry.get(survivor.id).state == SessionState.READY
 
 
+def test_session_list_says_when_it_stopped(tmp_path: Path) -> None:
+    """session.list used to ship every session in one reply.
+
+    Measured: the list carried only count. After the open-session cap, 64
+    live plus 64 closed still looks complete without has_more.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings, registry=SessionRegistry(max_open=20))
+    for index in range(15):
+        target = tmp_path / f"{index}.js"
+        target.write_text("x", encoding="utf-8")
+        created = service.create_session(str(target))
+        assert created.ok
+    page = service.list_sessions(offset=0, limit=5)
+    assert page.ok and page.data is not None
+    assert page.data["count"] == 5
+    assert page.data["total"] == 15
+    assert page.data["has_more"] is True
+    tail = service.list_sessions(offset=10, limit=5)
+    assert tail.data is not None
+    assert tail.data["count"] == 5
+    assert tail.data["has_more"] is False
+
+
 def test_open_sessions_are_bounded(tmp_path: Path) -> None:
     """An unattended loop that never closes used to keep every session.
 

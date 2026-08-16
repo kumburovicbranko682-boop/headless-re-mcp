@@ -408,9 +408,23 @@ class AnalysisService(
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def list_sessions(self) -> Result[JsonObject]:
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> Result[JsonObject]:
         sessions = [_session_json(session) for session in self.registry.list()]
-        return _success({"sessions": sessions, "count": len(sessions)})
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        window = sessions[start : start + cap]
+        # Measured: every live session was shipped in one reply with only
+        # count. Open sessions are now capped at 64, but 64+64 closed still
+        # looks like "that is all" without has_more.
+        return _success(
+            {
+                "sessions": window,
+                "count": len(window),
+                "total": len(sessions),
+                "offset": start,
+                "has_more": start + len(window) < len(sessions),
+            }
+        )
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_static(session_id)
