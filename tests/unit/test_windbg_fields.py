@@ -230,3 +230,56 @@ def test_windbg_open_dump_names_the_cut_sizes(
     assert "returned_chars" in doc
     assert "dump" in doc
     assert "exit_code" in doc
+
+
+def test_windbg_open_dump_does_not_call_an_omitted_command_list_a_triage_set(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The tool said a general triage set. The service runs only lm.
+
+    Measured: windbg_open_dump(dump) with commands=None called open_dump with
+    ['lm']. A model that skips windbg.modules after a default open_dump
+    because it believes triage already listed threads and the stack is then
+    working from a module list alone.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    seen: list[list[str]] = []
+
+    class _Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def open_dump(
+            self,
+            dump: Path,
+            commands: list[str],
+            *,
+            timeout: float = 60.0,
+            kernel: bool = False,
+        ) -> dict[str, Any]:
+            del dump, timeout, kernel
+            seen.append(list(commands))
+            return {"dump": "x", "output": "lm", "stderr": "", "exit_code": 0}
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.WindbgClient",
+        _Client,
+    )
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        dump = tmp_path / "crash.dmp"
+        dump.write_bytes(b"dump")
+        result = service.windbg_open_dump(str(dump))
+        assert result.ok, result.error
+        assert seen == [["lm"]]
+    finally:
+        service.close_all()
+    doc = " ".join(_tool_docstring("windbg.open_dump").split())
+    assert "lm" in doc
+    assert "triage set" not in doc
+    assert "!analyze" in doc

@@ -27,8 +27,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Run whitelisted cdb commands against a crash dump file.
 
-        For post-mortem work on a .dmp, not on a live debuggee. commands
-        defaults to a general triage set. Kernel dumps need kernel=true and are
+        For post-mortem work on a .dmp, not on a live debuggee. When commands
+        is omitted the service runs only ``lm`` (loaded modules), not
+        ``!analyze`` and not a multi-command crash walk. Kernel dumps need kernel=true and are
         refused unless HEADLESS_RE_WINDBG_ALLOW_KERNEL is set. The reply carries
         dump, output, stderr and exit_code, plus truncated, output_chars and
         returned_chars when the session was cut at the buffer.
