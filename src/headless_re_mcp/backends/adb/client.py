@@ -23,6 +23,7 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
 _INSTALL_PUSH_TIMEOUT = 180.0
+_PUSH_TIMEOUT = 180.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -423,12 +424,19 @@ class AdbBackend:
         return {"remote": remote_path, "local": str(local_path)}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
-        dev = self._device(serial)
+        """Push one file. The transfer is bounded.
+
+        adbutils ``sync.push`` has no timeout. Measured: push() was
+        invoked with no kwargs; a 0.8s sleep held ``device.push`` 0.8s.
+        """
+        self._device(serial)
         path = Path(local_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
-            dev.sync.push(str(path), remote_path)
+            self._push_file(serial, str(path), remote_path, timeout=_PUSH_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
         return {"local": str(path), "remote": remote_path}
