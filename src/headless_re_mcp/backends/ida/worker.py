@@ -1116,6 +1116,14 @@ def _comment_set(params: JsonObject) -> JsonObject:
             address=ea,
         )
     after = ida_bytes.get_cmt(ea, repeatable) or ""
+    # Measured: set_cmt True, readback still the old comment, ok=true --
+    # so a caller treats a no-op as the requested comment landing.
+    if after == before and after != comment:
+        raise WorkerRequestError(
+            "write_failed",
+            f"comment set reported success but readback is still {after!r}",
+            address=ea,
+        )
     return {
         "address": ea,
         "comment": after,
