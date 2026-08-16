@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.proxy.client import _FlowRecorder, _port_accepts
-from headless_re_mcp.backends.web.client import _MAX_SCRIPTS, _WebSession
+from headless_re_mcp.backends.web.client import _MAX_REQUESTS, _MAX_SCRIPTS, _WebSession
 from headless_re_mcp.core.service_frida import _MAX_AUTHORIZED, _append_recent
 
 
@@ -461,6 +461,65 @@ class TestWebScriptBufferIsBounded:
 
         assert listed["count"] == _MAX_SCRIPTS
         assert listed["total"] == _MAX_SCRIPTS
+        assert listed["has_more"] is False
+
+
+class TestWebNetworkSaysWhenTheWindowDroppedOlderRequests:
+    """3500 requests used to come back as total=3000 with no has_more.
+
+    The ring drops the oldest once it is full. A list sitting at the cap
+    looked exactly like a page that only ever made 3000 requests, so the
+    ones that scrolled off disappeared from whoever was supposed to see them.
+    """
+
+    def _backend_with(self, handle: _WebSession) -> Any:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_a_window_at_the_cap_reports_that_requests_were_dropped(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        evicted = 500
+        for index in range(_MAX_REQUESTS + evicted):
+            handle.record_request(str(index), {"requestId": str(index)})
+        listed = self._backend_with(handle).network_list("s", limit=_MAX_REQUESTS)
+
+        assert listed["count"] == _MAX_REQUESTS
+        assert listed["total"] == _MAX_REQUESTS
+        assert listed["seen"] == _MAX_REQUESTS + evicted
+        assert listed["has_more"] is True
+        assert listed["requests"][0]["requestId"] == str(evicted)
+
+    def test_a_page_inside_a_complete_window_reports_more(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(150):
+            handle.record_request(str(index), {"requestId": str(index)})
+        listed = self._backend_with(handle).network_list("s", limit=100)
+        assert listed["count"] == 100
+        assert listed["total"] == 150
+        assert listed["seen"] == 150
+        assert listed["has_more"] is True
+
+    def test_a_window_that_never_filled_is_complete(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(3):
+            handle.record_request(str(index), {"requestId": str(index)})
+        listed = self._backend_with(handle).network_list("s")
+        assert listed["count"] == 3
+        assert listed["total"] == 3
+        assert listed["seen"] == 3
+        assert listed["has_more"] is False
+
+    def test_a_window_that_exactly_fills_the_cap_is_complete(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_REQUESTS):
+            handle.record_request(str(index), {"requestId": str(index)})
+        listed = self._backend_with(handle).network_list("s", limit=_MAX_REQUESTS)
+        assert listed["count"] == _MAX_REQUESTS
+        assert listed["total"] == _MAX_REQUESTS
+        assert listed["seen"] == _MAX_REQUESTS
         assert listed["has_more"] is False
 
 

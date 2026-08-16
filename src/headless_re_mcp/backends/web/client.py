@@ -121,6 +121,10 @@ class _WebSession:
         self.page = page
         self.cdp = cdp
         self.requests: OrderedDict[str, JsonObject] = OrderedDict()
+        # requests_seen counts every request, including ones the window later
+        # evicted, so a list sitting at the cap can be told from a page that
+        # only ever made that many.
+        self.requests_seen = 0
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         # console_seen counts every line, including ones the ring later
         # dropped, so a tail of `limit` lines can be told from the whole log.
@@ -137,6 +141,14 @@ class _WebSession:
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
         self.runner: _Runner | None = None
+
+    def record_request(self, request_id: str, entry: JsonObject) -> None:
+        """Remember one request, evicting the oldest once the window is full."""
+        with self.lock:
+            self.requests_seen += 1
+            self.requests[request_id] = entry
+            while len(self.requests) > _MAX_REQUESTS:
+                self.requests.popitem(last=False)
 
     def record_script(self, params: JsonObject) -> None:
         """Remember one parsed script, evicting the oldest once the window is full."""
@@ -249,17 +261,17 @@ class WebBackend:
 
         def on_request(params: JsonObject) -> None:
             req = params.get("request") or {}
-            with handle.lock:
-                handle.requests[str(params.get("requestId"))] = {
+            handle.record_request(
+                str(params.get("requestId")),
+                {
                     "requestId": params.get("requestId"),
                     "url": req.get("url"),
                     "method": req.get("method"),
                     "resourceType": params.get("type"),
                     "status": None,
                     "mimeType": None,
-                }
-                while len(handle.requests) > _MAX_REQUESTS:
-                    handle.requests.popitem(last=False)
+                },
+            )
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
@@ -336,8 +348,18 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.requests.values())
+            seen = handle.requests_seen
+        retained = len(items)
         window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": retained,
+            "seen": seen,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(window) < retained or seen > retained,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
