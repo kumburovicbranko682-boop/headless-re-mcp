@@ -1258,7 +1258,7 @@ class UnpackMixin:
                 self._store_unpack_session(checked)
                 state = checked
             return _success(
-                {"unpack": state.to_dict(), "claims_universal_unpack": False},
+                {"unpack": state.status_dict(), "claims_universal_unpack": False},
                 session_id=session_id,
                 backend="unpack",
             )

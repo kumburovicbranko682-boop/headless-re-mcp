@@ -158,7 +158,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="unpack.status")
     def unpack_status(session_id: str) -> dict[str, Any]:
-        """Return the current unpack orchestration state and timeline summary."""
+        """Return the current unpack orchestration state and a recent timeline.
+
+        Artifacts and timeline are recent windows, not the whole ledger. Read
+        artifacts_has_more / timeline_has_more and the totals rather than
+        treating the arrays as every event. Use unpack.artifacts to page dumps.
+        """
         return _dump(analysis.unpack_status(session_id))
 
     @tools.tool(name="unpack.cancel")

@@ -190,6 +190,30 @@ class UnpackSessionState:
             "terminal": self.phase in _TERMINAL_PHASES,
         }
 
+    def status_dict(
+        self, *, artifact_limit: int = 20, timeline_limit: int = 50
+    ) -> JsonObject:
+        """A status-sized view: recent windows, not the whole ledger.
+
+        ``to_dict`` is the durable snapshot and must stay complete. Status is
+        described as a summary; measured 151 artifacts and 202 timeline events
+        still came back in full with no mark.
+        """
+        data = self.to_dict()
+        artifacts = list(data.get("artifacts") or [])
+        timeline = list(data.get("timeline") or [])
+        art_cap = max(1, int(artifact_limit))
+        time_cap = max(1, int(timeline_limit))
+        art_page = artifacts[-art_cap:]
+        time_page = timeline[-time_cap:]
+        data["artifacts"] = art_page
+        data["timeline"] = time_page
+        data["artifact_total"] = len(artifacts)
+        data["timeline_total"] = len(timeline)
+        data["artifacts_has_more"] = len(artifacts) > len(art_page)
+        data["timeline_has_more"] = len(timeline) > len(time_page)
+        return data
+
 
 def create_unpack_session(
     session_id: str,

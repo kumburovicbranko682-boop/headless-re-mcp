@@ -15,6 +15,7 @@ from headless_re_mcp.unpack.plan import build_unpack_plan
 from headless_re_mcp.unpack.session import (
     UnpackArtifact,
     UnpackPhase,
+    UnpackTimelineEvent,
     cancel_unpack_session,
     check_timeout,
     create_unpack_session,
@@ -453,3 +454,57 @@ def test_unpack_artifacts_says_when_the_list_is_only_a_page(tmp_path: Path) -> N
     assert tail.data["count"] == 51
     assert tail.data["total"] == 151
     assert tail.data["has_more"] is False
+
+
+def test_unpack_status_says_when_the_summary_is_only_a_window(tmp_path: Path) -> None:
+    """151 artifacts and 202 timeline events used to come back in full.
+
+    The tool calls itself a summary. The reply was the durable snapshot, so an
+    agent treated one status as every dump and every step.
+    """
+    binary = tmp_path / "plain.exe"
+    _write_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert started.ok
+    state = service._unpack_owner.get(session_id)
+    assert state is not None
+    now = datetime.now(UTC)
+    extra_arts = tuple(
+        UnpackArtifact("dump", f"/tmp/d{index}.bin", "ab", UnpackPhase.DUMPED)
+        for index in range(150)
+    )
+    extra_events = tuple(
+        UnpackTimelineEvent(
+            index + 10, now, UnpackPhase.RUNNING, "step", f"e{index}"
+        )
+        for index in range(200)
+    )
+    service._unpack_owner.put(
+        session_id,
+        replace(
+            state,
+            artifacts=state.artifacts + extra_arts,
+            timeline=state.timeline + extra_events,
+        ),
+    )
+
+    status = service.unpack_status(session_id)
+    assert status.ok and status.data is not None
+    unpack = status.data["unpack"]
+    assert unpack["artifact_total"] == 151
+    assert unpack["timeline_total"] == len(state.timeline) + 200
+    assert len(unpack["artifacts"]) == 20
+    assert len(unpack["timeline"]) == 50
+    assert unpack["artifacts_has_more"] is True
+    assert unpack["timeline_has_more"] is True
+    assert unpack["artifacts"][-1]["path"] == "/tmp/d149.bin"
