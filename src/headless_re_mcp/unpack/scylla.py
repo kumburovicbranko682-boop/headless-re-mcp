@@ -21,6 +21,7 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -287,25 +288,20 @@ def probe_scylla(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = subprocess.run([str(exe)], **options)
-    except subprocess.TimeoutExpired:
-        # GUI Scylla often never exits; treat startability as probe success.
+        # GUI Scylla often never exits; startability is still success. Measured:
+        # subprocess.run returned True in 0.40s and left the child in state S.
+        completed = run_bounded([str(exe)], timeout=timeout, creationflags=creationflags)
+    except TimedOut:
         return True, "timeout_after_start"
     except OSError:
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = (
+        completed.stdout.decode("utf-8", errors="replace")
+        + "\n"
+        + completed.stderr.decode("utf-8", errors="replace")
+    ).strip()
     lowered = text.casefold()
     if any(token in lowered for token in ("scylla", "usage", "iat", "import", "dump")):
         return True, text[:2000]
