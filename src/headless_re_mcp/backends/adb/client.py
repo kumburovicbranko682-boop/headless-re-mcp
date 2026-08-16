@@ -34,6 +34,7 @@ _LOGCAT_TIMEOUT = 15.0
 _FORCE_STOP_TIMEOUT = 15.0
 _LAUNCH_TIMEOUT = 15.0
 _CURRENT_ACTIVITY_TIMEOUT = 15.0
+_UNINSTALL_TIMEOUT = 30.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -412,12 +413,19 @@ class AdbBackend:
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        """Remove a package. The hop is bounded.
+
+        adbutils ``uninstall()`` has no deadline. ``shell(timeout=30)``
+        still opened the transport with a 600s default. Measured on
+        info: a wedged adb held the connect, not the command.
+        """
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         pkg = _check_package(package)
         try:
-            # adbutils uninstall() has no deadline. pm uninstall is the same
-            # operation and accepts the timeout the library's shell already has.
-            raw = dev.shell(["pm", "uninstall", pkg], timeout=30.0)
+            raw = self._adb_shell(serial, f"pm uninstall {pkg}", timeout=_UNINSTALL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
         text = str(raw)

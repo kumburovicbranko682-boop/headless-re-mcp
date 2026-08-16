@@ -512,37 +512,35 @@ class TestAdbArgumentValidation:
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
 
-    def test_uninstall_is_false_when_pm_did_not_succeed(self) -> None:
+    def test_uninstall_is_false_when_pm_did_not_succeed(self, tmp_path: Path) -> None:
         """A returned pm uninstall used to be reported as uninstalled.
 
         Measured: Failure [DELETE_FAILED_INTERNAL_ERROR] and Unknown
         package both came back uninstalled=True.
         """
 
-        class _Dev:
-            def __init__(self, text: str) -> None:
-                self.text = text
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                return self.text
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        failed = _Backend(_Dev("Failure [DELETE_FAILED_INTERNAL_ERROR]")).uninstall(
+        def _adb(text: str) -> Path:
+            path = tmp_path / f"adb-{hash(text) & 0xFFFF:x}"
+            path.write_text("#!/usr/bin/env python3\n" + f"print({text!r})\n")
+            path.chmod(0o755)
+            return path
+
+        failed = _Backend(_adb("Failure [DELETE_FAILED_INTERNAL_ERROR]")).uninstall(
             "emulator-5554", "com.example.app"
         )
         assert failed["uninstalled"] is False
         assert "Failure" in str(failed.get("note"))
 
-        ok = _Backend(_Dev("Success")).uninstall("emulator-5554", "com.example.app")
+        ok = _Backend(_adb("Success")).uninstall("emulator-5554", "com.example.app")
         assert ok["uninstalled"] is True
         assert "note" not in ok
 
@@ -585,41 +583,36 @@ class TestAdbArgumentValidation:
         assert out.read_bytes().startswith(b"\x89PNG")
         assert result["path"] == str(out)
 
-    def test_uninstall_does_not_wait_on_adb_forever(self) -> None:
-        """adbutils uninstall used to run with no deadline.
+    def test_uninstall_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """uninstall used adbutils shell, which connects with a 600s default.
 
-        Measured: uninstall(pkg) was invoked with no timeout. A wedged
-        adb held the worker for the life of the process.
+        Measured on info: shell(timeout=30) opened the transport with the
+        library default first.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-                self.cmd: object = None
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.cmd = cmd
-                self.timeout = timeout
-                return "Success"
-
-            def uninstall(self, pkg: str) -> None:
-                raise AssertionError("unbounded uninstall")
+        monkeypatch.setattr(adb_client, "_UNINSTALL_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).uninstall("emulator-5554", "com.example.app")
-        assert device.timeout == 30.0
-        assert device.cmd == ["pm", "uninstall", "com.example.app"]
-        assert result["uninstalled"] is True
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).uninstall("emulator-5554", "com.example.app")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_force_stop_does_not_wait_on_adb_forever(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
