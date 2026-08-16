@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.telemetry import record_alert
 
@@ -62,6 +63,35 @@ class IsolationPolicy:
         return bool(self.command)
 
 
+def _run_isolation(
+    command: list[str],
+    *,
+    capture_output: bool = True,
+    text: bool = True,
+    timeout: float | None = None,
+    check: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Same argv seam as ``subprocess.run``, but the timeout binds the tree.
+
+    Measured: a revert launcher that started a child still left that child
+    running after TimeoutExpired. The next sample then ran on a machine the
+    previous isolation step had not actually finished cleaning.
+    """
+    del capture_output, check
+    deadline = float(timeout if timeout is not None else DEFAULT_TIMEOUT_S)
+    creationflags = int(kwargs.get("creationflags") or 0)
+    try:
+        completed = run_bounded(list(command), timeout=deadline, creationflags=creationflags)
+    except TimedOut:
+        # Keep TimedOut so rotate() can report which pids the tree kill stopped.
+        # Wrapping it as TimeoutExpired used to drop that list.
+        raise
+    stdout = completed.stdout.decode("utf-8", errors="replace") if text else completed.stdout
+    stderr = completed.stderr.decode("utf-8", errors="replace") if text else completed.stderr
+    return subprocess.CompletedProcess(list(command), completed.returncode, stdout, stderr)
+
+
 class IsolationError(RuntimeError):
     """The isolation step was required and did not succeed."""
 
@@ -75,7 +105,7 @@ class IsolationRunner:
     """Invoke the configured isolation command and report honestly."""
 
     policy: IsolationPolicy = field(default_factory=IsolationPolicy)
-    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
+    run: Callable[..., subprocess.CompletedProcess[str]] = field(default=_run_isolation)
     clock: Callable[[], float] = time.monotonic
 
     def rotate(self, *, reason: str = "next_sample") -> JsonObject:
@@ -101,6 +131,14 @@ class IsolationRunner:
                 # Runs once per sample on an unattended box; a console window
                 # per rotation would pile up on the desktop.
                 **no_window_popen_kwargs(),
+            )
+        except TimedOut as exc:
+            return self._failed(
+                f"timed out after {self.policy.timeout_s:g}s",
+                command=command,
+                elapsed=self.clock() - started,
+                reason=reason,
+                killed_pids=list(exc.killed),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._failed(
@@ -136,6 +174,7 @@ class IsolationRunner:
         elapsed: float,
         reason: str,
         stderr: str = "",
+        killed_pids: list[int] | None = None,
     ) -> JsonObject:
         payload: JsonObject = {
             "ok": False,
@@ -147,6 +186,8 @@ class IsolationRunner:
         }
         if stderr:
             payload["stderr"] = stderr
+        if killed_pids:
+            payload["killed_pids"] = list(killed_pids)
         record_alert("isolation_failed", fields={"detail": detail, "reason": reason})
         if self.policy.required:
             raise IsolationError(

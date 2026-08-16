@@ -90,6 +90,59 @@ def test_a_timeout_is_a_failure() -> None:
     assert "Timeout" in str(outcome["detail"])
 
 
+def test_a_timeout_kills_the_launcher_child(tmp_path: Any) -> None:
+    """subprocess.run used to kill the revert launcher and leave its child.
+
+    Measured: IsolationError after the timeout, and os.kill(child, 0) still
+    succeeded. The next sample then ran on a machine the previous isolation
+    step had not finished cleaning.
+    """
+    import os
+    import sys
+    import time
+    from contextlib import suppress
+
+    pidfile = tmp_path / "child.pid"
+    script = tmp_path / "revert.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    runner = IsolationRunner(
+        IsolationPolicy(command=(sys.executable, str(script)), timeout_s=0.8)
+    )
+    child = 0
+    try:
+        with pytest.raises(IsolationError) as caught:
+            runner.rotate()
+        assert "timed out" in str(caught.value)
+        deadline = time.monotonic() + 2.0
+        while not pidfile.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pidfile.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.kill(child, 0)
+                alive = True
+            except OSError:
+                alive = False
+            if not alive or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert alive is False, "the isolation launcher's child outlived the timeout"
+        assert child in caught.value.detail["killed_pids"]
+    finally:
+        if child:
+            with suppress(OSError):
+                os.kill(child, 9)
+
+
 def test_the_timeout_is_passed_to_the_command() -> None:
     seen: dict[str, Any] = {}
 
