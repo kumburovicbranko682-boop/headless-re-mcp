@@ -427,13 +427,37 @@ class AgentStore:
             row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
         return None if row is None else self._mission_from_row(row)
 
-    def list_missions(self, *, status: MissionStatus | None = None, limit: int = 100) -> list[AgentMission]:
-        bounded = max(1, min(limit, 500))
+    def count_missions(self, *, status: MissionStatus | None = None) -> int:
         with self._reading() as con:
             if status is None:
-                rows = con.execute("SELECT * FROM missions ORDER BY created_at DESC, id DESC LIMIT ?", (bounded,)).fetchall()
+                row = con.execute("SELECT COUNT(*) AS c FROM missions").fetchone()
             else:
-                rows = con.execute("SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ?", (status.value, bounded)).fetchall()
+                row = con.execute(
+                    "SELECT COUNT(*) AS c FROM missions WHERE status=?",
+                    (status.value,),
+                ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def list_missions(
+        self,
+        *,
+        status: MissionStatus | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[AgentMission]:
+        bounded = max(1, min(limit, 500))
+        start = max(0, int(offset))
+        with self._reading() as con:
+            if status is None:
+                rows = con.execute(
+                    "SELECT * FROM missions ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (bounded, start),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (status.value, bounded, start),
+                ).fetchall()
         return [self._mission_from_row(row) for row in rows]
 
     def claim_next_mission(self) -> AgentMission | None:

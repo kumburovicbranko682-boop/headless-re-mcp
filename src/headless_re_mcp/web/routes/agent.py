@@ -294,6 +294,7 @@ def register_agent_routes(
     @app.get("/api/agent/missions")
     def list_missions(
         status: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
         limit: int = Query(default=100, ge=1, le=500),
         authorization: str | None = Header(default=None),
     ) -> JSONResponse:
@@ -302,9 +303,21 @@ def register_agent_routes(
             wanted = MissionStatus(status) if status else None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid_status") from exc
-        items = [item.dump() for item in store.list_missions(status=wanted, limit=limit)]
+        items = [
+            item.dump()
+            for item in store.list_missions(status=wanted, offset=offset, limit=limit)
+        ]
+        total = store.count_missions(status=wanted)
         return JSONResponse(
-            {"ok": True, "missions": items, "count": len(items), "scheduler_running": scheduler.running}
+            {
+                "ok": True,
+                "missions": items,
+                "count": len(items),
+                "total": total,
+                "offset": offset,
+                "has_more": offset + len(items) < total,
+                "scheduler_running": scheduler.running,
+            }
         )
 
     @app.get("/api/agent/missions/{mission_id}")

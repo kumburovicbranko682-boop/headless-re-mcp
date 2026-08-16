@@ -285,3 +285,24 @@ def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         store.create_mission(thread.id, "will not fit on disk")
+
+
+def test_a_capped_mission_list_says_what_it_left_out(tmp_path: Path) -> None:
+    """Overnight intake writes one mission per sample; the list is capped.
+
+    Measured: 150 missions, limit 100, the reply had count=100 and no total
+    or has_more, so it read as the whole queue. Fifty objectives were
+    invisible, and there was no offset to ask for them.
+    """
+    store = AgentStore(tmp_path / "missions.db")
+    thread = store.create_thread()
+    for index in range(150):
+        store.create_mission(thread.id, f"obj {index}")
+
+    assert store.count_missions() == 150
+    first = store.list_missions(limit=100, offset=0)
+    second = store.list_missions(limit=100, offset=100)
+    assert len(first) == 100
+    assert len(second) == 50
+    assert {item.id for item in first}.isdisjoint({item.id for item in second})
+    assert store.list_missions(limit=100, offset=150) == []

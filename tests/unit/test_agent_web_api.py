@@ -99,7 +99,24 @@ def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, mo
 
         listed = client.get("/api/agent/missions", headers=headers).json()
         assert listed["count"] == 1
+        assert listed["total"] == 1
+        assert listed["has_more"] is False
+        assert listed["offset"] == 0
         assert listed["scheduler_running"] is True
+
+        for index in range(4):
+            client.post(
+                "/api/agent/missions",
+                headers=headers,
+                json={"objective": f"extra {index}"},
+            )
+        page = client.get("/api/agent/missions?limit=2", headers=headers).json()
+        assert page["count"] == 2
+        assert page["total"] == 5
+        assert page["has_more"] is True
+        rest = client.get("/api/agent/missions?offset=2&limit=10", headers=headers).json()
+        assert rest["count"] == 3
+        assert rest["has_more"] is False
 
         fetched = client.get(f"/api/agent/missions/{mission['id']}", headers=headers)
         assert fetched.status_code == 200
