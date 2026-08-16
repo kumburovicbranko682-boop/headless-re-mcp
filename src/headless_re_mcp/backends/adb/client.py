@@ -524,17 +524,26 @@ class AdbBackend:
             if not path.is_file():
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:
-                _call_bounded(
+                outcome = _call_bounded(
                     lambda: dev.sync.push(str(path), remote_path),
                     timeout=_TRANSFER_TIMEOUT,
                     op="push",
                 )
-                _shell(dev, ["chmod", "755", remote_path])
-                pushed = True
             except AdbError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
+            # Measured: push returning False still set pushed=True, then the
+            # launch failed with details saying the binary was uploaded.
+            if outcome is False:
+                raise AdbError(
+                    "backend_error",
+                    "failed to push frida-server",
+                    path=str(path),
+                    remote=remote_path,
+                )
+            _shell(dev, ["chmod", "755", remote_path])
+            pushed = True
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             _shell(

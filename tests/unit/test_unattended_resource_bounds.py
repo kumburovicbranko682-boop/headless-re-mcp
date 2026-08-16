@@ -2945,6 +2945,32 @@ class TestFridaServerEnsureDoesNotInventAProcess:
         result = self._backend(Device()).ensure_frida_server("emulator-5554")
         assert result["running"] is True
 
+    def test_a_failed_push_is_not_pushed(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        binary = tmp_path / "frida-server"
+        binary.write_bytes(b"x")
+
+        class Device:
+            @property
+            def sync(self) -> Device:
+                return self
+
+            def push(self, src: str, remote: str) -> bool:
+                del src, remote
+                return False
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "root 1 0 init"
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).ensure_frida_server(
+                "emulator-5554", server_binary=str(binary)
+            )
+        assert caught.value.code == "backend_error"
+        assert caught.value.details.get("pushed") is not True
+
 
 class TestDevicePackagesArePaged:
     """pm list has no page size; a full device image is thousands of names.
