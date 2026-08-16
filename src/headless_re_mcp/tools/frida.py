@@ -106,7 +106,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
-        """List declared methods of a Java class on the authorized device pid (ART only)."""
+        """List declared methods of a Java class; read has_more when the page is full."""
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
     return tools.bindings
