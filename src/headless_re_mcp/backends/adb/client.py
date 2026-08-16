@@ -188,14 +188,22 @@ class AdbBackend:
             raw = _shell(dev, "getprop")
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
-        props: dict[str, str] = {}
+        parsed: list[tuple[str, str]] = []
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if match:
-                props[match.group(1)] = match.group(2)
-            if len(props) >= limit:
-                break
-        return {"properties": props, "count": len(props)}
+                parsed.append((match.group(1), match.group(2)))
+        capped = max(1, min(int(limit), 2000))
+        window = parsed[:capped]
+        # The loop used to stop at `limit` and return only count, so a page
+        # that filled looked like the whole getprop. Measured: 2000 keys,
+        # limit 500, count 500, no has_more.
+        return {
+            "properties": dict(window),
+            "count": len(window),
+            "total": len(parsed),
+            "has_more": len(parsed) > capped,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500

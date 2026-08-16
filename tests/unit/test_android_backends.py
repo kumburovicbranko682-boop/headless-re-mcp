@@ -491,6 +491,38 @@ class TestEnsureFridaServerDoesNotInventARunningProcess:
             service.close_all()
 
 
+class TestDevicePropertiesSayWhenTheyStopped:
+    """A getprop page that hit the cap used to look like the whole property set."""
+
+    def _backend(self, count: int) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return "\n".join(f"[ro.k{index}]: [v{index}]" for index in range(count))
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(2000).properties("emulator-5554", limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 2000
+        assert result["has_more"] is True
+        assert len(result["properties"]) == 500
+
+    def test_a_short_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).properties("emulator-5554", limit=500)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_page_that_exactly_fills_is_complete(self) -> None:
+        result = self._backend(500).properties("emulator-5554", limit=500)
+        assert result["count"] == 500
+        assert result["has_more"] is False
+
+
 class TestDevicePackagesAreBounded:
     """A device image can list thousands of packages; the reply used to be all of them."""
 
