@@ -18,10 +18,10 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.application_services import ApplicationServices
 from headless_re_mcp.core.capabilities_catalog import describe_capability, list_capabilities
-from headless_re_mcp.core.models import Result, RpcError
+from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import SessionRegistry, file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry, file_sha256
 from headless_re_mcp.core.store.sqlite_store import KNOWLEDGE_VALUE_MAX_CHARS
 from headless_re_mcp.core.ui_drive import drive_deadline, normalize_drive_steps, run_drive_step
 from headless_re_mcp.core.windows import (
@@ -346,9 +346,26 @@ class ExtAnalysisMixin(UiDriveMixin):
     def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"ghidra.analyze cannot run in {session.state.value} state"
+                )
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
             project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
             data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"ghidra.analyze cannot run in {session.state.value} state"
+                )
             _record_backend(self, session_id, "ghidra", endpoint=str(project))
             _timeline_append(self, session_id, "ghidra.analyze", "ghidra analyze finished")
             return _success(data, session_id=session_id, backend="ghidra")
