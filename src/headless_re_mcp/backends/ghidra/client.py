@@ -216,6 +216,14 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        if mode == "decompile":
+            # ExportJson.py cuts C at 200000. Old scripts (and a payload
+            # that already sits on that cap) used to look complete.
+            text = payload.get("decompiled")
+            if isinstance(text, str) and (len(text) >= 200_000 or payload.get("truncated")):
+                payload["truncated"] = True
+                payload.setdefault("output_chars", len(text))
+                payload["returned_chars"] = len(text)
         if mode in {"functions", "symbols", "xrefs"}:
             items = payload.get("items")
             if isinstance(items, list):

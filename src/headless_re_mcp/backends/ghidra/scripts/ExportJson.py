@@ -90,7 +90,13 @@ elif mode == "decompile":
                 decomp.dispose()
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
+    # Measured: 250000-char C, decompiled length 200000, no truncated --
+    # a caller reading decompiled thinks the function ended there.
     payload["decompiled"] = text[:200000]
+    if len(text) > 200000:
+        payload["truncated"] = True
+        payload["output_chars"] = len(text)
+        payload["returned_chars"] = len(payload["decompiled"])
 else:
     payload["error"] = "unknown mode"
 
