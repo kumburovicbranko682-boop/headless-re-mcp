@@ -45,7 +45,7 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_functions(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Functions radare2 found, with address, size and name.
+        """Functions radare2 found, with address, size and name (check items_truncated).
 
         Useful where IDA and radare2 disagree about where code begins, which is
         common in packed or obfuscated samples.

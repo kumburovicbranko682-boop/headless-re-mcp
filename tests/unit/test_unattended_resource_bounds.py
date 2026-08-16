@@ -1704,6 +1704,27 @@ class TestATruncatedListSaysSo:
         assert "items_total" not in payload
 
 
+class TestR2FunctionsDescriptionMatchesTheCut:
+    """r2.functions already cuts at 4096, but the tool text hid that.
+
+    Measured: 4346 items, count=4096, items_truncated=true, while the
+    description never mentioned the cut -- so a model that trusts the text
+    treats the page as every function radare2 found.
+    """
+
+    def test_the_tool_text_says_to_check_items_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.r2 import build_r2_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_r2_tools(service)}
+            doc = tools["r2.functions"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "items_truncated" in doc
+
+
 class TestAFindingIsEitherRecordedOrRefused:
     """Findings are what an unattended run remembers between sessions.
 
