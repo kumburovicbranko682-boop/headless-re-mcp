@@ -28,7 +28,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.manifest")
     def apk_manifest(session_id: str) -> dict[str, Any]:
-        """Return the decoded AndroidManifest.xml for the APK session."""
+        """Return the decoded AndroidManifest.xml for the APK session.
+
+        Large manifests are cut; read `truncated` and `bytes` rather than
+        assuming the XML is complete.
+        """
         return _dump(analysis.apk_manifest(session_id))
 
     @tools.tool(name="apk.permissions")

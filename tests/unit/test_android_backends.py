@@ -300,6 +300,56 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestApkManifestSaysWhenItStopped:
+    """The tool text says this is the decoded manifest.
+
+    Measured: a 250020-character manifest came back as 200000 characters, no
+    truncated field, and the XML no longer closed. An agent then treats a
+    permission or component that lived past the cut as absent.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, xml: str) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
+            def get_android_manifest_axml(self) -> Any:
+                class Body:
+                    def get_xml(self) -> bytes:
+                        return xml.encode("utf-8")
+
+                return Body()
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        return client
+
+    def test_a_cut_manifest_is_labelled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS
+
+        xml = "<manifest>" + ("x" * 250_000) + "</manifest>"
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is True
+        assert result["bytes"] == len(xml)
+        assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+        assert result["package"] == "com.example.app"
+
+    def test_a_short_manifest_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        xml = "<manifest package='com.example.app'/>"
+        result = self._client(monkeypatch, xml).manifest(tmp_path / "app.apk")
+
+        assert result["truncated"] is False
+        assert result["bytes"] == len(xml)
+        assert result["manifest_xml"] == xml
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

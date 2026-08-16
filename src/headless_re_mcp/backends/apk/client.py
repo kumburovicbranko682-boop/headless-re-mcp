@@ -19,6 +19,7 @@ JsonObject = dict[str, Any]
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
+_MAX_MANIFEST_CHARS = 200_000
 
 
 class ApkError(RuntimeError):
@@ -171,7 +172,16 @@ class ApkClient:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
+        # The tool text says this is the decoded manifest. Cutting it without
+        # saying so is how an agent concludes a permission or component is
+        # absent. Measured: a 250020-character manifest came back as 200000
+        # characters, no truncated field, and the XML no longer closed.
+        return {
+            "package": apk.get_package(),
+            "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            "bytes": len(xml),
+        }
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
