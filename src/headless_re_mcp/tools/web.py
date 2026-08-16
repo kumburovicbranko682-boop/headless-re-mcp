@@ -72,7 +72,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.scripts")
     def web_scripts(session_id: str, wasm_only: bool = False) -> dict[str, Any]:
-        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger."""
+        """List parsed scripts (JavaScript and WebAssembly) seen by the debugger.
+
+        The live window is capped. Read has_more and total rather than treating
+        count as the number of scripts the page ever parsed.
+        """
         return _dump(analysis.web_scripts(session_id, wasm_only=wasm_only))
 
     @tools.tool(name="web.script.source")
@@ -82,7 +86,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(session_id: str) -> dict[str, Any]:
-        """List WebAssembly modules loaded by the page."""
+        """List WebAssembly modules loaded by the page.
+
+        Shares the script window, so has_more means older scripts were evicted.
+        """
         return _dump(analysis.web_wasm_list(session_id))
 
     @tools.tool(name="web.dom.snapshot")

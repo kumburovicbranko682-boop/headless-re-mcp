@@ -420,6 +420,49 @@ class TestWebScriptBufferIsBounded:
         assert handle.console.maxlen is not None
         assert isinstance(handle.requests, OrderedDict)
 
+    def _backend_with(self, handle: _WebSession) -> Any:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_a_window_at_the_cap_reports_that_scripts_were_dropped(self) -> None:
+        """count==2000 used to look exactly like a page that only parsed 2000."""
+        handle = _WebSession(object(), object(), object(), object(), object())
+        evicted = 500
+        for index in range(_MAX_SCRIPTS + evicted):
+            handle.record_script(
+                {"scriptId": str(index), "url": f"https://x/{index}.js"}
+            )
+        listed = self._backend_with(handle).scripts("s")
+
+        assert listed["count"] == _MAX_SCRIPTS
+        assert listed["total"] == _MAX_SCRIPTS + evicted
+        assert listed["limit"] == _MAX_SCRIPTS
+        assert listed["has_more"] is True
+        assert listed["scripts"][0]["scriptId"] == str(evicted)
+
+    def test_a_window_that_never_filled_is_complete(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(3):
+            handle.record_script({"scriptId": str(index)})
+        listed = self._backend_with(handle).scripts("s")
+
+        assert listed["count"] == 3
+        assert listed["total"] == 3
+        assert listed["has_more"] is False
+
+    def test_a_window_that_exactly_fills_the_cap_is_complete(self) -> None:
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(_MAX_SCRIPTS):
+            handle.record_script({"scriptId": str(index)})
+        listed = self._backend_with(handle).scripts("s")
+
+        assert listed["count"] == _MAX_SCRIPTS
+        assert listed["total"] == _MAX_SCRIPTS
+        assert listed["has_more"] is False
+
 
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:

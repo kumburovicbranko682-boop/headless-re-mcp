@@ -126,10 +126,26 @@ class _WebSession:
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
+        # scripts_seen counts every scriptParsed, including ones the window
+        # later evicted, so a list sitting at the cap can be told from a page
+        # that only ever parsed that many.
+        self.scripts_seen = 0
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
         self.runner: _Runner | None = None
+
+    def record_script(self, params: JsonObject) -> None:
+        """Remember one parsed script, evicting the oldest once the window is full."""
+        with self.lock:
+            self.scripts_seen += 1
+            self.scripts[str(params.get("scriptId"))] = {
+                "scriptId": params.get("scriptId"),
+                "url": params.get("url"),
+                "language": params.get("scriptLanguage", "JavaScript"),
+            }
+            while len(self.scripts) > _MAX_SCRIPTS:
+                self.scripts.popitem(last=False)
 
     def close(self) -> None:
         for closer in (self.context.close, self.browser.close, self.playwright.stop):
@@ -251,14 +267,7 @@ class WebBackend:
                     entry["mimeType"] = resp.get("mimeType")
 
         def on_script(params: JsonObject) -> None:
-            with handle.lock:
-                handle.scripts[str(params.get("scriptId"))] = {
-                    "scriptId": params.get("scriptId"),
-                    "url": params.get("url"),
-                    "language": params.get("scriptLanguage", "JavaScript"),
-                }
-                while len(handle.scripts) > _MAX_SCRIPTS:
-                    handle.scripts.popitem(last=False)
+            handle.record_script(params)
 
         def on_console(params: JsonObject) -> None:
             parts: list[str] = []
@@ -366,9 +375,19 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
+            seen = handle.scripts_seen
+            retained = len(handle.scripts)
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        return {"scripts": values, "count": len(values)}
+        return {
+            "scripts": values,
+            "count": len(values),
+            "total": seen,
+            "limit": _MAX_SCRIPTS,
+            # Eviction, not pagination: the window is the newest scripts, and
+            # there is no next page of the ones that were dropped.
+            "has_more": seen > retained,
+        }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
