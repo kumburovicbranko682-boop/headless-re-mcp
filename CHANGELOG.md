@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 任务列表在 limit=500 时不标 `has_more`**。600 条任务
+  `limit=500` 回 500 且 `has_more=False`。store 上限和 peek 是同一个数。
+  过夜队列看起来已经列完。现在能 peek 第 501 条。
 - **`proxy.replay` 在命令未执行时仍报 `replayed: True`**。
   `call_soon_threadsafe` 入队后立刻成功。过夜任务会把没发出去的重放
   当已发生的流量。现在等命令跑完，超时报 `timeout`。

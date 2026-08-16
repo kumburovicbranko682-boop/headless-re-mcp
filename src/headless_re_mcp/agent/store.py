@@ -428,7 +428,11 @@ class AgentStore:
         return None if row is None else self._mission_from_row(row)
 
     def list_missions(self, *, status: MissionStatus | None = None, limit: int = 100) -> list[AgentMission]:
-        bounded = max(1, min(limit, 500))
+        # 501 so GET /missions?limit=500 can peek one past the page.
+        # Measured: 600 missions with limit=500 came back as count=500
+        # and has_more=False because the store cap and the peek were the
+        # same number, so an overnight queue looked complete.
+        bounded = max(1, min(limit, 501))
         with self._reading() as con:
             if status is None:
                 rows = con.execute("SELECT * FROM missions ORDER BY created_at DESC, id DESC LIMIT ?", (bounded,)).fetchall()

@@ -249,6 +249,35 @@ def test_mission_list_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None:
     assert len(body["missions"]) == 100
 
 
+def test_mission_list_says_when_it_stopped_at_the_store_cap(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """GET /missions?limit=500 could not peek past the store cap.
+
+    Measured: 600 missions with limit=500 came back as count=500 and
+    has_more=False, so an unattended caller treated a full page as the
+    whole overnight queue.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    for index in range(600):
+        store.create_mission(thread.id, f"obj {index}")
+
+    with TestClient(app) as client:
+        body = client.get(
+            "/api/agent/missions", headers=headers, params={"limit": 500}
+        ).json()
+    assert body["ok"] is True
+    assert body["count"] == 500
+    assert body["has_more"] is True
+    assert len(body["missions"]) == 500
+
+
 def test_watchdog_alerts_say_when_they_stopped(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """GET /watchdog stopped at 50 alerts and said that was every alert.
 

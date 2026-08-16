@@ -352,7 +352,7 @@ def register_agent_routes(
             raise HTTPException(status_code=400, detail="invalid_status") from exc
         # Measured: 150 missions with limit=100 came back as count=100 with
         # no has_more, so overnight queued work looked like a complete list.
-        probe = store.list_missions(status=wanted, limit=min(limit + 1, 500))
+        probe = store.list_missions(status=wanted, limit=min(limit + 1, 501))
         has_more = len(probe) > limit
         items = [item.dump() for item in probe[:limit]]
         return JSONResponse(
