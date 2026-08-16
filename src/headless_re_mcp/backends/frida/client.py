@@ -198,19 +198,20 @@ class FridaClient:
         finally:
             session.detach()
 
-    def _attach_with_deadline(self, pid: int) -> Any:
+    def _attach_with_deadline(self, pid: int, *, attach: Any | None = None) -> Any:
         """Attach with a deadline. ``frida.attach`` has none.
 
         Measured: a 0.8s sleep in attach held ``frida.attach`` 0.8s. A
         wedged target pins the worker; get_usb_device already has a
         timeout, this hop did not.
         """
+        target = attach if attach is not None else self._frida.attach
         box: list[Any] = []
         err: list[BaseException] = []
 
         def run() -> None:
             try:
-                box.append(self._frida.attach(pid))
+                box.append(target(pid))
             except BaseException as exc:  # noqa: BLE001
                 err.append(exc)
 
@@ -461,7 +462,9 @@ class FridaClient:
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
         try:
-            session = device.attach(pid)
+            session = self._attach_with_deadline(pid, attach=device.attach)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:
