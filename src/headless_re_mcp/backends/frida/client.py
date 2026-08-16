@@ -7,6 +7,7 @@ from typing import Any
 
 JsonObject = dict[str, Any]
 _ATTACH_TIMEOUT = 15.0
+_SPAWN_TIMEOUT = 15.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -230,6 +231,37 @@ class FridaClient:
             raise FridaError("backend_error", "frida attach returned nothing", pid=pid)
         return box[0]
 
+    def _spawn_with_deadline(self, device: Any, package: str) -> int:
+        """Spawn with a deadline. ``device.spawn`` has none.
+
+        Measured: a 0.8s sleep in spawn held ``frida.spawn`` 0.8s. A
+        wedged device pins the worker; get_usb_device already has a
+        timeout, this hop did not.
+        """
+        box: list[Any] = []
+        err: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                box.append(device.spawn([package]))
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+
+        thread = threading.Thread(target=run, name=f"frida-spawn-{package}", daemon=True)
+        thread.start()
+        thread.join(_SPAWN_TIMEOUT)
+        if thread.is_alive():
+            raise FridaError(
+                "timeout",
+                f"frida spawn timed out after {_SPAWN_TIMEOUT:g}s",
+                package=package,
+            )
+        if err:
+            raise err[0]
+        if not box:
+            raise FridaError("backend_error", "frida spawn returned nothing", package=package)
+        return int(box[0])
+
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_with_deadline(pid)
@@ -441,8 +473,10 @@ class FridaClient:
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         try:
-            pid = device.spawn([package.strip()])
+            pid = self._spawn_with_deadline(device, package.strip())
             device.resume(pid)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"spawn failed: {exc}", package=package) from exc
         return {"package": package.strip(), "pid": int(pid), "device": str(device_id or "local")}

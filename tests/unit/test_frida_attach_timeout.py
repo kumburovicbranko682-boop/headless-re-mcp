@@ -218,3 +218,34 @@ def test_frida_device_hook_does_not_wait_on_attach_forever(
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_spawn_does_not_wait_forever(monkeypatch: pytest.MonkeyPatch) -> None:
+    """frida.spawn used device.spawn with no deadline.
+
+    Measured: a 0.8s sleep in spawn held frida.spawn 0.8s.
+    get_usb_device already had a timeout; this hop did not.
+    """
+    monkeypatch.setattr(frida_client, "_SPAWN_TIMEOUT", 0.4)
+
+    class _Dev:
+        def spawn(self, args: object) -> int:
+            time.sleep(30)
+            return 99
+
+        def resume(self, pid: int) -> None:
+            raise AssertionError("resume must not run after a spawn timeout")
+
+    class _Fake:
+        def get_usb_device(self, timeout: object = None) -> _Dev:
+            return _Dev()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"
