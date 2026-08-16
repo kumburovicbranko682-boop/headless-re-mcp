@@ -333,6 +333,44 @@ class TestFridaResolveUsbHasADeadline:
         frida.release.set()
 
 
+class TestFridaResolveLocalAndNamedHaveADeadline:
+    """local and named-id resolve still parked after usb had a deadline.
+
+    Measured: get_local_device and get_device(..., timeout=5) that slept
+    8s still returned only after 8.000s.
+    """
+
+    def test_local_and_named_time_out(self) -> None:
+        class _Frida:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def get_local_device(self) -> object:
+                self.entered.set()
+                self.release.wait()
+                return object()
+
+            def get_device(self, device_id: str, timeout: float = 5) -> object:
+                del device_id, timeout
+                self.entered.set()
+                self.release.wait()
+                return object()
+
+        for device_id in ("local", "some-id"):
+            frida = _Frida()
+            client = FridaClient(timeout=0.3)
+            client._available = True
+            client._frida = frida
+            started = time.monotonic()
+            with pytest.raises(FridaError) as info:
+                client._resolve_device(device_id)
+            assert info.value.code == "timeout", device_id
+            assert time.monotonic() - started < 1.0, device_id
+            assert frida.entered.is_set()
+            frida.release.set()
+
+
 class TestFridaResolveRemoteHasADeadline:
     """Resolving host:port still parked on add_remote after the public add had a deadline.
 

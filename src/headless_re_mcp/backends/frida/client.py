@@ -395,7 +395,9 @@ class FridaClient:
         frida = self._need()
         try:
             if device_id in (None, "", "local"):
-                return frida.get_local_device()
+                # Measured: get_local_device that slept 8s still returned
+                # only after 8.000s after usb/host:port had a deadline.
+                return self._call("resolve_local", frida.get_local_device)
             if device_id == "usb":
                 # Measured: get_usb_device(timeout=5) that slept 8s still
                 # returned only after 8.000s. The kwarg is not a deadline
@@ -413,7 +415,11 @@ class FridaClient:
                 return self._call(
                     "resolve_remote", lambda: mgr.add_remote_device(device_id)
                 )
-            return frida.get_device(device_id, timeout=5)
+            # Measured: get_device(..., timeout=5) that slept 8s still
+            # returned only after 8.000s.
+            return self._call(
+                "resolve_device", lambda: frida.get_device(device_id, timeout=5)
+            )
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - frida raises many device errors

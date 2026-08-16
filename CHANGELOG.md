@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **解析 local / 具名 Frida 设备时仍会一直挂着**。USB 路径加截止后，
+  `get_local_device` 与 `get_device(..., timeout=5)` 睡 8s 仍要 8.000s
+  才回。现在共用同一截止。
 - **解析 USB Frida 设备时仍会一直挂着**。`get_usb_device(timeout=5)` 睡
   8s 仍要 8.000s 才回。客户端 0.3s 截止也不生效。现在共用同一截止。
 - **`ui.windows.list` 一次回完整窗口表**。500 个窗口整包返回，没有
