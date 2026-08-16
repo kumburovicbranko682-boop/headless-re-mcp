@@ -22,6 +22,7 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+_INSTALL_PUSH_TIMEOUT = 180.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -218,12 +219,54 @@ class AdbBackend:
             "third_party_only": third_party_only,
         }
 
+    def _adb_executable(self) -> str:
+        if self._adb_path is not None:
+            return str(self._adb_path)
+        import os
+        import shutil
+
+        env = os.environ.get("ADBUTILS_ADB_PATH")
+        if env:
+            return env
+        found = shutil.which("adb")
+        if found:
+            return found
+        raise AdbError("capability_unavailable", "adb executable not found for bounded push")
+
+    def _push_file(self, serial: str, local: str, remote: str, *, timeout: float) -> None:
+        """Push one file with a deadline. adbutils ``sync.push`` has none.
+
+        Measured: ``push()`` was invoked with no kwargs; a 0.8s sleep in
+        push held ``install()`` for 0.8s while ``pm install`` already had
+        180s. A wedged sync transfer held the worker.
+        """
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "-s", _check_serial(serial), "push", local, remote],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"push timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"push failed: {err or completed.returncode}",
+            )
+
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
-        """Push and ``pm install``. The package manager hop is bounded.
+        """Push and ``pm install``. Both hops are bounded.
 
         adbutils ``install()`` used to run with the library's 600s socket
-        default, print to the console, and retry. A wedged adb held the
-        worker. Push is still the sync API; ``pm install`` is the long wait.
+        default, print to the console, and retry. ``sync.push`` has no
+        timeout either: measured a 0.8s sleep in push held install 0.8s.
         """
         dev = self._device(serial)
         path = Path(apk_path).expanduser()
@@ -232,8 +275,10 @@ class AdbBackend:
         remote = "/data/local/tmp/headless-re-install.apk"
         flags = ["-r"] if reinstall else []
         try:
-            dev.sync.push(str(path), remote)
+            self._push_file(serial, str(path), remote, timeout=_INSTALL_PUSH_TIMEOUT)
             raw = dev.shell(["pm", "install", *flags, remote], timeout=180.0)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
         if "Success" not in str(raw):

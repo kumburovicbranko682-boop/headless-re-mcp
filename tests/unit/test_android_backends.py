@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -280,14 +281,8 @@ class TestAdbArgumentValidation:
         adb held the worker; the library also prints to the console.
         """
 
-        class _Sync:
-            def push(self, local: str, remote: str) -> None:
-                self.local = local
-                self.remote = remote
-
         class _Dev:
             def __init__(self) -> None:
-                self.sync = _Sync()
                 self.timeouts: list[object] = []
 
             def shell(self, cmd: object, timeout: object = None) -> str:
@@ -300,21 +295,62 @@ class TestAdbArgumentValidation:
                 raise AssertionError("unbounded install")
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, device: _Dev, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
+                self._adb_path = adb
                 self.device = device
 
             def _device(self, serial: str) -> _Dev:
                 return self.device
 
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport sys\nraise SystemExit(0)\n")
+        adb.chmod(0o755)
         apk = tmp_path / "app.apk"
         apk.write_bytes(b"apk")
         device = _Dev()
-        result = _Backend(device).install("emulator-5554", str(apk))
+        result = _Backend(device, adb).install("emulator-5554", str(apk))
         assert 180.0 in device.timeouts
         assert result["installed"] is True
+
+    def test_install_does_not_wait_on_push_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """adbutils sync.push used to run with no deadline.
+
+        Measured: push() was invoked with no kwargs; a 0.8s sleep in push
+        held install() for 0.8s. pm install already had 180s.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_INSTALL_PUSH_TIMEOUT", 0.4)
+
+        class _Dev:
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                raise AssertionError("pm must not run after a push timeout")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"apk")
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(_Dev(), adb).install("emulator-5554", str(apk))
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_uninstall_is_false_when_pm_did_not_succeed(self) -> None:
         """A returned pm uninstall used to be reported as uninstalled.
