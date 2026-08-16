@@ -181,6 +181,42 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestJsUnpackSaysWhenTheFileListWasCut:
+    """file_count used to be the whole tree while the list silently stopped at 2000."""
+
+    def test_a_cut_list_is_marked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        for index in range(2500):
+            (out / f"f{index}.js").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout=0: ("", "", 0))
+        result = JsClient(Path("/bin/true")).unpack_bundle(source, out)
+
+        assert result["file_count"] == 2500
+        assert len(result["files"]) == 2000
+        assert result["has_more"] is True
+
+    def test_a_short_tree_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "a.js").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout=0: ("", "", 0))
+        result = JsClient(Path("/bin/true")).unpack_bundle(source, out)
+
+        assert result["file_count"] == 1
+        assert result["has_more"] is False
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"

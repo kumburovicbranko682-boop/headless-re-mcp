@@ -39,7 +39,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_unpack_bundle(
         path: str, timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0
     ) -> dict[str, Any]:
-        """Unpack a webpack/browserify bundle into module files via webcrack."""
+        """Unpack a webpack/browserify bundle; read has_more when the file list was cut."""
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
     @tools.tool(name="wasm.wat")

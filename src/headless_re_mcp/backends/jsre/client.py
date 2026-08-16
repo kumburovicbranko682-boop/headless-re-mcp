@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
+_MAX_UNPACK_FILES = 2000
 
 
 class JsReError(RuntimeError):
@@ -100,7 +101,15 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        # file_count is the whole tree; the list is a page. Measured: 2500
+        # files came back as file_count=2500 and a 2000-name list with no
+        # has_more, so an agent treated the page as every module.
+        return {
+            "output_dir": str(out_dir),
+            "file_count": len(files),
+            "files": files[:_MAX_UNPACK_FILES],
+            "has_more": len(files) > _MAX_UNPACK_FILES,
+        }
 
 
 class WasmClient:
