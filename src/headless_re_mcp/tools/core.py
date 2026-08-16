@@ -464,7 +464,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """Search for text in the IDA database."""
+        """Search for text in the IDA database.
+
+        Capped by limit. Read has_more rather than treating returned as every
+        match.
+        """
         return _dump(
             analysis.static_search_text(
                 session_id,
