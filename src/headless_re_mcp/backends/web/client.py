@@ -462,7 +462,16 @@ class WebBackend:
             raise WebError(
                 "not_found", f"cannot fetch script source: {exc}", script_id=script_id
             ) from exc
-        source = resp.get("scriptSource", "")
+        source = resp.get("scriptSource")
+        # Measured: a CDP reply with no scriptSource came back as source='',
+        # bytes=0, truncated=False. An agent then treated a missing script as
+        # an empty file. scriptSource=None crashed on len().
+        if not isinstance(source, str):
+            raise WebError(
+                "backend_error",
+                "script source was not returned",
+                script_id=script_id,
+            )
         result: JsonObject = {"scriptId": script_id, "bytes": len(source)}
         if len(source) > _MAX_INLINE_BODY:
             artifact_dir.mkdir(parents=True, exist_ok=True)

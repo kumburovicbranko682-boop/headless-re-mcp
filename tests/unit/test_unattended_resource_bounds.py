@@ -920,6 +920,59 @@ class TestWebScreenshotDoesNotInventAFile:
         assert out.read_bytes() == b"PNG"
 
 
+class TestWebScriptSourceDoesNotInventAnEmptyFile:
+    """A CDP reply with no scriptSource used to look like an empty script.
+
+    Measured: {} came back as source='', bytes=0, truncated=False. An agent
+    then concluded the script had no source. scriptSource=None crashed.
+    """
+
+    def _backend(self, resp: Any) -> Any:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        class CDP:
+            def send(self, method: str, params: Any = None) -> Any:
+                del method, params
+                return resp
+
+        class Runner:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), object(), CDP())
+        handle.runner = Runner()  # type: ignore[assignment]
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_a_missing_source_is_not_an_empty_script(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebError
+
+        with pytest.raises(WebError) as caught:
+            self._backend({}).script_source("s", "42", tmp_path)
+        assert caught.value.code == "backend_error"
+
+    def test_a_null_source_is_not_an_empty_script(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebError
+
+        with pytest.raises(WebError) as caught:
+            self._backend({"scriptSource": None}).script_source("s", "42", tmp_path)
+        assert caught.value.code == "backend_error"
+
+    def test_an_empty_script_is_still_empty(self, tmp_path: Any) -> None:
+        result = self._backend({"scriptSource": ""}).script_source("s", "42", tmp_path)
+        assert result["source"] == ""
+        assert result["bytes"] == 0
+        assert result["truncated"] is False
+
+    def test_a_real_source_is_returned(self, tmp_path: Any) -> None:
+        result = self._backend({"scriptSource": "void 0"}).script_source("s", "42", tmp_path)
+        assert result["source"] == "void 0"
+        assert result["bytes"] == 6
+        assert result["truncated"] is False
+
+
 class TestWebDomSnapshotSaysWhenItStopped:
     """A cut DOM dump used to omit how much HTML was dropped.
 
