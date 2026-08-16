@@ -2943,3 +2943,45 @@ class TestAdbConnectDoesNotInventALink:
         )
         assert result["connected"] is True
 
+
+class TestDevicePropertiesArePaged:
+    """getprop is cut at `limit` and the rest used to vanish.
+
+    Measured: 600 properties came back as count=500 with no total or
+    has_more. An agent then treats a missing key as absent on the device.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_long_list_says_what_was_left_out(self) -> None:
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "\n".join(f"[ro.prop.{index}]: [{index}]" for index in range(600))
+
+        result = self._backend(Device()).properties("emulator-5554", limit=500)
+        assert result["count"] == 500
+        assert result["total"] == 600
+        assert result["has_more"] is True
+        assert len(result["properties"]) == 500
+        assert "ro.prop.0" in result["properties"]
+        assert "ro.prop.599" not in result["properties"]
+
+    def test_a_short_list_is_complete(self) -> None:
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "[ro.build.version.sdk]: [33]\n[ro.product.cpu.abi]: [arm64-v8a]"
+
+        result = self._backend(Device()).properties("emulator-5554", limit=500)
+        assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["has_more"] is False
+        assert result["properties"]["ro.build.version.sdk"] == "33"
+

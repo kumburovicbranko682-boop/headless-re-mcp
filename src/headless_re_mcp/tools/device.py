@@ -48,7 +48,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
     ) -> dict[str, Any]:
-        """Return getprop key/value pairs for a device."""
+        """Return getprop key/value pairs for a device.
+
+        Read `total` and `has_more` rather than assuming the page is complete.
+        """
         return _dump(analysis.device_properties(serial, limit=limit))
 
     @tools.tool(name="device.packages")

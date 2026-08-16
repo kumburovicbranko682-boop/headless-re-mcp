@@ -275,9 +275,18 @@ class AdbBackend:
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if match:
                 props[match.group(1)] = match.group(2)
-            if len(props) >= limit:
-                break
-        return {"properties": props, "count": len(props)}
+        cap = max(1, int(limit))
+        keys = list(props)
+        window = {key: props[key] for key in keys[:cap]}
+        # Measured: 600 getprop rows came back as count=500 with no total or
+        # has_more. The remaining 100 keys vanished, so an agent treats the
+        # page as the whole property set.
+        return {
+            "properties": window,
+            "count": len(window),
+            "total": len(props),
+            "has_more": len(props) > cap,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
