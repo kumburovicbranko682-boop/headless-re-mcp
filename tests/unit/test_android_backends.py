@@ -71,43 +71,66 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
-    def test_properties_at_the_cap_say_so_and_getprop_is_bounded(self) -> None:
+    def test_properties_at_the_cap_say_so_and_getprop_is_bounded(
+        self, tmp_path: Path
+    ) -> None:
         """A full getprop used to be cut at `limit` with only count.
 
         Measured: 10 properties, limit 3, reply was count=3 and no total or
-        has_more, and getprop was invoked with timeout=None. An unattended
-        agent treated the page as the device, and a wedged adb held the
-        worker until the process was killed.
+        has_more, and getprop went through adbutils shell which connects
+        with a 600s default.
         """
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeout = timeout
-                return "\n".join(f"[ro.prop.{index}]: [{index}]" for index in range(10))
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                assert serial
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).properties("emulator-5554", limit=3)
-        assert device.timeout == 15.0
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            + "".join(f"print('[ro.prop.{index}]: [{index}]')\n" for index in range(10))
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).properties("emulator-5554", limit=3)
         assert result["count"] == 3
         assert result["total"] == 10
         assert result["has_more"] is True
-        whole = _Backend(_Dev()).properties("emulator-5554", limit=20)
+        whole = _Backend(adb).properties("emulator-5554", limit=20)
         assert whole["has_more"] is False
         assert whole["total"] == 10
+
+    def test_properties_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """properties used adbutils shell, which connects with a 600s default.
+
+        Measured on the same hop as info: shell(timeout=15) opened the
+        transport with the library default first.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PROPERTIES_TIMEOUT", 0.4)
+
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).properties("emulator-5554", limit=3)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_packages_at_the_cap_say_so_and_pm_is_bounded(self) -> None:
         """pm list used to return every package and wait on adb forever.

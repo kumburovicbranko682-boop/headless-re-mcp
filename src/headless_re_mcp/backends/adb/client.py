@@ -28,6 +28,7 @@ _PULL_TIMEOUT = 180.0
 _FORWARD_TIMEOUT = 15.0
 _LIST_DEVICES_TIMEOUT = 10.0
 _INFO_TIMEOUT = 15.0
+_PROPERTIES_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -241,12 +242,19 @@ class AdbBackend:
         }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
-        dev = self._device(serial)
+        """List getprop. The hop is bounded; the reply is capped.
+
+        adbutils ``shell(timeout=15)`` still opened the transport with a
+        600s default. Measured on info: a wedged adb held the connect,
+        not the command. The same hop is used here.
+        """
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         capped = max(1, min(int(limit), 2000))
         try:
-            # Bounded: an adb that has stopped answering used to hold the
-            # worker forever. Fifteen seconds is enough for getprop.
-            raw = dev.shell("getprop", timeout=15.0)
+            raw = self._adb_shell(serial, "getprop", timeout=_PROPERTIES_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"getprop failed: {exc}") from exc
         props: dict[str, str] = {}
