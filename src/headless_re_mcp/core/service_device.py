@@ -16,8 +16,13 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 
 JsonObject = dict[str, Any]
+# Device tools are session-independent, but registration still needs a key the
+# repository and the reader can share. A reserved id keeps captures reclaimable
+# and readable without inventing a session the caller never opened.
+_DEVICE_CAPTURE_SESSION = "device"
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
@@ -84,13 +89,43 @@ class DeviceAnalysisMixin:
     def device_logcat(self, serial: str, lines: int = 200) -> Result[JsonObject]:
         return self._adb_wrap("logcat", serial=serial, lines=lines)
 
+    def _register_device_capture(
+        self, result: Result[JsonObject], path: Path, *, kind: str, source: str
+    ) -> Result[JsonObject]:
+        """Register a device file in place, leaving the payload otherwise as is.
+
+        ``device.screenshot`` and ``device.pull`` write a fresh uuid under the
+        artifact root and, until now, registered nowhere. Measured: two calls
+        left 4 KiB of files on disk with repository total 0 and no artifact_id,
+        so nothing could read them back and retention could not reclaim them.
+        Device tools have no session, so captures share a reserved id.
+        """
+        if not result.ok or result.data is None or not path.is_file():
+            return result
+        result.data.update(
+            _register_capture(
+                self, _DEVICE_CAPTURE_SESSION, path, kind=kind, source=source, payload={}
+            )
+        )
+        return result
+
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        return self._register_device_capture(
+            self._adb_wrap("screenshot", serial=serial, out_path=out),
+            out,
+            kind="device_screenshot",
+            source="device.screenshot",
+        )
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        return self._register_device_capture(
+            self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out),
+            out,
+            kind="device_pull",
+            source="device.pull",
+        )
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str

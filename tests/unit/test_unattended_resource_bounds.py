@@ -819,6 +819,107 @@ class TestUiCapturesAreRegistered:
             assert "_register_ui_capture" in inspect.getsource(method)
 
 
+class TestDeviceCapturesAreRegistered:
+    """Device screenshots and pulls were the same dead-end as UI bitmaps.
+
+    Measured: device.screenshot and device.pull wrote uuid files under the
+    artifact root and registered nothing -- repository total 0, no artifact_id.
+    The tool text already called the PNG an artifact, so an agent would try
+    artifacts.read on a path nothing can open, and retention never counted the
+    files a long device loop left behind.
+    """
+
+    def _service(self, tmp_path: Any) -> Any:
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        class FakeAdb:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+
+            def screenshot(self, serial: str, out_path: Any) -> dict[str, Any]:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(b"PNG" + b"\x00" * 64)
+                return {"path": str(out_path), "serial": serial}
+
+            def pull(self, serial: str, remote_path: str, local_path: Any) -> dict[str, Any]:
+                del serial
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(b"pulled")
+                return {"remote": remote_path, "local": str(local_path)}
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        patcher = patch("headless_re_mcp.core.service_device.AdbBackend", FakeAdb)
+        patcher.start()
+        service._adb_patcher = patcher  # type: ignore[attr-defined]
+        return service
+
+    def test_a_screenshot_is_readable_and_reclaimable(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path)
+        try:
+            result = service.device_screenshot("emulator-5554")
+            assert result.ok and result.data is not None
+            assert result.data["serial"] == "emulator-5554"
+            artifact_id = str(result.data["artifact_id"])
+            described = service.repository.describe_artifact(artifact_id)
+            assert described is not None
+            assert described["kind"] == "device_screenshot"
+            assert described["size"] == 67
+            read = service.artifacts_read(artifact_id, offset=0, limit=3)
+            assert read.ok and read.data is not None
+            assert read.data["data"] == "504e47"
+        finally:
+            service._adb_patcher.stop()  # type: ignore[attr-defined]
+            service.close_all()
+
+    def test_a_pull_is_registered_the_same_way(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path)
+        try:
+            result = service.device_pull("emulator-5554", "/sdcard/x.bin")
+            assert result.ok and result.data is not None
+            artifact_id = str(result.data["artifact_id"])
+            described = service.repository.describe_artifact(artifact_id)
+            assert described is not None
+            assert described["kind"] == "device_pull"
+            assert described["size"] == 6
+            listed = service.repository.list_artifacts()
+            assert listed["total"] == 1
+        finally:
+            service._adb_patcher.stop()  # type: ignore[attr-defined]
+            service.close_all()
+
+    def test_a_failed_capture_registers_nothing(self, tmp_path: Any) -> None:
+        from headless_re_mcp.core.results import _failure
+
+        service = self._service(tmp_path)
+        try:
+            missing = tmp_path / "never-written.png"
+            failed = _failure(RuntimeError("capture refused"))
+            assert (
+                service._register_device_capture(
+                    failed, missing, kind="device_screenshot", source="device.screenshot"
+                )
+                is failed
+            )
+            assert service.repository.list_artifacts()["total"] == 0
+        finally:
+            service._adb_patcher.stop()  # type: ignore[attr-defined]
+            service.close_all()
+
+    def test_both_device_capture_tools_route_through_the_registration(self) -> None:
+        import inspect
+
+        from headless_re_mcp.core import service_device
+
+        mixin = service_device.DeviceAnalysisMixin
+        for method in (mixin.device_screenshot, mixin.device_pull):
+            assert "_register_device_capture" in inspect.getsource(method)
+
+
 def _minimal_pe(path: Any) -> Any:
     image = bytearray(0x200)
     image[:2] = b"MZ"
