@@ -23,6 +23,7 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
 _INSTALL_PUSH_TIMEOUT = 180.0
+_INSTALL_PM_TIMEOUT = 180.0
 _PUSH_TIMEOUT = 180.0
 _PULL_TIMEOUT = 180.0
 _FORWARD_TIMEOUT = 15.0
@@ -414,16 +415,21 @@ class AdbBackend:
         adbutils ``install()`` used to run with the library's 600s socket
         default, print to the console, and retry. ``sync.push`` has no
         timeout either: measured a 0.8s sleep in push held install 0.8s.
+        ``pm install`` still went through adbutils ``shell``, which
+        opens the transport with a 600s default.
         """
-        dev = self._device(serial)
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
         remote = "/data/local/tmp/headless-re-install.apk"
-        flags = ["-r"] if reinstall else []
+        flags = "-r " if reinstall else ""
         try:
             self._push_file(serial, str(path), remote, timeout=_INSTALL_PUSH_TIMEOUT)
-            raw = dev.shell(["pm", "install", *flags, remote], timeout=180.0)
+            raw = self._adb_shell(
+                serial, f"pm install {flags}{remote}", timeout=_INSTALL_PM_TIMEOUT
+            )
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001

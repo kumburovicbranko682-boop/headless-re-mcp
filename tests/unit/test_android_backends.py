@@ -320,44 +320,63 @@ class TestAdbArgumentValidation:
         assert injected["launched"] is True
         assert "note" not in injected
 
-    def test_install_does_not_wait_on_pm_forever(self, tmp_path: Path) -> None:
-        """adbutils install used to run with no deadline.
+    def test_install_does_not_wait_on_pm_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pm install used adbutils shell, which connects with a 600s default.
 
-        Measured: install(path, ...) was invoked with no timeout. A wedged
-        adb held the worker; the library also prints to the console.
+        Measured on info: shell(timeout=180) opened the transport with the
+        library default first.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeouts: list[object] = []
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeouts.append(timeout)
-                if isinstance(cmd, list) and cmd and cmd[0] == "pm":
-                    return "Success"
-                return ""
-
-            def install(self, *args: object, **kwargs: object) -> None:
-                raise AssertionError("unbounded install")
+        monkeypatch.setattr(adb_client, "_INSTALL_PM_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev, adb: Path) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
                 self._adb_path = adb
-                self.device = device
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
+
+            def _push_file(self, serial: str, local: str, remote: str, *, timeout: float) -> None:
+                return None
 
         adb = tmp_path / "adb"
-        adb.write_text("#!/usr/bin/env python3\nimport sys\nraise SystemExit(0)\n")
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
         adb.chmod(0o755)
         apk = tmp_path / "app.apk"
         apk.write_bytes(b"apk")
-        device = _Dev()
-        result = _Backend(device, adb).install("emulator-5554", str(apk))
-        assert 180.0 in device.timeouts
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).install("emulator-5554", str(apk))
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
+
+    def test_install_reads_success_from_bounded_pm(self, tmp_path: Path) -> None:
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
+
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "if 'shell' in sys.argv:\n"
+            "    print('Success')\n"
+        )
+        adb.chmod(0o755)
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"apk")
+        result = _Backend(adb).install("emulator-5554", str(apk))
         assert result["installed"] is True
 
     def test_install_does_not_wait_on_push_forever(
