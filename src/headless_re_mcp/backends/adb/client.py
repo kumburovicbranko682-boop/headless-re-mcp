@@ -167,7 +167,9 @@ class AdbBackend:
             props[match.group(1)] = match.group(2)
         return {"properties": props, "count": len(props), "has_more": has_more}
 
-    def packages(self, serial: str, *, third_party_only: bool = False) -> JsonObject:
+    def packages(
+        self, serial: str, *, third_party_only: bool = False, limit: int = 1000
+    ) -> JsonObject:
         dev = self._device(serial)
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
@@ -179,7 +181,14 @@ class AdbBackend:
             for line in str(raw).splitlines()
             if line.startswith("package:")
         )
-        return {"packages": pkgs, "count": len(pkgs), "third_party_only": third_party_only}
+        cap = max(1, int(limit))
+        window = pkgs[:cap]
+        return {
+            "packages": window,
+            "count": len(window),
+            "has_more": len(pkgs) > cap,
+            "third_party_only": third_party_only,
+        }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)

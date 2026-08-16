@@ -350,6 +350,39 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestDevicePackagesAreBounded:
+    """An emulator image can carry thousands of packages; the list had no cap."""
+
+    def _backend(self, count: int) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _FakeDev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return "\n".join(f"package:com.vendor.app{index}" for index in range(count))
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _FakeDev()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(8000).packages("emulator-5554", limit=1000)
+        assert result["count"] == 1000
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 1000
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).packages("emulator-5554", limit=1000)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(1000).packages("emulator-5554", limit=1000)
+        assert result["count"] == 1000
+        assert result["has_more"] is False
+
+
 class TestDevicePropertiesSayWhenTheyStopped:
     """A getprop page that hit the cap looks exactly like one that ended."""
 
