@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 任务列表停在一页时看起来像完整队列**。150 个 mission、limit=100 时回
+  `count=100`，没有 `has_more`。过夜排队的旧任务会消失。现在截断时标
+  `has_more`。
 - **agent 线程列表停在 100 条时看起来像完整目录**。150 个线程回 100 条且
   `ok=True`，没有 `has_more`。过夜任务建的旧线程会消失。现在截断时标
   `has_more`。

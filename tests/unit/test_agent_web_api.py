@@ -221,3 +221,29 @@ def test_thread_list_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None: 
     assert body["count"] == 100
     assert body["has_more"] is True
     assert len(body["threads"]) == 100
+
+
+def test_mission_list_says_when_it_stopped(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """GET /missions stopped at 100 rows and said that was every mission.
+
+    Measured: 150 missions with limit=100 came back as count=100 with no
+    has_more, so overnight queued work looked complete.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    for index in range(150):
+        store.create_mission(thread.id, f"obj {index}")
+
+    with TestClient(app) as client:
+        body = client.get(
+            "/api/agent/missions", headers=headers, params={"limit": 100}
+        ).json()
+    assert body["ok"] is True
+    assert body["count"] == 100
+    assert body["has_more"] is True
+    assert len(body["missions"]) == 100

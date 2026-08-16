@@ -340,9 +340,19 @@ def register_agent_routes(
             wanted = MissionStatus(status) if status else None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid_status") from exc
-        items = [item.dump() for item in store.list_missions(status=wanted, limit=limit)]
+        # Measured: 150 missions with limit=100 came back as count=100 with
+        # no has_more, so overnight queued work looked like a complete list.
+        probe = store.list_missions(status=wanted, limit=min(limit + 1, 500))
+        has_more = len(probe) > limit
+        items = [item.dump() for item in probe[:limit]]
         return JSONResponse(
-            {"ok": True, "missions": items, "count": len(items), "scheduler_running": scheduler.running}
+            {
+                "ok": True,
+                "missions": items,
+                "count": len(items),
+                "has_more": has_more,
+                "scheduler_running": scheduler.running,
+            }
         )
 
     @app.get("/api/agent/missions/{mission_id}")
