@@ -17,7 +17,6 @@ overwritten. Configure via ``HEADLESS_RE_VMP_DUMPER``. Not bundled;
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -26,7 +25,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 
-from headless_re_mcp.dotnet.de4dot import _capture_process
+from headless_re_mcp.dotnet.de4dot import _capture_process, _probe_run
 
 JsonObject = dict[str, Any]
 
@@ -441,26 +440,24 @@ def run_vmp_dumper(
 
 
 def probe_vmp_dumper(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
-    """Best-effort probe (no-arg usage / parse-failure banner)."""
+    """Best-effort probe (no-arg usage / parse-failure banner).
+
+    ``subprocess.run(timeout=...)`` killed only the process it spawned.
+    Measured: a launcher that started a sleeper, timeout 0.4s, left one
+    orphan reparented to pid 1.
+    """
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run([str(exe)], **options)
+        completed = _probe_run([str(exe)], timeout)
     except (OSError, subprocess.TimeoutExpired):
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = (
+        (completed.stdout or b"").decode("utf-8", errors="replace")
+        + "\n"
+        + (completed.stderr or b"").decode("utf-8", errors="replace")
+    ).strip()
     lowered = text.casefold()
     markers = (
         "vmp",
