@@ -26,6 +26,7 @@ _INSTALL_PUSH_TIMEOUT = 180.0
 _PUSH_TIMEOUT = 180.0
 _PULL_TIMEOUT = 180.0
 _FORWARD_TIMEOUT = 15.0
+_LIST_DEVICES_TIMEOUT = 10.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -108,24 +109,58 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
 
+    def _list_adb_devices(self, *, timeout: float) -> list[JsonObject]:
+        """Read ``adb devices`` with a deadline. adbutils ``device_list`` has none.
+
+        Measured: ``device_list()`` with a 0.8s sleep held ``list_devices``
+        0.8s. A wedged adb server held the worker. Only ``device`` rows
+        are returned, matching what adbutils ``device_list`` used to yield.
+        """
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "devices"],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"list devices timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"list devices failed: {err or completed.returncode}",
+            )
+        items: list[JsonObject] = []
+        for line in (completed.stdout or b"").decode("utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[0] == "List":
+                continue
+            if parts[1] != "device":
+                continue
+            items.append({"serial": parts[0], "state": "device"})
+        return items
+
     def list_devices(self) -> JsonObject:
-        """List devices the adb server already reported.
+        """List devices the adb server already reported. The hop is bounded.
 
         A follow-up ``get_state`` per serial used to run with no deadline.
-        adbutils ``device_list`` only yields transports already in the
-        ``device`` state, so that second hop only held the worker when adb
-        had stopped answering. Use the listing; do not ask again.
+        ``device_list`` itself also had none: measured a 0.8s sleep held
+        the worker 0.8s. ``adb devices`` is the same listing.
         """
-        client = self._client()
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         try:
-            devices = client.device_list()
+            items = self._list_adb_devices(timeout=_LIST_DEVICES_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
-        items = []
-        for dev in devices:
-            serial = getattr(dev, "serial", "")
-            state = getattr(dev, "state", None) or "device"
-            items.append({"serial": serial, "state": state})
         return {"devices": items, "count": len(items)}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:

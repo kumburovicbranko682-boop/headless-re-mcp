@@ -642,7 +642,7 @@ class TestAdbArgumentValidation:
         assert result["package"] == "com.example.app"
         assert result["activity"] == ".MainActivity"
 
-    def test_list_devices_does_not_wait_on_get_state(self) -> None:
+    def test_list_devices_does_not_wait_on_get_state(self, tmp_path: Path) -> None:
         """Each listed serial used to trigger an unbounded get_state.
 
         Measured: device_list then get_state per device, no timeout.
@@ -650,42 +650,55 @@ class TestAdbArgumentValidation:
         worker; device_list already only yields state=device.
         """
 
-        class _Listed:
-            def __init__(self, serial: str) -> None:
-                self.serial = serial
-
-        class _Client:
-            def __init__(self) -> None:
-                self.get_state_calls = 0
-
-            def device_list(self) -> list[_Listed]:
-                return [_Listed("emu-1"), _Listed("emu-2")]
-
-            def device(self, serial: str | None = None) -> object:
-                outer = self
-
-                class _Dev:
-                    def get_state(self) -> str:
-                        outer.get_state_calls += 1
-                        return "device"
-
-                return _Dev()
-
         class _Backend(AdbBackend):
-            def __init__(self, client: _Client) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self._c = client
+                self._adb_path = adb
 
-            def _client(self) -> _Client:
-                return self._c
+            def _client(self) -> object:
+                raise AssertionError("unbounded adbutils device_list")
 
-        client = _Client()
-        result = _Backend(client).list_devices()
-        assert client.get_state_calls == 0
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "print('List of devices attached')\n"
+            "print('emu-1\\tdevice')\n"
+            "print('emu-2\\tdevice')\n"
+            "print('offline-1\\toffline')\n"
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).list_devices()
         assert result["count"] == 2
+        assert [item["serial"] for item in result["devices"]] == ["emu-1", "emu-2"]
         assert [item["state"] for item in result["devices"]] == ["device", "device"]
+
+    def test_list_devices_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """adbutils device_list used to run with no deadline.
+
+        Measured: device_list() with a 0.8s sleep held list_devices 0.8s.
+        """
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_LIST_DEVICES_TIMEOUT", 0.4)
+
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).list_devices()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_info_does_not_wait_on_adb_forever(self) -> None:
         """info used six unbounded adbutils calls.
