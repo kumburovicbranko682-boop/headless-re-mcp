@@ -73,8 +73,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
-        The buffer is a window; read `truncated` and `evicted` rather than
-        assuming these are every line the page ever logged.
+        The buffer is a window; read `has_more` for this page, and
+        `truncated`/`evicted` for lines the ring already dropped.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 

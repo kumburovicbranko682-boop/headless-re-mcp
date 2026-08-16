@@ -394,14 +394,20 @@ class WebBackend:
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
+        cap = max(1, int(limit))
         with handle.lock:
-            items = list(handle.console)[-limit:]
+            items = list(handle.console)
             evicted = handle.console_evicted
+        window = items[-cap:]
+        # Measured: 500 live lines and limit=200 came back as count=200,
+        # truncated=False, evicted=0, and no total or has_more.
         return {
-            "console": items,
-            "count": len(items),
+            "console": window,
+            "count": len(window),
+            "total": len(items),
             "evicted": evicted,
             "truncated": evicted > 0,
+            "has_more": len(items) > cap,
         }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
