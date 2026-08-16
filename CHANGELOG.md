@@ -96,6 +96,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **run 事件只读有上限、写入没有**。80 条 × 20_000 字符的 `message.delta` 把库堆到
   1.7 MiB，`list_events` 仍回全部 81 条。流式任务每个 token 写一行。现在每个 run
   只留最近 10000 条。
+- **调试事件库磁盘无淘汰**。每个 x64dbg 会话都会打开 `events.sqlite3`（
+  `persist_debug_events` 只控制时间线镜像）。2000 条事件后库是 528_384 字节且
+  COUNT 仍是 2000。现在磁盘只留最近 50 万条，读路径把被丢掉的前缀标成 dropped。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

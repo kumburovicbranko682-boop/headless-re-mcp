@@ -29,6 +29,11 @@ JsonObject = dict[str, Any]
 # while it ran -- about 340 MB a day at ten events a second. Sixty-four times
 # the native ring, so ordinary lag is still served without touching disk.
 MEMORY_WINDOW_EVENTS = 65_536
+# Memory is a window; the sqlite file used to keep every row. A dynamic
+# session always opens this file (persist_debug_events only mirrors the
+# timeline). Measured: 2000 events left 528_384 bytes on disk and COUNT(*)
+# was still 2000.
+DISK_RETAINED_EVENTS = 500_000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS debug_events (
@@ -57,7 +62,9 @@ class EventLogRead:
 class PersistentDebugEventLog:
     """Append-only event log with optional SQLite durability for one session."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self, path: Path | None = None, *, disk_retained_events: int = DISK_RETAINED_EVENTS
+    ) -> None:
         self._lock = RLock()
         self._memory: dict[int, DebugEvent] = {}
         self._latest = 0
@@ -66,6 +73,7 @@ class PersistentDebugEventLog:
         self._stored = 0  # how many sequences are held, in memory or on disk
         self._evicted_through = 0  # at or below this, look on disk rather than in memory
         self._path = path
+        self.disk_retained_events = disk_retained_events
         self._conn: sqlite3.Connection | None = None
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +148,33 @@ class PersistentDebugEventLog:
                 )
                 self._conn.commit()
                 self._evict_to_window()
+                self._trim_disk()
+
+    def _trim_disk(self) -> None:
+        """Drop the oldest persisted events once the file is over the retain cap.
+
+        read_after already treats a missing prefix as dropped, so a consumer
+        that lagged past the cap sees a gap rather than a silent hole.
+        """
+        if self._conn is None:
+            return
+        retain = max(1, int(self.disk_retained_events))
+        if self._stored <= retain:
+            return
+        kept = self._conn.execute(
+            "SELECT sequence FROM debug_events ORDER BY sequence DESC LIMIT 1 OFFSET ?",
+            (retain - 1,),
+        ).fetchone()
+        if kept is None:
+            return
+        oldest_kept = int(kept[0])
+        self._conn.execute("DELETE FROM debug_events WHERE sequence < ?", (oldest_kept,))
+        self._conn.commit()
+        for sequence in [seq for seq in self._memory if seq < oldest_kept]:
+            del self._memory[sequence]
+        self._oldest = oldest_kept
+        self._stored = int(self._conn.execute("SELECT COUNT(*) FROM debug_events").fetchone()[0])
+        self._evicted_through = max(self._evicted_through, oldest_kept - 1)
 
     def _evict_to_window(self) -> None:
         """Drop the oldest events from memory once they are safely on disk.

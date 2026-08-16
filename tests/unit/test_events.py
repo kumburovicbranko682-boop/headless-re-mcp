@@ -346,6 +346,46 @@ def test_the_log_stops_holding_every_event_it_ever_saw(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_the_durable_log_does_not_keep_every_event_on_disk(tmp_path: Path) -> None:
+    """Memory was a window; the sqlite file was not.
+
+    Measured: 2000 events left events.sqlite3 at 528_384 bytes and COUNT(*)
+    was still 2000. Every x64dbg session opens this file; persist_debug_events
+    only mirrors the timeline. A debuggee at ten events a second fills the
+    artifact root for the life of the session.
+    """
+    import sqlite3
+
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+    from headless_re_mcp.core.events import DebugEvent
+
+    path = tmp_path / "events.sqlite3"
+    log = PersistentDebugEventLog(path, disk_retained_events=50)
+    for index in range(1, 201):
+        log.append_events(
+            [
+                DebugEvent(
+                    sequence=index,
+                    timestamp_unix_ms=index,
+                    source="x64dbg.plugin_callback",
+                    kind="debug.dll_loaded",
+                    data={"module": "kernel32.dll", "pad": "z" * 200},
+                )
+            ]
+        )
+
+    with sqlite3.connect(path) as con:
+        stored = con.execute("SELECT COUNT(*) FROM debug_events").fetchone()[0]
+    assert stored == 50
+    served = log.read_after(0, limit=10)
+    assert served.batch.events[0].sequence == 151
+    assert served.batch.dropped > 0
+    assert path.stat().st_size < 200_000, (
+        f"bounded log still filled the file: {path.stat().st_size} bytes"
+    )
+    log.close()
+
+
 def test_persistent_log_reports_unrecovered_gap(tmp_path: Path) -> None:
     from headless_re_mcp.core.event_log import PersistentDebugEventLog
     from headless_re_mcp.core.events import DebugEvent
