@@ -8,6 +8,7 @@ from typing import Any
 JsonObject = dict[str, Any]
 _ATTACH_TIMEOUT = 15.0
 _SPAWN_TIMEOUT = 15.0
+_RESUME_TIMEOUT = 15.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -262,6 +263,33 @@ class FridaClient:
             raise FridaError("backend_error", "frida spawn returned nothing", package=package)
         return int(box[0])
 
+    def _resume_with_deadline(self, device: Any, pid: int) -> None:
+        """Resume with a deadline. ``device.resume`` has none.
+
+        Measured: a 0.8s sleep in resume held ``frida.spawn`` 0.8s after
+        spawn itself already returned. A wedged resume pins the worker
+        with a frozen target.
+        """
+        err: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                device.resume(pid)
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+
+        thread = threading.Thread(target=run, name=f"frida-resume-{pid}", daemon=True)
+        thread.start()
+        thread.join(_RESUME_TIMEOUT)
+        if thread.is_alive():
+            raise FridaError(
+                "timeout",
+                f"frida resume timed out after {_RESUME_TIMEOUT:g}s",
+                pid=pid,
+            )
+        if err:
+            raise err[0]
+
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_with_deadline(pid)
@@ -474,7 +502,7 @@ class FridaClient:
             raise FridaError("invalid_params", "package is required")
         try:
             pid = self._spawn_with_deadline(device, package.strip())
-            device.resume(pid)
+            self._resume_with_deadline(device, int(pid))
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
