@@ -136,6 +136,30 @@ def test_open_info_that_fits_is_not_labelled_truncated(
     assert "truncated" not in payload
 
 
+def test_the_r2_list_tools_name_the_item_cap() -> None:
+    """The mapping already set items_truncated; the descriptions did not."""
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import r2 as r2_mod
+
+    tree = ast.parse(inspect.getsource(r2_mod.build_r2_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "r2_functions",
+        "r2_strings",
+        "r2_imports",
+        "r2_exports",
+        "r2_xrefs",
+    ):
+        assert docs[name], name
+        assert "items_truncated" in docs[name], name
+
+
 def test_parse_r2_json_trailing_array() -> None:
     raw = "warning stuff\n" + json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 16}])
     parsed = parse_r2_json(raw)

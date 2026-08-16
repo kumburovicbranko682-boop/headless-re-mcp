@@ -49,7 +49,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Functions radare2 found, with address, size and name.
 
         Useful where IDA and radare2 disagree about where code begins, which is
-        common in packed or obfuscated samples.
+        common in packed or obfuscated samples. The item list is capped: read
+        items_truncated rather than treating count as every function.
         """
         return _dump(analysis.r2_functions(session_id, timeout=timeout))
 
@@ -57,21 +58,33 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_strings(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Strings radare2 recovered, with address, encoding and section."""
+        """Strings radare2 recovered, with address, encoding and section.
+
+        The item list is capped. Read items_truncated rather than treating
+        count as every string.
+        """
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
     @tools.tool(name="r2.imports")
     def r2_imports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Imported symbols with the library each resolves to."""
+        """Imported symbols with the library each resolves to.
+
+        The item list is capped. Read items_truncated rather than treating
+        count as every import.
+        """
         return _dump(analysis.r2_imports(session_id, timeout=timeout))
 
     @tools.tool(name="r2.exports")
     def r2_exports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Exported symbols with their addresses."""
+        """Exported symbols with their addresses.
+
+        The item list is capped. Read items_truncated rather than treating
+        count as every export.
+        """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
     @tools.tool(name="r2.disasm")
@@ -90,6 +103,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: int,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """References to and from address, as radare2 resolved them."""
+        """References to and from address, as radare2 resolved them.
+
+        The item list is capped. Read items_truncated rather than treating
+        count as every reference.
+        """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
