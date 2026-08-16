@@ -66,7 +66,7 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
     ) -> dict[str, Any]:
-        """Install a local APK onto the device (reinstall keeps data)."""
+        """Install a local APK; installed is True only when pm did not print Failure."""
         return _dump(analysis.device_install(serial, apk_path, reinstall=reinstall))
 
     @tools.tool(name="device.uninstall")

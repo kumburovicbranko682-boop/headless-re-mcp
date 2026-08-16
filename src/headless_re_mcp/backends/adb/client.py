@@ -297,21 +297,34 @@ class AdbBackend:
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
-        def _do_install() -> None:
+        def _do_install() -> object:
             try:
-                dev.install(
+                return dev.install(
                     str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
                 )
             except TypeError:
                 # Older adbutils signatures accept only the path.
-                dev.install(str(path))
+                return dev.install(str(path))
 
         try:
-            _deadline(_do_install, timeout=_INSTALL_TIMEOUT)
+            raw = _deadline(_do_install, timeout=_INSTALL_TIMEOUT)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
+        # adbutils.install returns the `pm install` text, not a bool. Older
+        # signatures return None. Measured: "Failure [INSTALL_FAILED_INVALID_APK]"
+        # still answered installed=True, so an agent treated a rejected APK as
+        # present. None/empty is the old success path; a Failure line is not.
+        text = "" if raw is None else str(raw)
+        if "failure" in text.lower():
+            raise AdbError(
+                "backend_error",
+                "install did not install the package",
+                path=str(path),
+                installed=False,
+                output=text[:800],
+            )
         return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
     def uninstall(self, serial: str, package: str) -> JsonObject:

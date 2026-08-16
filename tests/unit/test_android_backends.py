@@ -1146,6 +1146,50 @@ class TestDeviceInstallIsBounded:
         assert result["installed"] is True
 
 
+class TestInstallDoesNotInventSuccess:
+    """``installed: True`` used to mean the command returned, not that pm installed it.
+
+    Measured: a device whose ``pm install`` printed
+    ``Failure [INSTALL_FAILED_INVALID_APK]`` still answered
+    ``{'installed': True, ...}``. An unattended agent then treats a rejected
+    APK as present on the device.
+    """
+
+    def _backend(self, output: object) -> AdbBackend:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> object:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_pm_failure_is_not_installed(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        with pytest.raises(AdbError) as info:
+            self._backend("Failure [INSTALL_FAILED_INVALID_APK]").install(
+                "emulator-5554", str(apk)
+            )
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("installed") is not True
+        assert "not install" in info.value.message
+
+    def test_a_success_line_is_installed(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        result = self._backend("Success").install("emulator-5554", str(apk))
+        assert result["installed"] is True
+
+    def test_none_from_an_old_signature_is_installed(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        result = self._backend(None).install("emulator-5554", str(apk))
+        assert result["installed"] is True
+
+
 class TestDeviceForwardIsBounded:
     """A wedged adb forward used to park the tool worker with no deadline.
 
