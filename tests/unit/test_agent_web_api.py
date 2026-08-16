@@ -279,3 +279,37 @@ def test_watchdog_alerts_say_when_they_stopped(tmp_path: Path, monkeypatch) -> N
         ).json()
     assert complete["has_more"] is False
     assert len(complete["alerts"]) == 80
+
+
+def test_mission_create_says_when_the_objective_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """POST /missions sliced the objective at 8000 and said nothing.
+
+    Measured: a 9000-character objective came back as 8000 with no
+    truncated, so an unattended agent treated a cut brief as the whole
+    overnight job.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+
+    with TestClient(app) as client:
+        cut = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            json={"thread_id": thread.id, "objective": "X" * 9000},
+        ).json()
+        intact = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            json={"thread_id": thread.id, "objective": "short job"},
+        ).json()
+    assert cut["ok"] is True
+    assert len(cut["mission"]["objective"]) == 8000
+    assert cut["mission"]["truncated"] is True
+    assert intact["mission"]["truncated"] is False

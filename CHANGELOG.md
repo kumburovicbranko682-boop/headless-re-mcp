@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 任务目标截断后看起来仍是完整目标**。9000 字符的 objective
+  存成 8000 且没有 `truncated`。过夜任务会按被切掉的简报跑。现在创建
+  回包标 `truncated`。
 - **`windbg.*` 超时信封把可重试失败标成永久失败**。`WindbgError(timeout)`
   映射 `retryable=False`。agent 不会再试卡住的 cdb。现在 `timeout` 标可
   重试。

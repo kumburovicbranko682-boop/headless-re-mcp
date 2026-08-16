@@ -327,7 +327,12 @@ def register_agent_routes(
             raise HTTPException(status_code=404, detail="thread_not_found") from exc
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return JSONResponse({"ok": True, "mission": mission.dump()}, status_code=201)
+        payload = mission.dump()
+        # Measured: a 9000-character objective came back as 8000 with no
+        # truncated, so an unattended agent treated a cut brief as the
+        # whole overnight job.
+        payload["truncated"] = len(objective.strip()) > len(mission.objective)
+        return JSONResponse({"ok": True, "mission": payload}, status_code=201)
 
     @app.get("/api/agent/missions")
     def list_missions(
