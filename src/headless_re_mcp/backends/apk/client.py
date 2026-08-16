@@ -19,6 +19,7 @@ JsonObject = dict[str, Any]
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
+_MAX_COMPONENTS = 2000
 
 
 class ApkError(RuntimeError):
@@ -224,12 +225,28 @@ class ApkClient:
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        activities, activity_total = _page_names(apk.get_activities())
+        services, service_total = _page_names(apk.get_services())
+        receivers, receiver_total = _page_names(apk.get_receivers())
+        providers, provider_total = _page_names(apk.get_providers())
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities,
+            "services": services,
+            "receivers": receivers,
+            "providers": providers,
             "main_activity": apk.get_main_activity(),
+            "totals": {
+                "activities": activity_total,
+                "services": service_total,
+                "receivers": receiver_total,
+                "providers": provider_total,
+            },
+            "has_more": (
+                activity_total > len(activities)
+                or service_total > len(services)
+                or receiver_total > len(receivers)
+                or provider_total > len(providers)
+            ),
         }
 
     def native_libs(self, path: Path) -> JsonObject:
@@ -348,6 +365,11 @@ class ApkClient:
             # the enumeration ended or merely stopped.
             "has_more": has_more,
         }
+
+
+def _page_names(values: Any) -> tuple[list[str], int]:
+    names = sorted(str(item) for item in (values or []))
+    return names[:_MAX_COMPONENTS], len(names)
 
 
 def _dotted_to_smali(name: str) -> str:

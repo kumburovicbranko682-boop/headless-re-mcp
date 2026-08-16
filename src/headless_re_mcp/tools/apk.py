@@ -47,7 +47,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.components")
     def apk_components(session_id: str) -> dict[str, Any]:
-        """List activities, services, receivers, and providers."""
+        """List activities, services, receivers, and providers.
+
+        Each list is capped. Read `totals` and `has_more` rather than treating
+        a full page as the whole manifest.
+        """
         return _dump(analysis.apk_components(session_id))
 
     @tools.tool(name="apk.native_libs")

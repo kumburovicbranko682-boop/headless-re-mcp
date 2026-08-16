@@ -421,6 +421,35 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_components_does_not_return_every_component_as_if_it_were_small() -> None:
+    """5000 activities serialised to 108_705 bytes with no total/has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _FakeApk:
+        def get_activities(self) -> list[str]:
+            return [f"com.example.A{i}" for i in range(5000)]
+
+        def get_services(self) -> list[str]:
+            return ["com.example.S0"]
+
+        def get_receivers(self) -> list[str]:
+            return ["com.example.R0"]
+
+        def get_providers(self) -> list[str]:
+            return ["com.example.P0"]
+
+        def get_main_activity(self) -> str:
+            return "com.example.A0"
+
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    got = client.components(Path("dummy.apk"))
+    assert len(got["activities"]) == 2000
+    assert got["totals"]["activities"] == 5000
+    assert got["has_more"] is True
+
+
 def test_apk_strings_does_not_merge_long_values_or_hide_the_cut() -> None:
     """Two 5000-character strings that share a 2000-character prefix became one.
 
