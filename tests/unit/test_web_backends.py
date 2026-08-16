@@ -269,6 +269,27 @@ class TestWebConsoleSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebWasmListDescriptionMatchesTheCut:
+    """web.wasm.list reuses the paged script ring, but the tool text hid that.
+
+    Measured: scripts() now pages (2000 entries, default 200, has_more),
+    while this tool's description said "list WebAssembly modules" -- so a
+    model treats the first page as every module on the page.
+    """
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.web import build_web_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_web_tools(service)}
+            doc = tools["web.wasm.list"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestWebDomSnapshotDescriptionMatchesTheCut:
     """web.dom.snapshot already cuts HTML at 200000 bytes, but the tool text hid that.
 
