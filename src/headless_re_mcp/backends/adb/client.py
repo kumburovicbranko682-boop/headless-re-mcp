@@ -225,7 +225,10 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            dev.shell(
+                ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
+                timeout=15.0,
+            )
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
         return {"launched": True, "package": pkg}
