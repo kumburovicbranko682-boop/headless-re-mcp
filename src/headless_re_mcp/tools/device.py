@@ -85,7 +85,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.uninstall")
     def device_uninstall(serial: str, package: str) -> dict[str, Any]:
-        """Uninstall a package from the device."""
+        """Uninstall a package from the device.
+
+        uninstalled is true only when adb reports the package was removed, not
+        because the call returned.
+        """
         return _dump(analysis.device_uninstall(serial, package))
 
     @tools.tool(name="device.launch")

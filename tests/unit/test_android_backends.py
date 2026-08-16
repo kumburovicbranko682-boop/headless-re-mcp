@@ -432,6 +432,41 @@ class TestFridaServerEnsureDoesNotReportAGhost:
         assert result == {"running": True, "pushed": False, "port": 27042}
 
 
+class TestDeviceUninstallDoesNotReportAGhost:
+    """adbutils returning False used to be reported as uninstalled=True.
+
+    Measured: Device.uninstall returned False (package not on the device) and
+    the reply still said uninstalled=True. An unattended agent then treats a
+    missing package as gone and continues as if the uninstall happened.
+    """
+
+    def _uninstall(self, removed: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Dev:
+            def uninstall(self, package: str) -> object:
+                assert package == "com.example.app"
+                return removed
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.uninstall("emulator-5554", "com.example.app")
+
+    def test_a_missing_package_is_not_uninstalled(self) -> None:
+        result = self._uninstall(False)
+        assert result["uninstalled"] is False
+        assert "not installed" in result["note"]
+
+    def test_a_removed_package_is_uninstalled(self) -> None:
+        assert self._uninstall(True) == {
+            "uninstalled": True,
+            "package": "com.example.app",
+        }
+
+    def test_a_none_return_is_still_uninstalled(self) -> None:
+        assert self._uninstall(None)["uninstalled"] is True
+
+
 class TestDeviceLaunchDoesNotReportAGhost:
     """A monkey abort used to be reported as launched=True.
 
