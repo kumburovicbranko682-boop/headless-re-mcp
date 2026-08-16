@@ -854,3 +854,24 @@ def test_the_function_create_tool_says_a_missed_create_fails() -> None:
     }
     assert docs["static_function_create"]
     assert "error" in docs["static_function_create"]
+
+
+def test_the_function_delete_tool_says_a_live_function_fails() -> None:
+    """The worker already refuses a delete that leaves the function.
+
+    An agent that only reads the tool text treats any return as a function
+    that is gone.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_function_delete"]
+    assert "error" in docs["static_function_delete"]
