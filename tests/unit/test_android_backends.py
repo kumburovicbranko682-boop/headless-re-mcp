@@ -249,37 +249,38 @@ class TestAdbArgumentValidation:
         assert complete["has_more"] is False
         assert complete["total"] == 20
 
-    def test_launch_does_not_wait_on_adb_forever(self) -> None:
-        """monkey used to be invoked with no deadline.
+    def test_launch_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """launch used adbutils shell, which connects with a 600s default.
 
-        Measured: timeout=None. A wedged adb or a monkey that never
-        returns held the worker for the life of the process.
+        Measured on info: shell(timeout=15) opened the transport with the
+        library default first. A monkey that never returns is the same wait.
         """
+        import headless_re_mcp.backends.adb.client as adb_client
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeout = timeout
-                return "Events injected: 1"
+        monkeypatch.setattr(adb_client, "_LAUNCH_TIMEOUT", 0.4)
 
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).launch("emulator-5554", "com.example.app")
-        assert device.timeout == 15.0
-        assert result["launched"] is True
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).launch("emulator-5554", "com.example.app")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
-    def test_launch_is_false_when_monkey_did_not_inject(self) -> None:
+    def test_launch_is_false_when_monkey_did_not_inject(self, tmp_path: Path) -> None:
         """A returned monkey command used to be reported as launched.
 
         Measured: empty output, 'No activities found', and an argv error
@@ -287,33 +288,33 @@ class TestAdbArgumentValidation:
         an activity that never appeared.
         """
 
-        class _Dev:
-            def __init__(self, text: str) -> None:
-                self.text = text
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                return self.text
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        aborted = _Backend(_Dev("** No activities found to run, monkey aborted.")).launch(
+        def _adb(text: str) -> Path:
+            path = tmp_path / f"adb-{hash(text) & 0xFFFF:x}"
+            path.write_text("#!/usr/bin/env python3\n" + f"print({text!r})\n")
+            path.chmod(0o755)
+            return path
+
+        aborted = _Backend(_adb("** No activities found to run, monkey aborted.")).launch(
             "emulator-5554", "com.example.app"
         )
         assert aborted["launched"] is False
         assert "No activities found" in str(aborted.get("note"))
 
-        empty = _Backend(_Dev("")).launch("emulator-5554", "com.example.app")
-        assert empty["launched"] is False
+        empty = tmp_path / "adb-empty"
+        empty.write_text("#!/usr/bin/env python3\n")
+        empty.chmod(0o755)
+        assert _Backend(empty).launch("emulator-5554", "com.example.app")["launched"] is False
 
-        injected = _Backend(_Dev("arg: -p\nEvents injected: 1\n")).launch(
+        injected = _Backend(_adb("arg: -p\nEvents injected: 1\n")).launch(
             "emulator-5554", "com.example.app"
         )
         assert injected["launched"] is True
