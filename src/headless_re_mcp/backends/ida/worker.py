@@ -596,12 +596,15 @@ def _strings(params: JsonObject) -> JsonObject:
                 "truncated": len(value) > max_length,
             }
         )
+    # Same silent cut as functions: 250 strings, limit 100, returned=100,
+    # total=250, no has_more, so an agent treated the page as every constant.
     return {
         "items": items,
         "offset": offset,
         "limit": limit,
         "returned": len(items),
         "total": len(strings),
+        "has_more": offset + len(items) < len(strings),
     }
 
 
