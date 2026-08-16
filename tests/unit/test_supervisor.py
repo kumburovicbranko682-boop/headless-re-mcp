@@ -517,3 +517,45 @@ def test_the_real_default_spawn_starts_and_restarts_an_actual_process(
         "child.started",
         "supervisor.restart_limit",
     ]
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().split()[2] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def test_supervisor_terminate_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """A restart used to SIGTERM only the service; its workers stayed."""
+    import os
+    import time
+    from contextlib import suppress
+
+    child_file = tmp_path / "child.pid"
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(child_file)!r}, 'w').write(str(c.pid))\n"
+        "import time; time.sleep(60)\n"
+    )
+    parent = subprocess.Popen([sys.executable, str(script)])
+    for _ in range(50):
+        if child_file.exists():
+            break
+        time.sleep(0.02)
+    child_pid = int(child_file.read_text())
+    try:
+        assert _alive(parent.pid)
+        assert _alive(child_pid)
+        Supervisor(["x"])._terminate(parent)
+        time.sleep(0.2)
+        assert parent.poll() is not None
+        assert not _alive(child_pid), f"child {child_pid} still alive after supervisor stop"
+    finally:
+        with suppress(OSError):
+            os.kill(child_pid, 9)
+        with suppress(OSError):
+            os.kill(parent.pid, 9)

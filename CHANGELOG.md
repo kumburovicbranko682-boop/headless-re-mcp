@@ -129,6 +129,8 @@ until 1.0 the tool surface may still change between minor versions.
   再查进程表，没有 frida-server 就回 False。
 - **工具调用表只截断单行、不淘汰行**。80 次 × 20_000 字符把 `agent.db` 堆到
   1.7 MiB，COUNT 仍是 80。现在每个 run 只留最近 2000 条。
+- **监督进程重启只杀服务本身**。包装脚本起 sleeper 时，服务已死、子进程仍
+  是 S。idalib / 调试目标会在崩溃循环里越积越多。现在对真实子进程杀整树。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

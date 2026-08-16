@@ -270,6 +270,11 @@ class Supervisor:
                 return "unhealthy"
 
     def _terminate(self, child: Any) -> None:
+        if isinstance(child, subprocess.Popen):
+            from headless_re_mcp.core.process_tree import terminate_process_tree
+
+            terminate_process_tree(child, wait_s=15.0)
+            return
         with_terminate = getattr(child, "terminate", None)
         if callable(with_terminate):
             with_terminate()
