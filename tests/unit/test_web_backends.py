@@ -29,6 +29,30 @@ class TestNoArbitraryExecution:
         assert not {"evaluate", "eval", "run_code"} & public
 
 
+class TestWebNetworkPaging:
+    def test_a_network_page_says_when_more_is_retained(self) -> None:
+        """A 100-request page used to look complete even with total=250.
+
+        Measured: 250 requests, limit 100, count=100 total=250, no has_more.
+        Models that do not subtract still treat the page as the whole capture.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(250):
+            handle.requests[str(index)] = {
+                "requestId": str(index),
+                "url": f"https://ex/{index}",
+            }
+        backend._sessions["s"] = handle
+        result = backend.network_list("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+        rest = backend.network_list("s", offset=200, limit=100)
+        assert rest["count"] == 50
+        assert rest["has_more"] is False
+
+
 class TestWebScriptPaging:
     def test_a_script_page_says_when_more_is_retained(self) -> None:
         """The full script buffer used to be returned as if it were complete.

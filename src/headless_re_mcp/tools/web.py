@@ -55,7 +55,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List captured network requests (url, method, status, type)."""
+        """List captured network requests (url, method, status, type).
+
+        Paged; the reply carries total and has_more so a page is not read
+        as every request the tab made.
+        """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="web.network.get")
