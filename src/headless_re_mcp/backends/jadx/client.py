@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
+_MAX_FILE_LIST = 2000
 
 
 class JadxError(RuntimeError):
@@ -57,11 +58,14 @@ class JadxClient:
             if out_dir.is_dir()
             else []
         )
+        total = len(java_files)
         return {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
-            "java_file_count": len(java_files),
-            "java_files": java_files[:2000],
+            "java_file_count": total,
+            "java_files": java_files[:_MAX_FILE_LIST],
+            "limit": _MAX_FILE_LIST,
+            "has_more": total > _MAX_FILE_LIST,
         }
 
     def decompile(

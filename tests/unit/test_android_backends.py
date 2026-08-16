@@ -378,6 +378,47 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestJadxExportSaysWhenTheFileListWasCut:
+    """java_file_count said 2500 while java_files held 2000, with no has_more.
+
+    An agent walking the list thinks it has every class. The ones past the cut
+    are on disk but unnamed, so they are never opened.
+    """
+
+    def _export(self, tmp_path: Path, n: int) -> dict[str, Any]:
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        exe = tmp_path / "jadx"
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        out = tmp_path / "out"
+        sources = out / "sources"
+        sources.mkdir(parents=True)
+        for index in range(n):
+            (sources / f"C{index}.java").write_text("class X {}", encoding="utf-8")
+        client = JadxClient(exe)
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        return client.export_sources(tmp_path / "a.apk", out)
+
+    def test_a_tree_past_the_cap_reports_more(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.jadx.client import _MAX_FILE_LIST
+
+        result = self._export(tmp_path, _MAX_FILE_LIST + 5)
+        assert result["java_file_count"] == _MAX_FILE_LIST + 5
+        assert len(result["java_files"]) == _MAX_FILE_LIST
+        assert result["limit"] == _MAX_FILE_LIST
+        assert result["has_more"] is True
+
+    def test_a_tree_that_fits_is_complete(self, tmp_path: Path) -> None:
+        result = self._export(tmp_path, 3)
+        assert result["java_file_count"] == 3
+        assert result["java_files"] == [
+            "sources/C0.java",
+            "sources/C1.java",
+            "sources/C2.java",
+        ]
+        assert result["has_more"] is False
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
