@@ -349,8 +349,17 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            # Measured: "No resource with given identifier found" still
+            # answered as a successful payload with only body_error, so an
+            # agent treated a missing body as fetched evidence.
+            raise WebError(
+                "backend_error",
+                f"failed to fetch response body: {exc}",
+                request_id=request_id,
+            ) from exc
         result = dict(entry)
         if len(body) > _MAX_INLINE_BODY:
             artifact_dir.mkdir(parents=True, exist_ok=True)

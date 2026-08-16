@@ -60,7 +60,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
-        """Fetch one request's response body (large bodies spill to an artifact)."""
+        """Fetch one request's response body; a CDP failure is not success."""
         return _dump(analysis.web_network_get(session_id, request_id))
 
     @tools.tool(name="web.console")

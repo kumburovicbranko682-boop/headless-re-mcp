@@ -45,6 +45,84 @@ class TestWebSessionScoping:
             backend.script_source("never-opened", "1", tmp_path)
 
 
+class TestNetworkGetDoesNotInventSuccess:
+    """A CDP body fetch that failed used to look like a fetched response.
+
+    Measured: Network.getResponseBody raising
+    ``No resource with given identifier found`` still answered
+    ``{..., 'body_error': '...'}`` with no exception, so an agent treated a
+    missing body as captured evidence.
+    """
+
+    def _backend(self, exc: Exception) -> WebBackend:
+        import threading
+        from collections import OrderedDict
+
+        class _CDP:
+            def send(self, method: str, params: dict[str, object]) -> dict[str, object]:
+                raise exc
+
+        class _Runner:
+            def call(self, work: object, timeout: float = 60.0) -> object:
+                return work()  # type: ignore[operator]
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.requests = OrderedDict(
+                    {
+                        "req1": {
+                            "requestId": "req1",
+                            "url": "https://example.com/a",
+                            "method": "GET",
+                        }
+                    }
+                )
+                self.lock = threading.RLock()
+                self.runner = _Runner()
+                self.cdp = _CDP()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_cdp_failure_is_not_a_fetched_body(self, tmp_path: Path) -> None:
+        with pytest.raises(WebError) as info:
+            self._backend(RuntimeError("No resource with given identifier found")).network_get(
+                "s", "req1", tmp_path
+            )
+        assert info.value.code == "backend_error"
+        assert "response body" in info.value.message
+        assert info.value.details.get("request_id") == "req1"
+
+    def test_a_fetched_body_is_success(self, tmp_path: Path) -> None:
+        import threading
+        from collections import OrderedDict
+
+        class _CDP:
+            def send(self, method: str, params: dict[str, object]) -> dict[str, object]:
+                return {"body": "hello", "base64Encoded": False}
+
+        class _Runner:
+            def call(self, work: object, timeout: float = 60.0) -> object:
+                return work()  # type: ignore[operator]
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.requests = OrderedDict(
+                    {"req1": {"requestId": "req1", "url": "https://example.com/a"}}
+                )
+                self.lock = threading.RLock()
+                self.runner = _Runner()
+                self.cdp = _CDP()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        result = backend.network_get("s", "req1", tmp_path)
+        assert result["body"] == "hello"
+        assert result["body_truncated"] is False
+        assert "body_error" not in result
+
+
 class TestWebTargetClassification:
     def test_urls_and_web_assets_classify_as_web(self, tmp_path: Path) -> None:
         assert classify_target("https://example.com/app") is TargetKind.WEB
