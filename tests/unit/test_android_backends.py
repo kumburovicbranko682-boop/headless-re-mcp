@@ -532,6 +532,49 @@ class TestApkPermissionsAreCapped:
         assert page["totals"]["permissions"] == 3
 
 
+class TestApkClassesSayWhenTheyStopped:
+    """A class page that hit the cap looks exactly like one that ended.
+
+    Measured: 80 internal classes with limit=10 came back as count=10 and
+    total=80, with no has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = type(
+                    "Analysis",
+                    (),
+                    {
+                        "get_classes": lambda _self: [
+                            _Klass(f"Lcom/ex/C{index};") for index in range(n)
+                        ]
+                    },
+                )()
+
+        client = ApkClient()
+        client._available = True
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(80).classes(tmp_path / "app.apk", offset=0, limit=10)
+        assert page["count"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).classes(tmp_path / "app.apk", offset=0, limit=10)
+        assert page["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
