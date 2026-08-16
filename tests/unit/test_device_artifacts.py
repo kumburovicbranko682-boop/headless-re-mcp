@@ -11,6 +11,7 @@ from headless_re_mcp.core.service_device import (
     _MAX_DEVICE_ARTIFACTS,
     DeviceAnalysisMixin,
     prune_device_artifacts,
+    refuse_oversized_device_file,
 )
 
 
@@ -77,5 +78,25 @@ def test_device_capture_descriptions_do_not_call_the_file_an_artifact() -> None:
         assert "not a registered artifact" in text
         assert "artifacts.read cannot open it" in text
         assert "newest 32" in text
+        assert "64 MiB" in text
         assert "PNG artifact" not in text
         assert "local artifact" not in text
+
+
+def test_a_device_file_over_the_byte_cap_is_deleted_and_refused(tmp_path: Path) -> None:
+    """The count cap left each file unbounded. 32 huge pulls is still unbounded bytes."""
+    path = tmp_path / "pull.bin"
+    path.write_bytes(b"x" * 2048)
+    refused = refuse_oversized_device_file(path, limit=1024)
+    assert refused is not None
+    assert refused.ok is False
+    assert refused.error is not None
+    assert refused.error.code == "output_too_large"
+    assert path.exists() is False
+
+
+def test_a_device_file_within_the_byte_cap_is_kept(tmp_path: Path) -> None:
+    path = tmp_path / "shot.png"
+    path.write_bytes(b"x" * 512)
+    assert refuse_oversized_device_file(path, limit=1024) is None
+    assert path.is_file()
