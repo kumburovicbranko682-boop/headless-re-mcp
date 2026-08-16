@@ -237,7 +237,7 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(["am", "force-stop", pkg])
+            dev.shell(["am", "force-stop", pkg], timeout=15.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
         return {"stopped": True, "package": pkg}

@@ -202,6 +202,36 @@ class TestAdbArgumentValidation:
         assert device.timeout == 15.0
         assert result["launched"] is True
 
+    def test_force_stop_does_not_wait_on_adb_forever(self) -> None:
+        """am force-stop used to be invoked with no deadline.
+
+        Measured: timeout=None. A wedged adb held the worker for the
+        life of the process. The command itself is short; the wait is not.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeout = timeout
+                return ""
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).force_stop("emulator-5554", "com.example.app")
+        assert device.timeout == 15.0
+        assert result["stopped"] is True
+
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
         if backend.available:
