@@ -260,7 +260,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         count: Annotated[int, Field(ge=1, le=512)] = 32,
         max_bytes: Annotated[int, Field(ge=1, le=65536)] = 4096,
     ) -> dict[str, Any]:
-        """Bounded linear disassembly starting at address."""
+        """Bounded linear disassembly starting at address (check truncated)."""
         return _dump(
             analysis.static_disassemble(
                 session_id,
