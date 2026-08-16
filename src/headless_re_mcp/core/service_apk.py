@@ -17,7 +17,12 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, TargetKind
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_artifact, _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _record_artifact,
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import SessionRegistry, file_sha256
 
 JsonObject = dict[str, Any]
@@ -215,6 +220,16 @@ class ApkAnalysisMixin:
             source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
             out_apk = root / "repacked.apk"
             data = self._apktool_client().build(source, out_apk, timeout=timeout)
+            # Measured: 8 create/repack/close cycles left 8 APKs and 320 KiB,
+            # with artifacts.list total=0 and artifacts.gc collected=0.
+            data = _register_capture(
+                self,
+                session_id,
+                out_apk,
+                kind="apktool_repack",
+                source="apk.repack",
+                payload=data,
+            )
             _timeline_append(self, session_id, "apk.repack", "apktool rebuilt apk")
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, ApktoolError) as exc:
