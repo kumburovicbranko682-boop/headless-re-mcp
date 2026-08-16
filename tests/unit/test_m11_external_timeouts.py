@@ -225,3 +225,54 @@ def test_xvlkc_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) -> 
         if child:
             with suppress(OSError):
                 os.kill(child, 9)
+
+
+def test_vmp_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) -> None:
+    """subprocess.run used to leave the VMP dumper launcher's child alive.
+
+    Measured: probe returned (False, '') and os.kill(child, 0) still
+    succeeded. Doctor then moved on while that child kept a core.
+    """
+    import os
+    import time
+    from contextlib import suppress
+
+    from headless_re_mcp.unpack.vmp_dumper import probe_vmp_dumper
+
+    pidfile = tmp_path / "child.pid"
+    stub = tmp_path / "vmpdump"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    child = 0
+    try:
+        ok, output = probe_vmp_dumper(stub, timeout=0.8)
+        assert ok is False
+        assert output == ""
+        deadline = time.monotonic() + 2.0
+        while not pidfile.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pidfile.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.kill(child, 0)
+                alive = True
+            except OSError:
+                alive = False
+            if not alive or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert alive is False
+    finally:
+        if child:
+            with suppress(OSError):
+                os.kill(child, 9)
