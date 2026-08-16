@@ -254,7 +254,7 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         try:
-            raw = dev.shell(["logcat", "-d", "-t", str(capped)])
+            raw = dev.shell(["logcat", "-d", "-t", str(capped)], timeout=15.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
         text = str(raw)

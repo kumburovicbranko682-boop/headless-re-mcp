@@ -142,6 +142,36 @@ class TestAdbArgumentValidation:
         assert result["has_more"] is True
         assert len(result["packages"]) == 10
 
+    def test_logcat_does_not_wait_on_adb_forever(self) -> None:
+        """logcat -d still has to come back if adb has stopped answering.
+
+        Measured: the dump was invoked with timeout=None. A wedged adb
+        held the worker; the -t line cap does not bound the wait.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeout: object = "unset"
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeout = timeout
+                return "line\n"
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).logcat("emulator-5554", lines=10)
+        assert device.timeout == 15.0
+        assert result["requested"] == 10
+
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
         if backend.available:
