@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
@@ -163,6 +162,10 @@ def _call_bounded(work: Callable[[], T], *, timeout: float, op: str) -> T:
         ) from exc
 
 
+def _attach(target: Any, pid: int) -> Any:
+    return _call_bounded(lambda: target.attach(pid), timeout=_DEVICE_TIMEOUT, op="attach")
+
+
 def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
     """Cut a list to the page size, saying whether anything was left out.
 
@@ -219,7 +222,7 @@ class FridaClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
-        session = self._frida.attach(pid)
+        session = _attach(self._frida, pid)
         try:
             return {
                 "pid": pid,
@@ -232,7 +235,7 @@ class FridaClient:
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
-        session = self._frida.attach(pid)
+        session = _attach(self._frida, pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -271,7 +274,7 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._frida.attach(pid)
+        session = _attach(self._frida, pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -307,7 +310,7 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._frida.attach(pid)
+        session = _attach(self._frida, pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -331,7 +334,7 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
-        session = self._frida.attach(pid)
+        session = _attach(self._frida, pid)
         try:
             script = session.create_script(source)
             script.load()
@@ -365,18 +368,41 @@ class FridaClient:
         frida = self._need()
         try:
             if device_id in (None, "", "local"):
-                return frida.get_local_device()
+                return _call_bounded(
+                    frida.get_local_device,
+                    timeout=_DEVICE_TIMEOUT,
+                    op="get_local_device",
+                )
             if device_id == "usb":
-                return frida.get_usb_device(timeout=5)
+                return _call_bounded(
+                    lambda: frida.get_usb_device(timeout=5),
+                    timeout=_DEVICE_TIMEOUT,
+                    op="get_usb_device",
+                )
             if isinstance(device_id, str) and (":" in device_id):
                 # Reuse an already-registered remote device. Re-adding it on
                 # every call churns frida's device manager for what is meant to
                 # be a stable connection held for the life of the session.
                 mgr = frida.get_device_manager()
-                with contextlib.suppress(Exception):
-                    return mgr.get_device(device_id, timeout=1)
-                return mgr.add_remote_device(device_id)
-            return frida.get_device(device_id, timeout=5)
+                try:
+                    return _call_bounded(
+                        lambda: mgr.get_device(device_id, timeout=1),
+                        timeout=_DEVICE_TIMEOUT,
+                        op="get_device",
+                    )
+                except FridaError:
+                    raise
+                except Exception:
+                    return _call_bounded(
+                        lambda: mgr.add_remote_device(device_id),
+                        timeout=_DEVICE_TIMEOUT,
+                        op="add_remote_device",
+                    )
+            return _call_bounded(
+                lambda: frida.get_device(device_id, timeout=5),
+                timeout=_DEVICE_TIMEOUT,
+                op="get_device",
+            )
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - frida raises many device errors
@@ -479,7 +505,9 @@ class FridaClient:
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
         try:
-            session = device.attach(pid)
+            session = _attach(device, pid)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:
@@ -529,7 +557,9 @@ class FridaClient:
             )
         device = self._resolve_device(device_id)
         try:
-            session = device.attach(pid)
+            session = _attach(device, pid)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:

@@ -482,6 +482,59 @@ class TestFridaDeviceOpsCannotHoldAWorker:
         assert result["count"] == 1
         assert result["devices"][0]["id"] == "local"
 
+    def test_a_wedged_attach_comes_back_as_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
+
+        from headless_re_mcp.backends.frida import client as frida_client
+        from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+        monkeypatch.setattr(frida_client, "_DEVICE_TIMEOUT", 0.05)
+
+        class HungFrida:
+            def attach(self, pid: int) -> object:
+                del pid
+                threading.Event().wait()
+                return object()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = HungFrida()
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.modules(1, allowed_pid=1, limit=1)
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "attach"
+        assert time.monotonic() - started < 1.0
+
+    def test_a_wedged_local_device_comes_back_as_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
+
+        from headless_re_mcp.backends.frida import client as frida_client
+        from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+        monkeypatch.setattr(frida_client, "_DEVICE_TIMEOUT", 0.05)
+
+        class HungFrida:
+            def get_local_device(self) -> object:
+                threading.Event().wait()
+                return object()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = HungFrida()
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            client.applications("local", limit=1)
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "get_local_device"
+        assert time.monotonic() - started < 1.0
+
 
 class TestApkManifestSaysWhenItStopped:
     """The tool text says this is the decoded manifest.
