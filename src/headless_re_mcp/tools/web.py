@@ -32,7 +32,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         headless: bool = True,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Launch a Chrome browser for the session and open a URL via CDP."""
+        """Launch a Chrome browser for the session and open a URL via CDP.
+
+        A title that could not be read carries `title_error` rather than
+        looking like an empty title.
+        """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
     @tools.tool(name="web.navigate")
@@ -41,7 +45,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         url: str,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Navigate the session's browser to a new URL."""
+        """Navigate the session's browser to a new URL.
+
+        A title that could not be read carries `title_error` rather than
+        looking like an empty title.
+        """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
     @tools.tool(name="web.close")
@@ -117,7 +125,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the current page HTML, URL, and title.
 
         Oversized HTML is cut; read `truncated`/`bytes` rather than assuming
-        `html` is the whole page.
+        `html` is the whole page. A title that could not be read carries
+        `title_error` rather than looking like an empty title.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

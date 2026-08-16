@@ -226,8 +226,8 @@ class WebBackend:
                 summary = {
                     "opened": True,
                     "url": page.url,
-                    "title": _safe_title(page),
                     "headless": headless,
+                    **_title_fields(page),
                 }
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
@@ -317,7 +317,7 @@ class WebBackend:
                 handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {"url": handle.page.url, "title": _safe_title(handle.page)}
+            return {"url": handle.page.url, **_title_fields(handle.page)}
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
@@ -498,7 +498,7 @@ class WebBackend:
             # of the page was cut.
             return {
                 "url": handle.page.url,
-                "title": _safe_title(handle.page),
+                **_title_fields(handle.page),
                 "html": html[:_MAX_INLINE_BODY],
                 "truncated": len(html) > _MAX_INLINE_BODY,
                 "bytes": len(html),
@@ -573,8 +573,14 @@ class WebBackend:
                 self.close(session_id)
 
 
-def _safe_title(page: Any) -> str:
+def _title_fields(page: Any) -> JsonObject:
+    """Read the title, or say why it is missing.
+
+    Measured: page.title() raising Target closed still came back as title=''.
+    An agent then treated a dead page as a successful navigation to an
+    untitled document.
+    """
     try:
-        return str(page.title())
-    except Exception:  # noqa: BLE001
-        return ""
+        return {"title": str(page.title())}
+    except Exception as exc:  # noqa: BLE001
+        return {"title": "", "title_error": f"{type(exc).__name__}: {exc}"}

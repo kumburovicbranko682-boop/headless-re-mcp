@@ -973,6 +973,67 @@ class TestWebScriptSourceDoesNotInventAnEmptyFile:
         assert result["truncated"] is False
 
 
+class TestWebTitleDoesNotInventEmpty:
+    """page.title() raising used to come back as title=''.
+
+    Measured: Target closed after a successful goto still looked like a
+    navigation to an untitled page.
+    """
+
+    def _backend(self, page: Any) -> Any:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        class Runner:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), page, object())
+        handle.runner = Runner()  # type: ignore[assignment]
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_a_title_failure_is_not_an_empty_title(self) -> None:
+        class Page:
+            url = "https://x/done"
+
+            def title(self) -> str:
+                raise RuntimeError("Target closed")
+
+            def goto(
+                self, url: str, timeout: float | None = None, wait_until: str | None = None
+            ) -> None:
+                del url, timeout, wait_until
+
+            def content(self) -> str:
+                return "<html></html>"
+
+        backend = self._backend(Page())
+        nav = backend.navigate("s", "https://x")
+        assert nav["title"] == ""
+        assert "Target closed" in str(nav["title_error"])
+        dom = backend.dom_snapshot("s")
+        assert dom["title"] == ""
+        assert "Target closed" in str(dom["title_error"])
+
+    def test_a_real_empty_title_has_no_error(self) -> None:
+        class Page:
+            url = "https://x"
+
+            def title(self) -> str:
+                return ""
+
+            def goto(
+                self, url: str, timeout: float | None = None, wait_until: str | None = None
+            ) -> None:
+                del url, timeout, wait_until
+
+        nav = self._backend(Page()).navigate("s", "https://x")
+        assert nav["title"] == ""
+        assert "title_error" not in nav
+
+
 class TestWebDomSnapshotSaysWhenItStopped:
     """A cut DOM dump used to omit how much HTML was dropped.
 
