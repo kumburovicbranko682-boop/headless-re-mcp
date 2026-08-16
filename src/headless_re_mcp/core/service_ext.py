@@ -871,7 +871,15 @@ class ExtAnalysisMixin(UiDriveMixin):
                     f"{KNOWLEDGE_VALUE_MAX_CHARS} a finding may hold; record the bulk as an "
                     "artifact and keep the reference here"
                 )
-            self.registry.get(session_id)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"knowledge.record cannot run in {session.state.value} state"
+                )
             entry = self.services.artifacts.record_knowledge(
                 session_id=session_id,
                 kind=normalized_kind,
