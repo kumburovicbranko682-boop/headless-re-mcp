@@ -60,6 +60,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.hook.template")
     def frida_hook_template(session_id: str, template: str = "noop") -> dict[str, Any]:
+        """Load a canned probe script, then detach.
+
+        loaded is not a live hook. Read persisted: the template is destroyed
+        when this call returns, so nothing stays hooked in the target.
+        """
         return _dump(analysis.frida_hook_template(session_id, template=template))
 
     @tools.tool(name="frida.devices")

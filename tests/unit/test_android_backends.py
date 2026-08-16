@@ -198,6 +198,21 @@ class TestHookTemplateSaysWhatItActuallyLeavesBehind:
         assert payload["persisted"] is False
         assert fake.session.script.destroyed is True
 
+    def test_the_tool_description_names_persisted(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import frida as frida_mod
+
+        tree = ast.parse(inspect.getsource(frida_mod.build_frida_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["frida_hook_template"]
+        assert "persisted" in docs["frida_hook_template"]
+
 
 class TestFridaMemoryReadDoesNotPadAShortBuffer:
     """A short read used to come back with size equal to the request.
