@@ -481,17 +481,19 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
-                for e in handle.requests.values()
-            ]
+            retained = list(handle.requests.values())
+            seen = handle.requests_seen
+        entries = [
+            {
+                "request": {"method": e.get("method"), "url": e.get("url")},
+                "response": {
+                    "status": e.get("status") or 0,
+                    "content": {"mimeType": e.get("mimeType") or ""},
+                },
+                "_resourceType": e.get("resourceType"),
+            }
+            for e in retained
+        ]
         import json
 
         har = {
@@ -499,7 +501,12 @@ class WebBackend:
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "seen": seen,
+            "truncated": seen > len(entries),
+        }
 
     def close_all(self) -> None:
         with self._lock:

@@ -112,7 +112,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.har.export")
     def web_har_export(session_id: str) -> dict[str, Any]:
-        """Export captured network activity to a HAR artifact."""
+        """Export captured network activity to a HAR artifact.
+
+        The file is the retained window, not every request the page ever made.
+        Read truncated and seen rather than treating entry_count as the whole
+        capture.
+        """
         return _dump(analysis.web_har_export(session_id))
 
     return tools.bindings

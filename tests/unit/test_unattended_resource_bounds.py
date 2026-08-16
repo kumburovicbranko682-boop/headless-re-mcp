@@ -507,6 +507,40 @@ class TestWebScriptBufferIsBounded:
         assert listed["has_more"] is False
 
 
+class TestWebHarExportSaysWhenTheWindowDroppedOlderRequests:
+    """A HAR of 3500 requests used to say entry_count=3000 with no truncated.
+
+    The file is what an unattended agent keeps as the night's capture. A
+    window sitting at the cap looked like the whole session, so the requests
+    that scrolled off disappeared from whoever was supposed to reconstruct it.
+    """
+
+    def _export(self, tmp_path: Any, n: int) -> dict[str, Any]:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(n):
+            handle.record_request(
+                str(index),
+                {"requestId": str(index), "method": "GET", "url": f"https://x/{index}"},
+            )
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend.har_export("s", tmp_path / "capture.har")
+
+    def test_a_window_at_the_cap_marks_the_file_truncated(self, tmp_path: Any) -> None:
+        exported = self._export(tmp_path, _MAX_REQUESTS + 500)
+        assert exported["entry_count"] == _MAX_REQUESTS
+        assert exported["seen"] == _MAX_REQUESTS + 500
+        assert exported["truncated"] is True
+
+    def test_a_complete_capture_is_not_labelled_partial(self, tmp_path: Any) -> None:
+        exported = self._export(tmp_path, 3)
+        assert exported["entry_count"] == 3
+        assert exported["seen"] == 3
+        assert exported["truncated"] is False
+
+
 class TestWebNetworkSaysWhenTheWindowDroppedOlderRequests:
     """3500 requests used to come back as total=3000 with no has_more.
 
