@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -419,6 +420,17 @@ def run_vmp_dumper(
             stderr=capture.stderr,
             returncode=capture.returncode,
         ) from exc
+
+    # VMPDump writes beside the live module. Retention only knows the
+    # artifact copy. Measured: after a successful copy, sample.VMPDump.exe
+    # (1024 bytes) stayed next to the sample while destination also existed.
+    produced_resolved = produced.resolve()
+    if (
+        produced_resolved != destination.resolve()
+        and produced_resolved != source.resolve()
+    ):
+        with suppress(OSError):
+            produced.unlink()
 
     duration_ms = int((monotonic() - wall_started) * 1000)
     imports_rebuilt = _infer_imports_rebuilt(capture.stdout, capture.stderr)
