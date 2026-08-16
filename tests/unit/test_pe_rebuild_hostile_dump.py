@@ -131,17 +131,27 @@ def test_the_import_rebuild_reads_the_same_headers_and_needs_the_same_bound() ->
     assert 0 < len(within_the_format) < 1_000_000, "the format's own ceiling still works"
 
 
-def _craft_dump(*, sections: int, dump_size: int = 64 * 1024) -> bytes:
+def _craft_dump(
+    *,
+    sections: int,
+    dump_size: int = 64 * 1024,
+    overlap: bool = True,
+) -> bytes:
     """A SizeOfImage-style dump whose section table the test controls.
 
-    Each section claims the whole dump at VA 0, which is what turns the count
-    into an allocation multiplier: remap copies the dump once per section.
+    Overlapping sections each claim the whole dump at VA 0, which is what
+    turns the count into an allocation multiplier: remap copies the dump
+    once per section. Non-overlapping sections are a layout the loader
+    could actually map.
     """
     pe_offset = 0x80
     optional_size = 0xE0
     file_header = pe_offset + 4
     optional = file_header + 20
     table = optional + optional_size
+    section_span = 0x200
+    if not overlap:
+        dump_size = max(dump_size, sections * 0x1000 + section_span)
     dump_size = max(dump_size, table + sections * 40 + 0x200)
     data = bytearray(dump_size)
     data[0:2] = b"MZ"
@@ -161,10 +171,12 @@ def _craft_dump(*, sections: int, dump_size: int = 64 * 1024) -> bytes:
     struct.pack_into("<I", data, optional + 92, 16)
     for index in range(sections):
         off = table + index * 40
+        va = 0 if overlap else index * 0x1000
+        size = dump_size if overlap else section_span
         data[off : off + 8] = f".s{index}".encode()[:8].ljust(8, b"\0")
-        struct.pack_into("<I", data, off + 8, dump_size)
-        struct.pack_into("<I", data, off + 12, 0)
-        struct.pack_into("<I", data, off + 16, dump_size)
+        struct.pack_into("<I", data, off + 8, size)
+        struct.pack_into("<I", data, off + 12, va)
+        struct.pack_into("<I", data, off + 16, size)
         struct.pack_into("<I", data, off + 20, 0)
     return bytes(data)
 
@@ -190,9 +202,27 @@ def test_a_section_count_the_loader_will_not_map_is_refused() -> None:
 
 
 def test_the_loader_ceiling_still_rebuilds() -> None:
-    """96 sections is what the loader accepts; the bound must not refuse it."""
-    dump = _craft_dump(sections=MAX_SECTIONS)
+    """96 non-overlapping sections is what the loader accepts; still rebuild."""
+    dump = _craft_dump(sections=MAX_SECTIONS, overlap=False)
 
     rebuilt, _report = remap_dump_to_file(dump)
 
     assert len(rebuilt) > 0
+    assert len(rebuilt) < 4 * len(dump)
+
+
+def test_overlapping_sections_that_multiply_the_dump_are_refused() -> None:
+    """The count cap left the loader's 96 as a multiplier.
+
+    Measured at 96 overlapping sections on a 1 MB dump: 101 MB out, 213 MB
+    peak heap, 0.092s. The memory gate -- dump * 4 -- estimated 4 MB and
+    let it through.
+    """
+    dump = _craft_dump(sections=MAX_SECTIONS, dump_size=1024 * 1024)
+
+    started = time.perf_counter()
+    with pytest.raises(PeRebuildError) as caught:
+        remap_dump_to_file(dump)
+
+    assert "section table" in str(caught.value)
+    assert time.perf_counter() - started < 5.0, "and refused before the copies"
