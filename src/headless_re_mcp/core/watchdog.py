@@ -78,6 +78,9 @@ class Watchdog:
     # Which (session, backend) pairs have already been reported disconnected.
     # Pruned the same way, so it holds one entry per currently-dropped pipe.
     _reported_disconnected: set[tuple[str, str]] = field(default_factory=set)
+    # A failed health envelope is not "no backends". Forgetting that distinction
+    # used to prune every dead streak, so a probe blip reset abandonment.
+    _health_failed: bool = False
 
     def sweep(self) -> JsonObject:
         """One pass. Never raises: a watchdog that dies stops watching."""
@@ -93,6 +96,15 @@ class Watchdog:
 
     def _sweep(self) -> JsonObject:
         result = self.health.session_health()
+        if not getattr(result, "ok", False):
+            return self._handle_health_unavailable(result)
+        if self._health_failed:
+            self._health_failed = False
+            self._alert(
+                "session_health_recovered",
+                severity="info",
+                detail="session_health returned a usable envelope again",
+            )
         rows = self._rows(result)
         dead = [row for row in rows if not row.get("worker_alive", True)]
         disconnected = [
@@ -236,6 +248,35 @@ class Watchdog:
             if failed:
                 return f"recovery finished with {failed} failed backend(s)"
         return "recovery returned no error"
+
+    def _handle_health_unavailable(self, result: Any) -> JsonObject:
+        """Keep watching the last known dead set when the probe itself failed.
+
+        session_health returns a failed envelope instead of raising. Reading
+        that as zero rows pruned every streak, so a locked store looked idle
+        and a backend four recoveries into giving up was treated as new.
+        """
+        if not self._health_failed:
+            self._health_failed = True
+            self._alert(
+                "session_health_failed",
+                detail=self._health_failure_detail(result),
+            )
+        return {
+            "checked": 0,
+            "dead": 0,
+            "disconnected": 0,
+            "actions": [],
+            "recovered_total": self.recovered,
+            "alerts_total": self.raised,
+            "health_unavailable": True,
+        }
+
+    @staticmethod
+    def _health_failure_detail(result: Any) -> str:
+        error = getattr(result, "error", None)
+        message = str(getattr(error, "message", error) or "").strip()
+        return message or "session_health returned a failed envelope"
 
     @staticmethod
     def _rows(result: Any) -> list[JsonObject]:

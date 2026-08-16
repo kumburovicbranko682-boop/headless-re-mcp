@@ -319,3 +319,53 @@ def test_a_pipe_that_recovers_and_drops_again_is_reported_again() -> None:
     watchdog.sweep()
 
     assert watchdog.raised == 2, "a fresh drop is a fresh signal"
+
+
+def test_failed_health_envelope_does_not_forget_dead_backends() -> None:
+    """A failed session_health envelope is not the same as an empty machine.
+
+    session_health never raises; ok=False leaves data=None. Treating that as
+    zero rows pruned the dead streak, so a probe blip reset abandonment and
+    the next good sweep reported the same outage as new. Measured: streak 4
+    became {}, then the next recoveries were attempt 1 and 2 again.
+    """
+
+    class Flaky(FakeHealth):
+        def __init__(self) -> None:
+            super().__init__([_row("s1", "ida", alive=False, connected=False)])
+            self.fail = False
+
+        def session_health(self, session_id: str | None = None) -> FakeResult:
+            if self.fail:
+                return FakeResult(
+                    False, None, error=type("E", (), {"message": "store locked"})()
+                )
+            return super().session_health(session_id)
+
+    health = Flaky()
+    watchdog = Watchdog(health, policy=WatchdogPolicy(interval_s=30.0))
+
+    first = watchdog.sweep()
+    assert first["dead"] == 1
+    assert watchdog.raised == 1
+
+    health.fail = True
+    second = watchdog.sweep()
+    assert second.get("health_unavailable") is True
+    assert second["checked"] == 0
+    assert ("s1", "ida") in watchdog._dead_streak
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts()]
+    assert kinds.count("session_health_failed") == 1
+
+    for _ in range(10):
+        watchdog.sweep()
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts()]
+    assert kinds.count("session_health_failed") == 1, "one alert for one probe outage"
+
+    health.fail = False
+    third = watchdog.sweep()
+    assert third["dead"] == 1
+    assert third["actions"][0]["action"] == "still_dead"
+    kinds = [alert["kind"] for alert in watchdog.recent_alerts()]
+    assert kinds.count("backend_dead") == 1
+    assert "session_health_recovered" in kinds
