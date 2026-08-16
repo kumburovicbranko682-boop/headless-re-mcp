@@ -123,3 +123,54 @@ def test_windbg_live_timeout_maps_to_timeout(tmp_path: Path) -> None:
         with pytest.raises(WindbgError) as exc:
             client.attach(1234, allowed_pid=1234, timeout=1.0)
     assert exc.value.code == "timeout"
+
+
+def test_scylla_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) -> None:
+    """subprocess.run used to leave the Scylla launcher's child alive.
+
+    Measured: probe returned (True, 'timeout_after_start') and os.kill(child, 0)
+    still succeeded. Doctor then reported READY while that child kept a core.
+    """
+    import os
+    import time
+    from contextlib import suppress
+
+    from headless_re_mcp.unpack.scylla import probe_scylla
+
+    pidfile = tmp_path / "child.pid"
+    stub = tmp_path / "scylla"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    child = 0
+    try:
+        ok, output = probe_scylla(stub, timeout=0.8)
+        assert ok is True
+        assert output == "timeout_after_start"
+        deadline = time.monotonic() + 2.0
+        while not pidfile.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pidfile.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.kill(child, 0)
+                alive = True
+            except OSError:
+                alive = False
+            if not alive or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert alive is False
+    finally:
+        if child:
+            with suppress(OSError):
+                os.kill(child, 9)
