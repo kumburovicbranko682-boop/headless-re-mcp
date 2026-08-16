@@ -15,10 +15,10 @@ from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Result
+from headless_re_mcp.core.models import Result, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
 _AUTH_KEY = "frida_authorized"
@@ -37,8 +37,20 @@ class FridaDeviceMixin:
     settings: Settings
     registry: SessionRegistry
 
-    def _frida_auth(self, session_id: str) -> JsonObject:
+    def _require_open_session(self, session_id: str, tool: str) -> Any:
         session = self.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"{tool} cannot run in {session.state.value} state"
+            )
+        return session
+
+    def _frida_auth(self, session_id: str) -> JsonObject:
+        session = self._require_open_session(session_id, "frida")
         auth = session.metadata.get(_AUTH_KEY)
         if not isinstance(auth, dict):
             raise FridaError(
@@ -63,7 +75,7 @@ class FridaDeviceMixin:
         self, session_id: str, device_id: str = "usb", endpoint: str = ""
     ) -> Result[JsonObject]:
         try:
-            self.registry.get(session_id)
+            self._require_open_session(session_id, "frida.device.connect")
             client = FridaClient()
             if endpoint.strip():
                 info = client.add_remote_device(endpoint.strip())
@@ -76,6 +88,7 @@ class FridaDeviceMixin:
                     "name": str(getattr(device, "name", "")),
                     "type": str(getattr(device, "type", "")),
                 }
+            self._require_open_session(session_id, "frida.device.connect")
             self._save_auth(session_id, {"device_id": resolved_id, "pids": [], "packages": []})
             _record_backend(self, session_id, "frida", endpoint=resolved_id)
             _timeline_append(
@@ -101,7 +114,7 @@ class FridaDeviceMixin:
         port: int = 27042,
     ) -> Result[JsonObject]:
         try:
-            self.registry.get(session_id)
+            self._require_open_session(session_id, "frida.server.ensure")
             backend = getattr(self, "_adb_backend", None) or AdbBackend(
                 getattr(self.settings, "adb", None)
             )
@@ -111,6 +124,7 @@ class FridaDeviceMixin:
                 else None
             )
             data = backend.ensure_frida_server(serial, server_binary=binary, port=port)
+            self._require_open_session(session_id, "frida.server.ensure")
             _timeline_append(
                 self, session_id, "frida.server.ensure", "frida-server ensured", serial=serial
             )
