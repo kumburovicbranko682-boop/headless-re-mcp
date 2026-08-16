@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.devices` 在枚举卡住时仍会一直挂着**。给 attach/spawn/applications
+  加截止后，`enumerate_devices` 睡 8s 仍要 8.000s 才回。现在共用同一截止。
 - **`device.current_activity` 在读不到前台包时仍报成功**。假设备
   `app_current()` 返回 `None` 时仍 `ok=True` 且 `package=None`。agent
   会当成「没有前台应用」而不是读失败。现在空包名报 `backend_error`。

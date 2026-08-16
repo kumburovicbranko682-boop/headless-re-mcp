@@ -414,15 +414,21 @@ class FridaClient:
 
     def enumerate_devices(self) -> JsonObject:
         frida = self._need()
-        try:
-            devices = frida.enumerate_devices()
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
-        items = [
-            {"id": str(dev.id), "name": str(dev.name), "type": str(dev.type)}
-            for dev in devices
-        ]
-        return {"devices": items, "count": len(items)}
+
+        def work() -> JsonObject:
+            try:
+                devices = frida.enumerate_devices()
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError(
+                    "backend_error", f"failed to enumerate devices: {exc}"
+                ) from exc
+            items = [
+                {"id": str(dev.id), "name": str(dev.name), "type": str(dev.type)}
+                for dev in devices
+            ]
+            return {"devices": items, "count": len(items)}
+
+        return self._call("enumerate_devices", work)
 
     def add_remote_device(self, endpoint: str) -> JsonObject:
         frida = self._need()

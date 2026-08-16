@@ -192,6 +192,39 @@ class TestFridaApplicationsHaveADeadline:
         device.release.set()
 
 
+class TestFridaEnumerateDevicesHasADeadline:
+    """Listing devices used to park the caller when frida stopped answering.
+
+    Measured after attach/spawn/applications had a deadline:
+    ``enumerate_devices()`` against a listing that slept 8s still returned
+    only after 8.000s.
+    """
+
+    def test_a_hung_listing_returns_timeout_instead_of_blocking(self) -> None:
+        class _Frida:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def enumerate_devices(self) -> list[object]:
+                self.entered.set()
+                self.release.wait()
+                return []
+
+        frida = _Frida()
+        client = FridaClient(timeout=0.3)
+        client._available = True
+        client._frida = frida
+        started = time.monotonic()
+        with pytest.raises(FridaError) as info:
+            client.enumerate_devices()
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert frida.entered.is_set()
+        frida.release.set()
+
+
 class TestFridaModulesSayWhenTheyStopped:
     """A module page that hit the cap looks exactly like one that ended.
 
