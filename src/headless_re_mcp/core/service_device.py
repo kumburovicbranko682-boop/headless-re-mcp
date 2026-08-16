@@ -16,6 +16,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 
 JsonObject = dict[str, Any]
 
@@ -84,13 +85,51 @@ class DeviceAnalysisMixin:
     def device_logcat(self, serial: str, lines: int = 200) -> Result[JsonObject]:
         return self._adb_wrap("logcat", serial=serial, lines=lines)
 
+    def _device_owner(self, serial: str) -> str:
+        """Artifacts require a session_id; device tools address by serial.
+
+        A synthetic owner keeps the schema and the collector unchanged: the
+        file is still listed, readable and reclaimable, without inventing a
+        session the rest of the service would then have to close.
+        """
+        return f"device:{serial}"
+
+    def _with_device_artifact(
+        self,
+        result: Result[JsonObject],
+        serial: str,
+        path: Path,
+        *,
+        kind: str,
+        source: str,
+    ) -> Result[JsonObject]:
+        if not result.ok or result.data is None:
+            return result
+        payload = _register_capture(
+            self,
+            self._device_owner(serial),
+            path,
+            kind=kind,
+            source=source,
+            payload=result.data,
+        )
+        return _success(payload, **result.meta)
+
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        result = self._adb_wrap("screenshot", serial=serial, out_path=out)
+        return self._with_device_artifact(
+            result, serial, out, kind="device_screenshot", source="device.screenshot"
+        )
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        result = self._adb_wrap(
+            "pull", serial=serial, remote_path=remote_path, local_path=out
+        )
+        return self._with_device_artifact(
+            result, serial, out, kind="device_pull", source="device.pull"
+        )
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str
