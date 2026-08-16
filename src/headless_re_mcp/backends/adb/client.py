@@ -80,6 +80,26 @@ def _monkey_launched(message: object) -> bool:
     return "events injected" in text
 
 
+def _apk_install_succeeded(message: object) -> bool:
+    """pm install prints Success. adbutils returns None when it already raised.
+
+    A Failure string used to be ignored, so installed=True after
+    INSTALL_FAILED_*. An unattended agent then talks to a package that
+    never landed.
+    """
+    if message is None or message is True:
+        return True
+    if message is False:
+        return False
+    text = str(message).strip()
+    if not text:
+        return True
+    lower = text.lower()
+    if "failure" in lower:
+        return False
+    return lower.endswith("success") or "\nsuccess" in lower
+
+
 def _adb_connect_succeeded(message: object) -> bool:
     """adb prints 'connected to HOST:PORT' or 'already connected to HOST:PORT'.
 
@@ -237,15 +257,29 @@ class AdbBackend:
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
         try:
-            dev.install(
+            raw = dev.install(
                 str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
             )
         except TypeError:
             # Older adbutils signatures accept only the path.
-            dev.install(str(path))
+            raw = dev.install(str(path))
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
-        return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
+        installed = _apk_install_succeeded(raw)
+        result: JsonObject = {
+            "installed": installed,
+            "path": str(path),
+            "serial": _check_serial(serial),
+        }
+        if not installed:
+            # The call returning is not the same as the package landing.
+            # Measured: "Failure [INSTALL_FAILED_ALREADY_EXISTS]" still
+            # reported installed=True.
+            result["note"] = "package manager did not report Success"
+            snippet = str(raw).strip()
+            if snippet:
+                result["result"] = snippet[:500]
+        return result
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)

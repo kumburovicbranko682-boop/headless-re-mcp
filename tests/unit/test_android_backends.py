@@ -947,6 +947,64 @@ class TestFridaServerEnsureDoesNotReportAGhost:
         assert result == {"running": True, "pushed": False, "port": 27042}
 
 
+class TestDeviceInstallDoesNotReportAGhost:
+    """A Failure string used to be reported as installed=True.
+
+    Measured: Device.install returned 'Failure [INSTALL_FAILED_ALREADY_EXISTS]'
+    (and the older one-argument signature did the same) and the reply still
+    said installed=True. An unattended agent then talks to a package that
+    never landed.
+    """
+
+    def _install(self, tmp_path: Path, device: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        backend = AdbBackend()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend.install("emulator-5554", str(apk))
+
+    def test_a_failure_string_is_not_installed(self, tmp_path: Path) -> None:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> str:
+                return "Failure [INSTALL_FAILED_ALREADY_EXISTS]"
+
+        result = self._install(tmp_path, _Dev())
+        assert result["installed"] is False
+        assert "did not report Success" in result["note"]
+        assert "INSTALL_FAILED_ALREADY_EXISTS" in result["result"]
+
+    def test_an_old_signature_failure_is_not_installed(self, tmp_path: Path) -> None:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> str:
+                if kwargs:
+                    raise TypeError("unexpected keyword argument")
+                return "Performing Streamed Install\nFailure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
+
+        result = self._install(tmp_path, _Dev())
+        assert result["installed"] is False
+        assert "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in result["result"]
+
+    def test_a_none_return_is_still_installed(self, tmp_path: Path) -> None:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        result = self._install(tmp_path, _Dev())
+        assert result["installed"] is True
+        assert "note" not in result
+
+    def test_pm_success_wording_is_still_installed(self, tmp_path: Path) -> None:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> str:
+                return "Performing Streamed Install\nSuccess"
+
+        result = self._install(tmp_path, _Dev())
+        assert result["installed"] is True
+        assert "note" not in result
+
+
 class TestDeviceUninstallDoesNotReportAGhost:
     """adbutils returning False used to be reported as uninstalled=True.
 
