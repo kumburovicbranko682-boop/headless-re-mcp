@@ -29,6 +29,27 @@ class TestIdaPagesSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestStaticTypesDescriptionMatchesTheCut:
+    """static.types now pages with has_more, but the tool text hid that.
+
+    Measured: 250 types, limit 100, has_more=true, while the description
+    said "list local type-library ordinals" -- so a model treats a page as
+    every type.
+    """
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.core import build_static_extended_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_static_extended_tools(service)}
+            doc = tools["static.types"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestStaticGlobalsDescriptionMatchesTheCut:
     """static.globals now pages with has_more, but the tool text hid that.
 
