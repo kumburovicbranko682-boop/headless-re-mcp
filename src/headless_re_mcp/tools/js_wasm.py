@@ -29,6 +29,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         webcrack can exit non-zero after writing usable code. Read partial and
         exit_code rather than treating the output as a clean deobfuscation.
+        Oversized code is cut and marked truncated.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 

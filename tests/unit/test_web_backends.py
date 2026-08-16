@@ -455,6 +455,27 @@ def test_the_wasm_info_tool_names_a_cut_listing() -> None:
     assert "truncated" in docs["wasm_info"]
 
 
+def test_the_deobfuscate_tool_names_a_cut_listing() -> None:
+    """The reply already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut code field as the
+    whole deobfuscation.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import js_wasm as js_mod
+
+    tree = ast.parse(inspect.getsource(js_mod.build_js_wasm_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["js_deobfuscate"]
+    assert "truncated" in docs["js_deobfuscate"]
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
