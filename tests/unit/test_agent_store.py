@@ -475,6 +475,33 @@ def test_a_live_thread_does_not_keep_every_message_it_ever_wrote(tmp_path: Path)
     assert [m.content for m in other] == ["leave me"]
 
 
+def test_a_live_thread_message_bytes_are_bounded_not_just_message_count(
+    tmp_path: Path,
+) -> None:
+    """A count cap still permits a multi-gigabyte live thread.
+
+    Every message is individually capped at 1 MiB, but the old retention rule
+    kept 2,000 of them.  The database therefore grew to roughly 2 GiB while
+    ``list_messages`` only ever read its newest 2,000 rows.  Retention must
+    bound the bytes as well as the row count and keep the recent end intact.
+    """
+    store = AgentStore(tmp_path / "message-bytes.db")
+    store.retained_messages_per_thread = 200
+    store.retained_message_bytes_per_thread = 2_048
+    thread = store.create_thread()
+
+    for index in range(1, 8):
+        store.add_message(thread.id, "user", f"message {index}" + "x" * 900)
+
+    messages = store.list_messages(thread.id, limit=50)
+    assert [item.content.split("x", 1)[0] for item in messages] == [
+        "message 6",
+        "message 7",
+    ]
+    assert sum(len(item.content.encode("utf-8")) for item in messages) <= 2_048
+    assert store.path.stat().st_size < 100_000
+
+
 def test_finished_threads_are_trimmed_and_live_ones_are_not(tmp_path: Path) -> None:
     """Every completed mission used to leave its thread in the database forever.
 

@@ -53,6 +53,12 @@ _FINISHED_TRIM_INTERVAL = 32
 # so keeping it only grows the file.
 _RETAINED_MESSAGES_PER_THREAD = 2_000
 
+# A count cap alone still permits a live thread to retain roughly 2 GiB: every
+# message is allowed up to 1 MiB and the orchestrator can write thousands of
+# assistant/tool turns over a night.  The provider only reads the recent end,
+# so retaining that much prefix is unbounded storage with no analysis value.
+_RETAINED_MESSAGE_BYTES_PER_THREAD = 64 * 1024 * 1024
+
 # Each streamed token is a run_events row. 2000 deltas of 20 bytes were 414 KB
 # and still climbing. A live mission keeps every run until it finishes, and
 # list_events already only pages 5000 at a time, so the prefix nobody can
@@ -124,6 +130,7 @@ class AgentStore:
         self.retained_finished_threads = _RETAINED_FINISHED_THREADS
         self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
         self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
+        self.retained_message_bytes_per_thread = _RETAINED_MESSAGE_BYTES_PER_THREAD
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
@@ -300,12 +307,21 @@ class AgentStore:
             con.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?)", (message_id, thread_id, role, content, run_id, tool_call_id, now))
             con.execute("UPDATE threads SET updated_at=? WHERE id=?", (now, thread_id))
             keep = max(1, int(self.retained_messages_per_thread))
+            byte_keep = max(1, int(self.retained_message_bytes_per_thread))
             con.execute(
-                "DELETE FROM messages WHERE id IN ("
-                "  SELECT id FROM messages WHERE thread_id=?"
-                "  ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+                "WITH ranked AS ("
+                "  SELECT id,"
+                "    ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS row_number,"
+                "    SUM(length(CAST(content AS BLOB))) OVER ("
+                "      ORDER BY created_at DESC, id DESC ROWS UNBOUNDED PRECEDING"
+                "    ) AS bytes_so_far"
+                "  FROM messages WHERE thread_id=?"
+                ")"
+                " DELETE FROM messages WHERE id IN ("
+                "  SELECT id FROM ranked"
+                "  WHERE row_number > ? OR (bytes_so_far > ? AND row_number > 1)"
                 ")",
-                (thread_id, keep),
+                (thread_id, keep, byte_keep),
             )
         return AgentMessage(message_id, thread_id, role, content, run_id, tool_call_id, now)
 
