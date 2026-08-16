@@ -9,6 +9,22 @@ from typing import Any
 
 from headless_re_mcp.error_boundary import install_global_exception_hooks, record_exception
 
+# A long decompilation used to be sliced at 1000 characters and look complete.
+# Measured: a 1500-character preview came back as 1000 with no truncated.
+_PREVIEW_LIMIT = 1000
+
+
+def _decompiler_preview(cfunc: object | None) -> dict[str, Any]:
+    if cfunc is None:
+        return {"available": False, "preview": "", "truncated": False, "bytes": 0}
+    text = str(cfunc)
+    return {
+        "available": True,
+        "preview": text[:_PREVIEW_LIMIT],
+        "truncated": len(text) > _PREVIEW_LIMIT,
+        "bytes": len(text),
+    }
+
 
 def _emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -65,10 +81,7 @@ def run(binary: Path, decompile: bool) -> int:
                     result["decompiler"] = {"available": False, "error": "init failed"}
                 else:
                     cfunc = ida_hexrays.decompile(entry)
-                    result["decompiler"] = {
-                        "available": cfunc is not None,
-                        "preview": str(cfunc)[:1000] if cfunc is not None else "",
-                    }
+                    result["decompiler"] = _decompiler_preview(cfunc)
             except Exception as exc:
                 result["decompiler"] = {"available": False, "error": str(exc)}
 

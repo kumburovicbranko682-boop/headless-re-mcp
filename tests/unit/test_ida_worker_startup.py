@@ -192,3 +192,27 @@ class TestIdaDisassemblySaysWhenALineWasCut:
         self._install(monkeypatch, "mov eax, ebx")
         page = _disassemble({"address": 0x1000, "count": 1})
         assert page["instructions"][0]["truncated"] is False
+
+
+class TestIdaGatePreviewSaysWhenItWasCut:
+    """The idalib gate decompiler preview was sliced at 1000 and said nothing.
+
+    Measured: a 1500-character preview came back as 1000 with no truncated,
+    so a caller would treat a cut function body as the whole decompilation.
+    """
+
+    def test_a_cut_preview_is_reported(self) -> None:
+        from headless_re_mcp.backends.ida.gate_worker import _decompiler_preview
+
+        page = _decompiler_preview("X" * 1500)
+        assert page["available"] is True
+        assert len(page["preview"]) == 1000
+        assert page["truncated"] is True
+        assert page["bytes"] == 1500
+
+    def test_a_short_preview_is_not_labelled_partial(self) -> None:
+        from headless_re_mcp.backends.ida.gate_worker import _decompiler_preview
+
+        page = _decompiler_preview("int main() { return 0; }")
+        assert page["truncated"] is False
+        assert page["bytes"] == len("int main() { return 0; }")

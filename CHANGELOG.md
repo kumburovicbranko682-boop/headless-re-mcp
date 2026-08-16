@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **IDA gate 反编译预览截断后看起来仍是完整函数**。1500 字符被切成
+  1000 且没有 `truncated`。agent 会把切掉的函数体当成整段。现在带回
+  `truncated` 和 `bytes`。
 - **本地 `frida.attach` 超时信封把可重试失败标成永久失败**。设备路径
   已标 `retryable=True`，本地路径 `retryable=False`。agent 不会再试。
   现在本地 `timeout` 也标可重试。
