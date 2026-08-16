@@ -577,6 +577,59 @@ class TestWebConsoleSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestWebScreenshotDoesNotInventAFile:
+    """A playwright screenshot that wrote nothing still returned a path.
+
+    Measured: the reply carried path= and the file did not exist.
+    """
+
+    def test_a_screenshot_that_writes_nothing_is_not_stored(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.web.client import WebBackend, WebError
+
+        class Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                del path, full_page
+
+        class Runner:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), Page(), object())
+        handle.runner = Runner()  # type: ignore[assignment]
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        with pytest.raises(WebError) as caught:
+            backend.screenshot("s", tmp_path / "s.png")
+        assert caught.value.code == "backend_error"
+        assert not (tmp_path / "s.png").exists()
+
+    def test_a_screenshot_that_writes_a_file_is_stored(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        out = tmp_path / "s.png"
+
+        class Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                del full_page
+                Path(path).write_bytes(b"PNG")
+
+        class Runner:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), Page(), object())
+        handle.runner = Runner()  # type: ignore[assignment]
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        result = backend.screenshot("s", out)
+        assert result["path"] == str(out)
+        assert out.read_bytes() == b"PNG"
+
+
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:
         """Sorting would silently target the highest pid, not the new app."""

@@ -476,6 +476,15 @@ class WebBackend:
                 handle.page.screenshot(path=str(out_path), full_page=full_page)
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"screenshot failed: {exc}") from exc
+            # Measured: a screenshot whose playwright call wrote nothing still
+            # came back as a path. The caller then reads a capture that is not
+            # on disk.
+            if not out_path.is_file():
+                raise WebError(
+                    "backend_error",
+                    "screenshot did not write an image",
+                    path=str(out_path),
+                )
             return {"path": str(out_path)}
 
         return self._runner(handle).call(work)
