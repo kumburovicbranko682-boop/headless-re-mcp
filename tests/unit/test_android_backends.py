@@ -851,6 +851,63 @@ class TestFridaMemoryReadSaysWhenItWasShort:
         assert "truncated" in block
 
 
+class TestFridaJavaClassesDescriptionSaysWhenItWasCut:
+    """The class page already carries has_more; the tool text did not say so.
+
+    Measured: 250 classes, limit 100, count=100, has_more=True, while the
+    description omitted has_more. An unattended agent that trusted the
+    description treated the page as every loaded class.
+    """
+
+    def _client(self, count: int) -> FridaClient:
+        class _Exports:
+            def classes(self, name_filter: str, limit: int) -> list[str]:
+                del name_filter
+                return [f"com.App{index}" for index in range(min(count, limit))]
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Dev:
+            def attach(self, pid: int) -> _Session:
+                del pid
+                return _Session()
+
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        client._resolve_device = lambda device_id: _Dev()  # type: ignore[method-assign]
+        return client
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._client(250).java_enumerate(
+            "usb", 1, allowed_pids=[1], mode="classes", limit=100
+        )
+        assert result["count"] == 100
+        assert result["has_more"] is True
+
+    def test_the_tool_description_says_to_read_has_more(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "frida.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def frida_java_classes(")[1].split("def frida_java_methods(")[0]
+        assert "has_more" in block
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

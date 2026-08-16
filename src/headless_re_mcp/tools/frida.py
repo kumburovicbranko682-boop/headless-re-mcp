@@ -94,7 +94,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
-        """Enumerate loaded Java classes on the authorized device pid (ART only)."""
+        """Enumerate loaded Java classes; read has_more when the page is full."""
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
         )
