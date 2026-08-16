@@ -591,6 +591,14 @@ class UnpackCliMixin:
         """Optional Scylla helper into a session artifact; never overwrite input."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.scylla.rebuild cannot run in {session.state.value} state"
+                )
             if self.settings.scylla is None:
                 return Result[JsonObject](
                     ok=False,
@@ -624,6 +632,15 @@ class UnpackCliMixin:
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.scylla.rebuild cannot run in {session.state.value} state"
+                )
             return _success(
                 {
                     "scylla": result.to_dict(),
