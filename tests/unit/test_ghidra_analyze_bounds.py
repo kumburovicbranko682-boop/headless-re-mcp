@@ -73,6 +73,39 @@ class TestGhidraAnalyzeReportsTheInnerCap:
         assert result["returned_chars"] == 8000
 
 
+class TestGhidraAnalyzeReportsTheStreamCap:
+    """The 1 MiB run_bounded keep used to hide how much the JVM printed.
+
+    Measured: 20971520-byte stdout, keep 1 MiB, output_chars 1000000 --
+    so a caller reading output_chars thinks analyzeHeadless logged only
+    the retained prefix.
+    """
+
+    def test_the_true_log_length_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.ghidra.client as ghidra_mod
+        from headless_re_mcp.backends.common.bounded_run import Completed
+
+        binary = tmp_path / "a.bin"
+        binary.write_bytes(b"MZ")
+        client = GhidraClient()
+        client.analyze = Path("/bin/true")
+        client.java = Path("/bin/true")
+        monkeypatch.setattr(
+            ghidra_mod,
+            "run_bounded",
+            lambda *args, **kwargs: Completed(
+                0, b"G" * 1_000_000, b"", stdout_bytes=20_971_520, truncated=True
+            ),
+        )
+        result = client.analyze_binary(binary, tmp_path / "proj")
+        assert len(result["stdout_excerpt"]) == 8000
+        assert result["truncated"] is True
+        assert result["output_chars"] == 20_971_520
+        assert result["returned_chars"] == 8000
+
+
 class TestGhidraAnalyzeDescriptionMatchesTheCut:
     """ghidra.analyze now cuts the log at 8000 chars, but the tool text hid that.
 

@@ -296,7 +296,14 @@ class GhidraClient:
         decoded = completed.stdout.decode("utf-8", errors="replace")
         stdout = decoded[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
-        return stdout, stderr, int(completed.returncode), len(decoded)
+        # Measured: 20 MiB JVM log, run_bounded kept 1 MiB, output_chars
+        # 1000000 -- the keep hid how much analyzeHeadless actually printed.
+        produced = (
+            int(completed.stdout_bytes)
+            if completed.stdout_bytes is not None
+            else len(decoded)
+        )
+        return stdout, stderr, int(completed.returncode), produced
 
 
 def _which(name: str) -> Path | None:
