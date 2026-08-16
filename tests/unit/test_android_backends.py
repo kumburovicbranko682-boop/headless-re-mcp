@@ -859,6 +859,50 @@ class TestFridaApplicationPaging:
         assert complete["has_more"] is False
 
 
+class TestFridaModulePaging:
+    def test_a_module_page_says_when_more_exist(self) -> None:
+        """A module page used to look complete even with total > count.
+
+        Measured: 5 modules, limit 2, count=2 total=5, no has_more.
+        """
+
+        class _Exports:
+            def modules(self) -> list[dict[str, object]]:
+                return [
+                    {"name": f"m{index}", "base": hex(index), "size": 1, "path": f"/m{index}"}
+                    for index in range(5)
+                ]
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                assert source
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                assert pid > 0
+                return _Session()
+
+        client = FridaClient()
+        client._frida = _Frida()
+        client._available = True
+        result = client.modules(1, allowed_pid=1, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        complete = client.modules(1, allowed_pid=1, limit=5)
+        assert complete["has_more"] is False
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
