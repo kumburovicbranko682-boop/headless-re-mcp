@@ -315,6 +315,39 @@ def test_mission_create_says_when_the_objective_was_cut(
     assert intact["mission"]["truncated"] is False
 
 
+def test_mission_get_says_when_the_error_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """set_mission_status sliced the error at 1000 and said nothing.
+
+    Measured: a 1500-character failure reason was stored as 1000 with
+    no error_truncated, so an unattended GET treated a cut cause as
+    the whole overnight failure.
+    """
+    from headless_re_mcp.agent.models import MissionStatus
+
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    thread = store.create_thread(session_id="analysis-session")
+    cut = store.create_mission(thread.id, "long failure")
+    intact = store.create_mission(thread.id, "short failure")
+    store.set_mission_status(cut.id, MissionStatus.FAILED, error="E" * 1500)
+    store.set_mission_status(intact.id, MissionStatus.FAILED, error="provider exploded")
+
+    with TestClient(app) as client:
+        cut_body = client.get(f"/api/agent/missions/{cut.id}", headers=headers).json()
+        intact_body = client.get(f"/api/agent/missions/{intact.id}", headers=headers).json()
+    assert cut_body["ok"] is True
+    assert len(cut_body["mission"]["error"]) == 1000
+    assert cut_body["mission"]["error_truncated"] is True
+    assert intact_body["mission"]["error_truncated"] is False
+    assert intact_body["mission"]["error"] == "provider exploded"
+
+
 def test_thread_create_says_when_the_title_was_cut(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]
