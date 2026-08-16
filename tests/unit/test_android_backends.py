@@ -411,6 +411,50 @@ class TestAdbArgumentValidation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestDeviceScreenshotIsNotARegisteredArtifact:
+    def test_description_matches_the_empty_artifact_table(self, tmp_path: Path) -> None:
+        """The tool said PNG artifact; artifacts.list stayed empty.
+
+        Measured: device.screenshot wrote a file and returned path, with
+        no artifact_id. list_artifacts count=0. An unattended agent then
+        called artifacts.read and concluded the capture had failed.
+        """
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.device import build_device_tools
+
+        class _Fake(AdbBackend):
+            def __init__(self) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+
+            def screenshot(self, serial: str, out_path: Path) -> dict[str, Any]:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(b"\x89PNG\r\n")
+                return {"path": str(out_path), "serial": serial}
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            service._backend = lambda: _Fake()  # type: ignore[method-assign]
+            result = service.device_screenshot("emulator-5554")
+            assert result.ok and result.data is not None
+            assert "artifact_id" not in result.data
+            listed = service.repository.list_artifacts()
+            assert listed["count"] == 0
+            assert listed["total"] == 0
+
+            tools = {item.name: item for item in build_device_tools(service)}
+            doc = tools["device.screenshot"].handler.__doc__ or ""
+            assert "not a registered artifact" in doc
+            assert "path" in doc
+        finally:
+            service.close_all()
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()

@@ -113,7 +113,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:
-        """Capture a device screenshot to a PNG artifact."""
+        """Capture a device screenshot to a PNG file. The reply carries path.
+
+        This is not a registered artifact: artifacts.list and artifacts.read
+        will not see it. The tool has no session_id, so the file cannot be
+        entered in the artifact table.
+        """
         return _dump(analysis.device_screenshot(serial))
 
     @tools.tool(name="device.pull")
