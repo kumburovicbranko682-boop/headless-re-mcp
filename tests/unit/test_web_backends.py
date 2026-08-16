@@ -783,6 +783,17 @@ class TestProxyFlowGetDoesNotInventAnEmptyBody:
         assert result["response"]["size"] == 5
         assert result["response"]["body"] == "hello"
 
+    def test_the_tool_description_says_a_failed_read_is_not_empty(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "proxy.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def proxy_flow_get(")[1].split("def proxy_replay(")[0]
+        assert "empty" in block
+
 
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:

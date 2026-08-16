@@ -51,7 +51,7 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Fetch one flow's headers and body (large bodies spill to an artifact)."""
+        """Fetch one flow's headers and body; a body-read failure is not an empty response."""
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
     @tools.tool(name="proxy.replay")
