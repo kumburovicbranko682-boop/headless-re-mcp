@@ -40,7 +40,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return a readable, unminified form of a JavaScript file via webcrack.
 
         webcrack can exit non-zero after writing usable code. Read partial and
-        exit_code rather than treating the output as clean.
+        exit_code rather than treating the output as clean. Oversized code is
+        cut and marked truncated.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
