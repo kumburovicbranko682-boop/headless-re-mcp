@@ -140,12 +140,15 @@ def _capabilities() -> frozenset[str]:
 
 def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
     window = items[offset : offset + limit]
+    # Measured: 250 items, limit 100, returned=100, total=250, no
+    # has_more, so an agent that only read the page treated it as the set.
     return {
         "items": window,
         "offset": offset,
         "limit": limit,
         "returned": len(window),
         "total": len(items),
+        "has_more": offset + len(window) < len(items),
     }
 
 
