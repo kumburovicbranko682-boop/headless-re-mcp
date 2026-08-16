@@ -1275,6 +1275,33 @@ class TestApkStringPaging:
         assert rest["has_more"] is False
 
 
+class TestApkNativeLibPaging:
+    def test_a_native_lib_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A native-lib list used to look complete with only count.
+
+        Measured: five lib/ paths, count=5, no total or has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_files(self) -> list[str]:
+                return [f"lib/arm64-v8a/lib{index}.so" for index in range(5)] + [
+                    "classes.dex"
+                ]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.native_libs(apk, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        assert result["abis"] == ["arm64-v8a"]
+        complete = client.native_libs(apk, limit=5)
+        assert complete["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

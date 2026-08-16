@@ -223,13 +223,26 @@ class ApkClient:
             "main_activity": apk.get_main_activity(),
         }
 
-    def native_libs(self, path: Path) -> JsonObject:
+    def native_libs(self, path: Path, *, limit: int = 200) -> JsonObject:
+        """List bundled native libraries. The reply is capped.
+
+        Measured: five lib/ paths, count=5, no total or has_more. A page
+        looked like every .so the APK shipped.
+        """
         apk = self._apk(path)
         libs = sorted(name for name in apk.get_files() if name.startswith("lib/"))
         abis = sorted(
             {name.split("/")[1] for name in libs if len(name.split("/")) >= 3}
         )
-        return {"native_libs": libs, "abis": abis, "count": len(libs)}
+        capped = max(1, min(int(limit), 2000))
+        page = libs[:capped]
+        return {
+            "native_libs": page,
+            "abis": abis,
+            "count": len(page),
+            "total": len(libs),
+            "has_more": len(libs) > len(page),
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
