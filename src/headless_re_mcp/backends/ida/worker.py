@@ -23,6 +23,10 @@ class WorkerRequestError(RuntimeError):
 # idalib opens the binary in place, so one sample has one database and a second
 # process asking for it is refused with this.
 _DATABASE_IN_USE = 4
+# Ghidra's export already cuts here. Measured: a 520_000-character Hex-Rays
+# dump came back in full with no truncated or bytes, so the RPC line was the
+# whole function and a larger one would sit on the pipe until the host OOM'd.
+_MAX_DECOMPILE_CHARS = 200_000
 
 
 def _open_database_error(code: int, binary: Path) -> RuntimeError:
@@ -643,7 +647,9 @@ def _decompile(params: JsonObject) -> JsonObject:
     return {
         "address": int(function.start_ea),
         "end": int(function.end_ea),
-        "code": text,
+        "code": text[:_MAX_DECOMPILE_CHARS],
+        "truncated": len(text) > _MAX_DECOMPILE_CHARS,
+        "bytes": len(text),
     }
 
 

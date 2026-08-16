@@ -13,7 +13,9 @@ from typing import Any
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
+    _MAX_DECOMPILE_CHARS,
     _bytes_read,
+    _decompile,
     _functions,
     _open_database_error,
     _page_items,
@@ -151,3 +153,42 @@ def test_a_full_byte_read_is_complete(monkeypatch: Any) -> None:
     assert result["size"] == 64
     assert result["requested"] == 64
     assert result["truncated"] is False
+
+
+def _install_hexrays(monkeypatch: Any, text: str) -> None:
+    import sys
+    import types
+
+    class Func:
+        start_ea = 0x1000
+        end_ea = 0x1100
+
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: Func()  # type: ignore[attr-defined]
+    ida_hexrays = types.ModuleType("ida_hexrays")
+    ida_hexrays.init_hexrays_plugin = lambda: True  # type: ignore[attr-defined]
+    ida_hexrays.decompile = lambda ea: text  # type: ignore[attr-defined]
+    idautils = types.ModuleType("idautils")
+    idautils.Functions = lambda: [0x1000]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+    monkeypatch.setitem(sys.modules, "ida_hexrays", ida_hexrays)
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+
+
+def test_a_huge_decompile_says_how_much_was_cut(monkeypatch: Any) -> None:
+    """520000 characters came back in full with no truncated or bytes."""
+    full = "int f(void) { return 0; }\n" * 20_000
+    assert len(full) > _MAX_DECOMPILE_CHARS
+    _install_hexrays(monkeypatch, full)
+    result = _decompile({"address": 0x1000})
+    assert result["code"] == full[:_MAX_DECOMPILE_CHARS]
+    assert result["truncated"] is True
+    assert result["bytes"] == len(full)
+
+
+def test_a_short_decompile_is_complete(monkeypatch: Any) -> None:
+    _install_hexrays(monkeypatch, "int f(void) { return 1; }")
+    result = _decompile({"address": 0x1000})
+    assert result["code"] == "int f(void) { return 1; }"
+    assert result["truncated"] is False
+    assert result["bytes"] == len(result["code"])
