@@ -154,6 +154,26 @@ def test_static_writes_emit_patch_artifact_and_timeline(tmp_path: Path) -> None:
     assert Path(str(patched.data["patch_artifact"])).is_file()
 
 
+def test_static_patch_records_are_registered(tmp_path: Path) -> None:
+    """static writes wrote undo JSON and never registered it.
+
+    Measured: 2 writes, 2 files, 0 artifact rows, no artifact_id -- so the
+    agent cannot read the record back and retention cannot reclaim it.
+    """
+    service, session_id = _write_service(tmp_path)
+    renamed = service.static_name_set(session_id, address=0x140001000, name="hrmcp_unit")
+    assert renamed.ok and renamed.data is not None
+    assert renamed.data.get("artifact_id")
+
+    listed = service.repository.list_artifacts(session_id)
+    assert listed["total"] == 1
+    assert listed["artifacts"][0]["kind"] == "static_patch"
+
+    read = service.artifacts_read(str(renamed.data["artifact_id"]), offset=0, limit=16)
+    assert read.ok and read.data is not None
+    assert read.data["data"]
+
+
 def test_a_patch_that_landed_is_not_reported_as_a_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
