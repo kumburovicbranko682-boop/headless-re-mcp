@@ -504,4 +504,31 @@ class AdbBackend:
             dev.forward(local, remote)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
+        # Measured: a no-op forward still named the ports, so an agent
+        # talks through a tunnel that was never installed.
+        list_fn = getattr(dev, "forward_list", None) or getattr(dev, "list_forward", None)
+        if callable(list_fn):
+            try:
+                items = list_fn()
+            except Exception:  # noqa: BLE001
+                items = None
+            landed = False
+            for item in items if isinstance(items, (list, tuple)) else ():
+                left = getattr(item, "local", None)
+                right = getattr(item, "remote", None)
+                if left is None and isinstance(item, dict):
+                    left = item.get("local")
+                    right = item.get("remote")
+                if left is None and isinstance(item, (list, tuple)) and len(item) >= 2:
+                    left, right = item[0], item[1]
+                if str(left) == local and str(right) == remote:
+                    landed = True
+                    break
+            if not landed:
+                raise AdbError(
+                    "backend_error",
+                    "forward did not appear in the device list",
+                    local=local,
+                    remote=remote,
+                )
         return {"local": local, "remote": remote}

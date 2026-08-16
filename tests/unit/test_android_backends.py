@@ -1795,3 +1795,51 @@ class TestDevicePushDoesNotReportAGhost:
         result = self._push(tmp_path, _Sync())
         assert result["remote"] == "/data/local/tmp/payload.bin"
         assert result["local"].endswith("payload.bin")
+
+
+class TestDeviceForwardDoesNotReportAGhost:
+    """A forward that left no tunnel used to be reported as the port pair.
+
+    Measured: Device.forward was a no-op and the reply still named the
+    ports. An unattended agent then talks through a tunnel that was never
+    installed.
+    """
+
+    def _forward(self, device: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+
+    def test_a_no_op_forward_is_not_installed(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class _Dev:
+            def forward(self, local: str, remote: str) -> None:
+                return None
+
+            def forward_list(self) -> list[object]:
+                return []
+
+        try:
+            self._forward(_Dev())
+        except AdbError as exc:
+            assert exc.code == "backend_error"
+            assert "did not appear in the device list" in exc.message
+            return
+        raise AssertionError("no-op forward was reported as installed")
+
+    def test_a_listed_forward_is_still_installed(self) -> None:
+        class _Item:
+            local = "tcp:27042"
+            remote = "tcp:27042"
+
+        class _Dev:
+            def forward(self, local: str, remote: str) -> None:
+                return None
+
+            def forward_list(self) -> list[object]:
+                return [_Item()]
+
+        assert self._forward(_Dev()) == {"local": "tcp:27042", "remote": "tcp:27042"}
