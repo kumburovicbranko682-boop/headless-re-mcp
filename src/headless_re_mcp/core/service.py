@@ -408,9 +408,22 @@ class AnalysisService(
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def list_sessions(self) -> Result[JsonObject]:
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> Result[JsonObject]:
         sessions = [_session_json(session) for session in self.registry.list()]
-        return _success({"sessions": sessions, "count": len(sessions)})
+        capped = max(1, min(int(limit), 256))
+        start = max(0, int(offset))
+        window = sessions[start : start + capped]
+        # Measured: 200 open sessions came back as one 59 KiB object with
+        # only count, so an agent treated the listing as every session.
+        return _success(
+            {
+                "sessions": window,
+                "count": len(window),
+                "total": len(sessions),
+                "offset": start,
+                "has_more": start + len(window) < len(sessions),
+            }
+        )
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_static(session_id)

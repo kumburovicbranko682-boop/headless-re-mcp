@@ -122,3 +122,51 @@ def test_registry_updates_backend_and_metadata(tmp_path: Path) -> None:
     assert updated.metadata["image_base"] == 0x140000000
     detached = registry.detach_backend(session.id, BackendKind.IDA)
     assert BackendKind.IDA not in detached.backends
+
+
+class TestSessionListSaysWhenItWasCut:
+    """session.list used to return every resident session as one page.
+
+    Measured: 200 open sessions came back as one 59 KiB object with only
+    count, so an agent treated the listing as every session.
+    """
+
+    def test_a_full_page_is_marked(self) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load())
+        service = AnalysisService(settings)
+        try:
+            for index in range(80):
+                created = service.create_session(
+                    f"https://example.com/app{index}", target="web"
+                )
+                assert created.ok, created.error
+            listed = service.list_sessions(limit=50)
+            assert listed.ok and listed.data is not None
+            assert listed.data["count"] == 50
+            assert listed.data["total"] == 80
+            assert listed.data["has_more"] is True
+        finally:
+            service.close_all()
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load())
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            assert created.ok, created.error
+            listed = service.list_sessions(limit=50)
+            assert listed.ok and listed.data is not None
+            assert listed.data["has_more"] is False
+            assert listed.data["total"] == 1
+        finally:
+            service.close_all()
