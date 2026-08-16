@@ -341,3 +341,71 @@ class TestIdaSearchImmediateSaysWhenItWasCut:
         page = worker._search_immediate({"value": 1, "offset": 0, "limit": 100})
         assert page["returned"] == 100
         assert page["has_more"] is False
+
+
+class TestIdaCfgSaysWhenItWasCut:
+    """static.cfg used to return every block with only node_count.
+
+    Measured: 5000 nodes, 411 KiB, no has_more, so an agent treated the
+    dump as the function. 8000 nodes were 664 KiB.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+        import sys
+        import types
+
+        from headless_re_mcp.backends.ida import worker
+
+        class _Block:
+            def __init__(self, index: int, total: int) -> None:
+                self.id = index
+                self.start_ea = 0x1000 + index * 16
+                self.end_ea = self.start_ea + 16
+                self.type = 0
+                self._total = total
+
+            def succs(self) -> list[_Block]:
+                if self.id + 1 < self._total:
+                    return [_Block(self.id + 1, self._total)]
+                return []
+
+            def preds(self) -> list[_Block]:
+                if self.id:
+                    return [_Block(self.id - 1, self._total)]
+                return []
+
+        class _Chart:
+            def __iter__(self) -> object:
+                for index in range(count):
+                    yield _Block(index, count)
+
+        class _Func:
+            start_ea = 0x1000
+            end_ea = 0x1000 + count * 16
+
+        ida_gdl = types.ModuleType("ida_gdl")
+        ida_gdl.FlowChart = lambda fn: _Chart()  # type: ignore[attr-defined]
+        ida_funcs = types.ModuleType("ida_funcs")
+        ida_funcs.get_func = lambda ea: _Func()  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "ida_gdl", ida_gdl)
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        monkeypatch.setattr(worker, "_MAX_CFG_NODES", 100)
+
+    def test_a_full_page_is_marked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, 250)
+        page = worker._cfg({"address": 0x1000})
+        assert page["node_count"] == 100
+        assert page["total_nodes"] == 250
+        assert page["has_more"] is True
+        assert len(page["nodes"]) == 100
+
+    def test_an_exact_page_is_complete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida import worker
+
+        self._install(monkeypatch, 100)
+        page = worker._cfg({"address": 0x1000})
+        assert page["node_count"] == 100
+        assert page["total_nodes"] == 100
+        assert page["has_more"] is False

@@ -685,6 +685,13 @@ def _basic_blocks(params: JsonObject) -> JsonObject:
     return payload
 
 
+# static.cfg used to return every block. Measured: 5000 nodes, 411 KiB,
+# no has_more, so an agent treated the dump as the function and blew the
+# 256 KiB tool budget (8000 nodes = 664 KiB). One thousand is the same
+# hard top as the other static list pages.
+_MAX_CFG_NODES = 1000
+
+
 def _cfg(params: JsonObject) -> JsonObject:
     import ida_gdl
 
@@ -704,13 +711,21 @@ def _cfg(params: JsonObject) -> JsonObject:
         )
         for succ in block.succs():
             edges.append({"src": int(block.id), "dst": int(succ.id)})
+    window = nodes[:_MAX_CFG_NODES]
+    kept = {int(node["id"]) for node in window}
+    edge_window = [
+        edge for edge in edges if int(edge["src"]) in kept and int(edge["dst"]) in kept
+    ]
     return {
         "address": int(function.start_ea),
         "function_end": int(function.end_ea),
-        "nodes": nodes,
-        "edges": edges,
-        "node_count": len(nodes),
-        "edge_count": len(edges),
+        "nodes": window,
+        "edges": edge_window,
+        "node_count": len(window),
+        "edge_count": len(edge_window),
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+        "has_more": len(nodes) > _MAX_CFG_NODES,
         "note": "function-local CFG from ida_gdl.FlowChart",
     }
 
