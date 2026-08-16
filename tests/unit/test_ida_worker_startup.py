@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import _DATABASE_IN_USE, _open_database_error
 
@@ -78,4 +80,72 @@ class TestIdaPagedListsSayWhenTheyStopped:
 
         page = _page_items([{"i": index} for index in range(80)], 70, 10)
         assert page["returned"] == 10
+        assert page["has_more"] is False
+
+
+class TestIdaFunctionAndStringPagesSayWhenTheyStopped:
+    """static.functions/strings built their own page and omitted has_more.
+
+    Measured: 80 functions or strings with limit=10 came back as
+    returned=10 and total=80, with no has_more.
+    """
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, n: int) -> None:
+        import sys
+        import types
+
+        idautils = types.ModuleType("idautils")
+        idautils.Functions = lambda: list(range(n))  # type: ignore[attr-defined]
+
+        class _Str:
+            def __init__(self, index: int) -> None:
+                self.ea = 0x1000 + index
+                self.length = 5
+                self.strtype = 0
+
+            def __str__(self) -> str:
+                return f"s{self.ea:X}"
+
+        idautils.Strings = lambda: [_Str(index) for index in range(n)]  # type: ignore[attr-defined]
+
+        ida_funcs = types.ModuleType("ida_funcs")
+
+        class _Func:
+            def __init__(self, ea: int) -> None:
+                self.start_ea = ea
+                self.end_ea = ea + 16
+                self.flags = 0
+
+        ida_funcs.get_func = lambda ea: _Func(ea)  # type: ignore[attr-defined]
+        ida_name = types.ModuleType("ida_name")
+        ida_name.get_name = lambda ea: f"sub_{ea:X}"  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "idautils", idautils)
+        monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+        monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+
+    def test_functions_hitting_the_cap_are_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida.worker import _functions
+
+        self._install(monkeypatch, 80)
+        page = _functions({"offset": 0, "limit": 10})
+        assert page["returned"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_strings_hitting_the_cap_are_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.ida.worker import _strings
+
+        self._install(monkeypatch, 80)
+        page = _strings({"offset": 0, "limit": 10})
+        assert page["returned"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_a_complete_function_list_is_not_labelled_partial(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.ida.worker import _functions
+
+        self._install(monkeypatch, 3)
+        page = _functions({"offset": 0, "limit": 10})
         assert page["has_more"] is False

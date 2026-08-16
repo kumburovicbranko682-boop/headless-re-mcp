@@ -563,6 +563,7 @@ def _functions(params: JsonObject) -> JsonObject:
         "limit": limit,
         "returned": len(items),
         "total": len(addresses),
+        "has_more": offset + len(items) < len(addresses),
     }
 
 
@@ -597,6 +598,7 @@ def _strings(params: JsonObject) -> JsonObject:
         "limit": limit,
         "returned": len(items),
         "total": len(strings),
+        "has_more": offset + len(items) < len(strings),
     }
 
 

@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`static.functions` / `static.strings` 停在一页时看起来像完整表**。80 条、
+  limit=10 时回 `returned=10` / `total=80`，没有 `has_more`（这两条没用
+  `_page_items`）。只看列表的 agent 会停在第一页。现在截断时标 `has_more`。
 - **`apk.strings` 停在一页时看起来像完整串表**。80 条、limit=10 时回
   `count=10` / `total=80`，没有 `has_more`。只看列表的 agent 会停在第一页。
   现在截断时标 `has_more`。

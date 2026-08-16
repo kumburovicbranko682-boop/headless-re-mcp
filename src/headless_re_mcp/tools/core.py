@@ -72,7 +72,11 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        """List analyzed functions with addresses, names, ranges, and flags."""
+        """List analyzed functions with addresses, names, ranges, and flags.
+
+        Read `has_more` and `total` rather than treating a page as every
+        function.
+        """
         return _dump(analysis.static_functions(session_id, offset=offset, limit=limit))
 
     def static_strings(
@@ -81,7 +85,11 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: int = 100,
         max_length: int = 4096,
     ) -> dict[str, Any]:
-        """List analyzed strings with addresses, types, and bounded text values."""
+        """List analyzed strings with addresses, types, and bounded text values.
+
+        Read `has_more` and `total` rather than treating a page as every
+        string.
+        """
         return _dump(
             analysis.static_strings(
                 session_id,
