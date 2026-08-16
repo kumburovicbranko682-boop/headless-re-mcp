@@ -38,3 +38,24 @@ class TestGhidraAnalyzeSaysWhenItStopped:
         result = client.analyze_binary(binary, project)
         assert result["stdout_excerpt"] == "ok"
         assert "truncated" not in result
+
+
+class TestGhidraAnalyzeDescriptionMatchesTheCut:
+    """ghidra.analyze now cuts the log at 8000 chars, but the tool text hid that.
+
+    Measured: 20000-char stdout, excerpt length 8000, truncated=true, while
+    the description never mentioned the cut -- so a model treats the slice
+    as the whole analysis log.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.ghidra import build_ghidra_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_ghidra_tools(service)}
+            doc = tools["ghidra.analyze"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc

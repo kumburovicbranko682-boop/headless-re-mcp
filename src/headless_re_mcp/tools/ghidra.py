@@ -27,7 +27,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         A separate analysis from IDA's, worth having when the two disagree or
         when IDA cannot load the file. Minutes on a large binary, and the other
         ghidra tools read what this produced, so run it first. Requires
-        HEADLESS_RE_GHIDRA_HOME.
+        HEADLESS_RE_GHIDRA_HOME. Check truncated: the log excerpt is cut at
+        8000 characters.
         """
         return _dump(analysis.ghidra_analyze(session_id, timeout=timeout))
 
