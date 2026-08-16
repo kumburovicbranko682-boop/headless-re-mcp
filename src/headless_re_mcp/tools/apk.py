@@ -47,9 +47,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_permissions(session_id, limit=limit))
 
     @tools.tool(name="apk.certificates")
-    def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files."""
-        return _dump(analysis.apk_certificates(session_id))
+    def apk_certificates(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+    ) -> dict[str, Any]:
+        """List signing certificates and v1 signature files.
+
+        Each list is capped by `limit`. Read `has_more` and `totals`: the
+        unpaged reply used to return every certificate in one go.
+        """
+        return _dump(analysis.apk_certificates(session_id, limit=limit))
 
     @tools.tool(name="apk.components")
     def apk_components(

@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.certificates` 一次回完整证书表**。2000 张证书整包返回（417 KiB），没有
+  `has_more`。现在默认 500，截断时标 `totals` / `has_more`。
 - **IDA 反汇编行截断后看起来仍是完整指令**。800 字符的一行被切成 512 且没有
   `truncated`。agent 会把切掉的操作数当成整条指令。现在每行带回
   `truncated`。

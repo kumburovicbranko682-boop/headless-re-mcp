@@ -657,6 +657,45 @@ class TestApkPermissionsAreCapped:
         assert page["totals"]["permissions"] == 3
 
 
+class TestApkCertificatesAreCapped:
+    """The certificate lists had no page and no signal that they had stopped.
+
+    Measured: 2000 certificates came back in one 417 KiB reply, with no
+    has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Cert:
+            def __init__(self, index: int) -> None:
+                self.subject = f"CN=s{index}"
+                self.issuer = f"CN=i{index}"
+                self.serial_number = index
+                self.sha256_fingerprint = "ab"
+
+        class _Apk:
+            def get_signature_names(self) -> list[str]:
+                return [f"CERT{index}.RSA" for index in range(n)]
+
+            def get_certificates(self) -> list[_Cert]:
+                return [_Cert(index) for index in range(n)]
+
+        client = ApkClient()
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(2000).certificates(tmp_path / "app.apk", limit=10)
+        assert len(page["certificates"]) == 10
+        assert page["totals"]["certificates"] == 2000
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).certificates(tmp_path / "app.apk", limit=10)
+        assert page["has_more"] is False
+        assert page["v1_signed"] is True
+
+
 class TestApkClassesSayWhenTheyStopped:
     """A class page that hit the cap looks exactly like one that ended.
 
