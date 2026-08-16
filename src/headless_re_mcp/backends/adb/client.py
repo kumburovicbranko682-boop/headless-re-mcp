@@ -38,6 +38,7 @@ _CURRENT_ACTIVITY_TIMEOUT = 15.0
 _UNINSTALL_TIMEOUT = 30.0
 _SCREENSHOT_TIMEOUT = 20.0
 _FRIDA_PS_TIMEOUT = 5.0
+_FRIDA_CHMOD_TIMEOUT = 8.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -682,7 +683,12 @@ class AdbBackend:
                 # sync.push has no deadline. Measured: a 0.8s sleep in
                 # push held ensure_frida_server for 0.8s.
                 self._push_file(serial, str(path), remote_path, timeout=_PUSH_TIMEOUT)
-                self._device(serial).shell(["chmod", "755", remote_path], timeout=8.0)
+                # adbutils shell(timeout=8) still opens the transport with a
+                # 600s default. Measured: a 0.8s sleep in that hop held
+                # ensure_frida_server 0.8s after push already returned.
+                self._adb_shell(
+                    serial, f"chmod 755 {remote_path}", timeout=_FRIDA_CHMOD_TIMEOUT
+                )
                 pushed = True
             except AdbError:
                 raise
