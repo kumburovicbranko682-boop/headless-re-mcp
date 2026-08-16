@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -817,6 +818,89 @@ class TestUiCapturesAreRegistered:
         mixin = service_ui.UiAutomationMixin
         for method in (mixin.ui_screenshot, mixin.ui_ocr):
             assert "_register_ui_capture" in inspect.getsource(method)
+
+
+class TestDeviceCapturesAreRegistered:
+    """device.screenshot / device.pull write a fresh uuid file every call.
+
+    They are session-independent, so they never went through the capture
+    registrar that web and UI already use. A loop that screenshots a device
+    therefore grows the artifact root with files nothing can read back and
+    nothing can reclaim -- the same dead-end the browser and UI paths had.
+    """
+
+    def _service(self, tmp_path: Any) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+
+        class _FakeAdb:
+            def screenshot(self, serial: str, out_path: Any) -> dict[str, Any]:
+                out_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+                return {"path": str(out_path), "serial": serial}
+
+            def pull(self, serial: str, remote_path: str, local_path: Any) -> dict[str, Any]:
+                local_path.write_bytes(b"pulled")
+                return {"remote": remote_path, "local": str(local_path)}
+
+        service._backend = lambda: _FakeAdb()  # type: ignore[method-assign]
+        return service
+
+    def test_screenshot_and_pull_are_readable_reclaimable_artifacts(
+        self, tmp_path: Any
+    ) -> None:
+        service = self._service(tmp_path)
+        try:
+            shot = service.device_screenshot("emulator-5554")
+            pulled = service.device_pull("emulator-5554", "/sdcard/x.bin")
+
+            for result in (shot, pulled):
+                assert result.ok, result.error
+                assert result.data is not None
+                assert "artifact_error" not in result.data
+                assert result.data["artifact_id"]
+
+            listed = service.artifacts_list()
+            assert listed.ok and listed.data is not None
+            kinds = {item["kind"] for item in listed.data["artifacts"]}
+            assert kinds == {"device_screenshot", "device_pull"}
+
+            read = service.artifacts_read(str(shot.data["artifact_id"]), offset=0, limit=8)
+            assert read.ok and read.data is not None
+            assert read.data["data"].startswith("89504e47")
+        finally:
+            service.close_all()
+
+    def test_a_registration_failure_does_not_fail_the_capture(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path)
+        try:
+
+            def explode(**_: object) -> dict:  # type: ignore[type-arg]
+                raise RuntimeError("repository is down")
+
+            service.record_artifact = explode  # type: ignore[assignment]
+            result = service.device_screenshot("emulator-5554")
+
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_id" not in result.data
+            assert "repository is down" in result.data["artifact_error"]
+            assert Path(result.data["path"]).is_file()
+        finally:
+            service.close_all()
+
+    def test_both_device_capture_tools_route_through_the_registration(self) -> None:
+        import inspect
+
+        from headless_re_mcp.core import service_device
+
+        mixin = service_device.DeviceAnalysisMixin
+        for method in (mixin.device_screenshot, mixin.device_pull):
+            assert "_register_device_capture" in inspect.getsource(method)
 
 
 def _minimal_pe(path: Any) -> Any:

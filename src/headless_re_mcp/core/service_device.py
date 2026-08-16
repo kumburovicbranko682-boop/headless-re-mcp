@@ -16,8 +16,14 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _register_capture
 
 JsonObject = dict[str, Any]
+
+# Device tools are session-independent, but the artifact table still needs a
+# session key. A reserved id keeps captures listable and reclaimable without
+# inventing a fake analysis session.
+_DEVICE_CAPTURE_SESSION = "device"
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
@@ -86,11 +92,37 @@ class DeviceAnalysisMixin:
 
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")
-        return self._adb_wrap("screenshot", serial=serial, out_path=out)
+        result = self._adb_wrap("screenshot", serial=serial, out_path=out)
+        return self._register_device_capture(
+            result, out, kind="device_screenshot", source="device.screenshot"
+        )
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
         out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
-        return self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
+        return self._register_device_capture(
+            result, out, kind="device_pull", source="device.pull"
+        )
+
+    def _register_device_capture(
+        self,
+        result: Result[JsonObject],
+        path: Path,
+        *,
+        kind: str,
+        source: str,
+    ) -> Result[JsonObject]:
+        if not result.ok or result.data is None:
+            return result
+        data = _register_capture(
+            self,
+            _DEVICE_CAPTURE_SESSION,
+            path,
+            kind=kind,
+            source=source,
+            payload=result.data,
+        )
+        return _success(data, backend="adb")
 
     def device_push(
         self, serial: str, local_path: str, remote_path: str
