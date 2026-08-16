@@ -259,6 +259,33 @@ class TestWasmWatDoesNotSucceedOnAFailedExit:
         assert info.value.details.get("exit_code") == 1
 
 
+class TestWasmInfoDoesNotSucceedOnAFailedExit:
+    """wasm-objdump exit 1 still answered objdump= if any stdout was left behind.
+
+    Measured: info against leftover stdout returned
+    {objdump: "(module leftover)"} with no error, so an unattended agent
+    would treat a failed dump as the recovered listing.
+    """
+
+    def test_exit_1_with_stdout_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        stub = tmp_path / "wasm-objdump"
+        stub.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            jsre, "_run", lambda *args, **kwargs: ("(module leftover)", "ERROR: failed", 1)
+        )
+        client = WasmClient(wabt=tmp_path)
+        with pytest.raises(JsReError) as info:
+            client.info(module)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+
 class TestWasmInfoSaysHowMuchWasCut:
     """A capped objdump said it was truncated but not how long the original was.
 

@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`wasm.info` 在 wasm-objdump 失败时仍报成功**。exit 1 但 stdout
+  非空时仍返回 `objdump`。过夜任务会把失败的转储当完整 listing。现在
+  非零退出一律报 `backend_error`。
 - **`wasm.wat` 在 wasm2wat 失败时仍报成功**。exit 1 但 stdout 非空时
   仍返回 `wat`。过夜任务会把失败的翻译当恢复后的文本。现在非零退出
   一律报 `backend_error`。
