@@ -39,7 +39,12 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_unpack_bundle(
         path: str, timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0
     ) -> dict[str, Any]:
-        """Unpack a webpack/browserify bundle into module files via webcrack."""
+        """Unpack a webpack/browserify bundle into module files via webcrack.
+
+        The on-disk tree is complete. The `files` index is capped. Read
+        `has_more` and `file_count` rather than treating the list as every
+        module webcrack wrote.
+        """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
     @tools.tool(name="wasm.wat")

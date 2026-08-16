@@ -275,6 +275,51 @@ class TestWebScriptsAreCapped:
         assert page["has_more"] is False
 
 
+class TestJsUnpackBundleSaysWhenTheListStopped:
+    """The unpacked-file index was cut at 2000 with no signal that it had stopped.
+
+    Measured: 2500 module paths came back as 2000, with no has_more. The on-disk
+    tree was complete; a caller reading only the list would miss later modules.
+    """
+
+    def _client(
+        self, tmp_path: Path, n: int, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[JsClient, Path, Path]:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        bundle = tmp_path / "app.js"
+        bundle.write_text("console.log(1)\n")
+        out = tmp_path / "out"
+        for index in range(n):
+            path = out / "modules" / f"m{index}.js"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("export default 1\n")
+        stub = tmp_path / "webcrack"
+        stub.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(jsre, "_run", lambda *args, **kwargs: ("", "", 0))
+        return JsClient(executable=stub), bundle, out
+
+    def test_hitting_the_cap_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        monkeypatch.setattr(jsre, "_MAX_UNPACK_FILES", 10)
+        client, bundle, out = self._client(tmp_path, 25, monkeypatch)
+        page = client.unpack_bundle(bundle, out)
+        assert page["file_count"] == 25
+        assert len(page["files"]) == 10
+        assert page["has_more"] is True
+
+    def test_a_complete_tree_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, bundle, out = self._client(tmp_path, 3, monkeypatch)
+        page = client.unpack_bundle(bundle, out)
+        assert page["file_count"] == 3
+        assert page["has_more"] is False
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()

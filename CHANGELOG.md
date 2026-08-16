@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`js.unpack_bundle` 文件表停在 2000 时看起来像完整树**。2500 个解包文件只回
+  2000 条路径，没有 `has_more`。磁盘上的树是全的，但只看列表的 agent 会漏掉后面的
+  模块。现在截断时标 `has_more`。
 - **`apk.export_sources` 文件表停在 2000 时看起来像完整树**。2500 个 `.java` 只回
   2000 条路径，没有 `has_more`。磁盘上的树是全的，但只看列表的 agent 会漏掉后面的
   类。现在截断时标 `has_more`。
