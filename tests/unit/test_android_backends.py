@@ -421,6 +421,33 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_classes_says_when_the_page_is_not_the_whole_set() -> None:
+    """250 classes, limit=100 returned count=100 and total=250 but no has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _Klass:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def is_external(self) -> bool:
+            return False
+
+    class _Analysis:
+        def get_classes(self) -> list[_Klass]:
+            return [_Klass(f"Lfoo/Bar{i};") for i in range(250)]
+
+    class _Parsed:
+        analysis = _Analysis()
+
+    client = ApkClient()
+    client._available = True
+    client._parsed = lambda _path: _Parsed()  # type: ignore[method-assign]
+    got = client.classes(Path("dummy.apk"), limit=100)
+    assert got["count"] == 100
+    assert got["total"] == 250
+    assert got["has_more"] is True
+
+
 def test_apk_manifest_says_when_the_xml_was_cut() -> None:
     """A 250_000-character manifest came back as 200_000 with no truncated flag.
 
