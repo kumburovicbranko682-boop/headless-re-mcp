@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -99,6 +102,56 @@ def test_command_loop_gate_rejects_analyzer_window(
     assert not result.ok
     assert result.command_loop_seen
     assert result.analyzer_windows == ("x32dbg analyzer window",)
+
+
+def test_command_loop_gate_timeout_kills_what_the_launcher_started(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """process.kill left the child holding the pipes.
+
+    Measured: timeout 0.4s, then communicate(10) raised TimeoutExpired
+    after 10.4s total; the sleeper the launcher started was still alive.
+    The gate never returned a result.
+    """
+    pid_path = tmp_path / "child.pid"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.25)'])\n"
+        f"open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
+        "while True: time.sleep(0.25)\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "headless.exe"
+    _write_minimal_pe(executable, 0x8664)
+    real_popen = subprocess.Popen
+
+    def fake_popen(*_args: object, **kwargs: object) -> subprocess.Popen[str]:
+        return real_popen([sys.executable, str(launcher)], **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(gate_module, "describe_process_windows", lambda _pid: ())
+    started = time.monotonic()
+    result = gate_module.run_command_loop_gate(
+        executable, Architecture.X64, timeout=0.4
+    )
+    elapsed = time.monotonic() - started
+    assert result.ok is False
+    assert elapsed < 5.0
+    assert pid_path.is_file()
+    child = int(pid_path.read_text())
+    deadline = time.monotonic() + 2.0
+    alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except OSError:
+            alive = False
+            break
+        time.sleep(0.05)
+    assert alive is False, "the process the x64dbg gate started outlived the timeout"
 
 
 def test_command_loop_gate_rejects_wrong_architecture(tmp_path: Path) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -61,6 +63,9 @@ def run_command_loop_gate(
 
     with TemporaryDirectory(prefix=f"headless-re-xdbg-{architecture.value}-") as user_dir:
         seed_headless_event_settings(Path(user_dir))
+        popen_kw = no_window_popen_kwargs()
+        if os.name != "nt":
+            popen_kw["start_new_session"] = True
         process = subprocess.Popen(
             [str(path), "-userdir", user_dir],
             stdin=subprocess.PIPE,
@@ -69,7 +74,7 @@ def run_command_loop_gate(
             text=True,
             encoding="utf-8",
             errors="replace",
-            **no_window_popen_kwargs(),
+            **popen_kw,
         )
 
         def monitor_windows() -> None:
@@ -82,11 +87,25 @@ def run_command_loop_gate(
             daemon=True,
         )
         monitor.start()
+        stdout = ""
+        stderr = ""
         try:
             stdout, stderr = process.communicate(input="state\nexit\n", timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate(timeout=10)
+            # process.kill() left the debugger's child holding the pipes.
+            # Measured: timeout 0.4s, then communicate(10) raised
+            # TimeoutExpired; the sleeper the launcher started was still
+            # alive. The gate never returned a result.
+            from headless_re_mcp.core.process_tree import terminate_process_tree
+
+            terminate_process_tree(process)
+            if os.name != "nt" and isinstance(process.pid, int) and process.pid > 0:
+                with suppress(OSError, ProcessLookupError):
+                    os.killpg(process.pid, 9)
+            with suppress(subprocess.TimeoutExpired, ValueError, OSError):
+                stdout, stderr = process.communicate(timeout=2.0)
+            stdout = stdout or ""
+            stderr = stderr or ""
         finally:
             monitor_stop.set()
             monitor.join(timeout=2)
