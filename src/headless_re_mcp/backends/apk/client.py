@@ -253,6 +253,8 @@ class ApkClient:
             "count": len(window),
             "total": len(names),
             "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(window) < len(names),
         }
 
     def methods(

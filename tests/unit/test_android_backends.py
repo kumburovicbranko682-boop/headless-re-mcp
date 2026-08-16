@@ -277,6 +277,55 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkClassesSayWhenTheyStopped:
+    """150 classes with limit=100 used to come back as count=100, no has_more.
+
+    total was there, but every other capped list on this surface now carries
+    has_more, and an agent that only reads that flag treats a full page as
+    the whole DEX.
+    """
+
+    def _classes(self, n: int, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass(f"Lfoo/C{index};") for index in range(n)]
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client.classes(Path("app.apk"), offset=offset, limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._classes(150, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 150
+        assert result["has_more"] is True
+        assert len(result["classes"]) == 100
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._classes(3, limit=100)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._classes(100, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 100
+        assert result["has_more"] is False
+
+
 class TestApkXrefsSayWhenTheyStopped:
     """A caller list that hit the cap looks exactly like one that ended."""
 
