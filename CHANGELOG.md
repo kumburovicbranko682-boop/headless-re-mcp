@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`proxy.flows` 停在一页时看起来像完整抓包**。500 条 flow、limit=20 时回
+  `count=20` / `total=500`，没有 `has_more`。只看列表的 agent 会停在第一页。
+  现在截断时标 `has_more`。
 - **`web.network.list` 停在一页时看起来像完整抓包**。500 条请求、limit=20 时回
   `count=20` / `total=500`，没有 `has_more`。只看列表的 agent 会停在第一页。
   现在截断时标 `has_more`。

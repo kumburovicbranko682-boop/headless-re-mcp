@@ -360,6 +360,38 @@ class TestJsUnpackBundleSaysWhenTheListStopped:
         assert page["has_more"] is False
 
 
+class TestProxyFlowsSayWhenTheyStopped:
+    """A flow page that hit the cap looks exactly like one that ended.
+
+    Measured: 500 captured flows with limit=20 came back as count=20 and
+    total=500, with no has_more, so a caller reading only the list would
+    stop after the first page of an overnight capture.
+    """
+
+    def _backend(self, n: int) -> ProxyBackend:
+        class _Recorder:
+            def snapshot(self) -> list[dict[str, str]]:
+                return [{"id": str(index), "url": f"https://x/{index}"} for index in range(n)]
+
+        class _Inst:
+            recorder = _Recorder()
+
+        backend = ProxyBackend()
+        backend._instances["s"] = _Inst()  # type: ignore[assignment]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(500).flows("s", offset=0, limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 500
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).flows("s", offset=0, limit=20)
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
