@@ -33,6 +33,9 @@ JsonObject = dict[str, Any]
 # to keep every row forever, so a thread that only grew filled the disk while
 # the reader could never see the extra history.
 MESSAGE_RETAINED_ROWS = 2000
+# list_events pages from a cursor; the table itself used to keep every
+# message.delta forever. A streamed run writes one row per token.
+EVENT_RETAINED_ROWS = 10_000
 
 
 def utc_now() -> str:
@@ -51,6 +54,7 @@ class AgentStore:
         self._lock = RLock()
         self.journal_mode = "unknown"
         self.message_retained_rows = MESSAGE_RETAINED_ROWS
+        self.event_retained_rows = EVENT_RETAINED_ROWS
         self._enable_wal()
         self._init_schema()
         # Deliberately not recovering here. Opening a database is what a
@@ -290,6 +294,13 @@ class AgentStore:
         created = utc_now()
         safe = redact(data)
         con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, json.dumps(safe, ensure_ascii=False, default=str), created))
+        retain = max(1, int(self.event_retained_rows))
+        con.execute(
+            "DELETE FROM run_events WHERE run_id=? AND seq IN ("
+            " SELECT seq FROM run_events WHERE run_id=?"
+            " ORDER BY seq DESC LIMIT -1 OFFSET ?)",
+            (run_id, run_id, retain),
+        )
         return RunEvent(run_id, seq, event_type, safe, created)
 
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:

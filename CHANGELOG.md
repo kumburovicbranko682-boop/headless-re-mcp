@@ -93,6 +93,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **`r2.pipe` 能力摘要仍声称有常驻管道**。`capabilities.describe` 回
   `radare2/rizin whitelist pipe`，而每个 `r2.*` 都是新进程。摘要改为 one-shot
   whitelist commands。
+- **run 事件只读有上限、写入没有**。80 条 × 20_000 字符的 `message.delta` 把库堆到
+  1.7 MiB，`list_events` 仍回全部 81 条。流式任务每个 token 写一行。现在每个 run
+  只留最近 10000 条。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

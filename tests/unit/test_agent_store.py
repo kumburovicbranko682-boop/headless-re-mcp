@@ -287,6 +287,35 @@ def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path
         store.create_mission(thread.id, "will not fit on disk")
 
 
+def test_a_streamed_run_does_not_keep_every_event_on_disk(tmp_path: Path) -> None:
+    """The event page was capped; the table itself was not.
+
+    Measured: 80 message.delta rows of 20_000 characters, plus the run.started
+    create_run writes, left the database at 1_703_936 bytes and list_events
+    still returned all 81. A streamed unattended run writes one row per token.
+    """
+    import sqlite3
+
+    path = tmp_path / "events.db"
+    store = AgentStore(path)
+    store.event_retained_rows = 20
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    payload = {"delta": "y" * 20_000}
+    for _ in range(80):
+        store.append_event(run.id, "message.delta", payload)
+
+    listed = store.list_events(run.id, after=0, limit=5000)
+    assert len(listed) == 20
+    with sqlite3.connect(path) as con:
+        stored = con.execute("SELECT COUNT(*) FROM run_events WHERE run_id=?", (run.id,)).fetchone()[0]
+    assert stored == 20, "the write path must drop rows, not only hide them from list_events"
+    assert listed[-1].seq == 81, "the newest event must survive"
+    assert path.stat().st_size < 800_000, (
+        f"bounded run still filled the file: {path.stat().st_size} bytes"
+    )
+
+
 def test_a_long_thread_does_not_keep_every_message_on_disk(tmp_path: Path) -> None:
     """The read window was capped; the table itself was not.
 
