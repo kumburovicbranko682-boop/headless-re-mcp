@@ -277,6 +277,51 @@ class TestApkManifestSaysWhenItWasCut:
         assert result["manifest_xml"] == xml
 
 
+class TestApkComponentsSayWhenTheyStopped:
+    """2000 activities used to come back as 2000 names with no has_more."""
+
+    def _components(self, n: int, *, limit: int = 500) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _FakeApk:
+            def get_activities(self) -> list[str]:
+                return [f"A{index}" for index in range(n)]
+
+            def get_services(self) -> list[str]:
+                return [f"S{index}" for index in range(min(n, 2))]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "A0"
+
+        client = ApkClient()
+        client._apk = lambda path: _FakeApk()  # type: ignore[method-assign]
+        return client.components(Path("app.apk"), limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._components(2000, limit=500)
+        assert len(result["activities"]) == 500
+        assert result["totals"]["activities"] == 2000
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._components(3, limit=500)
+        assert result["activities"] == ["A0", "A1", "A2"]
+        assert result["totals"]["activities"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._components(500, limit=500)
+        assert len(result["activities"]) == 500
+        assert result["totals"]["activities"] == 500
+        assert result["has_more"] is False
+
+
 class TestApkPermissionsSayWhenTheyStopped:
     """5000 permissions used to come back as count=5000 with no limit.
 
