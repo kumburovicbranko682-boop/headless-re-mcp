@@ -153,7 +153,11 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return {"objdump": stdout[:_MAX_INLINE], "truncated": len(stdout) > _MAX_INLINE}
+        return {
+            "objdump": stdout[:_MAX_INLINE],
+            "truncated": len(stdout) > _MAX_INLINE,
+            "bytes": len(stdout),
+        }
 
 
 def _discover_webcrack() -> Path | None:

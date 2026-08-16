@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`wasm.info` 截断后不说原来有多长**。500,001 字符被切成 400,000 且
+  `truncated=True`，但没有 `bytes`。`wasm.wat` 已经带了长度，agent 无法判断
+  丢掉了多少。现在带回 `bytes`。
 - **agent 线程 GET 停在最近 500 条消息时看起来像完整对话**。600 条消息回最近
   500 条（从 m100 开始），没有 `has_more`。过夜长对话会被当成从中间开始。
   现在截断时标 `has_more`。

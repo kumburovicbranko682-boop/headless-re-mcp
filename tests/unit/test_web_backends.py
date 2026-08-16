@@ -205,6 +205,46 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestWasmInfoSaysHowMuchWasCut:
+    """A capped objdump said it was truncated but not how long the original was.
+
+    Measured: 500,001 characters came back as 400,000 with truncated=True
+    and no bytes, so a caller could not tell how much of the listing was
+    missing. wasm.wat already reports bytes.
+    """
+
+    def test_a_cut_dump_reports_its_original_size(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        stub = tmp_path / "wasm-objdump"
+        stub.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(jsre, "_run", lambda *args, **kwargs: ("Y" * 500_001, "", 0))
+        client = WasmClient(wabt=tmp_path)
+        page = client.info(module)
+        assert len(page["objdump"]) == 400_000
+        assert page["truncated"] is True
+        assert page["bytes"] == 500_001
+
+    def test_a_short_dump_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        stub = tmp_path / "wasm-objdump"
+        stub.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(jsre, "_run", lambda *args, **kwargs: ("ok\n", "", 0))
+        client = WasmClient(wabt=tmp_path)
+        page = client.info(module)
+        assert page["truncated"] is False
+        assert page["bytes"] == 3
+
+
 class TestWebConsoleSaysWhenItStopped:
     """A page that hit the cap looks exactly like one that ended.
 
