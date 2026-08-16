@@ -330,3 +330,20 @@ def test_a_capped_event_page_is_distinguishable_from_the_end(tmp_path: Path) -> 
     rest = store.list_events(run.id, after=page[-1].seq, limit=1000)
     assert rest[-1].seq == latest
     assert len(page) + len(rest) == latest
+
+
+def test_a_capped_thread_list_says_what_it_left_out(tmp_path: Path) -> None:
+    """Each mission creates a thread; the list used to stop at 100 with no flag.
+
+    Measured: 120 threads, list_threads(limit=100) returned 100 and nothing
+    said there were twenty more. Overnight intake looks like a short queue.
+    """
+    store = AgentStore(tmp_path / "threads.db")
+    for index in range(120):
+        store.create_thread(title=f"t{index}")
+    assert store.count_threads() == 120
+    first = store.list_threads(limit=100, offset=0)
+    second = store.list_threads(limit=100, offset=100)
+    assert len(first) == 100
+    assert len(second) == 20
+    assert {item.id for item in first}.isdisjoint({item.id for item in second})
