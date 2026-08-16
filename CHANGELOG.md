@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.open` 在读不到包名时仍报 `opened: True`**。假解析
+  `get_package()` 返回 `None` 时仍成功。agent 会把不是 APK 的 zip 当已
+  打开的包。现在空包名报 `backend_error`。
 - **`ui.process_tree` 调试目标窗口一次回完整表**。给子进程窗口加
   `has_more` 后，`debuggee_windows` 仍整包返回。500 个窗口没有截断信号。
   现在最多 256，截断时标 `has_more`。

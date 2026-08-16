@@ -834,6 +834,63 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestApkOpenDoesNotInventSuccess:
+    """A missing package name was still reported as an opened APK.
+
+    Measured: get_package() returning None still answered
+    {opened: True, package: None}. An unattended agent then treats a zip
+    that is not an APK as an opened package.
+    """
+
+    def test_a_missing_package_is_a_failure(self, tmp_path: Path) -> None:
+        class _Apk:
+            def get_package(self) -> None:
+                return None
+
+        apk = _apk(tmp_path / "empty.apk")
+        client = ApkClient(timeout=2.0)
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        with pytest.raises(ApkError) as info:
+            client.open(apk)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("opened") is False
+
+    def test_a_real_package_is_still_success(self, tmp_path: Path) -> None:
+        class _Apk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
+            def get_androidversion_name(self) -> str:
+                return "1.0"
+
+            def get_androidversion_code(self) -> str:
+                return "1"
+
+            def get_min_sdk_version(self) -> str:
+                return "24"
+
+            def get_target_sdk_version(self) -> str:
+                return "34"
+
+            def get_main_activity(self) -> str:
+                return "com.example.app.Main"
+
+            def get_permissions(self) -> list[str]:
+                return []
+
+            def get_files(self) -> list[str]:
+                return []
+
+        apk = _apk(tmp_path / "ok.apk")
+        client = ApkClient(timeout=2.0)
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        page = client.open(apk)
+        assert page["opened"] is True
+        assert page["package"] == "com.example.app"
+
+
 class TestApkOpenHasADeadline:
     """A wedged androguard parse used to park the caller for as long as it stayed wedged.
 
