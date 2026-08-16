@@ -57,6 +57,26 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _frida_server_running(dev: Any) -> bool:
+    """Whether ``ps`` currently lists a frida-server process.
+
+    A launch command returning is not evidence: ``su`` can print nothing and
+    still have started nothing, and a timeout can mean the prompt blocked
+    after the process actually started. Only a live listing is ``running``.
+    """
+    try:
+        listing = str(dev.shell("ps -A"))
+    except Exception:  # noqa: BLE001
+        listing = ""
+    if "frida-server" in listing:
+        return True
+    try:
+        listing = str(dev.shell("ps"))
+    except Exception:  # noqa: BLE001
+        return False
+    return "frida-server" in listing
+
+
 class AdbBackend:
     def __init__(self, adb_path: Path | None = None) -> None:
         self._adbutils: Any = None
@@ -277,22 +297,16 @@ class AdbBackend:
         remote_path: str = "/data/local/tmp/frida-server",
         port: int = 27042,
     ) -> JsonObject:
-        """Best-effort: push and start frida-server on a rooted device/emulator.
+        """Push and start frida-server on a rooted device/emulator.
 
-        Idempotent-ish: if a frida-server process is already running it does
-        nothing. Requires root (su) on the device; failures surface as
-        structured errors rather than exceptions.
+        Idempotent: if a frida-server process is already running it does
+        nothing. Requires root (su) on the device. ``running: True`` means a
+        process was seen in ``ps``, not that a launch command returned.
         """
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
-        try:
-            running = "frida-server" in str(dev.shell("ps -A")) or "frida-server" in str(
-                dev.shell("ps")
-            )
-        except Exception:  # noqa: BLE001
-            running = False
-        if running:
+        if _frida_server_running(dev):
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
@@ -305,20 +319,27 @@ class AdbBackend:
                 pushed = True
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to push frida-server: {exc}") from exc
+        launch_error: str | None = None
         try:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
+            # A timeout here often means su blocked after the process started, so
+            # the verdict is the post-launch ``ps``, not the exception.
             dev.shell(
                 f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
-        except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
-            return {
-                "running": None,
-                "pushed": pushed,
-                "port": port,
-                "note": f"launch attempted; verify manually ({exc})",
-            }
-        return {"running": True, "pushed": pushed, "port": port}
+        except Exception as exc:  # noqa: BLE001
+            launch_error = f"{type(exc).__name__}: {exc}"
+        if _frida_server_running(dev):
+            return {"running": True, "pushed": pushed, "port": port}
+        raise AdbError(
+            "backend_error",
+            "frida-server did not start",
+            port=port,
+            pushed=pushed,
+            running=False,
+            **({"launch_error": launch_error} if launch_error else {}),
+        )
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         dev = self._device(serial)

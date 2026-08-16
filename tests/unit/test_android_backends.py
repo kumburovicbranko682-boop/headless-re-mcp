@@ -300,6 +300,144 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class _PsDevice:
+    """An adb device that answers ``ps`` from a script and treats everything else as launch."""
+
+    def __init__(
+        self,
+        listings: list[str],
+        *,
+        launch: str | BaseException = "",
+    ) -> None:
+        self.listings = list(listings)
+        self.launch = launch
+        self.commands: list[object] = []
+
+    def shell(self, cmd: object, timeout: float | None = None) -> str:
+        self.commands.append(cmd)
+        text = str(cmd)
+        if "ps" in text and "su" not in text and "nohup" not in text:
+            if self.listings:
+                return self.listings.pop(0)
+            return "root      1     0     0  init"
+        if isinstance(self.launch, BaseException):
+            raise self.launch
+        return self.launch
+
+
+class TestEnsureFridaServerDoesNotInventARunningProcess:
+    """``running: True`` used to mean the launch command returned, not that a process existed.
+
+    Measured: a device whose ``ps`` never lists frida-server, and whose ``su``
+    launch returns empty stdout (success), still answered
+    ``{'running': True, 'pushed': False, 'port': 27042}``. There was no
+    post-launch ``ps``. An unattended agent then attaches to a server that was
+    never started and treats the empty listen as a target problem.
+    """
+
+    def _backend(self, device: _PsDevice) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_launch_that_starts_nothing_is_not_reported_running(self) -> None:
+        device = _PsDevice(["root 1 0 init", "root 1 0 init"])
+        backend = self._backend(device)
+
+        with pytest.raises(AdbError) as info:
+            backend.ensure_frida_server("emulator-5554")
+
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("running") is not True
+        # The launch ran; the lie was skipping the check that would have seen it fail.
+        assert any("nohup" in str(cmd) or "su" in str(cmd) for cmd in device.commands)
+        assert any("ps" in str(cmd) for cmd in device.commands[2:])
+
+    def test_already_running_is_still_true_and_does_not_relaunch(self) -> None:
+        device = _PsDevice(["root 42 0 frida-server -l 0.0.0.0:27042"])
+        result = self._backend(device).ensure_frida_server("emulator-5554")
+
+        assert result["running"] is True
+        assert result["pushed"] is False
+        assert not any("nohup" in str(cmd) or "su -c" in str(cmd) for cmd in device.commands)
+
+    def test_a_launch_that_then_appears_in_ps_is_running(self) -> None:
+        device = _PsDevice(
+            [
+                "root 1 0 init",
+                "root 1 0 init",
+                "root 99 0 frida-server -l 0.0.0.0:27042",
+            ]
+        )
+        result = self._backend(device).ensure_frida_server("emulator-5554")
+
+        assert result["running"] is True
+        assert any("nohup" in str(cmd) or "su" in str(cmd) for cmd in device.commands)
+
+    def test_a_timed_out_launch_is_running_only_if_ps_then_shows_it(self) -> None:
+        """The old path treated a blocking su as 'probably launched' and said None.
+
+        If the process is actually there after the timeout, say so. If it is
+        not, that is a failure, not a success with a footnote.
+        """
+        appeared = _PsDevice(
+            ["root 1 0 init", "root 1 0 init", "root 7 0 /data/local/tmp/frida-server"],
+            launch=TimeoutError("su prompt"),
+        )
+        result = self._backend(appeared).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+
+        missing = _PsDevice(
+            ["root 1 0 init", "root 1 0 init", "root 1 0 init", "root 1 0 init"],
+            launch=TimeoutError("su prompt"),
+        )
+        with pytest.raises(AdbError) as info:
+            self._backend(missing).ensure_frida_server("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("running") is not True
+
+    def test_the_tool_envelope_is_a_failure_not_an_ensured_timeline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        device = _PsDevice(["root 1 0 init", "root 1 0 init"])
+        backend = self._backend(device)
+        monkeypatch.setattr(
+            "headless_re_mcp.core.service_frida.AdbBackend",
+            lambda *args, **kwargs: backend,
+        )
+        apk = tmp_path / "app.apk"
+        import zipfile
+
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session(str(apk), target="apk")
+            assert created.data is not None
+            session_id = str(created.data["session"]["id"])
+            result = service.frida_server_ensure(session_id, "emulator-5554")
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "backend_error"
+            timeline = service.timeline_list(session_id)
+            events = (timeline.data or {}).get("events") or []
+            assert not any(
+                "ensured" in str(event.get("message", "")).lower()
+                for event in events
+                if isinstance(event, dict)
+            )
+        finally:
+            service.close_all()
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
