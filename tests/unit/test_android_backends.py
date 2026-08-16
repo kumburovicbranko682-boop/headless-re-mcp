@@ -916,6 +916,26 @@ class TestFridaModulePaging:
         assert complete["has_more"] is False
 
 
+class TestFridaExportsDescription:
+    def test_exports_description_says_to_read_has_more(self) -> None:
+        """frida.exports already paged but its tool text was empty.
+
+        Measured: handler.__doc__ was empty while the reply carries
+        has_more. A model that never saw the field treated one page as
+        every export.
+        """
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.exports"].handler.__doc__ or ""
+            assert "has_more" in doc
+        finally:
+            service.close_all()
+
+
 class TestFridaDevicePaging:
     def test_a_device_page_says_when_more_exist(self) -> None:
         """A device list used to look complete with only count.

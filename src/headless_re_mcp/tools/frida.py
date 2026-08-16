@@ -40,6 +40,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
+        """List exports of a module in the attached process.
+
+        Capped; the reply carries has_more so a page is not read as every
+        export the module published.
+        """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
     @tools.tool(name="frida.memory.read")
