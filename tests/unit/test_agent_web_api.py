@@ -99,6 +99,8 @@ def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, mo
 
         listed = client.get("/api/agent/missions", headers=headers).json()
         assert listed["count"] == 1
+        assert listed["total"] == 1
+        assert listed["has_more"] is False
         assert listed["scheduler_running"] is True
 
         fetched = client.get(f"/api/agent/missions/{mission['id']}", headers=headers)
@@ -111,6 +113,30 @@ def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, mo
 
     # The lifespan has to stop the loop, or the process cannot exit cleanly.
     assert app.state.mission_scheduler.running is False
+
+
+def test_a_mission_list_at_the_cap_reports_the_rest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        for index in range(3):
+            created = client.post(
+                "/api/agent/missions",
+                headers=headers,
+                json={"objective": f"job {index}"},
+            )
+            assert created.status_code == 201
+        listed = client.get("/api/agent/missions?limit=2", headers=headers).json()
+        assert listed["count"] == 2
+        assert listed["total"] == 3
+        assert listed["has_more"] is True
+        tail = client.get("/api/agent/missions?offset=2&limit=2", headers=headers).json()
+        assert tail["count"] == 1
+        assert tail["has_more"] is False
+        assert tail["missions"][0]["id"] not in {item["id"] for item in listed["missions"]}
 
 
 def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

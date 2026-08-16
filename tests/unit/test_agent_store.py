@@ -250,6 +250,27 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
 
+
+def test_a_mission_page_at_the_cap_is_not_the_whole_queue(tmp_path: Path) -> None:
+    """150 missions with limit=100 used to come back as count=100, unmarked.
+
+    The missions list is the unattended entry point after a restart. A page
+    sitting at the cap looked exactly like a queue that only had 100 items, so
+    the rest of the work disappeared from whoever was supposed to see it.
+    """
+    store = AgentStore(tmp_path / "page.db")
+    thread = store.create_thread()
+    for index in range(150):
+        store.create_mission(thread.id, f"objective {index}")
+
+    assert store.count_missions() == 150
+    page = store.list_missions(limit=100)
+    assert len(page) == 100
+    tail = store.list_missions(offset=100, limit=100)
+    assert len(tail) == 50
+    assert {item.id for item in page}.isdisjoint({item.id for item in tail})
+
+
 def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path) -> None:
     """The rollback must not become the error report.
 
