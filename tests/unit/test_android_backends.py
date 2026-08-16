@@ -988,6 +988,63 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDevicePushIsBounded:
+    """A wedged sync.push used to park the tool worker for as long as adb liked.
+
+    Measured: device.push called sync.push with no deadline, so a 2.5s block
+    was waited out in full and still returned success. adbutils opens that
+    transport with timeout=None (library default 600s).
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_blocking_push_fails_instead_of_waiting_it_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PUSH_TIMEOUT", 0.2)
+        local = tmp_path / "x.bin"
+        local.write_bytes(b"x")
+
+        class _Sync:
+            def push(self, src: str, dst: str) -> int:
+                time.sleep(5)
+                return 1
+
+        class _Dev:
+            sync = _Sync()
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).push("emulator-5554", str(local), "/data/local/tmp/x")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_push_is_success(self, tmp_path: Path) -> None:
+        local = tmp_path / "x.bin"
+        local.write_bytes(b"x")
+
+        class _Sync:
+            def push(self, src: str, dst: str) -> int:
+                return 1
+
+        class _Dev:
+            sync = _Sync()
+
+        result = self._backend(_Dev()).push(
+            "emulator-5554", str(local), "/data/local/tmp/x"
+        )
+        assert result["remote"] == "/data/local/tmp/x"
+
+
 class TestPullDoesNotInventAFile:
     """A pull that wrote nothing used to return a local path as if it had.
 

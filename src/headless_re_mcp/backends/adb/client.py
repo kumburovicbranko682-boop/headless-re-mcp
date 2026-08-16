@@ -11,10 +11,13 @@ package name or serial can never smuggle extra arguments.
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
 
 # A serial is either an emulator/host:port endpoint or a device id. Both are
 # constrained so nothing that reaches a shell command can carry metacharacters.
@@ -29,6 +32,10 @@ _MAX_PACKAGES = 5000
 # is longer than any of these commands need and shorter than the 60s tool
 # budget, so a stuck device costs one call, not a thread.
 _SHELL_TIMEOUT = 20.0
+# sync.push opens a transport with timeout=None. Measured: a 2.5s block was
+# waited out in full and still returned success. Sixty seconds is the tool
+# budget: a large file can use it, a wedged adb cannot keep the worker.
+_PUSH_TIMEOUT = 60.0
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -62,6 +69,32 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _deadline(fn: Callable[[], T], *, timeout: float) -> T:
+    """Run a blocking adbutils call that has no timeout argument.
+
+    The worker is a daemon so a timeout returns to the tool thread; the
+    blocked call may still sit on the socket until adbutils' own 600s
+    default. That costs a thread, not the worker that serves tools.
+    """
+    box: list[T] = []
+    err: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            box.append(fn())
+        except BaseException as exc:  # noqa: BLE001
+            err.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise AdbError("backend_error", f"adb timed out after {timeout}")
+    if err:
+        raise err[0]
+    return box[0]
 
 
 def _shell(dev: Any, cmd: str | list[str], *, timeout: float = _SHELL_TIMEOUT) -> str:
@@ -370,7 +403,12 @@ class AdbBackend:
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
-            dev.sync.push(str(path), remote_path)
+            _deadline(
+                lambda: dev.sync.push(str(path), remote_path),
+                timeout=_PUSH_TIMEOUT,
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
         return {"local": str(path), "remote": remote_path}
