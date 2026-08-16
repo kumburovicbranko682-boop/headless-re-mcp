@@ -323,8 +323,15 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.requests.values())
-        window = items[offset : offset + limit]
-        return {"requests": window, "count": len(window), "total": len(items), "offset": offset}
+        cap = max(1, int(limit))
+        window = items[offset : offset + cap]
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + len(window) < len(items),
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

@@ -182,6 +182,47 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestWebNetworkListSaysWhenItStopped:
+    """A request page that hit the cap looks exactly like one that ended.
+
+    Measured: 300 captured requests, limit 100, count=100, total=300, no
+    has_more -- so a caller that only looks at the page thinks it has the
+    whole capture.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from threading import RLock
+
+        class _FakeHandle:
+            def __init__(self) -> None:
+                self.lock = RLock()
+                self.requests = {
+                    f"r{index}": {"requestId": f"r{index}", "url": f"https://x/{index}"}
+                    for index in range(n)
+                }
+
+        backend = WebBackend()
+        handle = _FakeHandle()
+        backend._get = lambda session_id: handle  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(300).network_list("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 300
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).network_list("s", offset=0, limit=100)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(100).network_list("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestWebConsoleSaysWhenItStopped:
     """A console page that hit the cap looks exactly like one that ended.
 
