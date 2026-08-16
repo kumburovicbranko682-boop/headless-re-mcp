@@ -433,7 +433,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List struct/union types from the local type library."""
+        """List struct/union types from the local type library.
+
+        Capped by limit. Read has_more and total rather than treating returned
+        as every struct.
+        """
         return _dump(analysis.static_structs(session_id, offset=offset, limit=limit))
 
     def static_enums(
