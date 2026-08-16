@@ -266,6 +266,55 @@ class TestApkNativeLibsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkMethodsSayWhenTheyStopped:
+    """A method page that filled used to look like every method if count was all you read."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Method:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class _Klass:
+            name = "Lcom/ex/A;"
+
+            def get_methods(self) -> list[_Method]:
+                return [_Method(f"m{index}") for index in range(count)]
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass()]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _Parsed())
+        return client
+
+    def test_a_full_page_is_marked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 250).methods(
+            tmp_path / "app.apk", "Lcom/ex/A;", limit=100
+        )
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).methods(
+            tmp_path / "app.apk", "Lcom/ex/A;", limit=100
+        )
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestApkClassesSayWhenTheyStopped:
     """A class page that filled used to look like the whole DEX if count was all you read."""
 
