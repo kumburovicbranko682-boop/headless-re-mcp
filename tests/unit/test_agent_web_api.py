@@ -442,6 +442,33 @@ def test_mission_get_says_when_the_error_was_cut(
     assert intact_body["mission"]["error"] == "provider exploded"
 
 
+def test_thread_get_says_when_the_title_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """create_thread sliced the title at 200 and GET said nothing.
+
+    Measured: a 250-character title was stored as 200 with no
+    title_truncated on GET, so an unattended list treated a cut name
+    as the whole overnight thread.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    store = app.state.agent_store
+    cut = store.create_thread(title="T" * 250)
+    intact = store.create_thread(title="short")
+
+    with TestClient(app) as client:
+        cut_body = client.get(f"/api/agent/threads/{cut.id}", headers=headers).json()
+        intact_body = client.get(f"/api/agent/threads/{intact.id}", headers=headers).json()
+    assert cut_body["ok"] is True
+    assert len(cut_body["thread"]["title"]) == 200
+    assert cut_body["thread"]["title_truncated"] is True
+    assert intact_body["thread"]["title_truncated"] is False
+
+
 def test_thread_create_says_when_the_title_was_cut(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]

@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 线程标题在 GET 时截断后看起来仍是完整标题**。250 字符
+  title 存成 200，创建回包有 `truncated`，但 GET/列表没有。过夜任务
+  列表会把被切掉的名字当全名。现在满页 title 标 `title_truncated`。
 - **会话关闭记账失败原因截断后看起来仍是完整原因**。309 字符的
   persist_error 存成 200 且没有 `persist_error_truncated`。过夜 close
   会把被切掉的磁盘错误当全因。现在满页标截断。

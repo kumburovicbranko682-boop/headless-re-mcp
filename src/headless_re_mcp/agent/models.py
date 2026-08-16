@@ -100,7 +100,13 @@ class AgentThread:
     updated_at: str
 
     def dump(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        # Measured: a 250-character title was stored as 200 with no
+        # signal on GET, so an overnight thread list looked like the
+        # whole name. The store cap is 200; a full page is the only
+        # surviving evidence that the cut happened.
+        value["title_truncated"] = len(self.title) >= 200
+        return value
 
 
 @dataclass(frozen=True, slots=True)
