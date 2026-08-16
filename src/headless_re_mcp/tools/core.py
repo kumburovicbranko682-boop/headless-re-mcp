@@ -884,7 +884,11 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         method_token: Annotated[int, Field(ge=0)],
         require_verified: bool = True,
     ) -> dict[str, Any]:
-        """Bounded CIL subset disassembly for MethodDef token 0x0600xxxx."""
+        """Bounded CIL subset disassembly for MethodDef token 0x0600xxxx.
+
+        A method that hit the byte or instruction cap is marked partial.
+        Read that flag rather than treating instructions as the whole body.
+        """
         return _dump(
             analysis.dotnet_il(
                 session_id,

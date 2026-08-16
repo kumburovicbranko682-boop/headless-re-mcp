@@ -124,3 +124,24 @@ def test_the_xrefs_tool_says_a_page_is_only_a_page() -> None:
     }
     assert docs["dotnet_xrefs"]
     assert "truncated" in docs["dotnet_xrefs"]
+
+
+def test_the_il_tool_names_a_short_body() -> None:
+    """The reply already set partial; the description did not.
+
+    An agent that only reads the tool text treats a capped walk as the
+    whole method body.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_dotnet_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["dotnet_il"]
+    assert "partial" in docs["dotnet_il"]
