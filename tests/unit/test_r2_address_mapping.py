@@ -119,6 +119,27 @@ def test_a_cut_function_array_is_not_the_last_function(tmp_path: Path) -> None:
     assert "items" not in enriched
 
 
+def test_strings_description_says_to_read_truncation() -> None:
+    """r2.strings already cuts lists but its tool text never said so.
+
+    Measured: handler.__doc__ had no truncated or items_truncated while
+    enrich_r2_payload set items_truncated=True for 4097 strings
+    (count=4096, items_total=4097). A model that never saw the fields
+    treated a cut listing as every string r2 found.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.r2 import build_r2_tools
+
+    service = AnalysisService()
+    try:
+        tools = {item.name: item for item in build_r2_tools(service)}
+        doc = tools["r2.strings"].handler.__doc__ or ""
+        assert "truncated" in doc
+        assert "items_truncated" in doc
+    finally:
+        service.close_all()
+
+
 def test_functions_description_says_to_read_truncation() -> None:
     """r2.functions already cuts lists but its tool text never said so.
 
