@@ -56,7 +56,7 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_strings(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Strings radare2 recovered, with address, encoding and section."""
+        """Strings radare2 recovered, with address, encoding and section (check items_truncated)."""
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
     @tools.tool(name="r2.imports")
