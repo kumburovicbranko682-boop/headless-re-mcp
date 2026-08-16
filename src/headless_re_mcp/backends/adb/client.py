@@ -431,9 +431,20 @@ class AdbBackend:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 image = dev.screenshot()
-                image.save(str(out_path))
+                result = image.save(str(out_path))
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+            # PIL returns None on success. Measured: an explicit False was
+            # still reported as a successful screenshot, and the file was
+            # never written.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "screenshot was refused",
+                    path=str(out_path),
+                    serial=_check_serial(serial),
+                    captured=False,
+                )
             return {"path": str(out_path), "serial": _check_serial(serial)}
 
         return self._call("screenshot", work)

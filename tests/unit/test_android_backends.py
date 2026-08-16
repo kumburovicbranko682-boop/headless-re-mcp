@@ -1428,6 +1428,55 @@ class TestDeviceUninstallDoesNotInventSuccess:
         assert page["uninstalled"] is True
 
 
+class TestDeviceScreenshotDoesNotInventSuccess:
+    """A refused screenshot save was still reported as a successful capture.
+
+    Measured: a device whose image.save() returned False still answered
+    {path, serial} with no error, and the file was never written. An
+    unattended agent then reads an empty path. PIL itself returns None
+    on success, so only an explicit False is a refusal.
+    """
+
+    def test_a_refused_save_is_a_failure(self, tmp_path: Path) -> None:
+        class _Image:
+            def save(self, path: str) -> bool:
+                del path
+                return False
+
+        class _Dev:
+            def screenshot(self) -> _Image:
+                return _Image()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        out = tmp_path / "shot.png"
+        with pytest.raises(AdbError) as info:
+            backend.screenshot("emulator-5554", out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("captured") is False
+        assert not out.exists()
+
+    def test_a_none_return_is_still_success(self, tmp_path: Path) -> None:
+        class _Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"PNG")
+
+        class _Dev:
+            def screenshot(self) -> _Image:
+                return _Image()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        out = tmp_path / "shot.png"
+        page = backend.screenshot("emulator-5554", out)
+        assert page["path"] == str(out)
+        assert out.read_bytes() == b"PNG"
+
+
 class TestDeviceScreenshotDoesNotClaimAnArtifact:
     """The tool described a registered artifact and returned a bare path.
 
