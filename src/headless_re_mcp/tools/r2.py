@@ -89,6 +89,6 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: int,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """References to and from address, as radare2 resolved them."""
+        """References to and from address; read items_truncated when the list was cut."""
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
