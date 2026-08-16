@@ -1579,6 +1579,27 @@ class TestApkExportSourcesIsRegistered:
             service.close_all()
 
 
+class TestApkDecodeDescriptionMatchesTheArtifacts:
+    """apk.decode now registers the tree, but the tool text hid that.
+
+    Measured: 2501 files, artifact_ids present, while the description said
+    only "editable tree" -- so a model tries the bare decoded_dir and
+    cannot read the files back.
+    """
+
+    def test_the_tool_text_says_to_use_artifact_ids(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.decode"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "artifact_ids" in doc
+
+
 class TestApkDecodeIsRegistered:
     """apk.decode writes a smali tree and never registered it.
 
