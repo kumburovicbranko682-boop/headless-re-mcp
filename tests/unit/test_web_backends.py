@@ -181,6 +181,40 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestWebConsoleSaysWhenItWasCut:
+    """A console page that hit the cap used to look like every message."""
+
+    def _backend(self, n: int) -> WebBackend:
+        import threading
+        from collections import deque
+
+        from headless_re_mcp.backends.web.client import _MAX_CONSOLE
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.console = deque(
+                    ({"type": "log", "text": str(index)} for index in range(n)),
+                    maxlen=_MAX_CONSOLE,
+                )
+                self.runner = object()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_full_buffer_is_not_returned_as_one_page(self) -> None:
+        result = self._backend(500).console("s", limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 500
+        assert result["has_more"] is True
+
+    def test_a_short_buffer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).console("s", limit=200)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+
 class TestJsUnpackSaysWhenTheFileListWasCut:
     """file_count used to be the whole tree while the list silently stopped at 2000."""
 

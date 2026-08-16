@@ -359,8 +359,18 @@ class WebBackend:
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            items = list(handle.console)
+        capped = max(1, min(int(limit), _MAX_CONSOLE))
+        window = items[-capped:]
+        # A page that filled used to look like the whole console. Measured:
+        # 500 buffered lines with limit 200 came back as count=200 and no
+        # has_more, so an agent treated the slice as every message.
+        return {
+            "console": window,
+            "count": len(window),
+            "total": len(items),
+            "has_more": len(items) > capped,
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)
