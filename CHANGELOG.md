@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`js.unpack_bundle` 在 webcrack 失败时仍报成功**。exit 1 但输出
+  目录里已有残留文件时仍返回 `output_dir`。过夜任务会把失败的拆包当
+  恢复后的树。现在非零退出一律报 `backend_error`。
 - **`js.deobfuscate` 在 webcrack 失败时仍报成功**。exit 1 但 stdout
   非空时仍返回 `code`。过夜任务会把失败的反混淆当恢复后的源码。现在
   非零退出一律报 `backend_error`。

@@ -426,6 +426,34 @@ class TestWebNetworkListSaysWhenItStopped:
         assert page["has_more"] is False
 
 
+class TestJsUnpackBundleDoesNotSucceedOnAFailedExit:
+    """webcrack exit 1 still answered output_dir if leftover files existed.
+
+    Measured: unpack_bundle against a leftover leftover.js returned
+    file_count=1 with no error, so an unattended agent would treat a
+    failed unpack as a recovered bundle tree.
+    """
+
+    def test_exit_1_with_leftover_files_is_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.jsre.client as jsre
+
+        bundle = tmp_path / "app.js"
+        bundle.write_text("console.log(1)\n", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "leftover.js").write_text("old\n", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda *args, **kwargs: ("", "ERROR: unpack failed", 1))
+        client = JsClient(executable=stub)
+        with pytest.raises(JsReError) as info:
+            client.unpack_bundle(bundle, out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+
 class TestJsUnpackBundleSaysWhenTheListStopped:
     """The unpacked-file index was cut at 2000 with no signal that it had stopped.
 

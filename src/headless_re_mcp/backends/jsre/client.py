@@ -97,7 +97,10 @@ class JsClient:
             if out_dir.is_dir()
             else []
         )
-        if code != 0 and not files:
+        # Measured: exit 1 with leftover files in out_dir still answered
+        # {output_dir, file_count: 1}. An unattended agent then treats a
+        # failed unpack as a recovered bundle tree.
+        if code != 0:
             raise JsReError(
                 "backend_error",
                 "webcrack unpack failed",
