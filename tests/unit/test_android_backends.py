@@ -583,6 +583,45 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaApplicationsSayWhenTheyStopped:
+    """300 applications with limit=256 used to come back as count=256, no has_more."""
+
+    def _apps(self, n: int, *, limit: int = 256) -> dict[str, Any]:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class _App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.example.app{index}"
+                self.name = f"App {index}"
+                self.pid = 0
+
+        class _Dev:
+            def enumerate_applications(self) -> list[_App]:
+                return [_App(index) for index in range(n)]
+
+        client = FridaClient()
+        client._resolve_device = lambda device_id: _Dev()  # type: ignore[method-assign]
+        return client.applications("usb", limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._apps(300, limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 300
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._apps(3, limit=256)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._apps(256, limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 256
+        assert result["has_more"] is False
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
