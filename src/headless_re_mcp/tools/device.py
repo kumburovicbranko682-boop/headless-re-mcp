@@ -51,7 +51,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.info")
     def device_info(serial: str) -> dict[str, Any]:
-        """Return model, SDK, release, and ABI for one device serial."""
+        """Return model, SDK, release, and ABI for one device serial.
+
+        Answers with serial, state, model, device, sdk, release and abi.
+        There is no SDK, ABI, android_version or version field.
+        """
         return _dump(analysis.device_info(serial))
 
     @tools.tool(name="device.properties")
