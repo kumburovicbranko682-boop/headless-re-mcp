@@ -318,27 +318,36 @@ class ProxyBackend:
             inst = self._instances.get(session_id)
         if inst is None:
             return {"running": False}
+        dropped = inst.recorder.evicted()
         return {
             "running": True,
             "host": inst.host,
             "port": inst.port,
             "flow_count": inst.recorder.count(),
             "retained_max": _MAX_FLOWS,
+            "evicted": dropped,
+            "truncated": dropped > 0,
         }
 
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
+        dropped = inst.recorder.evicted()
         cap = max(1, int(limit))
         window = items[offset : offset + cap]
         # Measured: 400 flows came back as count=100, total=400, offset=0
         # and no has_more.
+        # Measured: 2011 flows came back as total=2000, last page
+        # has_more=False, and no evicted, so the ring looked like every
+        # flow the proxy saw.
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": offset,
             "has_more": offset + len(window) < len(items),
+            "evicted": dropped,
+            "truncated": dropped > 0,
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

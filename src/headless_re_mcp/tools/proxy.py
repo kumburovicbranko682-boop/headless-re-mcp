@@ -37,7 +37,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.status")
     def proxy_status(session_id: str) -> dict[str, Any]:
-        """Report whether the proxy is running and how many flows it captured."""
+        """Report whether the proxy is running and how many flows it captured.
+
+        The capture is a ring; read `truncated`/`evicted` rather than assuming
+        `flow_count` is every flow the proxy saw.
+        """
         return _dump(analysis.proxy_status(session_id))
 
     @tools.tool(name="proxy.flows")
@@ -49,6 +53,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured HTTP flows (method, url, status, content type).
 
         Read `total` and `has_more` rather than assuming the page is complete.
+        The capture is a ring; read `truncated`/`evicted` rather than assuming
+        `total` is every flow the proxy saw.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 

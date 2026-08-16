@@ -148,6 +148,48 @@ class TestProxyFlowsSayWhenTheyStopped:
         result = backend.flows("s", offset=300, limit=100)
         assert result["count"] == 100
         assert result["has_more"] is False
+        assert result["evicted"] == 0
+        assert result["truncated"] is False
+
+    def test_a_full_ring_says_what_was_dropped(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _MAX_FLOWS, ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = _FlowRecorder()
+
+        inst = Inst()
+        dropped = 11
+        for index in range(_MAX_FLOWS + dropped):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._get = lambda session_id: inst  # type: ignore[method-assign]
+        result = backend.flows("s", offset=1900, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == _MAX_FLOWS
+        assert result["has_more"] is False
+        assert result["evicted"] == dropped
+        assert result["truncated"] is True
+
+    def test_status_says_what_was_dropped(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _MAX_FLOWS, ProxyBackend
+
+        class Inst:
+            def __init__(self) -> None:
+                self.host = "127.0.0.1"
+                self.port = 8080
+                self.recorder = _FlowRecorder()
+
+        inst = Inst()
+        dropped = 11
+        for index in range(_MAX_FLOWS + dropped):
+            inst.recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        backend._instances["s"] = inst  # type: ignore[assignment]
+        result = backend.status("s")
+        assert result["flow_count"] == _MAX_FLOWS
+        assert result["evicted"] == dropped
+        assert result["truncated"] is True
 
 
 class TestProxyHarExportSaysWhenItStopped:
