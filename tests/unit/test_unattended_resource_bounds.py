@@ -1388,6 +1388,58 @@ class TestATimeoutBindsWhatTheToolStarted:
         assert completed.stdout.strip() == b"done"
 
 
+class TestR2TimeoutKillsWhatItStarted:
+    """r2 still used subprocess.run after the other CLI backends moved.
+
+    Measured: a wrapper that spawned a sleeper returned timeout in 0.40s and
+    left the child in state S. The caller had its answer; the orphan kept a
+    core. The same wrapper under run_bounded is what the other backends do.
+    """
+
+    def test_a_timed_out_r2_kills_the_process_it_started(self, tmp_path: Any) -> None:
+        import os
+        import stat
+        import sys
+        import time
+
+        from headless_re_mcp.backends.r2.client import R2Client, R2Error
+
+        marker = tmp_path / "child.pid"
+        fake = tmp_path / ("r2.cmd" if os.name == "nt" else "r2")
+        body = tmp_path / "fake_r2.py"
+        body.write_text(
+            "import subprocess, sys, time\n"
+            f"marker = {str(marker)!r}\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time\\nwhile True: time.sleep(0.2)'])\n"
+            "open(marker, 'w', encoding='ascii').write(str(child.pid))\n"
+            "while True:\n"
+            "    time.sleep(0.2)\n",
+            encoding="utf-8",
+        )
+        if os.name == "nt":
+            fake.write_text(f'@echo off\n"{sys.executable}" "{body}" %*\n', encoding="utf-8")
+        else:
+            script = f"#!{sys.executable}\n" + body.read_text(encoding="utf-8")
+            fake.write_text(script, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        sample = tmp_path / "sample.bin"
+        sample.write_bytes(b"MZ" + b"\x00" * 64)
+
+        started = time.monotonic()
+        with pytest.raises(R2Error) as caught:
+            R2Client(executable=fake).run(sample, ["i"], timeout=0.4)
+        elapsed = time.monotonic() - started
+
+        assert caught.value.code == "timeout"
+        assert elapsed < 3.0
+        killed = list(caught.value.details.get("killed_pids") or [])
+        assert len(killed) >= 2
+        child = int(marker.read_text(encoding="ascii").strip())
+        assert child in killed
+        assert TestATimeoutBindsWhatTheToolStarted()._alive(child) is False
+
+
 class TestOnlyAMissingSessionSaysSessionNotFound:
     """Any KeyError used to be reported as a missing session.
 

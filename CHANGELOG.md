@@ -62,6 +62,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **超时杀进程树在 Linux 上是空走**。后代枚举只走 Win32 Toolhelp32，非 Windows 直接返回空列
   表，于是 `run_bounded` 只杀掉启动器：孤儿接着占着管道，排空把 0.4 秒的截止拖成 5.4 秒，子
   进程还在跑。现在也读 `/proc` 枚举后代，同一场景约 0.8 秒返回、父子都死。
+- **r2 超时只杀启动器**。jadx / Ghidra / apktool 已改走有界执行，r2 还在用 `subprocess.run`：
+  包装脚本起一个 sleeper 时，0.40 秒拿到 timeout，子进程仍是 S。现在同一条有界执行，被杀
+  pid 进错误详情。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
