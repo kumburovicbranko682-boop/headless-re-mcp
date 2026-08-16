@@ -229,10 +229,16 @@ class AdbBackend:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"connect failed: {exc}", endpoint=endpoint) from exc
+        text = str(message).lower()
+        # adb prints "connected to HOST:PORT" or "already connected to HOST:PORT".
+        # Matching the bare word "already" invented success: measured
+        # "failed to authenticate: already in use" and "cannot connect:
+        # connection already closed" both came back as connected=True.
+        connected = "already connected" in text or "connected to" in text
         return {
             "endpoint": endpoint,
             "result": str(message),
-            "connected": "connected" in str(message).lower() or "already" in str(message).lower(),
+            "connected": connected,
         }
 
     def info(self, serial: str) -> JsonObject:

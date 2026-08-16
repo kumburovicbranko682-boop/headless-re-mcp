@@ -2899,3 +2899,47 @@ class TestAdbMutationsDoNotInventSuccess:
             self._backend(Device()).force_stop("emulator-5554", "com.example.app")
         assert caught.value.code == "backend_error"
 
+
+class TestAdbConnectDoesNotInventALink:
+    """adb connect writes a sentence; the word 'already' is not success.
+
+    Measured: 'failed to authenticate: already in use' and 'cannot connect:
+    connection already closed' both came back as connected=True.
+    """
+
+    def _backend(self, message: str) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Client:
+            def connect(self, endpoint: str, timeout: float | None = None) -> str:
+                del endpoint, timeout
+                return message
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._client = lambda: Client()  # type: ignore[method-assign]
+        return backend
+
+    def test_already_in_use_is_not_connected(self) -> None:
+        result = self._backend("failed to authenticate: already in use").connect(
+            "127.0.0.1", 5555
+        )
+        assert result["connected"] is False
+        assert "already in use" in result["result"]
+
+    def test_already_closed_is_not_connected(self) -> None:
+        result = self._backend("cannot connect: connection already closed").connect(
+            "10.0.0.1", 5555
+        )
+        assert result["connected"] is False
+
+    def test_connected_to_is_connected(self) -> None:
+        result = self._backend("connected to 127.0.0.1:5555").connect("127.0.0.1", 5555)
+        assert result["connected"] is True
+
+    def test_already_connected_to_is_connected(self) -> None:
+        result = self._backend("already connected to 127.0.0.1:5555").connect(
+            "127.0.0.1", 5555
+        )
+        assert result["connected"] is True
+
