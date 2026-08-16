@@ -115,6 +115,8 @@ until 1.0 the tool surface may still change between minor versions.
   `count=500`，没有 `total` / `has_more`。现在带这两项。
 - **`device.packages` 没有上限**。5000 个包名序列化成 113_946 字节，回包没有
   `total` / `has_more`。现在最多回 2000 个并标明还有更多。
+- **x64dbg 关闭只杀启动器**。包装脚本起 sleeper 时，关闭后父进程已死、子进程
+  仍是 S。整晚会留下调试目标。现在关会话杀整树。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

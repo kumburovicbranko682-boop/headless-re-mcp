@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock, RLock
@@ -646,3 +647,46 @@ def test_reconnect_refuses_once_the_worker_is_gone() -> None:
     # Rebuilding a connection to a dead worker would hang until the pipe timeout
     # and then report a transport problem instead of the real cause.
     assert failure.value.code == "worker_exited"
+
+
+def test_closing_x64dbg_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """x64dbg close used to terminate only the launcher; the debuggee stayed."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from headless_re_mcp.backends.x64dbg.client import XdbgClient
+
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print(c.pid, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = int(parent.stdout.readline().strip())
+
+    def _alive(pid: int) -> bool:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+                return fh.read().split()[2] != "Z"
+        except FileNotFoundError:
+            return False
+
+    assert _alive(parent.pid)
+    assert _alive(child_pid)
+
+    client = object.__new__(XdbgClient)
+    client._process = parent
+    client._terminate_process()
+    time.sleep(0.2)
+    assert parent.poll() is not None
+    assert not _alive(child_pid), f"child {child_pid} still alive after x64dbg close"
+    with suppress(OSError):
+        os.kill(child_pid, 9)

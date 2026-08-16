@@ -1227,12 +1227,9 @@ class XdbgClient:
 
     def _terminate_process(self) -> None:
         if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=5)
+            from headless_re_mcp.core.process_tree import terminate_process_tree
+
+            terminate_process_tree(self._process, wait_s=5.0)
 
     def _finish_threads(self) -> None:
         self._monitor_stop.set()
