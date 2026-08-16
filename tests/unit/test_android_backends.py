@@ -1341,6 +1341,34 @@ class TestApkComponentPaging:
         assert complete["has_more"] is False
 
 
+class TestApkPermissionPaging:
+    def test_a_permission_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A permission list used to look complete with only count.
+
+        Measured: five permissions, count=5, no total or has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_permissions(self) -> list[str]:
+                return [f"p{index}" for index in range(5)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return [f"r{index}" for index in range(5)]
+
+        client = ApkClient()
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.permissions(apk, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["requested_total"] == 5
+        assert result["has_more"] is True
+        complete = client.permissions(apk, limit=5)
+        assert complete["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

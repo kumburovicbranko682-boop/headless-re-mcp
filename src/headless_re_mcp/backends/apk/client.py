@@ -173,17 +173,27 @@ class ApkClient:
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
         return {"package": apk.get_package(), "manifest_xml": xml[:200_000]}
 
-    def permissions(self, path: Path) -> JsonObject:
+    def permissions(self, path: Path, *, limit: int = 200) -> JsonObject:
+        """List declared and requested permissions. Each list is capped.
+
+        Measured: five permissions, count=5, no total or has_more. A page
+        looked like every permission the APK declared.
+        """
         apk = self._apk(path)
         declared = sorted(apk.get_permissions())
         try:
             requested = sorted(apk.get_requested_permissions())
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested = declared
+        capped = max(1, min(int(limit), 2000))
+        page = declared[:capped]
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
+            "permissions": page,
+            "requested_permissions": requested[:capped],
+            "count": len(page),
+            "total": len(declared),
+            "requested_total": len(requested),
+            "has_more": len(declared) > len(page) or len(requested) > capped,
         }
 
     def certificates(self, path: Path) -> JsonObject:
