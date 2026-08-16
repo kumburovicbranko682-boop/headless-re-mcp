@@ -299,14 +299,23 @@ class AdbBackend:
             if not path.is_file():
                 raise AdbError("not_found", "apk not found", path=str(path))
             try:
-                dev.install(
+                result = dev.install(
                     str(path), nolaunch=True, uninstall=False, flags=["-r"] if reinstall else []
                 )
             except TypeError:
                 # Older adbutils signatures accept only the path.
-                dev.install(str(path))
+                result = dev.install(str(path))
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"install failed: {exc}", path=str(path)) from exc
+            # adbutils returns None on success. Measured: an explicit False
+            # was still reported as installed: True.
+            if result is False:
+                raise AdbError(
+                    "backend_error",
+                    "install was refused",
+                    path=str(path),
+                    installed=False,
+                )
             return {"installed": True, "path": str(path), "serial": _check_serial(serial)}
 
         return self._call("install", work, timeout=self._install_timeout)

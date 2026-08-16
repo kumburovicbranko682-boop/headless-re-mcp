@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.install` 在安装被拒绝时仍报 `installed: True`**。假设备 `install()`
+  返回 `False` 仍回成功。无人值守的 agent 随后去启动一个根本没装上的包。现在
+  明确的 `False` 是 `backend_error`；adbutils 成功时的 `None` 仍算成功。
 - **`js.unpack_bundle` 文件表停在 2000 时看起来像完整树**。2500 个解包文件只回
   2000 条路径，没有 `has_more`。磁盘上的树是全的，但只看列表的 agent 会漏掉后面的
   模块。现在截断时标 `has_more`。

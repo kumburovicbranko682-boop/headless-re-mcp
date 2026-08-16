@@ -838,3 +838,39 @@ class TestDevicePackagesAreCapped:
         page = self._backend(3).packages("emulator-5554", limit=10)
         assert page["count"] == 3
         assert page["has_more"] is False
+
+
+class TestDeviceInstallDoesNotInventSuccess:
+    """A refused install was still reported as installed.
+
+    Measured: a device whose install() returned False still answered
+    {installed: True}. An unattended agent then launches a package that
+    is not on the device. adbutils itself returns None on success, so
+    only an explicit False is a refusal.
+    """
+
+    def _backend(self, result: object) -> AdbBackend:
+        class _Dev:
+            def install(self, *args: object, **kwargs: object) -> object:
+                del args, kwargs
+                return result
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_refused_install_is_a_failure(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        with pytest.raises(AdbError) as info:
+            self._backend(False).install("emulator-5554", str(apk))
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("installed") is False
+
+    def test_a_none_return_is_still_success(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        page = self._backend(None).install("emulator-5554", str(apk))
+        assert page["installed"] is True
