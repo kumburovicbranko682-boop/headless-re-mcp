@@ -19,6 +19,8 @@ from headless_re_mcp.backends.ida.worker import (
     _cfg,
     _decompile,
     _functions,
+    _globals,
+    _names,
     _open_database_error,
     _page_items,
     _strings,
@@ -253,3 +255,58 @@ def test_a_short_cfg_is_complete(monkeypatch: Any) -> None:
     assert result["total_nodes"] == 3
     assert result["truncated"] is False
     assert result["has_more"] is False
+
+
+def test_a_name_page_does_not_build_the_whole_idb(monkeypatch: Any) -> None:
+    """5000 names and limit=100 still built 5000 dicts before slicing."""
+    import sys
+    import types
+
+    import headless_re_mcp.backends.ida.worker as worker
+
+    idautils = types.ModuleType("idautils")
+    idautils.Names = lambda: [(index, f"n{index}") for index in range(5000)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} name dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _names({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_a_globals_page_does_not_build_the_whole_idb(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    import headless_re_mcp.backends.ida.worker as worker
+
+    idautils = types.ModuleType("idautils")
+    idautils.Names = lambda: [(index, f"n{index}") for index in range(5000)]  # type: ignore[attr-defined]
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: None  # type: ignore[attr-defined]
+    ida_bytes = types.ModuleType("ida_bytes")
+    ida_bytes.get_flags = lambda ea: 0  # type: ignore[attr-defined]
+    ida_bytes.is_data = lambda flags: True  # type: ignore[attr-defined]
+    ida_bytes.is_code = lambda flags: False  # type: ignore[attr-defined]
+    ida_bytes.get_item_size = lambda ea: 4  # type: ignore[attr-defined]
+    ida_name = types.ModuleType("ida_name")
+    ida_name.get_name = lambda ea: f"n{ea}"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+    monkeypatch.setitem(sys.modules, "ida_name", ida_name)
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} global dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _globals({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100

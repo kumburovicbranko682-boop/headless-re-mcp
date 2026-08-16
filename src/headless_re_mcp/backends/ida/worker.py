@@ -740,10 +740,22 @@ def _names(params: JsonObject) -> JsonObject:
     import idautils
 
     offset, limit = _paging(params)
+    # Measured: 5000 names and limit=100 still built 5000 dicts before
+    # slicing. A large IDB would allocate the whole name table on every page.
     items: list[JsonObject] = []
+    total = 0
     for ea, name in idautils.Names():
-        items.append({"ea": int(ea), "name": name})
-    return _page_items(items, offset, limit)
+        if offset <= total < offset + limit:
+            items.append({"ea": int(ea), "name": name})
+        total += 1
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+    }
 
 
 def _globals(params: JsonObject) -> JsonObject:
@@ -753,23 +765,33 @@ def _globals(params: JsonObject) -> JsonObject:
     import idautils
 
     offset, limit = _paging(params)
+    # Same as _names: 5000 globals and limit=100 built 5000 dicts first.
     items: list[JsonObject] = []
+    total = 0
     for ea, name in idautils.Names():
         if ida_funcs.get_func(ea) is not None:
             continue
-        flags = int(ida_bytes.get_flags(ea))
-        items.append(
-            {
-                "ea": int(ea),
-                "name": name or ida_name.get_name(ea) or None,
-                "is_data": bool(ida_bytes.is_data(flags)),
-                "is_code": bool(ida_bytes.is_code(flags)),
-                "size": int(ida_bytes.get_item_size(ea)),
-            }
-        )
-    payload = _page_items(items, offset, limit)
-    payload["note"] = "named addresses outside functions; not a full data-flow model"
-    return payload
+        if offset <= total < offset + limit:
+            flags = int(ida_bytes.get_flags(ea))
+            items.append(
+                {
+                    "ea": int(ea),
+                    "name": name or ida_name.get_name(ea) or None,
+                    "is_data": bool(ida_bytes.is_data(flags)),
+                    "is_code": bool(ida_bytes.is_code(flags)),
+                    "size": int(ida_bytes.get_item_size(ea)),
+                }
+            )
+        total += 1
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+        "note": "named addresses outside functions; not a full data-flow model",
+    }
 
 
 def _iter_numbered_types() -> list[JsonObject]:
