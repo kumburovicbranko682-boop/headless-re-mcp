@@ -390,6 +390,63 @@ class TestFridaApplicationsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaModulesSayWhenTheyStopped:
+    """A module page that hit the cap looks exactly like one that ended.
+
+    Measured: 200 modules, limit 64, count=64, total=200, no has_more -- so
+    a caller that only looks at the page thinks it has the whole process map.
+    """
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class _Exports:
+            def modules(self) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "name": f"libmod{index}.so",
+                        "base": hex(0x70000000 + index * 0x1000),
+                        "size": 4096,
+                        "path": f"/system/lib64/libmod{index}.so",
+                    }
+                    for index in range(n)
+                ]
+
+        class _Script:
+            exports_sync = _Exports()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        client = FridaClient()
+        client._available = True
+        client._frida = type("F", (), {"attach": staticmethod(lambda pid: _Session())})()
+        return client
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._client(200).modules(1234, allowed_pid=1234, limit=64)
+        assert result["count"] == 64
+        assert result["total"] == 200
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._client(3).modules(1234, allowed_pid=1234, limit=64)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._client(64).modules(1234, allowed_pid=1234, limit=64)
+        assert result["count"] == 64
+        assert result["has_more"] is False
+
+
 class TestDeviceUninstallDoesNotInventSuccess:
     """adbutils returning False used to be reported as uninstalled=True."""
 

@@ -213,7 +213,14 @@ class FridaClient:
                 }
                 for item in mods[:capped]
             ]
-            return {"modules": items, "count": len(items), "total": len(mods)}
+            return {
+                "modules": items,
+                "count": len(items),
+                "total": len(mods),
+                # A caller deciding "these are all the modules" has to know
+                # whether the enumeration ended or this page merely stopped.
+                "has_more": len(mods) > len(items),
+            }
         finally:
             session.detach()
 
