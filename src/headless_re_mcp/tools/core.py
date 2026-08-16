@@ -272,7 +272,8 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         """Bounded linear disassembly starting at address.
 
         A long instruction line is cut and marked truncated rather than looking
-        like the whole mnemonic.
+        like the whole mnemonic. The walk itself can stop early: read partial
+        rather than treating returned as count instructions.
         """
         return _dump(
             analysis.static_disassemble(
