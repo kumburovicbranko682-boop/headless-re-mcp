@@ -357,10 +357,23 @@ class WebBackend:
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
+        """Recent console lines. A page is not the whole buffer.
+
+        Measured: 500 retained lines, limit 200, came back count=200 with
+        neither total nor has_more. The first 300 looked like they never
+        happened.
+        """
         handle = self._get(session_id)
+        capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
-            items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+            retained = list(handle.console)
+        page = retained[-capped:]
+        return {
+            "console": page,
+            "count": len(page),
+            "total": len(retained),
+            "has_more": len(retained) > len(page),
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)

@@ -9,6 +9,7 @@ import pytest
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend, WebError
+from headless_re_mcp.backends.web.client import _WebSession
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -26,6 +27,30 @@ class TestNoArbitraryExecution:
     def test_web_backend_has_no_public_evaluate_method(self) -> None:
         public = {name for name in dir(WebBackend) if not name.startswith("_")}
         assert not {"evaluate", "eval", "run_code"} & public
+
+
+class TestWebConsolePaging:
+    def test_a_console_page_says_when_more_is_retained(self) -> None:
+        """A 200-line page used to look like the whole console.
+
+        Measured: 500 retained lines, limit 200, count=200, no total or
+        has_more. The first 300 looked like they never happened.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        for index in range(500):
+            handle.console.append({"text": f"line {index}"})
+        backend._sessions["s"] = handle
+        result = backend.console("s", limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 500
+        assert result["has_more"] is True
+        assert result["console"][0]["text"] == "line 300"
+        assert result["console"][-1]["text"] == "line 499"
+
+        complete = backend.console("s", limit=500)
+        assert complete["has_more"] is False
+        assert complete["total"] == 500
 
 
 class TestWebSessionScoping:

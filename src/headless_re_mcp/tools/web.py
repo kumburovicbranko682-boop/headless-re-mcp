@@ -67,7 +67,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_console(
         session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
     ) -> dict[str, Any]:
-        """Return recent browser console messages."""
+        """Return recent browser console messages.
+
+        Capped; the reply carries total and has_more so a page is not read
+        as every message the page logged.
+        """
         return _dump(analysis.web_console(session_id, limit=limit))
 
     @tools.tool(name="web.scripts")
