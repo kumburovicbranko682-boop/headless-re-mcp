@@ -319,8 +319,18 @@ class ProxyBackend:
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        window = items[offset : offset + limit]
-        return {"flows": window, "count": len(window), "total": len(items), "offset": offset}
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        window = items[start : start + cap]
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            # A caller deciding "these are all the flows" has to know
+            # whether the ring ended or this page merely stopped.
+            "has_more": start + len(window) < len(items),
+        }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

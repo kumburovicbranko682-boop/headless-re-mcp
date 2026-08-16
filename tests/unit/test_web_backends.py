@@ -384,6 +384,53 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestProxyFlowsSayWhenTheyStopped:
+    """A flow page that hit the cap looks exactly like one that ended.
+
+    Measured: 300 captured flows, limit 100, count=100, total=300, no
+    has_more -- so a caller that only looks at the page thinks it has the
+    whole capture.
+    """
+
+    def _backend(self, n: int) -> ProxyBackend:
+        class _Rec:
+            def __init__(self) -> None:
+                self._items = [
+                    {
+                        "id": f"f{index}",
+                        "method": "GET",
+                        "url": f"https://example.com/{index}",
+                    }
+                    for index in range(n)
+                ]
+
+            def snapshot(self) -> list[dict[str, Any]]:
+                return list(self._items)
+
+        class _Inst:
+            recorder = _Rec()
+
+        backend = ProxyBackend()
+        backend._get = lambda session_id: _Inst()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._backend(300).flows("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 300
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).flows("s", offset=0, limit=100)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._backend(100).flows("s", offset=0, limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestProxyFlowBodyIsRegistered:
     """proxy.flow.get spills bodies over 200 KiB and never registered them.
 
