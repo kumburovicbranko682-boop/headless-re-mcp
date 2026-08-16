@@ -53,8 +53,12 @@ if mode == "functions":
     payload["has_more"] = has_more
 elif mode == "symbols":
     items = []
+    has_more = False
     for sym in st.getAllSymbols(True):
         if len(items) >= limit:
+            # Same silent cut as functions: a 256-item export with only
+            # count looked like every recovered symbol.
+            has_more = True
             break
         items.append(
             {
@@ -64,6 +68,7 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "xrefs":
     items = []
     if address_arg:

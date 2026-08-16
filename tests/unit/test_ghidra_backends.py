@@ -87,3 +87,54 @@ class TestGhidraFunctionsSaysWhenItWasCut:
         result = _Client().functions(binary, project, limit=256)
         assert result["count"] == 256
         assert result["has_more"] is True
+
+
+class TestGhidraSymbolsSaysWhenItWasCut:
+    """A symbol page that hit the cap used to look like every symbol.
+
+    Measured: an export of 256 items (13 KiB) came back as count=256 with
+    no has_more and no total, so an agent treated the page as the table.
+    """
+
+    def test_the_export_script_sets_has_more_on_a_full_page(self) -> None:
+        source = _SCRIPT.read_text(encoding="utf-8")
+        symbols_block = source.split('elif mode == "xrefs"')[0].split(
+            'elif mode == "symbols"'
+        )[1]
+        assert "has_more = True" in symbols_block
+        assert 'payload["has_more"]' in symbols_block
+
+    def test_the_client_forwards_has_more(self, tmp_path: Path) -> None:
+        class _Client(GhidraClient):
+            def __init__(self) -> None:
+                self.home = tmp_path
+                self.java = tmp_path
+                self.analyze = tmp_path / "analyzeHeadless"
+                self.analyze.write_text("", encoding="utf-8")
+
+            def _run_headless(self, project_dir: Path, **_: object) -> tuple[str, str, int]:
+                items = [
+                    {"name": f"sym_{index}", "address": hex(index), "type": "Label"}
+                    for index in range(256)
+                ]
+                out_path = project_dir / "export_symbols.json"
+                out_path.write_text(
+                    json.dumps(
+                        {
+                            "mode": "symbols",
+                            "items": items,
+                            "count": 256,
+                            "has_more": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return "", "", 0
+
+        binary = tmp_path / "app.bin"
+        binary.write_bytes(b"MZ")
+        project = tmp_path / "proj"
+        project.mkdir()
+        result = _Client().symbols(binary, project, limit=256)
+        assert result["count"] == 256
+        assert result["has_more"] is True
