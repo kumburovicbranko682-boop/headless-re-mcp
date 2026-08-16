@@ -170,6 +170,10 @@ class ApkAnalysisMixin:
             data = client.export_sources(binary, out_dir, timeout=timeout, no_imports=no_imports)
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(self, session_id, "apk.export_sources", "jadx exported sources")
+            # A bare output_dir is a dead end: nothing on the tool surface
+            # opens a path, and gc only collects rows. Measured: 2500 Java
+            # files, 51 KiB listing, 0 artifact rows.
+            data = self._register_export_tree(session_id, out_dir, data)
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, JadxError) as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
@@ -181,6 +185,31 @@ class ApkAnalysisMixin:
             getattr(self.settings, "apktool", None),
             getattr(self.settings, "apksigner", None),
         )
+
+    def _register_export_tree(
+        self, session_id: str, out_dir: Path, payload: JsonObject
+    ) -> JsonObject:
+        """Register every file jadx wrote so retention can see them."""
+        ids: list[str] = []
+        artifact_error: str | None = None
+        if out_dir.is_dir():
+            for path in sorted(p for p in out_dir.rglob("*") if p.is_file()):
+                extra = _register_capture(
+                    self,
+                    session_id,
+                    path,
+                    kind="apk_export_sources",
+                    source="apk.export_sources",
+                    payload={},
+                )
+                if extra.get("artifact_id"):
+                    ids.append(str(extra["artifact_id"]))
+                elif artifact_error is None and extra.get("artifact_error"):
+                    artifact_error = str(extra["artifact_error"])
+        result = {**payload, "artifact_ids": ids}
+        if artifact_error is not None:
+            result["artifact_error"] = artifact_error
+        return result
 
     def _register_decode_tree(
         self, session_id: str, out_dir: Path, payload: JsonObject

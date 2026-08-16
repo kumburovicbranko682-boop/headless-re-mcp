@@ -1321,6 +1321,62 @@ class TestApktoolBoundaries:
         assert leftover.is_file()
 
 
+class TestApkExportSourcesIsRegistered:
+    """apk.export_sources writes a Java tree and never registered it.
+
+    Measured: 2500 files, 51 KiB listing, 0 artifact rows, so the tree
+    cannot be read back or reclaimed after an overnight export loop.
+    """
+
+    def test_exported_sources_are_readable_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core import service_apk as apk_mod
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+
+            class _FakeJadx:
+                def export_sources(
+                    self, binary: Path, out_dir: Path, **kwargs: object
+                ) -> dict[str, Any]:
+                    del binary, kwargs
+                    src = out_dir / "sources" / "com"
+                    src.mkdir(parents=True)
+                    names = []
+                    for index in range(20):
+                        path = src / f"C{index}.java"
+                        path.write_text(f"class C{index} {{}}", encoding="utf-8")
+                        names.append(str(path.relative_to(out_dir)))
+                    return {
+                        "output_dir": str(out_dir),
+                        "sources_dir": str(out_dir / "sources"),
+                        "java_file_count": len(names),
+                        "java_files": names,
+                        "has_more": False,
+                    }
+
+            monkeypatch.setattr(apk_mod, "JadxClient", lambda *args, **kwargs: _FakeJadx())
+            result = service.apk_export_sources(session_id)
+            assert result.ok, result.error
+            assert result.data is not None
+            assert len(result.data["artifact_ids"]) == 20
+
+            listed = service.artifacts_list(session_id, limit=50)
+            assert listed.ok and listed.data is not None
+            assert listed.data["total"] == 20
+            assert listed.data["artifacts"][0]["kind"] == "apk_export_sources"
+        finally:
+            service.close_all()
+
+
 class TestApkDecodeIsRegistered:
     """apk.decode writes a smali tree and never registered it.
 
