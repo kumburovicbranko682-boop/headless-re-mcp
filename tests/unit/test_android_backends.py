@@ -1114,6 +1114,26 @@ class TestApktoolBoundaries:
         assert result["manifest"] == str(out / "AndroidManifest.xml")
         assert result["smali_dirs"] == ["smali"]
 
+    def test_a_failed_decode_is_not_the_leftover_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apktool import client as apktool_mod
+
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        (out / "smali").mkdir()
+        monkeypatch.setattr(
+            apktool_mod, "_run", lambda cmd, timeout, redact_from=None: ("", "Exception", 1)
+        )
+        tool = tmp_path / "apktool"
+        tool.write_text("x", encoding="utf-8")
+        client = ApktoolClient(tool, None)
+        with pytest.raises(ApktoolError) as caught:
+            client.decode(_apk(tmp_path / "a.apk"), out)
+        assert caught.value.code == "backend_error"
+        assert caught.value.details["exit_code"] == 1
+
 
 class TestExportListingsSayWhenTheyStopped:
     """The file list is a window; the count is the tree.

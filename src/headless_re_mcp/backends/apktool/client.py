@@ -88,10 +88,15 @@ class ApktoolClient:
         # Measured: exit 0 with an empty output dir came back as a decoded_dir
         # and manifest=None. An overnight agent then edits a tree that was
         # never decoded.
-        if not manifest.is_file():
+        # Measured: exit 1 with a leftover AndroidManifest.xml from a previous
+        # decode still came back as decoded_dir. The session reuses the same
+        # directory, so a failed retry looked like a fresh decode.
+        if code != 0 or not manifest.is_file():
             raise ApktoolError(
                 "backend_error",
-                "apktool decode produced no manifest",
+                "apktool decode failed"
+                if code != 0
+                else "apktool decode produced no manifest",
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )

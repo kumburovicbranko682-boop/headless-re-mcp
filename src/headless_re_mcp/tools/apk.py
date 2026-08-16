@@ -140,7 +140,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 600.0,
         no_resources: bool = False,
     ) -> dict[str, Any]:
-        """Decode the APK to smali and resources with apktool (editable tree)."""
+        """Decode the APK to smali and resources with apktool (editable tree).
+
+        A leftover tree from a previous decode is not success when apktool
+        itself failed.
+        """
         return _dump(analysis.apk_decode(session_id, timeout=timeout, no_resources=no_resources))
 
     @tools.tool(name="apk.repack")
