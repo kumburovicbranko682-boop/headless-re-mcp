@@ -864,7 +864,11 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 64,
         require_verified: bool = True,
     ) -> dict[str, Any]:
-        """Paginated CLR metadata enumeration (dotnet_metadata, not IDA)."""
+        """Paginated CLR metadata enumeration (dotnet_metadata, not IDA).
+
+        Capped by limit. Read truncated and total rather than treating items
+        as every row of that kind.
+        """
         return _dump(
             analysis.dotnet_enumerate(
                 session_id,

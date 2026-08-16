@@ -82,3 +82,24 @@ def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     assert xrefs.ok
     assert xrefs.data is not None
     assert xrefs.data["kind"] == "xrefs"
+
+
+def test_the_enumerate_tool_says_a_page_is_only_a_page() -> None:
+    """The page already set truncated; the description did not.
+
+    An honest assembly with 77 types and limit=20 comes back truncated=True.
+    An agent that only reads the tool text treats one page as every row.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_dotnet_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["dotnet_enumerate"]
+    assert "truncated" in docs["dotnet_enumerate"]
