@@ -29,6 +29,7 @@ _FORWARD_TIMEOUT = 15.0
 _LIST_DEVICES_TIMEOUT = 10.0
 _INFO_TIMEOUT = 15.0
 _PROPERTIES_TIMEOUT = 15.0
+_PACKAGES_TIMEOUT = 15.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -276,11 +277,20 @@ class AdbBackend:
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
     ) -> JsonObject:
-        dev = self._device(serial)
+        """List packages. The hop is bounded; the reply is capped.
+
+        adbutils ``shell(timeout=15)`` still opened the transport with a
+        600s default. Measured on info: a wedged adb held the connect,
+        not the command.
+        """
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         capped = max(1, min(int(limit), 2000))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         try:
-            raw = dev.shell(args, timeout=15.0)
+            raw = self._adb_shell(serial, args, timeout=_PACKAGES_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"pm list failed: {exc}") from exc
         pkgs = sorted(

@@ -132,39 +132,58 @@ class TestAdbArgumentValidation:
         assert elapsed < 2.0
         assert caught.value.code == "timeout"
 
-    def test_packages_at_the_cap_say_so_and_pm_is_bounded(self) -> None:
+    def test_packages_at_the_cap_say_so_and_pm_is_bounded(self, tmp_path: Path) -> None:
         """pm list used to return every package and wait on adb forever.
 
         Measured: 80 packages, no limit in the reply, timeout=None. A busy
-        emulator listing is a full page that looks complete, and a wedged
-        adb holds the worker.
+        emulator listing is a full page that looks complete, and
+        adbutils shell connects with a 600s default.
         """
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(self, cmd: object, timeout: object = None) -> str:
-                self.timeout = timeout
-                return "\n".join(f"package:com.app{index}" for index in range(80))
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
-        result = _Backend(device).packages("emulator-5554", limit=10)
-        assert device.timeout == 15.0
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            + "".join(f"print('package:com.app{index}')\n" for index in range(80))
+        )
+        adb.chmod(0o755)
+        result = _Backend(adb).packages("emulator-5554", limit=10)
         assert result["count"] == 10
         assert result["total"] == 80
         assert result["has_more"] is True
         assert len(result["packages"]) == 10
+
+    def test_packages_does_not_wait_on_adb_forever(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """packages used adbutils shell, which connects with a 600s default."""
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_PACKAGES_TIMEOUT", 0.4)
+
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).packages("emulator-5554", limit=10)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_logcat_does_not_wait_on_adb_forever(self) -> None:
         """logcat -d still has to come back if adb has stopped answering.
