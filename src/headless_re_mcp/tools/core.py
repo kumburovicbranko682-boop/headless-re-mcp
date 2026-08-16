@@ -899,7 +899,11 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 64,
         require_verified: bool = True,
     ) -> dict[str, Any]:
-        """Weak MemberRef xref listing (not a full callgraph / not IDA)."""
+        """Weak MemberRef xref listing (not a full callgraph / not IDA).
+
+        Capped by limit. Read truncated and total rather than treating items
+        as every MemberRef.
+        """
         return _dump(
             analysis.dotnet_xrefs(
                 session_id,
