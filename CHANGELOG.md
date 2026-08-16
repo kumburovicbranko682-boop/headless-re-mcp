@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.packages` 一次回完整列表，没有任何上限**。2000 个包名整包返回，也没有
+  `has_more`。现在默认 500、工具面上限 2000，截断时标 `has_more`。
 - **`device.properties` 停在上限时看起来和“到此为止”完全一样**。80 条属性、limit=10 时回
   `count=10` 且没有 `has_more`，agent 会当成整张 getprop 表。现在留下的才标 `has_more`，
   刚好填满一页且后面没有了的不会被误标。

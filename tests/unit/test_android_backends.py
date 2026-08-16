@@ -541,3 +541,33 @@ class TestDevicePropertiesSayWhenTheyStopped:
         page = self._backend(10).properties("emulator-5554", limit=10)
         assert page["count"] == 10
         assert page["has_more"] is False
+
+
+class TestDevicePackagesAreCapped:
+    """The package list had no page and no signal that it had stopped.
+
+    Measured: 2000 package names came back in one reply, with no has_more.
+    """
+
+    def _backend(self, n: int) -> AdbBackend:
+        class _Pkgs:
+            def shell(self, *args: object, **kwargs: object) -> str:
+                del args, kwargs
+                return "\n".join(f"package:com.app{i}" for i in range(n))
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Pkgs()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(2000).packages("emulator-5554", limit=10)
+        assert page["count"] == 10
+        assert page["has_more"] is True
+        assert len(page["packages"]) == 10
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).packages("emulator-5554", limit=10)
+        assert page["count"] == 3
+        assert page["has_more"] is False
