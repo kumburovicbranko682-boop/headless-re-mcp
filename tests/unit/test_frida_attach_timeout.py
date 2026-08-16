@@ -395,3 +395,28 @@ def test_frida_resolve_remote_does_not_wait_forever(
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_local_device_does_not_wait_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_local_device used to run with no deadline.
+
+    Measured: a 0.8s sleep in that hop held applications('local') 0.8s.
+    """
+    monkeypatch.setattr(frida_client, "_LOCAL_DEVICE_TIMEOUT", 0.4)
+
+    class _Fake:
+        def get_local_device(self) -> object:
+            time.sleep(30)
+            raise AssertionError("local")
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.applications("local")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"

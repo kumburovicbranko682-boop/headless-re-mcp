@@ -12,6 +12,7 @@ _RESUME_TIMEOUT = 15.0
 _APPLICATIONS_TIMEOUT = 15.0
 _DEVICES_TIMEOUT = 15.0
 _REMOTE_TIMEOUT = 15.0
+_LOCAL_DEVICE_TIMEOUT = 15.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -385,6 +386,35 @@ class FridaClient:
             )
         return box[0]
 
+    def _local_device_with_deadline(self, frida: Any) -> Any:
+        """Resolve the local device with a deadline. ``get_local_device`` has none.
+
+        Measured: a 0.8s sleep in that hop held ``applications("local")``
+        0.8s. A wedged local backend pins the worker.
+        """
+        box: list[Any] = []
+        err: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                box.append(frida.get_local_device())
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+
+        thread = threading.Thread(target=run, name="frida-local-device", daemon=True)
+        thread.start()
+        thread.join(_LOCAL_DEVICE_TIMEOUT)
+        if thread.is_alive():
+            raise FridaError(
+                "timeout",
+                f"frida local device timed out after {_LOCAL_DEVICE_TIMEOUT:g}s",
+            )
+        if err:
+            raise err[0]
+        if not box:
+            raise FridaError("backend_error", "frida local device returned nothing")
+        return box[0]
+
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_with_deadline(pid)
@@ -517,7 +547,7 @@ class FridaClient:
         frida = self._need()
         try:
             if device_id in (None, "", "local"):
-                return frida.get_local_device()
+                return self._local_device_with_deadline(frida)
             if device_id == "usb":
                 return frida.get_usb_device(timeout=5)
             if isinstance(device_id, str) and (":" in device_id):
