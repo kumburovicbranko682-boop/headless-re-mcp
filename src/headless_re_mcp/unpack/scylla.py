@@ -10,7 +10,6 @@ run fail closed without claiming IAT recovery.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from contextlib import suppress
@@ -21,7 +20,7 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
-from headless_re_mcp.dotnet.de4dot import _capture_process
+from headless_re_mcp.dotnet.de4dot import _capture_process, _probe_run
 
 JsonObject = dict[str, Any]
 
@@ -283,29 +282,27 @@ def run_scylla(
 
 
 def probe_scylla(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
-    """Best-effort probe: file exists and process starts (GUI builds may return empty)."""
+    """Best-effort probe: file exists and process starts (GUI builds may return empty).
+
+    ``subprocess.run(timeout=...)`` killed only the process it spawned.
+    Measured: a launcher that started a sleeper, timeout 0.4s, left one
+    orphan reparented to pid 1. Timeout-as-success is a separate defect.
+    """
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run([str(exe)], **options)
+        completed = _probe_run([str(exe)], timeout)
     except subprocess.TimeoutExpired:
         # GUI Scylla often never exits; treat startability as probe success.
         return True, "timeout_after_start"
     except OSError:
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = (
+        (completed.stdout or b"").decode("utf-8", errors="replace")
+        + "\n"
+        + (completed.stderr or b"").decode("utf-8", errors="replace")
+    ).strip()
     lowered = text.casefold()
     if any(token in lowered for token in ("scylla", "usage", "iat", "import", "dump")):
         return True, text[:2000]

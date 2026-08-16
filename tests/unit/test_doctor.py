@@ -593,3 +593,46 @@ def test_net_reactor_slayer_probe_timeout_kills_what_the_launcher_started(
         if alive:
             time.sleep(0.05)
     assert alive == set(), f"probe left orphans {sorted(alive)}"
+
+
+def test_scylla_probe_timeout_kills_what_the_launcher_started(tmp_path: Path) -> None:
+    """subprocess.run killed the probe and left the work running.
+
+    Measured: a launcher that started a sleeper, timeout 0.4s, left one
+    orphan reparented to pid 1. Timeout-as-success is a separate defect.
+    """
+    import os
+    import time
+
+    from headless_re_mcp.unpack.scylla import probe_scylla
+
+    pid_path = tmp_path / "child.pid"
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    launcher = tmp_path / "launch"
+    launcher.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(sleeper)!r}])\n"
+        f"open({str(pid_path)!r}, 'a').write(str(child.pid) + '\\n')\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    _ok, _output = probe_scylla(launcher, timeout=0.4)
+    assert pid_path.is_file()
+    pids = [int(line) for line in pid_path.read_text().split() if line.strip()]
+    assert pids
+    deadline = time.monotonic() + 2.0
+    alive = set(pids)
+    while time.monotonic() < deadline and alive:
+        remaining = set()
+        for pid in alive:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            remaining.add(pid)
+        alive = remaining
+        if alive:
+            time.sleep(0.05)
+    assert alive == set(), f"probe left orphans {sorted(alive)}"
