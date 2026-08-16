@@ -9,6 +9,7 @@ JsonObject = dict[str, Any]
 _ATTACH_TIMEOUT = 15.0
 _SPAWN_TIMEOUT = 15.0
 _RESUME_TIMEOUT = 15.0
+_APPLICATIONS_TIMEOUT = 15.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -290,6 +291,35 @@ class FridaClient:
         if err:
             raise err[0]
 
+    def _applications_with_deadline(self, device: Any) -> Any:
+        """List apps with a deadline. ``enumerate_applications`` has none.
+
+        Measured: a 0.8s sleep in that hop held ``frida.applications``
+        0.8s. A wedged device pins the worker.
+        """
+        box: list[Any] = []
+        err: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                box.append(device.enumerate_applications())
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+
+        thread = threading.Thread(target=run, name="frida-applications", daemon=True)
+        thread.start()
+        thread.join(_APPLICATIONS_TIMEOUT)
+        if thread.is_alive():
+            raise FridaError(
+                "timeout",
+                f"frida applications timed out after {_APPLICATIONS_TIMEOUT:g}s",
+            )
+        if err:
+            raise err[0]
+        if not box:
+            raise FridaError("backend_error", "frida applications returned nothing")
+        return box[0]
+
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_with_deadline(pid)
@@ -477,7 +507,9 @@ class FridaClient:
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
-            apps = device.enumerate_applications()
+            apps = self._applications_with_deadline(device)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))

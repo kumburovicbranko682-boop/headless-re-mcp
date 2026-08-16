@@ -281,3 +281,32 @@ def test_frida_spawn_does_not_wait_on_resume_forever(
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_applications_does_not_wait_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """frida.applications used enumerate_applications with no deadline.
+
+    Measured: a 0.8s sleep in that hop held applications 0.8s.
+    """
+    monkeypatch.setattr(frida_client, "_APPLICATIONS_TIMEOUT", 0.4)
+
+    class _Dev:
+        def enumerate_applications(self) -> list[object]:
+            time.sleep(30)
+            return []
+
+    class _Fake:
+        def get_usb_device(self, timeout: object = None) -> _Dev:
+            return _Dev()
+
+    client = FridaClient()
+    client._frida = _Fake()
+    client._available = True
+    t0 = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.applications("usb")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    assert caught.value.code == "timeout"
