@@ -878,6 +878,51 @@ class TestWebScreenshotDoesNotInventAFile:
         assert out.read_bytes() == b"PNG"
 
 
+class TestWebDomSnapshotSaysWhenItStopped:
+    """A cut DOM dump used to omit how much HTML was dropped.
+
+    Measured: a 200050-character page came back as 200000 characters,
+    truncated=True, and no bytes.
+    """
+
+    def _backend(self, html: str) -> Any:
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        class Page:
+            url = "https://x"
+
+            def title(self) -> str:
+                return "t"
+
+            def content(self) -> str:
+                return html
+
+        class Runner:
+            def call(self, work: Any, timeout: float | None = None) -> Any:
+                del timeout
+                return work()
+
+        handle = _WebSession(object(), object(), object(), Page(), object())
+        handle.runner = Runner()  # type: ignore[assignment]
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_a_cut_page_reports_bytes(self) -> None:
+        from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY
+
+        result = self._backend("h" * (_MAX_INLINE_BODY + 50)).dom_snapshot("s")
+        assert len(result["html"]) == _MAX_INLINE_BODY
+        assert result["truncated"] is True
+        assert result["bytes"] == _MAX_INLINE_BODY + 50
+
+    def test_a_short_page_is_complete(self) -> None:
+        result = self._backend("<html></html>").dom_snapshot("s")
+        assert result["html"] == "<html></html>"
+        assert result["truncated"] is False
+        assert result["bytes"] == len(result["html"])
+
+
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:
         """Sorting would silently target the highest pid, not the new app."""

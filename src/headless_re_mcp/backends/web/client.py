@@ -484,11 +484,15 @@ class WebBackend:
                 html = handle.page.content()
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
+            # Measured: a 200050-character DOM came back as 200000 characters,
+            # truncated=True, and no bytes. An agent then cannot tell how much
+            # of the page was cut.
             return {
                 "url": handle.page.url,
                 "title": _safe_title(handle.page),
                 "html": html[:_MAX_INLINE_BODY],
                 "truncated": len(html) > _MAX_INLINE_BODY,
+                "bytes": len(html),
             }
 
         return self._runner(handle).call(work)

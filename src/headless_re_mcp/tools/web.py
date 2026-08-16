@@ -114,7 +114,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
-        """Return the current page HTML, URL, and title."""
+        """Return the current page HTML, URL, and title.
+
+        Oversized HTML is cut; read `truncated`/`bytes` rather than assuming
+        `html` is the whole page.
+        """
         return _dump(analysis.web_dom_snapshot(session_id))
 
     @tools.tool(name="web.screenshot")
