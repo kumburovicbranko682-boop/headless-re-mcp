@@ -1152,6 +1152,24 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["count"] == 10
         assert result["has_more"] is False
 
+    def test_tool_description_says_to_read_has_more(self) -> None:
+        """apk.xrefs already paged but its tool text never said so.
+
+        Measured: handler.__doc__ had no has_more while the reply carries
+        it. A model that never saw the field treated one page as every
+        caller.
+        """
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.xrefs"].handler.__doc__ or ""
+            assert "has_more" in doc
+        finally:
+            service.close_all()
+
 
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
