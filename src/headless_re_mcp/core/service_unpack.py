@@ -693,6 +693,17 @@ class UnpackMixin:
             }
             if remap_report is not None:
                 payload["remap_report"] = remap_report.to_dict()
+            # Same leak as unpack.pe.rebuild: measured a 2048-byte
+            # iat-rebuilt-*.exe with artifacts.list total=0, gc removed=0,
+            # surviving close_all.
+            payload = _register_capture(
+                self,
+                session_id,
+                out_path,
+                kind="iat_rebuilt",
+                source="unpack.iat.rebuild",
+                payload=payload,
+            )
             try:
                 verified = scan_pe(out_path)
                 payload["pe_verify"] = {

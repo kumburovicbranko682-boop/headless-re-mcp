@@ -393,8 +393,9 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Rebuild import tables on a dumped PE using a confirmed IAT range.
 
         Answers with output_path, input_path, report, rebuild_gate,
-        recoverability, and claims_universal_unpack false. There is no
-        rebuilt field.
+        recoverability, artifact_id, and claims_universal_unpack false.
+        There is no rebuilt field. artifact_id is the artifacts table row;
+        without it the image is invisible to artifacts.gc.
         """
         return _dump(
             analysis.unpack_iat_rebuild(
