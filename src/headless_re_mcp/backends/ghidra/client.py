@@ -18,6 +18,23 @@ _MAX_STDOUT = 200_000
 _MAX_DECOMPILE_CHARS = 200_000
 
 
+def _page_export(payload: JsonObject, *, limit: int) -> JsonObject:
+    """Cut an export list to the page and say whether anything was left out.
+
+    Measured: 500 functions with limit=256 came back as count=256 and no
+    has_more, so an agent treated one page as every function Ghidra found.
+    """
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return payload
+    page = items[:limit]
+    payload["items"] = page
+    payload["count"] = len(page)
+    payload["limit"] = limit
+    payload["has_more"] = bool(payload.get("has_more")) or len(items) > limit
+    return payload
+
+
 def _disclose_decompile(payload: JsonObject) -> JsonObject:
     """Mark a decompilation that was cut at the inline cap.
 
@@ -197,7 +214,8 @@ class GhidraClient:
             _EXPORT_SCRIPT,
             mode,
             str(out_path),
-            str(capped),
+            # One extra so a page that fills can be told from a list that ended.
+            str(capped + 1),
             addr,
         ]
         stdout, stderr, code = self._run_headless(
@@ -232,6 +250,8 @@ class GhidraClient:
         payload["project_dir"] = str(project_dir)
         if isinstance(payload.get("decompiled"), str):
             _disclose_decompile(payload)
+        elif mode != "decompile":
+            _page_export(payload, limit=capped)
         return payload
 
     def _run_headless(
