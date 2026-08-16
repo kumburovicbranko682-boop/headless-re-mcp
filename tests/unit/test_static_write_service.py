@@ -355,3 +355,24 @@ def test_the_decompile_tool_says_oversized_output_is_truncated() -> None:
     assert docs["static_decompile"]
     assert "truncated" in docs["static_decompile"]
     assert "artifacts.read" in docs["static_decompile"]
+
+
+def test_the_strings_tool_says_a_page_is_only_a_page() -> None:
+    """The worker already set has_more; the description did not.
+
+    An agent that only reads the tool text treats one page as every string
+    in the database.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_core_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_strings"]
+    assert "has_more" in docs["static_strings"]
