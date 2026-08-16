@@ -629,6 +629,52 @@ class TestFridaServerEnsureDoesNotInventARunningServer:
         assert result["running"] is True
 
 
+class TestApkMethodsSayWhenTheyStopped:
+    """A method page that hit the cap looks exactly like one that ended."""
+
+    def _client(self, n: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Method:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.descriptor = "()V"
+                self.access = "public"
+
+        class _Klass:
+            name = "Lcom/example/A;"
+
+            def get_methods(self) -> list[_Method]:
+                return [_Method(f"m{index}") for index in range(n)]
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass()]
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(250).methods(tmp_path / "a.apk", "Lcom/example/A;", limit=100)
+        assert result["count"] == 100
+        assert result["total"] == 250
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(3).methods(tmp_path / "a.apk", "Lcom/example/A;", limit=100)
+        assert result["count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(100).methods(tmp_path / "a.apk", "Lcom/example/A;", limit=100)
+        assert result["count"] == 100
+        assert result["has_more"] is False
+
+
 class TestApkClassesSayWhenTheyStopped:
     """A class page that hit the cap looks exactly like one that ended.
 

@@ -286,13 +286,16 @@ class ApkClient:
                         "access": str(getattr(method, "access", "")),
                     }
                 )
-        window = methods[offset : offset + limit]
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        window = methods[start : start + cap]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
