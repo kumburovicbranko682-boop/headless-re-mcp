@@ -117,6 +117,8 @@ until 1.0 the tool surface may still change between minor versions.
   `total` / `has_more`。现在最多回 2000 个并标明还有更多。
 - **x64dbg 关闭只杀启动器**。包装脚本起 sleeper 时，关闭后父进程已死、子进程
   仍是 S。整晚会留下调试目标。现在关会话杀整树。
+- **IDA 关闭只杀启动器**。包装脚本起 sleeper 时，terminate 后父进程已死、子
+  进程仍是 S。idalib 工作进程以 GB 计，孤儿会占着库锁。现在杀整树。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

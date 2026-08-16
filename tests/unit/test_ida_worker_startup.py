@@ -49,3 +49,48 @@ def test_the_worker_envelope_carries_retryable_through_to_the_client() -> None:
 
     assert parsed.code == "worker_start_failed"
     assert parsed.retryable is True
+
+
+def test_terminating_ida_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """IDA terminate used to kill only the launcher; the child stayed."""
+    import os
+    import subprocess
+    import sys
+    import time
+    from contextlib import suppress
+
+    from headless_re_mcp.backends.ida.client import IdaWorkerClient
+
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print(c.pid, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = int(parent.stdout.readline().strip())
+
+    def _alive(pid: int) -> bool:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+                return fh.read().split()[2] != "Z"
+        except FileNotFoundError:
+            return False
+
+    assert _alive(parent.pid)
+    assert _alive(child_pid)
+
+    client = object.__new__(IdaWorkerClient)
+    client._process = parent
+    client._closed = False
+    client.terminate()
+    time.sleep(0.2)
+    assert parent.poll() is not None
+    assert not _alive(child_pid), f"child {child_pid} still alive after IDA terminate"
+    with suppress(OSError):
+        os.kill(child_pid, 9)
