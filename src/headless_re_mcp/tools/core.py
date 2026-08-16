@@ -43,9 +43,16 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         """Return one session, including target, state, architecture, and backends."""
         return _dump(analysis.get_session(session_id))
 
-    def session_list() -> dict[str, Any]:
-        """List all sessions known to this MCP server process."""
-        return _dump(analysis.list_sessions())
+    def session_list(
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        """List sessions known to this MCP server process.
+
+        Capped; the reply carries total and has_more so a page is not read
+        as every session this process still holds.
+        """
+        return _dump(analysis.list_sessions(offset=offset, limit=limit))
 
     def session_close(session_id: str) -> dict[str, Any]:
         """Close a session and terminate its isolated backend worker."""

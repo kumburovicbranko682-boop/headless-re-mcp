@@ -122,3 +122,39 @@ def test_registry_updates_backend_and_metadata(tmp_path: Path) -> None:
     assert updated.metadata["image_base"] == 0x140000000
     detached = registry.detach_backend(session.id, BackendKind.IDA)
     assert BackendKind.IDA not in detached.backends
+
+
+def test_session_list_page_says_when_more_exist(tmp_path: Path) -> None:
+    """session.list used to return every session with only count.
+
+    Measured: five open sessions, count=5, no total or has_more. An
+    unattended caller reading the array treated one page as the whole
+    process.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        for index in range(5):
+            binary = tmp_path / f"fixture{index}.exe"
+            _write_minimal_pe(binary, 0x8664)
+            created = service.create_session(str(binary))
+            assert created.ok
+        page = service.list_sessions(offset=0, limit=2)
+        assert page.ok and page.data is not None
+        assert page.data["count"] == 2
+        assert page.data["total"] == 5
+        assert page.data["has_more"] is True
+        rest = service.list_sessions(offset=2, limit=10)
+        assert rest.data is not None
+        assert rest.data["count"] == 3
+        assert rest.data["has_more"] is False
+        first_ids = {item["id"] for item in page.data["sessions"]}
+        rest_ids = {item["id"] for item in rest.data["sessions"]}
+        assert first_ids & rest_ids == set()
+    finally:
+        service.close_all()

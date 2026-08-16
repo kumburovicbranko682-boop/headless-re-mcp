@@ -408,9 +408,26 @@ class AnalysisService(
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def list_sessions(self) -> Result[JsonObject]:
-        sessions = [_session_json(session) for session in self.registry.list()]
-        return _success({"sessions": sessions, "count": len(sessions)})
+    def list_sessions(self, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
+        """Page the in-process session list.
+
+        Measured: five open sessions came back as count=5 with no total or
+        has_more. An unattended caller reading the array treated one page
+        as every session this process still held.
+        """
+        items = [_session_json(session) for session in self.registry.list()]
+        capped = max(1, min(int(limit), 500))
+        start = max(0, int(offset))
+        page = items[start : start + capped]
+        return _success(
+            {
+                "sessions": page,
+                "count": len(page),
+                "total": len(items),
+                "offset": start,
+                "has_more": start + len(page) < len(items),
+            }
+        )
 
     def open_static(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.open_static(session_id)

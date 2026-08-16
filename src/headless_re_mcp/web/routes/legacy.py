@@ -379,9 +379,13 @@ def register_legacy_routes(
     def sessions(
         authorization: str | None = Header(default=None),
         token_q: str | None = Query(default=None, alias="token"),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=200, ge=1, le=500),
     ) -> JSONResponse:
         _require_token(authorization, token_q)
-        return JSONResponse(_result_payload(service.list_sessions()))
+        return JSONResponse(
+            _result_payload(service.list_sessions(offset=offset, limit=limit))
+        )
 
     @app.get("/api/sessions/{session_id}")
     def session_get(
