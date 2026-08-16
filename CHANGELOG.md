@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.device.connect` 在加远程设备卡住时仍会一直挂着**。给
+  `enumerate_devices` 加截止后，`add_remote_device` 睡 8s 仍要 8.000s
+  才回。现在共用同一截止。
 - **`frida.devices` 在枚举卡住时仍会一直挂着**。给 attach/spawn/applications
   加截止后，`enumerate_devices` 睡 8s 仍要 8.000s 才回。现在共用同一截止。
 - **`device.current_activity` 在读不到前台包时仍报成功**。假设备

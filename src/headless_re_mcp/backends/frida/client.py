@@ -432,13 +432,19 @@ class FridaClient:
 
     def add_remote_device(self, endpoint: str) -> JsonObject:
         frida = self._need()
-        try:
-            device = frida.get_device_manager().add_remote_device(endpoint)
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError(
-                "backend_error", f"failed to add remote device: {exc}", endpoint=endpoint
-            ) from exc
-        return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
+
+        def work() -> JsonObject:
+            try:
+                device = frida.get_device_manager().add_remote_device(endpoint)
+            except Exception as exc:  # noqa: BLE001
+                raise FridaError(
+                    "backend_error",
+                    f"failed to add remote device: {exc}",
+                    endpoint=endpoint,
+                ) from exc
+            return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
+
+        return self._call("add_remote_device", work)
 
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
         device = self._resolve_device(device_id)

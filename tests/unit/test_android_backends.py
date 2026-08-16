@@ -225,6 +225,46 @@ class TestFridaEnumerateDevicesHasADeadline:
         frida.release.set()
 
 
+class TestFridaAddRemoteDeviceHasADeadline:
+    """Adding a remote device used to park the caller when frida stopped answering.
+
+    Measured after enumerate_devices had a deadline: ``add_remote_device()``
+    against a manager that slept 8s still returned only after 8.000s.
+    """
+
+    def test_a_hung_add_returns_timeout_instead_of_blocking(self) -> None:
+        class _Mgr:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def add_remote_device(self, endpoint: str) -> object:
+                del endpoint
+                self.entered.set()
+                self.release.wait()
+                return object()
+
+        class _Frida:
+            def __init__(self) -> None:
+                self.mgr = _Mgr()
+
+            def get_device_manager(self) -> _Mgr:
+                return self.mgr
+
+        frida = _Frida()
+        client = FridaClient(timeout=0.3)
+        client._available = True
+        client._frida = frida
+        started = time.monotonic()
+        with pytest.raises(FridaError) as info:
+            client.add_remote_device("127.0.0.1:27042")
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert frida.mgr.entered.is_set()
+        frida.mgr.release.set()
+
+
 class TestFridaModulesSayWhenTheyStopped:
     """A module page that hit the cap looks exactly like one that ended.
 
