@@ -36,7 +36,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         host: str = "127.0.0.1",
         port: Annotated[int, Field(ge=1, le=65535)] = 5555,
     ) -> dict[str, Any]:
-        """Connect to an emulator over TCP (LDPlayer 5555, MuMu 7555, Nox 62001)."""
+        """Connect to an emulator over TCP (LDPlayer 5555, MuMu 7555, Nox 62001).
+
+        connected is true only for adb's 'connected to' / 'already connected to'
+        replies, not because the text happens to contain those words.
+        """
         return _dump(analysis.device_connect(host=host, port=port))
 
     @tools.tool(name="device.info")

@@ -57,6 +57,19 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _adb_connect_succeeded(message: object) -> bool:
+    """adb prints 'connected to HOST:PORT' or 'already connected to HOST:PORT'.
+
+    A substring of 'connected' also matches 'not connected' and 'disconnected'.
+    A substring of 'already' matches 'already in use'. Measured: those three
+    replies were reported as connected=True, so an unattended agent treated a
+    refused emulator as ready and burned the mission on a device that is not
+    there.
+    """
+    text = str(message).strip().lower()
+    return text.startswith("connected to ") or text.startswith("already connected to ")
+
+
 class AdbBackend:
     def __init__(self, adb_path: Path | None = None) -> None:
         self._adbutils: Any = None
@@ -125,10 +138,11 @@ class AdbBackend:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"connect failed: {exc}", endpoint=endpoint) from exc
+        text = str(message)
         return {
             "endpoint": endpoint,
-            "result": str(message),
-            "connected": "connected" in str(message).lower() or "already" in str(message).lower(),
+            "result": text,
+            "connected": _adb_connect_succeeded(text),
         }
 
     def info(self, serial: str) -> JsonObject:

@@ -432,6 +432,50 @@ class TestFridaServerEnsureDoesNotReportAGhost:
         assert result == {"running": True, "pushed": False, "port": 27042}
 
 
+class TestDeviceConnectDoesNotReportAGhost:
+    """A refusal whose text mentioned 'connected' used to be connected=True.
+
+    Measured: 'not connected to 127.0.0.1:5555', 'disconnected from
+    127.0.0.1:5555', and 'already in use' all came back connected=True because
+    the check was a substring. An unattended agent then talks to an emulator
+    that never accepted the connection.
+    """
+
+    def _connect(self, message: str) -> dict[str, Any]:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class _Client:
+            def connect(self, endpoint: str, timeout: float = 10.0) -> str:
+                assert endpoint == "127.0.0.1:5555"
+                assert timeout == 10.0
+                return message
+
+        backend = AdbBackend()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        return backend.connect("127.0.0.1", 5555)
+
+    def test_a_refusal_that_mentions_connected_is_not_connected(self) -> None:
+        for message in (
+            "not connected to 127.0.0.1:5555",
+            "disconnected from 127.0.0.1:5555",
+            "already in use",
+            "failed to connect to 127.0.0.1:5555",
+            "unable to connect to 127.0.0.1:5555: Connection refused",
+        ):
+            result = self._connect(message)
+            assert result["connected"] is False, message
+            assert result["result"] == message
+
+    def test_adb_success_wording_is_still_connected(self) -> None:
+        for message in (
+            "connected to 127.0.0.1:5555",
+            "already connected to 127.0.0.1:5555",
+        ):
+            result = self._connect(message)
+            assert result["connected"] is True, message
+            assert result["endpoint"] == "127.0.0.1:5555"
+
+
 class TestDevicePropertiesSayWhenTheyStopped:
     """800 properties with limit=500 used to come back as count=500, unmarked."""
 
