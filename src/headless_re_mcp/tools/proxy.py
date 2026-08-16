@@ -59,7 +59,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.replay")
     def proxy_replay(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Replay a captured request through the proxy."""
+        """Replay a captured request through the proxy.
+
+        replayed=true means the replay command finished on the proxy loop,
+        not that it was merely queued.
+        """
         return _dump(analysis.proxy_replay(session_id, flow_id))
 
     @tools.tool(name="proxy.export_har")

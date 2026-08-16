@@ -150,6 +150,79 @@ class TestProxyFlowsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestProxyReplayDoesNotInventSuccess:
+    """call_soon_threadsafe returning is not a completed replay.
+
+    Measured: a loop that never ran the callback still came back as
+    replayed=True. An agent then treats the request as resent.
+    """
+
+    def _backend(self, loop: Any, *, explode: bool = False) -> Any:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend
+
+        class Flow:
+            def copy(self) -> Flow:
+                return self
+
+        class Commands:
+            def call(self, name: str, args: list[object]) -> None:
+                del name, args
+                if explode:
+                    raise RuntimeError("replay exploded")
+
+        class Master:
+            commands = Commands()
+
+        class Inst:
+            def __init__(self) -> None:
+                self.recorder = type("R", (), {"raw": staticmethod(lambda flow_id: Flow())})()
+                self._master = Master()
+                self._loop = loop
+
+        backend = ProxyBackend()
+        backend._instances["s"] = Inst()
+        return backend
+
+    def test_a_dead_loop_is_a_timeout_not_a_replay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+        from headless_re_mcp.backends.proxy.client import ProxyError
+
+        monkeypatch.setattr(proxy_client, "_REPLAY_TIMEOUT", 0.05)
+
+        class DeadLoop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                del fn, args
+
+        started = time.monotonic()
+        with pytest.raises(ProxyError) as caught:
+            self._backend(DeadLoop()).replay("s", "flow-1")
+        assert caught.value.code == "timeout"
+        assert time.monotonic() - started < 1.0
+
+    def test_a_loop_exception_is_not_a_replay(self) -> None:
+        from headless_re_mcp.backends.proxy.client import ProxyError
+
+        class LiveLoop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                fn(*args)
+
+        with pytest.raises(ProxyError) as caught:
+            self._backend(LiveLoop(), explode=True).replay("s", "flow-1")
+        assert caught.value.code == "backend_error"
+
+    def test_a_finished_replay_is_still_success(self) -> None:
+        class LiveLoop:
+            def call_soon_threadsafe(self, fn: Any, *args: object) -> None:
+                fn(*args)
+
+        result = self._backend(LiveLoop()).replay("s", "flow-1")
+        assert result == {"replayed": True, "flow_id": "flow-1"}
+
+
 class TestProxyStartHonesty:
     def test_port_probe_reports_false_for_a_closed_port(self) -> None:
         # Port 1 on loopback is not something this test suite ever binds.

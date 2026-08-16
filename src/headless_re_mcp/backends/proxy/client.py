@@ -16,11 +16,17 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# call_soon_threadsafe only queues the command. Measured: a loop that never
+# ran still returned replayed=True. This is how long we wait for the loop
+# to actually execute replay.client.
+_REPLAY_TIMEOUT = 30.0
 
 
 class ProxyError(RuntimeError):
@@ -377,9 +383,35 @@ class ProxyBackend:
             raise ProxyError("not_found", "unknown flow id", flow_id=flow_id)
         if master is None or inst._loop is None:
             raise ProxyError("invalid_state", "proxy is not running")
+        done: Future[None] = Future()
         try:
             new_flow = flow.copy()
-            inst._loop.call_soon_threadsafe(master.commands.call, "replay.client", [new_flow])
+        except Exception as exc:  # noqa: BLE001
+            raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
+
+        def work() -> None:
+            try:
+                master.commands.call("replay.client", [new_flow])
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiter
+                if not done.done():
+                    done.set_exception(exc)
+            else:
+                if not done.done():
+                    done.set_result(None)
+
+        try:
+            inst._loop.call_soon_threadsafe(work)
+        except Exception as exc:  # noqa: BLE001
+            raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
+        try:
+            done.result(timeout=_REPLAY_TIMEOUT)
+        except FutureTimeout as exc:
+            raise ProxyError(
+                "timeout",
+                f"replay timed out after {_REPLAY_TIMEOUT:g}s",
+                flow_id=flow_id,
+                timeout=_REPLAY_TIMEOUT,
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}
