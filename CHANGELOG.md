@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.strings` 停在一页时看起来像完整串表**。80 条、limit=10 时回
+  `count=10` / `total=80`，没有 `has_more`。只看列表的 agent 会停在第一页。
+  现在截断时标 `has_more`。
 - **`device.logcat` 切掉多余行时看起来像完整缓冲**。设备回了 500 行、请求 20
   行时只回 20 行，没有 `has_more`。现在截断时标 `has_more`。
 - **`frida.modules` 停在上限时看起来像完整模块表**。200 个模块、limit=20 时回

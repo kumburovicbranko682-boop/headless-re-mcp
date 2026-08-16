@@ -583,6 +583,45 @@ class TestApkStringsDoNotMergeAtTheCap:
         assert page["truncated"] is False
 
 
+class TestApkStringsSayWhenTheyStopped:
+    """A string page that hit the cap looks exactly like one that ended.
+
+    Measured: 80 strings with limit=10 came back as count=10 and total=80,
+    with no has_more.
+    """
+
+    def _client(self, n: int) -> ApkClient:
+        class _Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = type(
+                    "Analysis",
+                    (),
+                    {"get_strings": lambda _self: [_Item(f"s{index}") for index in range(n)]},
+                )()
+
+        client = ApkClient()
+        client._available = True
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        page = self._client(80).strings(tmp_path / "app.apk", offset=0, limit=10)
+        assert page["count"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(3).strings(tmp_path / "app.apk", offset=0, limit=10)
+        assert page["has_more"] is False
+
+
 class TestApkPermissionsAreCapped:
     """The permission lists had no page and no signal that they had stopped.
 

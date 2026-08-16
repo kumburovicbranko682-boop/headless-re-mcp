@@ -336,6 +336,7 @@ class ApkClient:
             "total": len(values),
             "offset": offset,
             "truncated": any(len(item) > _MAX_STRING_LEN for item in source_window),
+            "has_more": offset + len(window) < len(values),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
