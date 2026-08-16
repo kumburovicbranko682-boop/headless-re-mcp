@@ -165,3 +165,31 @@ def test_doctor_reports_de4dot_missing(tmp_path: Path) -> None:
     assert report is not None
     probes = {item["name"]: item for item in report["probes"]}
     assert probes["de4dot"]["status"] == "missing"
+
+
+def test_de4dot_probe_is_false_when_every_invocation_fails(tmp_path: Path) -> None:
+    """A file that never answers used to be reported as de4dot.
+
+    Measured: a 30s sleeper, timeout 0.4s, came back ok=True output=''
+    after three timed-out argv variants. Doctor then marked the CLI
+    READY. An unattended run would spend the night on a tool that
+    cannot start.
+    """
+    from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
+
+    hanging = tmp_path / "hang"
+    hanging.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    hanging.chmod(0o755)
+    ok, output = probe_de4dot_version(hanging, timeout=0.4)
+    assert ok is False
+    assert output == ""
+
+    other = tmp_path / "other"
+    other.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+    other.chmod(0o755)
+    ok_other, output_other = probe_de4dot_version(other, timeout=0.4)
+    assert ok_other is False
+    assert output_other == ""

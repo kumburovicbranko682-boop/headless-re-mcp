@@ -391,4 +391,4 @@ def probe_de4dot_version(executable: Path, *, timeout: float = 5.0) -> tuple[boo
         lowered = text.casefold()
         if "de4dot" in lowered or completed.returncode in {0, 1}:
             return True, text[:2000]
-    return True, ""
+    return False, ""
