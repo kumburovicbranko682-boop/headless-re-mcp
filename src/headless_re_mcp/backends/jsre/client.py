@@ -82,7 +82,15 @@ class JsClient:
         # webcrack always unminifies; expose it under a formatting-focused name.
         return self.deobfuscate(path, timeout=timeout)
 
-    def unpack_bundle(self, path: Path, out_dir: Path, *, timeout: float = 300.0) -> JsonObject:
+    def unpack_bundle(
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
@@ -100,7 +108,22 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        return {"output_dir": str(out_dir), "file_count": len(files), "files": files[:2000]}
+        # The list used to be files[:2000] with no has_more. A bundle with
+        # 2 500 modules reported file_count=2500 and a 2 000-name list that
+        # looked finished; names 2001+ were unreachable. Measured at 2 000
+        # typical paths: 90 KiB. A page of 100 is 4.6 KiB.
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 2000))
+        window = files[start : start + cap]
+        return {
+            "output_dir": str(out_dir),
+            "file_count": len(files),
+            "files": window,
+            "count": len(window),
+            "total": len(files),
+            "offset": start,
+            "has_more": start + len(window) < len(files),
+        }
 
 
 class WasmClient:

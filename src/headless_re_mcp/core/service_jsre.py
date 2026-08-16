@@ -89,12 +89,18 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def js_unpack_bundle(self, path: str, timeout: float = 300.0) -> Result[JsonObject]:
+    def js_unpack_bundle(
+        self,
+        path: str,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
         out_dir: Path | None = None
         try:
             out_dir = self._jsre_out_dir("unpack")
             data = JsClient(getattr(self.settings, "webcrack", None)).unpack_bundle(
-                Path(path), out_dir, timeout=timeout
+                Path(path), out_dir, timeout=timeout, offset=offset, limit=limit
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
