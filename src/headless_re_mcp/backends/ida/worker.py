@@ -929,7 +929,10 @@ def _search_bytes(params: JsonObject) -> JsonObject:
             "ida_bytes.bin_search API is unavailable in this IDA build",
         )
 
-    while len(matches) < offset + limit and ea < end_ea:
+    # Measured: 150 hits with limit=100 came back total=100 has_more=False,
+    # so an agent treated one page as every match. Collect one extra so a
+    # full page can be told from a search that actually ended.
+    while len(matches) < offset + limit + 1 and ea < end_ea:
         patterns = compile_vec()
         parsed = parse_pat(patterns, ea, normalized, 16)
         if parsed is False:
