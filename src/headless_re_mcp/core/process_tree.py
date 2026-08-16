@@ -7,6 +7,7 @@ import os
 import subprocess
 from contextlib import suppress
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -59,11 +60,56 @@ def process_image_path(pid: int) -> str | None:
         kernel32.CloseHandle(handle)
 
 
+def _ppid_from_proc(pid: int) -> int | None:
+    """Read a process's parent from ``/proc``, or None if it is gone."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("PPid:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+            return None
+    return None
+
+
+def _enumerate_proc_children(parent_pid: int, limit: int) -> list[int]:
+    """Direct children via ``/proc/*/status``. Bounded, never raises."""
+    children: list[int] = []
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return []
+    for name in names:
+        if not name.isdigit():
+            continue
+        child = int(name)
+        if child <= 0 or child == parent_pid:
+            continue
+        if _ppid_from_proc(child) != parent_pid:
+            continue
+        children.append(child)
+        if len(children) >= limit:
+            break
+    children.sort()
+    return children
+
+
 def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PIDS) -> list[int]:
-    """Return direct child PIDs of ``parent_pid`` (bounded, Toolhelp32)."""
-    if os.name != "nt" or type(parent_pid) is not int or parent_pid <= 0:
+    """Return direct child PIDs of ``parent_pid`` (bounded).
+
+    Windows uses Toolhelp32. Elsewhere the same bound is read from ``/proc``:
+    without that, ``terminate_process_tree`` only kills the process it was
+    handed, and a launcher's child is left running. Measured here: kill the
+    launcher, the grandchild stays up and is reparented to pid 1.
+    """
+    if type(parent_pid) is not int or parent_pid <= 0:
         return []
     limit = max(1, min(int(max_pids), _MAX_CHILD_PIDS))
+    if os.name != "nt":
+        return _enumerate_proc_children(int(parent_pid), limit)
     kernel32 = ctypes.windll.kernel32
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1, 0xFFFFFFFF):
@@ -128,7 +174,10 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
-    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+    # Enumerate before the parent dies: that is while the relationship is
+    # still recorded. The walk itself is platform-specific; skipping it
+    # off Windows left every launcher's child running after a timeout.
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
 
