@@ -56,6 +56,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **IDA 分页列表停在一页时看起来像完整结果**。80 条、limit=10 时回
+  `returned=10` / `total=80`，没有 `has_more`。xrefs、names、search 等共用
+  `_page_items` 的工具都会让只看列表的 agent 停在第一页。现在截断时标
+  `has_more`。
 - **`proxy.flows` 停在一页时看起来像完整抓包**。500 条 flow、limit=20 时回
   `count=20` / `total=500`，没有 `has_more`。只看列表的 agent 会停在第一页。
   现在截断时标 `has_more`。

@@ -49,3 +49,33 @@ def test_the_worker_envelope_carries_retryable_through_to_the_client() -> None:
 
     assert parsed.code == "worker_start_failed"
     assert parsed.retryable is True
+
+
+class TestIdaPagedListsSayWhenTheyStopped:
+    """IDA list pages had total but no has_more.
+
+    Measured: 80 items with limit=10 came back as returned=10 and total=80,
+    with no has_more, so a caller reading only the list would stop after
+    the first page of xrefs, names, or search hits.
+    """
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        from headless_re_mcp.backends.ida.worker import _page_items
+
+        page = _page_items([{"i": index} for index in range(80)], 0, 10)
+        assert page["returned"] == 10
+        assert page["total"] == 80
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        from headless_re_mcp.backends.ida.worker import _page_items
+
+        page = _page_items([{"i": index} for index in range(3)], 0, 10)
+        assert page["has_more"] is False
+
+    def test_the_last_page_is_not_labelled_partial(self) -> None:
+        from headless_re_mcp.backends.ida.worker import _page_items
+
+        page = _page_items([{"i": index} for index in range(80)], 70, 10)
+        assert page["returned"] == 10
+        assert page["has_more"] is False

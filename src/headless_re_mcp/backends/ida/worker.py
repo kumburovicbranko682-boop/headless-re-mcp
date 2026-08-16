@@ -146,6 +146,7 @@ def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
         "limit": limit,
         "returned": len(window),
         "total": len(items),
+        "has_more": offset + len(window) < len(items),
     }
 
 
