@@ -69,9 +69,16 @@ class JsClient:
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
         stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
-        if code != 0 and not stdout:
+        # Measured: exit 1 with stdout "Error: cannot parse" came back as
+        # code= that text, truncated=False. The tool is deobfuscate, so an
+        # error line read as the recovered source.
+        if code != 0:
             raise JsReError(
-                "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "webcrack failed",
+                exit_code=code,
+                stderr=stderr[:_MAX_STDERR],
+                stdout=stdout[:_MAX_STDERR],
             )
         return {
             "code": stdout[:_MAX_INLINE],
@@ -135,9 +142,13 @@ class WasmClient:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
-        if code != 0 and not stdout:
+        if code != 0:
             raise JsReError(
-                "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "wasm2wat failed",
+                exit_code=code,
+                stderr=stderr[:_MAX_STDERR],
+                stdout=stdout[:_MAX_STDERR],
             )
         return {
             "wat": stdout[:_MAX_INLINE],
@@ -151,9 +162,13 @@ class WasmClient:
         stdout, stderr, code = _run(
             [str(self._objdump), "-h", "-x", str(resolved)], timeout=timeout
         )
-        if code != 0 and not stdout:
+        if code != 0:
             raise JsReError(
-                "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "wasm-objdump failed",
+                exit_code=code,
+                stderr=stderr[:_MAX_STDERR],
+                stdout=stdout[:_MAX_STDERR],
             )
         # wat already carries bytes so a caller can tell how much was cut.
         # Measured: a 400050-character objdump came back as 400000 characters,

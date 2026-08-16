@@ -203,6 +203,57 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestJsReDoesNotInventSuccess:
+    """A non-zero CLI with text on stdout used to look like recovered source.
+
+    Measured: exit 1 and stdout "Error: cannot parse" came back as
+    code/wat/objdump of that text.
+    """
+
+    def test_webcrack_nonzero_is_not_deobfuscated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: ("Error: cannot parse\n", "", 1))
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        with pytest.raises(JsReError) as caught:
+            JsClient(stub).deobfuscate(source)
+        assert caught.value.code == "backend_error"
+        assert caught.value.details["exit_code"] == 1
+
+    def test_webcrack_zero_is_still_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: ("var a = 1;", "", 0))
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        result = JsClient(stub).deobfuscate(source)
+        assert result["code"] == "var a = 1;"
+        assert result["truncated"] is False
+
+    def test_wasm2wat_nonzero_is_not_wat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: ("wasm2wat: failed\n", "", 1))
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        client = WasmClient(None)
+        client._wasm2wat = tmp_path / "wasm2wat"
+        with pytest.raises(JsReError) as caught:
+            client.wat(module)
+        assert caught.value.code == "backend_error"
+
+
 class TestWasmInfoSaysWhenItStopped:
     """wasm.wat already reports bytes; wasm.info used to omit them.
 
