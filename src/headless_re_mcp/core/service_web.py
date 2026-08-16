@@ -7,6 +7,7 @@ HAR) spill to the session artifact area rather than inflating a tool result.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -14,10 +15,10 @@ from uuid import uuid4
 from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Result, TargetKind
+from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
 
@@ -51,10 +52,32 @@ class WebAnalysisMixin:
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"web.open cannot run in {session.state.value} state"
+                )
             target = url.strip() or (session.locator or "")
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")
             data = self._web.open(session_id, target, headless=headless, timeout=timeout)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"web.open cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                with suppress(BaseException):
+                    self._web.close(session_id)
+                raise
             _record_backend(self, session_id, "web", endpoint=data.get("url"))
             _timeline_append(self, session_id, "web.open", "browser opened", url=data.get("url"))
             return _success(data, session_id=session_id, backend="web")

@@ -243,3 +243,117 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
+
+
+class _TrackingWebBackend:
+    def __init__(self) -> None:
+        self.live: set[str] = set()
+        self.opens: list[str] = []
+
+    def open(
+        self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
+    ) -> dict:  # type: ignore[type-arg]
+        self.opens.append(session_id)
+        self.live.add(session_id)
+        return {
+            "opened": True,
+            "url": url or "https://example.com",
+            "title": "",
+            "headless": headless,
+        }
+
+    def close(self, session_id: str) -> dict:  # type: ignore[type-arg]
+        self.live.discard(session_id)
+        return {"closed": True}
+
+    def close_all(self) -> None:
+        self.live.clear()
+
+
+class _TrackingProxyBackend:
+    def __init__(self) -> None:
+        self.live: set[str] = set()
+        self.starts: list[str] = []
+
+    def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> dict:  # type: ignore[type-arg]
+        self.starts.append(session_id)
+        self.live.add(session_id)
+        return {"running": True, "host": host, "port": port, "endpoint": f"{host}:{port}"}
+
+    def stop(self, session_id: str) -> dict:  # type: ignore[type-arg]
+        self.live.discard(session_id)
+        return {"stopped": True}
+
+    def close_all(self) -> None:
+        self.live.clear()
+
+
+class TestClosedSessionCannotSpawnBackends:
+    """Retained CLOSED sessions used to launch a browser/proxy that close cannot reap."""
+
+    def test_web_open_on_a_closed_session_does_not_launch(self) -> None:
+        service = AnalysisService()
+        web = _TrackingWebBackend()
+        service._web_backend = web  # type: ignore[assignment]
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+
+            result = service.web_open(session_id)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "invalid_request"
+            assert "closed" in result.error.message
+            assert web.opens == []
+            assert web.live == set()
+        finally:
+            service.close_all()
+
+    def test_proxy_start_on_a_closed_session_does_not_listen(self) -> None:
+        service = AnalysisService()
+        proxy = _TrackingProxyBackend()
+        service._proxy_backend = proxy  # type: ignore[assignment]
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+
+            result = service.proxy_start(session_id, port=18080)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "invalid_request"
+            assert "closed" in result.error.message
+            assert proxy.starts == []
+            assert proxy.live == set()
+        finally:
+            service.close_all()
+
+    def test_web_open_reclaims_if_the_session_closes_during_launch(self) -> None:
+        service = AnalysisService()
+        web = _TrackingWebBackend()
+        service._web_backend = web  # type: ignore[assignment]
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            original_open = web.open
+
+            def open_and_close(
+                session_id: str,
+                url: str,
+                *,
+                headless: bool = True,
+                timeout: float = 30.0,
+            ) -> dict:  # type: ignore[type-arg]
+                service.close_session(session_id)
+                return original_open(session_id, url, headless=headless, timeout=timeout)
+
+            web.open = open_and_close  # type: ignore[method-assign]
+            result = service.web_open(session_id)
+            assert result.ok is False
+            assert web.live == set()
+        finally:
+            service.close_all()

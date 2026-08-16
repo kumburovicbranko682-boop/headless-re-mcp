@@ -7,6 +7,7 @@ best-effort and returns guidance rather than raising when root is unavailable.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,10 +16,10 @@ from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import Result
+from headless_re_mcp.core.models import Result, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
 
@@ -50,8 +51,30 @@ class ProxyAnalysisMixin:
         self, session_id: str, host: str = "127.0.0.1", port: int = 8080
     ) -> Result[JsonObject]:
         try:
-            self.registry.get(session_id)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"proxy.start cannot run in {session.state.value} state"
+                )
             data = self._proxy.start(session_id, host=host, port=port)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"proxy.start cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                with suppress(BaseException):
+                    self._proxy.stop(session_id)
+                raise
             _record_backend(self, session_id, "proxy", endpoint=data.get("endpoint"))
             _timeline_append(self, session_id, "proxy.start", "mitmproxy started", port=port)
             return _success(data, session_id=session_id, backend="proxy")
