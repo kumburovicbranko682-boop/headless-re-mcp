@@ -53,7 +53,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Dump sections and details of a .wasm module via wasm-objdump."""
+        """Dump wasm-objdump details; read truncated when the listing was cut."""
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
     return tools.bindings

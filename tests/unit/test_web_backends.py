@@ -633,6 +633,38 @@ class TestWasmWatSaysWhenTextWasCut:
         assert "truncated" in block
 
 
+class TestWasmInfoSaysWhenListingWasCut:
+    """An objdump that hit the inline cap used to look complete if unread.
+
+    Measured: 500_000 characters came back as 400_000 with truncated=True,
+    while the tool text omitted truncated. An unattended agent that trusted
+    the description treated the fragment as the whole dump.
+    """
+
+    def test_a_cut_listing_is_marked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        tool = tmp_path / "wasm-objdump"
+        tool.write_bytes(b"")
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout=0: ("o" * 500_000, "", 0))
+        result = WasmClient(tool).info(module)
+        assert len(result["objdump"]) == 400_000
+        assert result["truncated"] is True
+
+    def test_the_tool_description_says_to_read_truncated(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "headless_re_mcp"
+            / "tools"
+            / "js_wasm.py"
+        ).read_text(encoding="utf-8")
+        block = source.split("def wasm_info(")[1]
+        assert "truncated" in block
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"
