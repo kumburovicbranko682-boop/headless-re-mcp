@@ -577,7 +577,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         address: int,
         type: str,
     ) -> dict[str, Any]:
-        """Apply a type string at an address."""
+        """Apply a type string at an address.
+
+        The write is checked on the way out: a type that did not land is an
+        error, not ok.
+        """
         return _dump(
             analysis.static_type_apply(session_id, address=address, type=type)
         )

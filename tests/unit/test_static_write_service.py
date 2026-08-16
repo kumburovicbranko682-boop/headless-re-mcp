@@ -812,3 +812,24 @@ def test_the_comment_set_tool_says_an_unchanged_comment_fails() -> None:
     }
     assert docs["static_comment_set"]
     assert "did not land" in docs["static_comment_set"]
+
+
+def test_the_type_apply_tool_says_an_unchanged_type_fails() -> None:
+    """The worker already refuses a no-op SetType; the description did not.
+
+    An agent that only reads the tool text treats any return as a type that
+    landed.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_type_apply"]
+    assert "did not land" in docs["static_type_apply"]
