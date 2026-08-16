@@ -384,6 +384,14 @@ class UnpackCliMixin:
         """Optional XVLKC unpack into a session artifact; never overwrite input."""
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.xvlkc.unpack cannot run in {session.state.value} state"
+                )
             if self.settings.xvlkc is None:
                 return Result[JsonObject](
                     ok=False,
@@ -417,6 +425,15 @@ class UnpackCliMixin:
                 input_sha256=session.sha256,
                 timeout=_detection_timeout(timeout),
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.xvlkc.unpack cannot run in {session.state.value} state"
+                )
             return _success(
                 {
                     "xvlkc": result.to_dict(),
