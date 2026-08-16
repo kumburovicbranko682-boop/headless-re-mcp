@@ -198,3 +198,14 @@ def test_a_capped_report_says_it_is_capped() -> None:
     )
     assert "Showing 500 of 913 findings" in partial
     assert "Showing 100 of 247 artifacts" in partial
+
+    audit_only = render_markdown_report(
+        session=session,
+        audit={
+            "entries": [{"at": "t", "action": f"a{i}", "ok": True} for i in range(30)],
+            "count": 30,
+            "total": 80,
+        },
+    )
+    assert "Showing 30 of 80 actions" in audit_only
+    assert "## Recent actions" in audit_only
