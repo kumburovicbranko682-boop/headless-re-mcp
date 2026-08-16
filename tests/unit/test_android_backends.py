@@ -1523,6 +1523,28 @@ class TestApktoolBoundaries:
         assert leftover.is_file()
 
 
+class TestApkExportSourcesDescriptionMatchesTheArtifacts:
+    """apk.export_sources now registers the tree, but the tool text hid that.
+
+    Measured: 2500 Java files, artifact_ids present, while the description
+    only mentioned has_more on the name list -- so a model pages names and
+    still cannot read a file back.
+    """
+
+    def test_the_tool_text_says_to_use_artifact_ids(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.apk import build_apk_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_apk_tools(service)}
+            doc = tools["apk.export_sources"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "artifact_ids" in doc
+        assert "has_more" in doc
+
+
 class TestApkExportSourcesIsRegistered:
     """apk.export_sources writes a Java tree and never registered it.
 
