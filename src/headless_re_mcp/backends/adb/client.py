@@ -22,6 +22,12 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _MAX_LOGCAT_LINES = 5000
+_FOCUSED_WINDOW_RE = re.compile(
+    r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
+)
+_RESUMED_ACTIVITY_RE = re.compile(
+    r"mResumedActivity: ActivityRecord\{.*?\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\s.*?\}"
+)
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -271,15 +277,36 @@ class AdbBackend:
         return {"stopped": True, "package": pkg}
 
     def current_activity(self, serial: str) -> JsonObject:
+        """Read the foreground component. Every dumpsys hop is bounded.
+
+        adbutils ``app_current`` used to run up to three dumpsys commands
+        with the library's 600s socket default and retry them. A wedged
+        adb held the worker; a large window dump also had no size cap.
+        Grep on the device keeps the reply small.
+        """
         dev = self._device(serial)
         try:
-            current = dev.app_current()
+            focused = str(
+                dev.shell("dumpsys window windows | grep mCurrentFocus", timeout=15.0)
+            )
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
-        return {
-            "package": getattr(current, "package", None),
-            "activity": getattr(current, "activity", None),
-        }
+        match = _FOCUSED_WINDOW_RE.search(focused)
+        if match:
+            return {"package": match.group("package"), "activity": match.group("activity")}
+        try:
+            resumed = str(
+                dev.shell(
+                    "dumpsys activity activities | grep mResumedActivity",
+                    timeout=15.0,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
+        match = _RESUMED_ACTIVITY_RE.search(resumed)
+        if match:
+            return {"package": match.group("package"), "activity": match.group("activity")}
+        return {"package": None, "activity": None}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
         dev = self._device(serial)

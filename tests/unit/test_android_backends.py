@@ -272,6 +272,43 @@ class TestAdbArgumentValidation:
         assert device.timeout == 15.0
         assert result["stopped"] is True
 
+    def test_current_activity_does_not_wait_on_adb_forever(self) -> None:
+        """app_current used three dumpsys calls with no deadline.
+
+        Measured: app_current() was invoked with no timeout. adbutils
+        retries and defaults the socket to 600s. A wedged adb held the
+        worker; the window dump also had no size cap.
+        """
+
+        class _Dev:
+            def __init__(self) -> None:
+                self.timeouts: list[object] = []
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                self.timeouts.append(timeout)
+                return (
+                    "mCurrentFocus=Window{41b37570 u0 com.example.app/.MainActivity}"
+                )
+
+            def app_current(self) -> object:
+                raise AssertionError("unbounded app_current")
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        device = _Dev()
+        result = _Backend(device).current_activity("emulator-5554")
+        assert device.timeouts == [15.0]
+        assert result["package"] == "com.example.app"
+        assert result["activity"] == ".MainActivity"
+
     def test_list_devices_does_not_wait_on_get_state(self) -> None:
         """Each listed serial used to trigger an unbounded get_state.
 
