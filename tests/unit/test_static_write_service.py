@@ -397,3 +397,24 @@ def test_the_imports_tool_says_a_page_is_only_a_page() -> None:
     }
     assert docs["static_imports"]
     assert "has_more" in docs["static_imports"]
+
+
+def test_the_exports_tool_says_a_page_is_only_a_page() -> None:
+    """The worker already set has_more; the description did not.
+
+    An agent that only reads the tool text treats one page as every export
+    in the database.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_exports"]
+    assert "has_more" in docs["static_exports"]
