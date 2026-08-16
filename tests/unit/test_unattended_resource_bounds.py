@@ -2679,3 +2679,46 @@ class TestFridaServerEnsureDoesNotInventAProcess:
         assert result == {"running": True, "pushed": False, "port": 27042}
         assert all("su" not in cmd for cmd in device.cmds)
 
+
+class TestDevicePackagesArePaged:
+    """pm list has no page size; a full device image is thousands of names.
+
+    Measured: 4000 packages came back as count=4000 with no total, has_more or
+    limit. The adjacent device.properties call already pages. An unattended
+    agent that lists packages on every emulator would ship the whole store
+    into the context every time.
+    """
+
+    def test_a_long_list_says_what_was_left_out(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "\n".join(f"package:com.app{index}" for index in range(4000))
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        result = backend.packages("emulator-5554", limit=50)
+        assert result["count"] == 50
+        assert result["total"] == 4000
+        assert result["has_more"] is True
+        assert len(result["packages"]) == 50
+
+    def test_a_short_list_is_complete(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "package:com.foo\npackage:com.bar"
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: Device()  # type: ignore[method-assign]
+        result = backend.packages("emulator-5554", limit=50)
+        assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["has_more"] is False
+
