@@ -263,6 +263,33 @@ def test_a_cut_import_list_is_marked(tmp_path: Path) -> None:
     assert enriched["items_total"] == 4146
 
 
+def test_a_cut_export_list_is_marked(tmp_path: Path) -> None:
+    """An export list that hit the item cap used to look complete if unread.
+
+    Measured: 4146 exports came back as count=4096, items_truncated=True,
+    while the tool text omitted items_truncated. An unattended agent that
+    trusted the description treated the page as every export.
+    """
+    from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS
+
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [{"vaddr": 0x140001000 + index, "name": f"exp{index}"} for index in range(4146)]
+    )
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["iEj"]}, binary=binary)
+    assert enriched["count"] == _MAX_ITEMS
+    assert enriched["items_truncated"] is True
+    assert enriched["items_total"] == 4146
+
+
+def test_exports_tool_description_says_to_read_items_truncated() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "r2.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def r2_exports(")[1].split("def r2_disasm(")[0]
+    assert "items_truncated" in block
+
+
 def test_imports_tool_description_says_to_read_items_truncated() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "headless_re_mcp" / "tools" / "r2.py"
