@@ -300,11 +300,15 @@ class ApkClient:
             if not klass.is_external()
         )
         window = names[offset : offset + limit]
+        # Measured: 250 classes came back as count=100, total=250, offset=0
+        # and no has_more. An agent that only reads count treats the page
+        # as the whole DEX.
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
             "offset": offset,
+            "has_more": offset + len(window) < len(names),
         }
 
     def methods(
