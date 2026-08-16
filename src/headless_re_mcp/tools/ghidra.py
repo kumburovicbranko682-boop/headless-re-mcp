@@ -68,7 +68,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         A second reading of code IDA decompiled differently, or of code it
-        could not.
+        could not. Oversized output is cut and marked truncated, with bytes
+        naming the original length.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

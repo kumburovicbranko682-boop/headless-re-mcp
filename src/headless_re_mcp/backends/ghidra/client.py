@@ -13,6 +13,30 @@ JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
+# Same cap as ExportJson.py. The script cuts first so the JSON on disk stays
+# bounded; this side says so even when an older script omitted the mark.
+_MAX_DECOMPILE_CHARS = 200_000
+
+
+def _disclose_decompile(payload: JsonObject) -> JsonObject:
+    """Mark a decompilation that was cut at the inline cap.
+
+    Measured: a 250_000-character function came back as 200_000 characters
+    with no truncated flag, so an agent treated the prefix as the whole C.
+    """
+    text = payload.get("decompiled")
+    if not isinstance(text, str):
+        return payload
+    reported = payload.get("bytes")
+    original = reported if isinstance(reported, int) and reported >= 0 else len(text)
+    already = payload.get("truncated")
+    truncated = bool(already) or original > _MAX_DECOMPILE_CHARS or (
+        already is None and len(text) >= _MAX_DECOMPILE_CHARS
+    )
+    payload["decompiled"] = text[:_MAX_DECOMPILE_CHARS]
+    payload["truncated"] = truncated
+    payload["bytes"] = original
+    return payload
 
 
 class GhidraError(RuntimeError):
@@ -206,6 +230,8 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        if isinstance(payload.get("decompiled"), str):
+            _disclose_decompile(payload)
         return payload
 
     def _run_headless(
