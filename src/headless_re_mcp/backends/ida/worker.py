@@ -631,10 +631,13 @@ def _decompile(params: JsonObject) -> JsonObject:
 
     raw_address = params.get("address")
     if raw_address is None:
-        addresses = list(idautils.Functions())
-        if not addresses:
+        # Measured: no address still listed every function (20000 addresses)
+        # just to pick the first. A large IDB then paid that cost on every
+        # default decompile before Hex-Rays ran.
+        first = next(iter(idautils.Functions()), None)
+        if first is None:
             raise WorkerRequestError("function_not_found", "database contains no functions")
-        address = int(addresses[0])
+        address = int(first)
     else:
         address = _integer(raw_address, "address")
 

@@ -199,6 +199,43 @@ def test_a_short_decompile_is_complete(monkeypatch: Any) -> None:
     assert result["bytes"] == len(result["code"])
 
 
+def test_a_default_decompile_does_not_list_every_function(monkeypatch: Any) -> None:
+    """No address used to list every function just to pick the first.
+
+    Measured: 20000 addresses were materialized before Hex-Rays ran.
+    """
+    import sys
+    import types
+
+    class Counting:
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        def __iter__(self):
+            for index in range(20_000):
+                self.yielded += 1
+                yield index
+
+    class Func:
+        start_ea = 0
+        end_ea = 1
+
+    funcs = Counting()
+    idautils = types.ModuleType("idautils")
+    idautils.Functions = lambda: funcs  # type: ignore[attr-defined]
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: Func()  # type: ignore[attr-defined]
+    ida_hexrays = types.ModuleType("ida_hexrays")
+    ida_hexrays.init_hexrays_plugin = lambda: True  # type: ignore[attr-defined]
+    ida_hexrays.decompile = lambda ea: "int f(){}"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+    monkeypatch.setitem(sys.modules, "ida_hexrays", ida_hexrays)
+    result = _decompile({})
+    assert result["address"] == 0
+    assert funcs.yielded == 1
+
+
 def _install_flowchart(monkeypatch: Any, block_count: int) -> None:
     import sys
     import types
