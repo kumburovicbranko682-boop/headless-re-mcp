@@ -57,11 +57,15 @@ class JadxClient:
             if out_dir.is_dir()
             else []
         )
+        listed = java_files[:2000]
         return {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": len(java_files),
-            "java_files": java_files[:2000],
+            "java_files": listed,
+            # A caller deciding "these are all the classes" has to know
+            # whether the tree ended or this list merely stopped.
+            "has_more": len(java_files) > len(listed),
         }
 
     def decompile(

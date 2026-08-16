@@ -629,6 +629,45 @@ class TestFridaServerEnsureDoesNotInventARunningServer:
         assert result["running"] is True
 
 
+class TestJadxExportSaysWhenItStopped:
+    """A java_files page that hit the cap looks exactly like one that ended.
+
+    Measured: 2500 .java files, java_file_count=2500, java_files length 2000,
+    no has_more -- so the last 500 class names vanished while the reply
+    looked like the whole tree.
+    """
+
+    def _client(self, tmp_path: Path, n: int) -> Any:
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        exe = tmp_path / "jadx"
+        exe.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        (out / "sources").mkdir(parents=True)
+        for index in range(n):
+            (out / "sources" / f"C{index}.java").write_text("class X {}", encoding="utf-8")
+        client = JadxClient(exe)
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        apk = _apk(tmp_path / "a.apk")
+        return client.export_sources(apk, out)
+
+    def test_hitting_the_cap_is_reported(self, tmp_path: Path) -> None:
+        result = self._client(tmp_path, 2500)
+        assert result["java_file_count"] == 2500
+        assert len(result["java_files"]) == 2000
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        result = self._client(tmp_path, 3)
+        assert result["java_file_count"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self, tmp_path: Path) -> None:
+        result = self._client(tmp_path, 2000)
+        assert result["java_file_count"] == 2000
+        assert result["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

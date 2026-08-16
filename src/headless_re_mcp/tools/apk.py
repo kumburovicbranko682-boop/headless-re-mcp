@@ -144,7 +144,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
         no_imports: bool = False,
     ) -> dict[str, Any]:
-        """Decompile the whole APK to a Java source tree via jadx."""
+        """Decompile the whole APK to a Java source tree via jadx (check has_more)."""
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
         )
