@@ -2278,6 +2278,35 @@ class TestReadingASliceDoesNotLoadTheWholeArtifact:
             assert result.ok, result.error
             assert result.data is not None
             assert result.data["data"] == ""
+            assert result.data["has_more"] is False
+        finally:
+            service.close_all()
+
+    def test_a_slice_says_what_was_left_out(self, tmp_path: Any) -> None:
+        """1000 bytes and limit=8 came back as size=1000 and no has_more."""
+        service = self._service(tmp_path)
+        try:
+            directory = tmp_path / "artifacts" / "dump" / "page"
+            directory.mkdir(parents=True, exist_ok=True)
+            blob = directory / "page.bin"
+            blob.write_bytes(b"x" * 1000)
+            artifact = service.record_artifact(
+                session_id="page",
+                kind="module_dump",
+                path=blob,
+                sha256="2" * 64,
+                source="test",
+                size=1000,
+            )
+            first = service.artifacts_read(str(artifact["id"]), offset=0, limit=8)
+            assert first.ok, first.error
+            assert first.data is not None
+            assert first.data["size"] == 1000
+            assert first.data["has_more"] is True
+            last = service.artifacts_read(str(artifact["id"]), offset=992, limit=16)
+            assert last.ok, last.error
+            assert last.data is not None
+            assert last.data["has_more"] is False
         finally:
             service.close_all()
 

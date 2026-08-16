@@ -643,14 +643,19 @@ class ExtAnalysisMixin(UiDriveMixin):
         with path.open("rb") as stream:
             stream.seek(offset)
             data = stream.read(limit)
+        size = path.stat().st_size
+        # size is already here. Measured: a 1000-byte file and limit=8 came
+        # back with no has_more, so a caller that only reads data treats the
+        # slice as the whole artifact.
         return _success(
             {
                 "artifact_id": artifact_id,
                 "offset": offset,
                 "limit": limit,
-                "size": path.stat().st_size,
+                "size": size,
                 "encoding": "hex",
                 "data": data.hex(),
+                "has_more": offset + len(data) < size,
             }
         )
 

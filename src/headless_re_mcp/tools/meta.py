@@ -99,7 +99,8 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         A decompilation or disassembly too large to return inline is registered
         as an artifact and answered with artifact_id; this is how the rest of it
-        is retrieved.
+        is retrieved. Read `size` and `has_more` rather than assuming this
+        slice is the whole file.
         """
         return _dump(analysis.artifacts_read(artifact_id, offset=offset, limit=limit))
 
