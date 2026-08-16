@@ -693,6 +693,46 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestUninstallDoesNotInventSuccess:
+    """``uninstalled: True`` used to mean the command returned, not that pm removed it.
+
+    Measured: a device whose ``pm uninstall`` printed
+    ``Failure [DELETE_FAILED_INTERNAL_ERROR]`` still answered
+    ``{'uninstalled': True, 'package': 'com.missing.app'}``. An unattended
+    agent then treats a still-installed (or never-installed) package as gone.
+    """
+
+    def _backend(self, output: object) -> AdbBackend:
+        class _Dev:
+            def uninstall(self, package: str) -> object:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_pm_failure_is_not_uninstalled(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("Failure [DELETE_FAILED_INTERNAL_ERROR]").uninstall(
+                "emulator-5554", "com.missing.app"
+            )
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("uninstalled") is not True
+        assert "not remove" in info.value.message
+
+    def test_empty_output_is_not_evidence_of_an_uninstall(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("").uninstall("emulator-5554", "com.example.app")
+        assert info.value.code == "backend_error"
+
+    def test_a_success_line_is_uninstalled(self) -> None:
+        result = self._backend("Success").uninstall("emulator-5554", "com.example.app")
+        assert result["uninstalled"] is True
+        assert result["package"] == "com.example.app"
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

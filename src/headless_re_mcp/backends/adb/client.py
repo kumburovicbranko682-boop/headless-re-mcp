@@ -251,9 +251,21 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.uninstall(pkg)
+            raw = dev.uninstall(pkg)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"uninstall failed: {exc}", package=pkg) from exc
+        # adbutils.uninstall returns the `pm uninstall` text, not a bool.
+        # Measured: "Failure [DELETE_FAILED_INTERNAL_ERROR]" still answered
+        # uninstalled=True, so an agent treated a missing package as gone.
+        text = str(raw or "")
+        if "success" not in text.lower():
+            raise AdbError(
+                "backend_error",
+                "uninstall did not remove the package",
+                package=pkg,
+                uninstalled=False,
+                output=text[:800],
+            )
         return {"uninstalled": True, "package": pkg}
 
     def launch(self, serial: str, package: str) -> JsonObject:
