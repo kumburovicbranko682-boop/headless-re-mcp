@@ -318,6 +318,29 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaMemoryReadDescriptionMatchesTheReturn:
+    """frida.memory.read returns hex then immediately detaches.
+
+    Measured: the handler docstring was empty while the payload is
+    encoding=hex and the attach is destroyed in finally -- so a model that
+    only sees the name treats the read as a live session and guesses the
+    encoding.
+    """
+
+    def test_the_tool_text_says_hex_and_detach(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.memory.read"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "hex" in doc
+        assert "detach" in doc
+
+
 class TestFridaAttachDescriptionMatchesDetach:
     """frida.attach reports attached=true then immediately detaches.
 
