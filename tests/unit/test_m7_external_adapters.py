@@ -447,3 +447,47 @@ def test_a_timed_out_xvlkc_probe_kills_what_it_started(tmp_path: Path) -> None:
     assert elapsed < 3.0
     child = int(marker.read_text(encoding="ascii").strip())
     assert _pid_is_running(child) is False
+
+
+def test_a_timed_out_vmp_probe_kills_what_it_started(tmp_path: Path) -> None:
+    """subprocess.run left the child of a VMPDump probe wrapper running.
+
+    Measured: a script that spawned a sleeper returned in 0.40s and left the
+    child in state S, so the next unpack started while the probe's child still
+    held the box.
+    """
+    import os
+    import stat
+    import sys
+    import time
+
+    from headless_re_mcp.unpack.vmp_dumper import probe_vmp_dumper
+
+    marker = tmp_path / "child.pid"
+    fake = tmp_path / ("vmpdump.cmd" if os.name == "nt" else "vmpdump")
+    body = tmp_path / "fake_vmp.py"
+    body.write_text(
+        "import subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        "open(marker, 'w', encoding='ascii').write(str(child.pid))\n"
+        "while True:\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake.write_text(f'@echo off\n"{sys.executable}" "{body}" %*\n', encoding="utf-8")
+    else:
+        script = f"#!{sys.executable}\n" + body.read_text(encoding="utf-8")
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    started = time.monotonic()
+    ok, _text = probe_vmp_dumper(fake, timeout=0.4)
+    elapsed = time.monotonic() - started
+
+    assert ok is False
+    assert elapsed < 3.0
+    child = int(marker.read_text(encoding="ascii").strip())
+    assert _pid_is_running(child) is False
