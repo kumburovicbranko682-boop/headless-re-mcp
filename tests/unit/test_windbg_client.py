@@ -186,3 +186,22 @@ def test_launch_failure_becomes_a_structured_error(
     assert exc.value.code == "backend_error"
     assert "could not be launched" in exc.value.message
     assert exc.value.details["cdb"] == str(cdb)
+
+
+def test_windbg_threads_description_says_to_check_truncated() -> None:
+    """windbg.threads already cuts at 500000 chars, but the tool text hid that.
+
+    Measured: 500-byte session, cap 64, truncated=true, while the
+    description said "thread list as cdb prints it" -- so a model treats
+    the slice as the whole stack.
+    """
+    from headless_re_mcp.core.service import AnalysisService
+    from headless_re_mcp.tools.windbg import build_windbg_tools
+
+    service = AnalysisService()
+    try:
+        tools = {item.name: item for item in build_windbg_tools(service)}
+        doc = tools["windbg.threads"].handler.__doc__ or ""
+    finally:
+        service.close_all()
+    assert "truncated" in doc
