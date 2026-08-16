@@ -347,11 +347,13 @@ class ApkClient:
             }
         )
         window = values[offset : offset + limit]
+        # Measured: 500 strings, limit 200, count=200, total=500, no has_more.
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
             "offset": offset,
+            "has_more": offset + len(window) < len(values),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

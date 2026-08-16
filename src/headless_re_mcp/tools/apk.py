@@ -84,7 +84,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: int = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
     ) -> dict[str, Any]:
-        """List distinct DEX string constants with pagination."""
+        """List distinct DEX strings; read has_more / total when the page is full."""
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="apk.xrefs")

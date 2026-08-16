@@ -266,6 +266,46 @@ class TestApkNativeLibsAreBounded:
         assert result["has_more"] is False
 
 
+class TestApkStringsSayWhenTheyStopped:
+    """A string page that filled used to look like every constant if count was all you read."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, count: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Str:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = self
+
+            def get_strings(self) -> list[_Str]:
+                return [_Str(f"s{index}") for index in range(count)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _Parsed())
+        return client
+
+    def test_a_full_page_is_marked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 500).strings(tmp_path / "app.apk", limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 500
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).strings(tmp_path / "app.apk", limit=200)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestApkMethodsSayWhenTheyStopped:
     """A method page that filled used to look like every method if count was all you read."""
 
