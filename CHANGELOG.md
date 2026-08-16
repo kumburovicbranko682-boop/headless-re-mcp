@@ -133,6 +133,8 @@ until 1.0 the tool surface may still change between minor versions.
   是 S。idalib / 调试目标会在崩溃循环里越积越多。现在对真实子进程杀整树。
 - **APK manifest 超长时被静默切掉**。250_000 字符切成 200_000，回包没有
   `truncated`。模型会把后半段里的组件当成从未声明。现在标明切过。
+- **Ghidra 函数/符号/交叉引用列表停在上限却不说**。256 条、limit=256 时
+  只有 count，没有 `has_more`。模型把一页当成整个程序。现在标明还有更多。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

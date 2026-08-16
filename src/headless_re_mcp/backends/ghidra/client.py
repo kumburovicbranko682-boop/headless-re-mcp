@@ -204,6 +204,11 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        items = payload.get("items")
+        if isinstance(items, list) and "has_more" not in payload:
+            # The script used to stop at `limit` and say nothing. A page that
+            # filled the cap looks like the whole program.
+            payload["has_more"] = len(items) >= capped
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
