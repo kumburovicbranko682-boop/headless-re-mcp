@@ -456,6 +456,14 @@ class WebBackend:
                 handle.page.screenshot(path=str(out_path), full_page=full_page)
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"screenshot failed: {exc}") from exc
+            # Measured: page.screenshot that wrote nothing still returned
+            # path, so an unattended agent treats a missing PNG as a page.
+            if not out_path.is_file() or out_path.stat().st_size <= 0:
+                raise WebError(
+                    "backend_error",
+                    "screenshot produced no image",
+                    path=str(out_path),
+                )
             return {"path": str(out_path)}
 
         return self._runner(handle).call(work)
