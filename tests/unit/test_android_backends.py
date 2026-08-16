@@ -318,6 +318,27 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaJavaMethodsDescriptionMatchesTheCut:
+    """frida.java.methods already pages, but the tool text hid that.
+
+    Measured: the description said "list declared methods" and never
+    mentioned has_more, while the payload cuts at the limit -- so a model
+    that trusts the text treats a page as every method on the class.
+    """
+
+    def test_the_tool_text_says_to_check_has_more(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.frida import build_frida_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_frida_tools(service)}
+            doc = tools["frida.java.methods"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "has_more" in doc
+
+
 class TestFridaJavaClassesDescriptionMatchesTheCut:
     """frida.java.classes already pages, but the tool text hid that.
 
