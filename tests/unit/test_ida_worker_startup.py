@@ -18,8 +18,10 @@ from headless_re_mcp.backends.ida.worker import (
     _bytes_read,
     _cfg,
     _decompile,
+    _exports,
     _functions,
     _globals,
+    _imports,
     _metadata,
     _names,
     _open_database_error,
@@ -554,6 +556,60 @@ def test_a_type_page_does_not_build_the_whole_til(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(worker, "_page_items", boom)
     result = _types({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_an_import_page_does_not_build_the_whole_table(monkeypatch: Any) -> None:
+    """5000 imports and limit=100 still built 5000 dicts before slicing."""
+    import sys
+    import types
+
+    import headless_re_mcp.backends.ida.worker as worker
+
+    ida_nalt = types.ModuleType("ida_nalt")
+    ida_nalt.get_import_module_qty = lambda: 1  # type: ignore[attr-defined]
+    ida_nalt.get_import_module_name = lambda index: "kernel32"  # type: ignore[attr-defined]
+
+    def enum_import_names(index: int, callback: Any) -> bool:
+        del index
+        for ordinal in range(5000):
+            callback(0x1000 + ordinal, f"Fn{ordinal}", ordinal)
+        return True
+
+    ida_nalt.enum_import_names = enum_import_names  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_nalt", ida_nalt)
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} import dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _imports({"offset": 0, "limit": 100})
+    assert result["returned"] == 100
+    assert result["total"] == 5000
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_an_export_page_does_not_build_the_whole_table(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    import headless_re_mcp.backends.ida.worker as worker
+
+    idautils = types.ModuleType("idautils")
+    idautils.Entries = lambda: [  # type: ignore[attr-defined]
+        (index, index, 0x1000 + index, f"E{index}") for index in range(5000)
+    ]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+
+    def boom(items: list[Any], offset: int, limit: int) -> Any:
+        raise AssertionError(f"materialised {len(items)} export dicts")
+
+    monkeypatch.setattr(worker, "_page_items", boom)
+    result = _exports({"offset": 0, "limit": 100})
     assert result["returned"] == 100
     assert result["total"] == 5000
     assert result["has_more"] is True

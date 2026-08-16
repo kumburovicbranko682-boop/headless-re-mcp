@@ -290,7 +290,11 @@ def _imports(params: JsonObject) -> JsonObject:
     import ida_nalt
 
     offset, limit = _paging(params)
+    # Built here instead of via _page_items so we do not materialise every
+    # import dict. Measured: 5000 imports and limit=100 still built 5000
+    # dicts before the window was taken.
     items: list[JsonObject] = []
+    total = 0
     module_count = int(ida_nalt.get_import_module_qty())
     for module_index in range(module_count):
         module_name = ida_nalt.get_import_module_name(module_index) or ""
@@ -302,35 +306,57 @@ def _imports(params: JsonObject) -> JsonObject:
             *,
             _module: str = module_name,
         ) -> bool:
-            items.append(
-                {
-                    "ea": int(ea),
-                    "module": _module,
-                    "name": name or None,
-                    "ordinal": int(ordinal),
-                }
-            )
+            nonlocal total
+            if offset <= total < offset + limit:
+                items.append(
+                    {
+                        "ea": int(ea),
+                        "module": _module,
+                        "name": name or None,
+                        "ordinal": int(ordinal),
+                    }
+                )
+            total += 1
             return True
 
         ida_nalt.enum_import_names(module_index, _collect)
-    return _page_items(items, offset, limit)
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+    }
 
 
 def _exports(params: JsonObject) -> JsonObject:
     import idautils
 
     offset, limit = _paging(params)
+    # Same window as imports. Measured: 5000 exports and limit=100 still
+    # built 5000 dicts before the window was taken.
     items: list[JsonObject] = []
+    total = 0
     for index, ordinal, ea, name in idautils.Entries():
-        items.append(
-            {
-                "index": int(index),
-                "ordinal": int(ordinal),
-                "ea": int(ea),
-                "name": name or None,
-            }
-        )
-    return _page_items(items, offset, limit)
+        if offset <= total < offset + limit:
+            items.append(
+                {
+                    "index": int(index),
+                    "ordinal": int(ordinal),
+                    "ea": int(ea),
+                    "name": name or None,
+                }
+            )
+        total += 1
+    return {
+        "items": items,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "total": total,
+        "has_more": offset + len(items) < total,
+    }
 
 
 def _entrypoints(params: JsonObject) -> JsonObject:
