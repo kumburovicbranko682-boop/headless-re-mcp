@@ -1196,10 +1196,14 @@ def _function_create(params: JsonObject) -> JsonObject:
             address=ea,
         )
     function = ida_funcs.get_func(ea)
-    if function is None:
+    if function is None or int(function.start_ea) != ea:
+        # Measured: add_func returned True while get_func found a different
+        # function, and the reply still said created=True. An agent then
+        # treats another function's range as one it just created.
         raise WorkerRequestError(
             "write_failed",
-            f"function create reported success but lookup failed at 0x{ea:X}",
+            f"function create reported success but lookup did not find a "
+            f"function starting at 0x{ea:X}",
             address=ea,
         )
     return {

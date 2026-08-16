@@ -552,3 +552,58 @@ def test_a_written_type_is_applied() -> None:
     assert result["ok"] is True
     assert result["type"] == "char *"
     assert result["previous_type"] == "int"
+
+
+def test_a_different_function_is_not_created() -> None:
+    """add_func True with get_func pointing at another range used to say created."""
+    import sys
+    import types
+
+    from headless_re_mcp.backends.ida.worker import WorkerRequestError, _function_create
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: _FakeFunc(0x0F00, 0x1100)  # type: ignore[attr-defined]
+    ida_funcs.add_func = lambda ea: True  # type: ignore[attr-defined]
+    sys.modules["ida_funcs"] = ida_funcs
+
+    try:
+        _function_create({"address": 0x1000})
+    except WorkerRequestError as exc:
+        assert "did not find a function starting" in str(exc)
+        return
+    raise AssertionError("another function's range was reported created")
+
+
+def test_a_function_at_the_address_is_created() -> None:
+    import sys
+    import types
+
+    from headless_re_mcp.backends.ida.worker import _function_create
+
+    holder: dict[str, _FakeFunc | None] = {"func": None}
+
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_min_ea = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_ida.inf_get_max_ea = lambda: 0x2000  # type: ignore[attr-defined]
+    sys.modules["ida_ida"] = ida_ida
+
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: holder["func"]  # type: ignore[attr-defined]
+
+    def add_func(ea: int) -> bool:
+        holder["func"] = _FakeFunc(ea, ea + 0x100)
+        return True
+
+    ida_funcs.add_func = add_func  # type: ignore[attr-defined]
+    sys.modules["ida_funcs"] = ida_funcs
+
+    result = _function_create({"address": 0x1000})
+    assert result["created"] is True
+    assert result["ok"] is True
+    assert result["start"] == 0x1000
+    assert result["end"] == 0x1100
