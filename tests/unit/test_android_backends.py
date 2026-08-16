@@ -1244,6 +1244,66 @@ class TestJadxExportSaysWhenItStopped:
         assert result["has_more"] is False
 
 
+class TestJadxExportDoesNotTrustLeftovers:
+    """A failed jadx used to succeed if the last export left .java files.
+
+    Measured: exit 1, leftover sources/Old.java still on disk, export
+    returned java_file_count=1 as if this run had written it.
+    """
+
+    def test_a_failed_export_is_not_saved_by_yesterdays_classes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import JadxClient, JadxError
+
+        exe = tmp_path / "jadx"
+        exe.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        (out / "sources").mkdir(parents=True)
+        leftover = out / "sources" / "Old.java"
+        leftover.write_text("class Old {}", encoding="utf-8")
+        monkeypatch.setattr(
+            jadx_mod,
+            "run_bounded",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout=b"", stderr=b"jadx failed"
+            ),
+        )
+        with pytest.raises(JadxError) as info:
+            JadxClient(exe).export_sources(_apk(tmp_path / "a.apk"), out)
+        assert info.value.code == "backend_error"
+        assert not leftover.is_file()
+
+    def test_this_run_partial_sources_still_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        exe = tmp_path / "jadx"
+        exe.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        (out / "sources").mkdir(parents=True)
+        (out / "sources" / "Old.java").write_text("class Old {}", encoding="utf-8")
+
+        def _run(*args: object, **kwargs: object) -> SimpleNamespace:
+            del args, kwargs
+            written = out / "sources" / "New.java"
+            written.parent.mkdir(parents=True, exist_ok=True)
+            written.write_text("class New {}", encoding="utf-8")
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"partial")
+
+        monkeypatch.setattr(jadx_mod, "run_bounded", _run)
+        result = JadxClient(exe).export_sources(_apk(tmp_path / "a.apk"), out)
+        assert result["java_file_count"] == 1
+        assert result["java_files"] == ["sources/New.java"]
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

@@ -9,6 +9,7 @@ disk. jadx needs a JRE on PATH; when either is missing the tool degrades to
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,15 @@ class JadxClient:
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Measured: exit 1 with leftover sources/Old.java still became a
+        # successful export, so an unattended agent then reads last night's
+        # classes as this run's output. Clear first; this-run partial writes
+        # still count.
+        for child in list(out_dir.iterdir()):
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
         try:
@@ -131,7 +141,7 @@ class JadxClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")
         stderr = completed.stderr.decode("utf-8", errors="replace")
         # jadx exits non-zero on partial decompile failures but still writes
-        # usable sources, so only fail hard when nothing landed on disk.
+        # usable sources, so only fail hard when this run landed nothing.
         if completed.returncode != 0 and not any(out_dir.rglob("*.java")):
             raise JadxError(
                 "backend_error",
