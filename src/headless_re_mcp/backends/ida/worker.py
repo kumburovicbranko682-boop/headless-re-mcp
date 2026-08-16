@@ -873,12 +873,14 @@ def _bytes_read(params: JsonObject) -> JsonObject:
             size=size,
         )
     data = bytes(raw)
+    # Measured: asked 64, got 10, truncated=false -- a caller that trusts
+    # the flag treats a short read as the whole requested range.
     return {
         "address": address,
         "size": len(data),
         "hex": data.hex(),
         "base64": base64.b64encode(data).decode("ascii"),
-        "truncated": False,
+        "truncated": len(data) < size,
     }
 
 
