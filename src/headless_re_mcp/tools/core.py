@@ -263,7 +263,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List cross-references to an address."""
+        """List cross-references to an address; read has_more / total when the page is full."""
         return _dump(
             analysis.static_xrefs_to(
                 session_id,
