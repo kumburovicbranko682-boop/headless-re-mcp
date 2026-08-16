@@ -1003,7 +1003,9 @@ def _search_immediate(params: JsonObject) -> JsonObject:
     flags = int(ida_search.SEARCH_DOWN)
     matches: list[JsonObject] = []
     ea = start_ea
-    while len(matches) < offset + limit:
+    # Collect one past the page so _page_items can set has_more. Measured:
+    # 250 hits, limit 100, returned=100, total=100, has_more=False.
+    while len(matches) < offset + limit + 1:
         found = ida_search.find_imm(ea, flags, value)
         # find_imm may return (ea, n) tuple on some builds
         if isinstance(found, tuple):
