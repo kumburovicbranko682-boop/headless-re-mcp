@@ -185,7 +185,7 @@ class TestAdbArgumentValidation:
 
             def shell(self, cmd: object, timeout: object = None) -> str:
                 self.timeout = timeout
-                return ""
+                return "Events injected: 1"
 
         class _Backend(AdbBackend):
             def __init__(self, device: _Dev) -> None:
@@ -201,6 +201,46 @@ class TestAdbArgumentValidation:
         result = _Backend(device).launch("emulator-5554", "com.example.app")
         assert device.timeout == 15.0
         assert result["launched"] is True
+
+    def test_launch_is_false_when_monkey_did_not_inject(self) -> None:
+        """A returned monkey command used to be reported as launched.
+
+        Measured: empty output, 'No activities found', and an argv error
+        all came back launched=True. An unattended agent then waited for
+        an activity that never appeared.
+        """
+
+        class _Dev:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+            def shell(self, cmd: object, timeout: object = None) -> str:
+                return self.text
+
+        class _Backend(AdbBackend):
+            def __init__(self, device: _Dev) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = None
+                self.device = device
+
+            def _device(self, serial: str) -> _Dev:
+                return self.device
+
+        aborted = _Backend(_Dev("** No activities found to run, monkey aborted.")).launch(
+            "emulator-5554", "com.example.app"
+        )
+        assert aborted["launched"] is False
+        assert "No activities found" in str(aborted.get("note"))
+
+        empty = _Backend(_Dev("")).launch("emulator-5554", "com.example.app")
+        assert empty["launched"] is False
+
+        injected = _Backend(_Dev("arg: -p\nEvents injected: 1\n")).launch(
+            "emulator-5554", "com.example.app"
+        )
+        assert injected["launched"] is True
+        assert "note" not in injected
 
     def test_force_stop_does_not_wait_on_adb_forever(self) -> None:
         """am force-stop used to be invoked with no deadline.

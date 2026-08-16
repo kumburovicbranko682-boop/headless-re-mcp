@@ -222,16 +222,28 @@ class AdbBackend:
         return {"uninstalled": True, "package": pkg}
 
     def launch(self, serial: str, package: str) -> JsonObject:
+        """Start the launcher activity. ``launched`` is True only when monkey
+        reports that it injected an event — a returned shell is not enough.
+        """
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            dev.shell(
+            raw = dev.shell(
                 ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
                 timeout=15.0,
             )
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
-        return {"launched": True, "package": pkg}
+        text = str(raw)
+        if "Events injected" in text:
+            return {"launched": True, "package": pkg}
+        snippet = " ".join(text.split())[:240]
+        return {
+            "launched": False,
+            "package": pkg,
+            "note": snippet
+            or "monkey returned but did not report Events injected",
+        }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)

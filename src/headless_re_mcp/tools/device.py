@@ -86,7 +86,12 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.launch")
     def device_launch(serial: str, package: str) -> dict[str, Any]:
-        """Launch a package's main launcher activity."""
+        """Launch a package's main launcher activity.
+
+        launched is True only when monkey reports Events injected. A
+        returned shell is not enough: no launcher activity, a monkey
+        abort, or empty output all used to be reported as launched.
+        """
         return _dump(analysis.device_launch(serial, package))
 
     @tools.tool(name="device.force_stop")
