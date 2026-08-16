@@ -28,7 +28,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.list")
     def device_list() -> dict[str, Any]:
-        """List ADB devices and emulators visible to the local adb server."""
+        """List ADB devices and emulators visible to the local adb server.
+
+        Capped. Read `has_more` rather than treating `count` as every
+        serial the server can see.
+        """
         return _dump(analysis.device_list())
 
     @tools.tool(name="device.connect")

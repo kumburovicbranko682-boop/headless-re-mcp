@@ -38,6 +38,8 @@ _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$")
 _CONNECT_OK = re.compile(r"(?:^|[\s])(?:already\s+)?connected\s+to\s+\S+")
 _CONNECT_FAIL = re.compile(r"\b(?:not|failed to|unable to)\s+connect")
 _MAX_LOGCAT_LINES = 5000
+# Measured: 500 serials came back in one reply with no has_more.
+_MAX_DEVICES = 256
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -183,7 +185,11 @@ class AdbBackend:
             except Exception as exc:  # noqa: BLE001
                 raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
             items = []
+            has_more = False
             for dev in devices:
+                if len(items) >= _MAX_DEVICES:
+                    has_more = True
+                    break
                 serial = getattr(dev, "serial", "")
                 state = "device"
                 try:
@@ -191,7 +197,7 @@ class AdbBackend:
                 except Exception:  # noqa: BLE001
                     state = "unknown"
                 items.append({"serial": serial, "state": state})
-            return {"devices": items, "count": len(items)}
+            return {"devices": items, "count": len(items), "has_more": has_more}
 
         return self._call("list_devices", work)
 

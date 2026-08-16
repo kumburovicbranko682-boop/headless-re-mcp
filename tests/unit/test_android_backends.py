@@ -1589,6 +1589,48 @@ class TestDeviceLaunchDoesNotInventSuccess:
         assert payload["launched"] is True
 
 
+class TestDeviceListIsCapped:
+    """The device list had no page and no signal that it had stopped.
+
+    Measured: 500 serials came back in one reply, with no has_more.
+    """
+
+    def _backend(self, n: int) -> AdbBackend:
+        class _Dev:
+            def __init__(self, index: int) -> None:
+                self.serial = f"emulator-{index}"
+
+        class _Client:
+            def device_list(self) -> list[_Dev]:
+                return [_Dev(index) for index in range(n)]
+
+            def device(self, serial: str) -> object:
+                del serial
+
+                class _State:
+                    def get_state(self) -> str:
+                        return "device"
+
+                return _State()
+
+        backend = AdbBackend(timeout=2.0)
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(500).list_devices()
+        assert page["count"] == 256
+        assert page["has_more"] is True
+        assert len(page["devices"]) == 256
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).list_devices()
+        assert page["count"] == 3
+        assert page["has_more"] is False
+
+
 class TestDevicePackagesAreCapped:
     """The package list had no page and no signal that it had stopped.
 

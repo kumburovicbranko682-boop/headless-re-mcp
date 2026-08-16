@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`device.list` 一次回完整设备表**。500 个 serial 整包返回，没有
+  `has_more`。现在最多 256，截断时标 `has_more`。
 - **按 `host:port` 解析 Frida 设备时加远程仍会一直挂着**。公开的
   `add_remote_device` 加截止后，`_resolve_device("127.0.0.1:27042")` 对
   睡 8s 的 `add_remote_device` 仍要 8.000s 才回。现在共用同一截止。
