@@ -247,6 +247,45 @@ class TestWebNetworkListSaysWhenItWasCut:
         assert result["total"] == 3
 
 
+class TestWebWasmListSaysWhenItWasCut:
+    """web.wasm.list shares the script buffer and used to hide that it stopped at 200."""
+
+    def _backend(self, n: int) -> WebBackend:
+        import threading
+        from collections import OrderedDict
+
+        class _Handle:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.scripts = OrderedDict(
+                    (
+                        str(index),
+                        {
+                            "scriptId": str(index),
+                            "url": f"m{index}.wasm",
+                            "language": "WebAssembly",
+                        },
+                    )
+                    for index in range(n)
+                )
+                self.runner = object()
+
+        backend = WebBackend()
+        backend._sessions["s"] = _Handle()  # type: ignore[assignment]
+        return backend
+
+    def test_a_full_page_is_marked(self) -> None:
+        result = self._backend(300).scripts("s", wasm_only=True, limit=200)
+        assert result["count"] == 200
+        assert result["total"] == 300
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(self) -> None:
+        result = self._backend(3).scripts("s", wasm_only=True, limit=200)
+        assert result["has_more"] is False
+        assert result["total"] == 3
+
+
 class TestWebScriptsSayWhenTheyWereCut:
     """A script list that filled the debugger buffer used to look like every script."""
 

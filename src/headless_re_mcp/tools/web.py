@@ -85,9 +85,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.web_script_source(session_id, script_id))
 
     @tools.tool(name="web.wasm.list")
-    def web_wasm_list(session_id: str) -> dict[str, Any]:
-        """List WebAssembly modules loaded by the page."""
-        return _dump(analysis.web_wasm_list(session_id))
+    def web_wasm_list(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
+    ) -> dict[str, Any]:
+        """List WebAssembly modules; read has_more / total when the page is full."""
+        return _dump(analysis.web_wasm_list(session_id, limit=limit))
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:

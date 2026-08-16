@@ -110,8 +110,10 @@ class WebAnalysisMixin:
             session_id, "scripts", session_id, wasm_only=wasm_only, limit=limit
         )
 
-    def web_wasm_list(self, session_id: str) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "scripts", session_id, wasm_only=True)
+    def web_wasm_list(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id, "scripts", session_id, wasm_only=True, limit=limit
+        )
 
     def web_script_source(self, session_id: str, script_id: str) -> Result[JsonObject]:
         try:
