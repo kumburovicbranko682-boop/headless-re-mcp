@@ -199,6 +199,7 @@ class ApkClient:
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         items: list[JsonObject] = []
+        skipped = 0
         try:
             names = apk.get_signature_names()
         except Exception:  # noqa: BLE001
@@ -216,11 +217,18 @@ class ApkClient:
                     }
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
+                # Swallowing here used to drop a signer with no trace. Measured:
+                # one unreadable cert next to one good one came back as a single
+                # certificate and v1_signed=True, so an agent treats the APK as
+                # having exactly one signer.
+                skipped += 1
                 continue
         return {
             "signature_files": list(names),
             "certificates": items,
             "v1_signed": bool(names),
+            "skipped": skipped,
+            "truncated": skipped > 0,
         }
 
     def components(self, path: Path) -> JsonObject:

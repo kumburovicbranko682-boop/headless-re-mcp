@@ -42,7 +42,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files."""
+        """List signing certificates and v1 signature files.
+
+        Unreadable certificate objects are skipped; read `skipped` and
+        `truncated` rather than assuming the list is every signer.
+        """
         return _dump(analysis.apk_certificates(session_id))
 
     @tools.tool(name="apk.components")

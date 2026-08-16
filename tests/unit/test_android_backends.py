@@ -350,6 +350,71 @@ class TestApkManifestSaysWhenItStopped:
         assert result["manifest_xml"] == xml
 
 
+class TestApkCertificatesSayWhenTheySkipped:
+    """An unreadable cert used to vanish, leaving a shorter signer list.
+
+    Measured: one certificate that raised next to one that parsed came back
+    as a single certificate and v1_signed=True, so an agent treats the APK
+    as having exactly one signer.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, certs: list[Any]) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_signature_names(self) -> list[str]:
+                return ["CERT.RSA"]
+
+            def get_certificates(self) -> list[Any]:
+                return certs
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        return client
+
+    def test_a_skipped_cert_is_counted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class Bad:
+            @property
+            def subject(self) -> str:
+                raise RuntimeError("unreadable")
+
+        good = type(
+            "Good",
+            (),
+            {
+                "subject": "CN=ok",
+                "issuer": "CN=ca",
+                "serial_number": 1,
+                "sha256_fingerprint": "aa",
+            },
+        )()
+        result = self._client(monkeypatch, [Bad(), good]).certificates(tmp_path / "app.apk")
+        assert result["skipped"] == 1
+        assert result["truncated"] is True
+        assert len(result["certificates"]) == 1
+        assert result["certificates"][0]["subject"] == "CN=ok"
+
+    def test_a_complete_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = type(
+            "Good",
+            (),
+            {
+                "subject": "CN=ok",
+                "issuer": "CN=ca",
+                "serial_number": 1,
+                "sha256_fingerprint": "aa",
+            },
+        )()
+        result = self._client(monkeypatch, [good]).certificates(tmp_path / "app.apk")
+        assert result["skipped"] == 0
+        assert result["truncated"] is False
+        assert len(result["certificates"]) == 1
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
