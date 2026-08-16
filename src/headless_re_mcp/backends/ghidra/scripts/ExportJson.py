@@ -33,8 +33,13 @@ def _addr(value):
 
 if mode == "functions":
     items = []
+    has_more = False
     for fn in fm.getFunctions(True):
         if len(items) >= limit:
+            # A page that filled used to look like every function. The
+            # Python client just forwards this JSON, so a 256-item export
+            # with only count made an agent treat the page as the program.
+            has_more = True
             break
         entry = fn.getEntryPoint()
         items.append(
@@ -45,6 +50,7 @@ if mode == "functions":
             }
         )
     payload["items"] = items
+    payload["has_more"] = has_more
 elif mode == "symbols":
     items = []
     for sym in st.getAllSymbols(True):
