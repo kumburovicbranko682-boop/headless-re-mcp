@@ -158,7 +158,10 @@ class WasmClient:
         stdout, stderr, code = _run(
             [str(self._objdump), "-h", "-x", str(resolved)], timeout=timeout
         )
-        if code != 0 and not stdout:
+        # Measured: exit 1 with stdout "(error dump)" still became
+        # objdump="(error dump)", so an unattended agent treats the error
+        # text as the module dump.
+        if code != 0:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )

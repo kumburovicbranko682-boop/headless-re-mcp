@@ -452,6 +452,30 @@ class TestWasmInfoDescriptionMatchesTheCut:
         assert "truncated" in doc
 
 
+class TestWasmInfoDoesNotTreatStderrAsDump:
+    """A failed wasm-objdump used to succeed if it printed anything to stdout.
+
+    Measured: exit 1, stdout "(error dump)", info returned that string as
+    the module dump. An unattended agent then analyses the error text.
+    """
+
+    def test_a_failed_run_is_not_saved_by_error_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_mod
+
+        tool = tmp_path / "wasm-objdump"
+        tool.write_text("x", encoding="utf-8")
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        monkeypatch.setattr(
+            jsre_mod, "_run", lambda *args, **kwargs: ("(error dump)", "fail", 1)
+        )
+        with pytest.raises(JsReError) as info:
+            WasmClient(tool).info(module)
+        assert info.value.code == "backend_error"
+
+
 class TestWasmWatDescriptionMatchesTheCut:
     """wasm.wat already cuts at 400000 bytes, but the tool text hid that.
 
