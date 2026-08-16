@@ -213,7 +213,12 @@ class FridaClient:
                 }
                 for item in mods[:capped]
             ]
-            return {"modules": items, "count": len(items), "total": len(mods)}
+            return {
+                "modules": items,
+                "count": len(items),
+                "total": len(mods),
+                "has_more": len(items) < len(mods),
+            }
         finally:
             session.detach()
 

@@ -351,6 +351,49 @@ class TestApktoolBoundaries:
         assert info.value.code == "capability_unavailable"
 
 
+def test_frida_modules_says_when_the_page_is_not_the_whole_set() -> None:
+    """100 modules, limit=64 returned count=64 and total=100 but no has_more.
+
+    A caller that reads count the way other list tools taught it to misses
+    the rest.
+    """
+    from headless_re_mcp.backends.frida.client import FridaClient
+
+    class _Exports:
+        def modules(self) -> list[dict[str, object]]:
+            return [
+                {"name": f"m{i}", "base": hex(i), "size": 1, "path": f"/m{i}"}
+                for i in range(100)
+            ]
+
+    class _Script:
+        def load(self) -> None:
+            return None
+
+        @property
+        def exports_sync(self) -> _Exports:
+            return _Exports()
+
+    class _Session:
+        def create_script(self, _source: str) -> _Script:
+            return _Script()
+
+        def detach(self) -> None:
+            return None
+
+    class _Frida:
+        def attach(self, _pid: int) -> _Session:
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    got = client.modules(1, allowed_pid=1, limit=64)
+    assert got["count"] == 64
+    assert got["total"] == 100
+    assert got["has_more"] is True
+
+
 def test_apk_manifest_says_when_the_xml_was_cut() -> None:
     """A 250_000-character manifest came back as 200_000 with no truncated flag.
 

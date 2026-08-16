@@ -135,6 +135,8 @@ until 1.0 the tool surface may still change between minor versions.
   `truncated`。模型会把后半段里的组件当成从未声明。现在标明切过。
 - **Ghidra 函数/符号/交叉引用列表停在上限却不说**。256 条、limit=256 时
   只有 count，没有 `has_more`。模型把一页当成整个程序。现在标明还有更多。
+- **`frida.modules` 停在上限却不说还有**。100 个模块、limit=64 时有 total
+  没有 `has_more`。按其它列表工具读 count 的模型会漏掉后面的模块。现在带上。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
