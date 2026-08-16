@@ -551,37 +551,50 @@ class TestAdbArgumentValidation:
         held the worker for the life of the process.
         """
 
-        class _Dev:
-            def __init__(self) -> None:
-                self.timeout: object = "unset"
-
-            def shell(
-                self, cmd: object, timeout: object = None, encoding: object = "utf-8"
-            ) -> bytes:
-                self.timeout = timeout
-                self.encoding = encoding
-                return b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
-
-            def screenshot(self) -> object:
-                raise AssertionError("unbounded screenshot")
-
         class _Backend(AdbBackend):
-            def __init__(self, device: _Dev) -> None:
+            def __init__(self, adb: Path) -> None:
                 self._adbutils = object()
                 self._available = True
-                self._adb_path = None
-                self.device = device
+                self._adb_path = adb
 
-            def _device(self, serial: str) -> _Dev:
-                return self.device
+            def _device(self, serial: str) -> object:
+                raise AssertionError("unbounded adbutils shell")
 
-        device = _Dev()
+        adb = tmp_path / "adb"
+        adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "sys.stdout.buffer.write(b'\\x89PNG\\r\\n\\x1a\\n' + b'\\x00' * 8)\n"
+        )
+        adb.chmod(0o755)
         out = tmp_path / "shot.png"
-        result = _Backend(device).screenshot("emulator-5554", out)
-        assert device.timeout == 20.0
+        result = _Backend(adb).screenshot("emulator-5554", out)
         assert out.is_file()
         assert out.read_bytes().startswith(b"\x89PNG")
         assert result["path"] == str(out)
+
+    def test_screenshot_times_out_on_a_wedged_adb(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.backends.adb.client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SCREENSHOT_TIMEOUT", 0.4)
+
+        class _Backend(AdbBackend):
+            def __init__(self, adb: Path) -> None:
+                self._adbutils = object()
+                self._available = True
+                self._adb_path = adb
+
+        adb = tmp_path / "adb"
+        adb.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        adb.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            _Backend(adb).screenshot("emulator-5554", tmp_path / "shot.png")
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert caught.value.code == "timeout"
 
     def test_uninstall_does_not_wait_on_adb_forever(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

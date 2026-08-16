@@ -35,6 +35,7 @@ _FORCE_STOP_TIMEOUT = 15.0
 _LAUNCH_TIMEOUT = 15.0
 _CURRENT_ACTIVITY_TIMEOUT = 15.0
 _UNINSTALL_TIMEOUT = 30.0
+_SCREENSHOT_TIMEOUT = 20.0
 _FOCUSED_WINDOW_RE = re.compile(
     r"mCurrentFocus=Window\{.*\s+(?P<package>[^\s]+)/(?P<activity>[^\s]+)\}"
 )
@@ -215,6 +216,30 @@ class AdbBackend:
                 f"shell failed: {err or completed.returncode}",
             )
         return (completed.stdout or b"").decode("utf-8", errors="replace")
+
+    def _adb_shell_bytes(self, serial: str, command: str, *, timeout: float) -> bytes:
+        """Same hop as ``_adb_shell``, but keep the bytes for screencap."""
+        import os
+        import subprocess
+
+        from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = run_bounded(
+                [self._adb_executable(), "-s", _check_serial(serial), "shell", command],
+                timeout=timeout,
+                creationflags=creationflags,
+            )
+        except TimedOut as exc:
+            raise AdbError("timeout", f"shell timed out after {timeout:g}s") from exc
+        if completed.returncode != 0:
+            err = (completed.stderr or b"").decode("utf-8", errors="replace")[:240]
+            raise AdbError(
+                "backend_error",
+                f"shell failed: {err or completed.returncode}",
+            )
+        return completed.stdout or b""
 
     def info(self, serial: str) -> JsonObject:
         """Read a few well-known properties. The hop is bounded.
@@ -562,17 +587,20 @@ class AdbBackend:
         adbutils ``screenshot()`` used to run with the library's 600s
         socket default. A wedged adb held the worker; we do not need the
         PIL round-trip to write the PNG the caller asked for.
+        adbutils ``shell(timeout=20)`` still opened the transport with a
+        600s default.
         """
-        dev = self._device(serial)
+        if not self._available:
+            raise AdbError("capability_unavailable", "adbutils is not installed")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            try:
-                raw = dev.shell(["screencap", "-p"], timeout=20.0, encoding=None)
-            except TypeError:
-                raw = dev.shell(["screencap", "-p"], timeout=20.0)
+            data = self._adb_shell_bytes(
+                serial, "screencap -p", timeout=_SCREENSHOT_TIMEOUT
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
-        data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("latin-1")
         if not data.startswith(b"\x89PNG") and b"\x89PNG" in data[:16]:
             data = data.replace(b"\r\n", b"\n")
         out_path.write_bytes(bytes(data))
