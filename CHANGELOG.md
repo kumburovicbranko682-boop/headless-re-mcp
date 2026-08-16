@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.strings` 先截断再去重，长串被静默合并**。两条 2500 字符、只在截断点
+  之后不同的串变成一条 2000 字符，没有 `truncated`。现在先按完整值去重，页面里
+  有被切过的串就标 `truncated`。
 - **`device.uninstall` 在卸载被拒绝时仍报 `uninstalled: True`**。假设备
   `uninstall()` 返回 `False` 仍回成功。无人值守的 agent 会以为包已经没了。现在
   明确的 `False` 是 `backend_error`。

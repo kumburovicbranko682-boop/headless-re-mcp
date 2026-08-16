@@ -314,18 +314,19 @@ class ApkClient:
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        values = sorted(
-            {
-                str(item.get_value())[:_MAX_STRING_LEN]
-                for item in parsed.analysis.get_strings()
-            }
-        )
+        # Dedup the full values first. Measured: slicing before the set merged
+        # two 2500-character strings that differed only after the 2000-char
+        # cap into one, and nothing said they had been cut.
+        raw = sorted({str(item.get_value()) for item in parsed.analysis.get_strings()})
+        values = [item[:_MAX_STRING_LEN] for item in raw]
         window = values[offset : offset + limit]
+        source_window = raw[offset : offset + limit]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
             "offset": offset,
+            "truncated": any(len(item) > _MAX_STRING_LEN for item in source_window),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

@@ -455,6 +455,48 @@ class TestJadxExportSourcesSayWhenTheListStopped:
         assert page["has_more"] is False
 
 
+class TestApkStringsDoNotMergeAtTheCap:
+    """Long strings were sliced before dedup, so distinct values disappeared.
+
+    Measured: two 2500-character strings that differed only after the
+    2000-character cap became one 2000-character value, with no truncated.
+    """
+
+    def _client(self, values: list[str]) -> ApkClient:
+        class _Item:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def get_value(self) -> str:
+                return self._value
+
+        class _Parsed:
+            def __init__(self) -> None:
+                self.analysis = type(
+                    "Analysis",
+                    (),
+                    {"get_strings": lambda _self: [_Item(value) for value in values]},
+                )()
+
+        client = ApkClient()
+        client._available = True
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        return client
+
+    def test_distinct_long_strings_stay_distinct(self, tmp_path: Path) -> None:
+        page = self._client(["A" * 2500 + "LEFT", "A" * 2500 + "RIGHT", "short"]).strings(
+            tmp_path / "app.apk"
+        )
+        assert page["total"] == 3
+        assert page["truncated"] is True
+        assert sum(1 for item in page["strings"] if len(item) == 2000) == 2
+
+    def test_short_strings_are_not_labelled_partial(self, tmp_path: Path) -> None:
+        page = self._client(["alpha", "beta"]).strings(tmp_path / "app.apk")
+        assert page["total"] == 2
+        assert page["truncated"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
