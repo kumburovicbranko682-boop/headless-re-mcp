@@ -90,7 +90,10 @@ elif mode == "decompile":
                 decomp.dispose()
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
+    # Cap matches GhidraClient._MAX_DECOMPILED_CHARS. Say when the C stopped.
     payload["decompiled"] = text[:200000]
+    payload["truncated"] = len(text) > 200000
+    payload["bytes"] = len(text)
 else:
     payload["error"] = "unknown mode"
 

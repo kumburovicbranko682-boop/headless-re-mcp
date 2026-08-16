@@ -1546,6 +1546,72 @@ class TestATruncatedListSaysSo:
         assert "items_total" not in payload
 
 
+class TestGhidraDecompileSaysWhenItWasCut:
+    """ExportJson.py sliced decompiled C at 200_000 chars and said nothing.
+
+    Measured: a 250,021-character body came back as 200,000 with no truncated,
+    so a caller would treat a mid-function slice as the whole decompile.
+    """
+
+    def _client(self, tmp_path: Any, payload: dict[str, Any]) -> Any:
+        import json
+
+        from headless_re_mcp.backends.ghidra.client import GhidraClient
+
+        home = tmp_path / "ghidra"
+        analyze = home / "support" / "analyzeHeadless"
+        analyze.parent.mkdir(parents=True)
+        analyze.write_text("#!/bin/sh\n")
+        java = tmp_path / "java"
+        java.write_text("")
+        client = GhidraClient(home=home, java=java)
+
+        def fake_run(*args: object, **kwargs: object) -> tuple[str, str, int]:
+            del args, kwargs
+            out = tmp_path / "proj" / "export_decompile.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload))
+            return ("", "", 0)
+
+        client._run_headless = fake_run  # type: ignore[method-assign]
+        return client
+
+    def test_a_silent_slice_is_reported(self, tmp_path: Any) -> None:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        page = self._client(
+            tmp_path,
+            {
+                "mode": "decompile",
+                "decompiled": "x" * 200_000,
+                "count": 0,
+                "function": "foo",
+                "entry": "0x1000",
+            },
+        ).decompile(binary, tmp_path / "proj", "0x1000")
+        assert len(page["decompiled"]) == 200_000
+        assert page["truncated"] is True
+        assert page["bytes"] == 200_000
+
+    def test_a_complete_function_is_not_labelled_partial(self, tmp_path: Any) -> None:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        page = self._client(
+            tmp_path,
+            {
+                "mode": "decompile",
+                "decompiled": "int foo() { return 1; }\n",
+                "count": 0,
+                "function": "foo",
+                "entry": "0x1000",
+                "truncated": False,
+                "bytes": 24,
+            },
+        ).decompile(binary, tmp_path / "proj", "0x1000")
+        assert page["truncated"] is False
+        assert page["decompiled"].startswith("int foo")
+
+
 class TestAFindingIsEitherRecordedOrRefused:
     """Findings are what an unattended run remembers between sessions.
 

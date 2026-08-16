@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`ghidra.decompile` 截断后看起来仍是完整 C**。250,021 字符的反编译被切成 200,000
+  且没有 `truncated`，agent 会把切到一半的函数当成整份输出。现在带回
+  `truncated` 与 `bytes`。
 - **`apk.native_libs` 一次回完整 so 表**。3100 条 `lib/` 路径整包返回（85 KiB），没有
   `has_more`。现在默认 500，截断时标 `total` / `has_more`。
 - **`apk.components` 一次回完整组件表**。2000 个 activity 整包返回（42 KiB），没有

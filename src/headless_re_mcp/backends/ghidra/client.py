@@ -13,6 +13,7 @@ JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
+_MAX_DECOMPILED_CHARS = 200_000
 
 
 class GhidraError(RuntimeError):
@@ -204,6 +205,8 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        if mode == "decompile":
+            payload = _mark_decompile_cap(payload)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
@@ -250,6 +253,29 @@ class GhidraClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
+
+
+def _mark_decompile_cap(payload: JsonObject) -> JsonObject:
+    """ExportJson.py used to slice at 200_000 chars and say nothing.
+
+    Measured: a 250,021-character decompile came back as 200,000 with no
+    ``truncated``, so a caller treated a mid-function cut as the whole C.
+    The script now reports the cut; this still marks a silent slice so an
+    older postScript cannot lie.
+    """
+    text = payload.get("decompiled")
+    if not isinstance(text, str):
+        payload["decompiled"] = ""
+        payload["truncated"] = False
+        payload["bytes"] = 0
+        return payload
+    reported = payload.get("bytes")
+    original = reported if isinstance(reported, int) and reported >= 0 else len(text)
+    cut = text[:_MAX_DECOMPILED_CHARS]
+    payload["decompiled"] = cut
+    payload["bytes"] = original
+    payload["truncated"] = bool(payload.get("truncated")) or original > len(cut) or len(text) >= _MAX_DECOMPILED_CHARS
+    return payload
 
 
 def _which(name: str) -> Path | None:
