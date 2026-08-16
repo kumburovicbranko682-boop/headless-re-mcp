@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.core.limits import rebuild_would_exhaust_memory
-from headless_re_mcp.core.models import BackendKind, Result, RpcError
+from headless_re_mcp.core.models import BackendKind, Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_detect import _detection_timeout
-from headless_re_mcp.core.session import file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
 from headless_re_mcp.core.windows import list_process_windows
 from headless_re_mcp.detection import PeFormatError, ScanMode, scan_pe
 from headless_re_mcp.detection.die import DieScanError
@@ -1061,6 +1061,15 @@ class UnpackMixin:
     ) -> Result[JsonObject]:
         """Build a non-authoritative unpack plan without side effects."""
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.plan cannot run in {session.state.value} state"
+                )
             classified = self.packer_classify(
                 session_id,
                 mode=mode,
@@ -1123,6 +1132,15 @@ class UnpackMixin:
         ``reanalyzed`` may be restarted without the flag.
         """
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.start cannot run in {session.state.value} state"
+                )
             if type(replace) is not bool:
                 return Result[JsonObject](
                     ok=False,
@@ -1276,6 +1294,15 @@ class UnpackMixin:
                 )
                 bounded_probe = None
 
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.start cannot run in {session.state.value} state"
+                )
             self._store_unpack_session(state)
             payload: JsonObject = {
                 "unpack": state.to_dict(),
