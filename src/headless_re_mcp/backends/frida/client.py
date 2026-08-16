@@ -514,7 +514,9 @@ class FridaClient:
             )
         device = self._resolve_device(device_id)
         try:
-            session = device.attach(pid)
+            session = self._attach_with_deadline(pid, attach=device.attach)
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
         try:
