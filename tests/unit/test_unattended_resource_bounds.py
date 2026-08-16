@@ -1310,11 +1310,18 @@ class TestATimeoutBindsWhatTheToolStarted:
         import os
 
         if os.name != "nt":
+            # A SIGKILL'd child is a zombie until init reaps it. os.kill(pid, 0)
+            # is true for that, which would read as "still running".
             try:
-                os.kill(pid, 0)
+                with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
+                    raw = handle.read()
             except OSError:
                 return False
-            return True
+            close = raw.rfind(")")
+            if close < 0:
+                return False
+            parts = raw[close + 1 :].split()
+            return bool(parts) and parts[0] != "Z"
         handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
         if not handle:
             return False
@@ -1326,13 +1333,9 @@ class TestATimeoutBindsWhatTheToolStarted:
             ctypes.windll.kernel32.CloseHandle(handle)
 
     def test_the_process_the_launcher_started_is_killed_too(self) -> None:
-        import os
         import time
 
         from headless_re_mcp.core.process_tree import terminate_process_tree
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         process, grandchild = self._launcher()
         try:
@@ -1351,14 +1354,10 @@ class TestATimeoutBindsWhatTheToolStarted:
                 process.kill()
 
     def test_a_tool_that_overruns_is_reported_with_what_was_killed(self) -> None:
-        import os
         import sys
         import time
 
         from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         started = time.monotonic()
         with pytest.raises(TimedOut) as caught:
@@ -1368,8 +1367,10 @@ class TestATimeoutBindsWhatTheToolStarted:
         # Returning at all is half the point. The launcher's child inherits the
         # pipes, so killing only the launcher leaves the drain waiting for an
         # EOF that never comes -- and subprocess.run's own post-kill drain on
-        # Windows has no timeout, so that wait is unbounded.
-        assert elapsed < 10.0
+        # Windows has no timeout, so that wait is unbounded. On Linux the same
+        # empty walk left the child running and spent the full 5s drain:
+        # measured 5.4s for a 0.4s deadline. Killing the tree closes the pipes.
+        assert elapsed < 3.0
         # The launcher and the process it started, not just the launcher.
         assert len(caught.value.killed) >= 2
         for pid in caught.value.killed:

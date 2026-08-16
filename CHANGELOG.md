@@ -59,6 +59,9 @@ until 1.0 the tool surface may still change between minor versions.
 - **过大的失败回包会被截成成功**。工具结果超限时，截断信封丢掉 `ok` 和 `error`，而编排器把缺
   少 `ok` 当成 True：一次 10 KiB 的 `backend_error` 在 512 字节上限下，模型看到的是成功、库里
   记成 completed。现在截断后仍保留 `ok` 与错误码。
+- **超时杀进程树在 Linux 上是空走**。后代枚举只走 Win32 Toolhelp32，非 Windows 直接返回空列
+  表，于是 `run_bounded` 只杀掉启动器：孤儿接着占着管道，排空把 0.4 秒的截止拖成 5.4 秒，子
+  进程还在跑。现在也读 `/proc` 枚举后代，同一场景约 0.8 秒返回、父子都死。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
