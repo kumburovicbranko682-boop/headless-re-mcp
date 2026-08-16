@@ -29,11 +29,16 @@ _MAX_ATTACH_OUTPUT = 8_000
 
 
 def _bounded(raw: bytes, limit: int) -> tuple[str, dict[str, object]]:
-    """Decode and cap ``raw``, plus the fields that say whether it was cut."""
+    """Decode and cap ``raw``, plus the fields that say whether it was cut.
+
+    Keep the tail: cdb prints the banner first and the command answer last.
+    A prefix cut threw that answer away and then reported the banner as the
+    session.
+    """
     text = raw.decode("utf-8", errors="replace")
     if len(text) <= limit:
         return text, {}
-    return text[:limit], {
+    return text[-limit:], {
         "truncated": True,
         "output_chars": len(text),
         "returned_chars": limit,
@@ -45,7 +50,7 @@ def _summarised(text: str, limit: int) -> dict[str, object]:
     if len(text) <= limit:
         return {"output": text}
     return {
-        "output": text[:limit],
+        "output": text[-limit:],
         "truncated": True,
         "output_chars": len(text),
         "returned_chars": limit,
@@ -255,7 +260,7 @@ class WindbgClient:
                 "backend_error",
                 "cdb user-mode probe failed",
                 exit_code=completed.returncode,
-                stderr=err[:2000],
+                stderr=err[-2000:],
             )
         return {
             "pid": pid,

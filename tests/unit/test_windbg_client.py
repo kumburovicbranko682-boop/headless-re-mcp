@@ -126,3 +126,32 @@ def test_launch_failure_becomes_a_structured_error(
     assert exc.value.code == "backend_error"
     assert "could not be launched" in exc.value.message
     assert exc.value.details["cdb"] == str(cdb)
+
+
+def test_an_attach_cut_keeps_the_probe_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """9000 banner characters plus vertarget used to come back as the banner.
+
+    Measured: attach's 8000-character prefix was all B's and
+    'Windows 10 Version 19045' was gone, so an agent treated the debugger
+    splash as the probe.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    body = ("B" * 9000) + "Windows 10 Version 19045 MP (8 procs)\n"
+
+    def fake_bounded(cmd: list[str], **kwargs: object) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", fake_bounded)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    payload = WindbgClient(cdb).attach(42, allowed_pid=42)
+    assert "19045" in str(payload["output"])
+    assert payload["truncated"] is True
+    assert payload["output_chars"] == len(body)
+    assert payload["returned_chars"] == windbg_module._MAX_ATTACH_OUTPUT
+    assert len(str(payload["output"])) == windbg_module._MAX_ATTACH_OUTPUT
