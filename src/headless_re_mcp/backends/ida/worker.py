@@ -146,6 +146,9 @@ def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
         "limit": limit,
         "returned": len(window),
         "total": len(items),
+        # A caller deciding "these are all the items" has to know whether
+        # the list ended or this page merely stopped.
+        "has_more": offset + len(window) < len(items),
     }
 
 
@@ -562,6 +565,7 @@ def _functions(params: JsonObject) -> JsonObject:
         "limit": limit,
         "returned": len(items),
         "total": len(addresses),
+        "has_more": offset + len(items) < len(addresses),
     }
 
 
@@ -596,6 +600,7 @@ def _strings(params: JsonObject) -> JsonObject:
         "limit": limit,
         "returned": len(items),
         "total": len(strings),
+        "has_more": offset + len(items) < len(strings),
     }
 
 
