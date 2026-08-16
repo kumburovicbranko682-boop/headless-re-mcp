@@ -50,10 +50,15 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         data = self.run(binary, ["i"], timeout=timeout)
+        raw = str(data.get("raw", ""))
+        # Measured: 12_000 characters of `i` came back as 8_000 with no
+        # truncated, so a caller treated a mid-listing cut as the whole info.
         return {
             "opened": True,
             "binary": str(binary),
-            "info": data.get("raw", "")[:8000],
+            "info": raw[:8000],
+            "truncated": len(raw) > 8000 or data.get("truncated") is True,
+            "bytes": len(raw),
             "note": "r2.open is one-shot validation; subsequent tools reopen the binary",
         }
 

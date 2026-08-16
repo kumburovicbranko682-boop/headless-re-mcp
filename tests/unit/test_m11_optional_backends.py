@@ -107,3 +107,33 @@ def test_windbg_live_missing_cdb(tmp_path: Path) -> None:
     with pytest.raises(WindbgError) as exc:
         client.attach(1, allowed_pid=1)
     assert exc.value.code == "capability_unavailable"
+
+
+class TestR2OpenSaysWhenInfoWasCut:
+    """r2.open sliced the `i` listing at 8000 characters and said nothing.
+
+    Measured: 12_000 characters came back as 8_000 with no truncated, so a
+    caller would treat a mid-listing slice as the whole info block.
+    """
+
+    def _client(self, tmp_path: Path, raw: str) -> tuple[R2Client, Path]:
+        binary = tmp_path / "x.bin"
+        binary.write_bytes(b"MZ")
+        stub = tmp_path / "r2"
+        stub.write_text("#!/bin/sh\n")
+        client = R2Client(executable=stub)
+        client.run = lambda *args, **kwargs: {"raw": raw, "commands": ["i"]}  # type: ignore[method-assign]
+        return client, binary
+
+    def test_a_silent_slice_is_reported(self, tmp_path: Path) -> None:
+        client, binary = self._client(tmp_path, "x" * 12_000)
+        page = client.open(binary)
+        assert len(page["info"]) == 8000
+        assert page["truncated"] is True
+        assert page["bytes"] == 12_000
+
+    def test_a_short_listing_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        client, binary = self._client(tmp_path, "arch x86\n")
+        page = client.open(binary)
+        assert page["truncated"] is False
+        assert page["info"].startswith("arch")
