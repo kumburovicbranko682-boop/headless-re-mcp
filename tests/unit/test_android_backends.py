@@ -1255,3 +1255,53 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class TestApktoolSaysWhenTheDecodeWasPartial:
+    """apktool exit 1 with a manifest on disk used to come back as a clean tree.
+
+    The hard-fail path only trips when nothing landed. A warning-and-write
+    still looked like the whole package.
+    """
+
+    def _decode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        code: int,
+        stderr: str = "",
+    ) -> dict[str, Any]:
+        import headless_re_mcp.backends.apktool.client as apktool_mod
+
+        fake_tool = tmp_path / "apktool"
+        fake_tool.write_text("#!/bin/sh\n", encoding="utf-8")
+        out = tmp_path / "decoded"
+        out.mkdir()
+        (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        (out / "smali").mkdir()
+        monkeypatch.setattr(apktool_mod, "_run", lambda *args, **kwargs: ("", stderr, code))
+        client = ApktoolClient(fake_tool, None)
+        return client.decode(_apk(tmp_path / "a.apk"), out)
+
+    def test_a_nonzero_exit_with_a_manifest_is_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._decode(
+            tmp_path, monkeypatch, code=1, stderr="W: could not decode resource\n"
+        )
+        assert result["manifest"]
+        assert result["smali_dirs"] == ["smali"]
+        assert result["partial"] is True
+        assert result["exit_code"] == 1
+        assert "incomplete" in str(result["note"])
+        assert "could not decode resource" in str(result["stderr"])
+
+    def test_a_clean_exit_is_not_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._decode(tmp_path, monkeypatch, code=0)
+        assert result["partial"] is False
+        assert result["exit_code"] == 0
+        assert "note" not in result
+        assert "stderr" not in result

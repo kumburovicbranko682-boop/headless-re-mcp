@@ -93,12 +93,23 @@ class ApktoolClient:
                 stderr=stderr[:_MAX_STDERR],
             )
         smali_dirs = sorted(str(p.name) for p in out_dir.glob("smali*") if p.is_dir())
-        return {
+        # apktool exits 1 after writing a usable-but-incomplete tree. Measured:
+        # that still came back as decoded_dir + manifest with no mark, so an
+        # agent treated a failed decode as the whole package.
+        result: JsonObject = {
             "decoded_dir": str(out_dir),
             "manifest": str(manifest) if manifest.is_file() else None,
             "smali_dirs": smali_dirs,
             "has_resources": (out_dir / "res").is_dir(),
+            "exit_code": code,
+            "partial": code != 0,
         }
+        if code != 0:
+            result["note"] = "apktool exited non-zero; the tree may be incomplete"
+            snippet = stderr.strip()
+            if snippet:
+                result["stderr"] = snippet[:_MAX_STDERR]
+        return result
 
     def build(self, decoded_dir: Path, out_apk: Path, *, timeout: float = 600.0) -> JsonObject:
         """Rebuild an APK from a previously decoded (and possibly edited) tree."""
