@@ -376,6 +376,21 @@ class TestWebScreenshotDoesNotReportAGhost:
         assert result == {"path": str(dest)}
         assert dest.is_file()
 
+    def test_the_tool_description_names_a_missing_file(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import web as web_mod
+
+        tree = ast.parse(inspect.getsource(web_mod.build_web_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["web_screenshot"]
+        assert "local file" in docs["web_screenshot"]
+
 
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:

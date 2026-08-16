@@ -107,7 +107,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
-        """Capture a screenshot of the current page to a PNG artifact."""
+        """Capture a screenshot of the current page to a PNG artifact.
+
+        The write is checked on the way out: a save that did not produce a
+        local file is an error, not a path.
+        """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 
     @tools.tool(name="web.har.export")
