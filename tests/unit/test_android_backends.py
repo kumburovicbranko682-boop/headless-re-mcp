@@ -509,6 +509,72 @@ class TestApkPermissionsArePaged:
         assert result["has_more"] is False
 
 
+class TestApkComponentsArePaged:
+    """Component lists have no page size; a plugin host is thousands of names.
+
+    Measured: 2000 activities, 800 services, 400 receivers and 100 providers
+    came back in full with no total or has_more.
+    """
+
+    def _client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        activities: int,
+        services: int,
+        receivers: int,
+        providers: int,
+    ) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_activities(self) -> list[str]:
+                return [f"com.app.A{index}" for index in range(activities)]
+
+            def get_services(self) -> list[str]:
+                return [f"com.app.S{index}" for index in range(services)]
+
+            def get_receivers(self) -> list[str]:
+                return [f"com.app.R{index}" for index in range(receivers)]
+
+            def get_providers(self) -> list[str]:
+                return [f"com.app.P{index}" for index in range(providers)]
+
+            def get_main_activity(self) -> str:
+                return "com.app.A0"
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        return client
+
+    def test_a_long_list_says_what_was_left_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(
+            monkeypatch, activities=2000, services=800, receivers=400, providers=100
+        ).components(tmp_path / "app.apk", limit=500)
+        assert len(result["activities"]) == 500
+        assert len(result["services"]) == 500
+        assert result["totals"] == {
+            "activities": 2000,
+            "services": 800,
+            "receivers": 400,
+            "providers": 100,
+        }
+        assert result["has_more"] is True
+        assert result["main_activity"] == "com.app.A0"
+
+    def test_a_short_list_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(
+            monkeypatch, activities=2, services=1, receivers=1, providers=1
+        ).components(tmp_path / "app.apk", limit=500)
+        assert result["has_more"] is False
+        assert result["totals"]["activities"] == 2
+        assert len(result["activities"]) == 2
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

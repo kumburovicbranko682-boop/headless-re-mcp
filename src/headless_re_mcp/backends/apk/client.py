@@ -247,14 +247,33 @@ class ApkClient:
             "truncated": skipped > 0,
         }
 
-    def components(self, path: Path) -> JsonObject:
+    def components(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
+        activities = sorted(apk.get_activities())
+        services = sorted(apk.get_services())
+        receivers = sorted(apk.get_receivers())
+        providers = sorted(apk.get_providers())
+        cap = max(1, int(limit))
+        # Measured: 2000 activities, 800 services, 400 receivers and 100
+        # providers came back in full with no total or has_more.
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities[:cap],
+            "services": services[:cap],
+            "receivers": receivers[:cap],
+            "providers": providers[:cap],
             "main_activity": apk.get_main_activity(),
+            "totals": {
+                "activities": len(activities),
+                "services": len(services),
+                "receivers": len(receivers),
+                "providers": len(providers),
+            },
+            "has_more": (
+                len(activities) > cap
+                or len(services) > cap
+                or len(receivers) > cap
+                or len(providers) > cap
+            ),
         }
 
     def native_libs(self, path: Path) -> JsonObject:

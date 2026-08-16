@@ -57,9 +57,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_certificates(session_id))
 
     @tools.tool(name="apk.components")
-    def apk_components(session_id: str) -> dict[str, Any]:
-        """List activities, services, receivers, and providers."""
-        return _dump(analysis.apk_components(session_id))
+    def apk_components(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+    ) -> dict[str, Any]:
+        """List activities, services, receivers, and providers.
+
+        Each list is a window; read `totals` and `has_more` rather than
+        assuming any of them is complete.
+        """
+        return _dump(analysis.apk_components(session_id, limit=limit))
 
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
