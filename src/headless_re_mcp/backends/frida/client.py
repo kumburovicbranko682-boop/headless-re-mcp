@@ -277,12 +277,17 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            # Measured: asked 16, size field 16, data 3 bytes, no truncated --
+            # a caller that trusts size treats a short read as the whole range.
+            payload: JsonObject = {
                 "address": address,
-                "size": size,
+                "size": len(data),
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            if len(data) < size:
+                payload["truncated"] = True
+            return payload
         finally:
             session.detach()
 
