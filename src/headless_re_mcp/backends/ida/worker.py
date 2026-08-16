@@ -91,15 +91,25 @@ def _overview() -> JsonObject:
     import ida_nalt
     import idautils
 
-    functions = list(idautils.Functions())
-    strings = list(idautils.Strings())
+    # Measured: open listed 20000 functions and 20000 strings just to
+    # count them and pick the first address. The ready event then held
+    # two full tables the caller never asked for.
+    function_count = 0
+    entry_function = None
+    for ea in idautils.Functions():
+        if entry_function is None:
+            entry_function = int(ea)
+        function_count += 1
+    string_count = 0
+    for _ in idautils.Strings():
+        string_count += 1
     image_base = int(ida_nalt.get_imagebase())
     return {
         "kernel_version": ida_kernwin.get_kernel_version(),
         "image_base": image_base,
-        "function_count": len(functions),
-        "string_count": len(strings),
-        "entry_function": int(functions[0]) if functions else image_base,
+        "function_count": function_count,
+        "string_count": string_count,
+        "entry_function": image_base if entry_function is None else entry_function,
         "badaddr": int(ida_idaapi.BADADDR),
         "capabilities": sorted(_capabilities()),
     }

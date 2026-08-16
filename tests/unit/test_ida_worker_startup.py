@@ -22,6 +22,7 @@ from headless_re_mcp.backends.ida.worker import (
     _globals,
     _names,
     _open_database_error,
+    _overview,
     _page_items,
     _strings,
     _types,
@@ -234,6 +235,52 @@ def test_a_default_decompile_does_not_list_every_function(monkeypatch: Any) -> N
     result = _decompile({})
     assert result["address"] == 0
     assert funcs.yielded == 1
+
+
+def test_overview_does_not_keep_every_function(monkeypatch: Any) -> None:
+    """Open used to list every function and string just to count them.
+
+    Measured: 20000 addresses and 20000 strings were materialized for the
+    ready event.
+    """
+    import sys
+    import types
+
+    class Counting:
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        def __iter__(self):
+            for index in range(20_000):
+                self.yielded += 1
+                yield index
+
+    functions = Counting()
+    strings = Counting()
+    idautils = types.ModuleType("idautils")
+    idautils.Functions = lambda: functions  # type: ignore[attr-defined]
+    idautils.Strings = lambda: strings  # type: ignore[attr-defined]
+    ida_idaapi = types.ModuleType("ida_idaapi")
+    ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF  # type: ignore[attr-defined]
+    ida_kernwin = types.ModuleType("ida_kernwin")
+    ida_kernwin.get_kernel_version = lambda: "8.3"  # type: ignore[attr-defined]
+    ida_nalt = types.ModuleType("ida_nalt")
+    ida_nalt.get_imagebase = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_hexrays = types.ModuleType("ida_hexrays")
+    ida_hexrays.init_hexrays_plugin = lambda: False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_idaapi", ida_idaapi)
+    monkeypatch.setitem(sys.modules, "ida_kernwin", ida_kernwin)
+    monkeypatch.setitem(sys.modules, "ida_nalt", ida_nalt)
+    monkeypatch.setitem(sys.modules, "ida_hexrays", ida_hexrays)
+    result = _overview()
+    assert result["function_count"] == 20_000
+    assert result["string_count"] == 20_000
+    assert result["entry_function"] == 0
+    assert "functions" not in result
+    assert "strings" not in result
+    assert functions.yielded == 20_000
+    assert strings.yielded == 20_000
 
 
 def _install_flowchart(monkeypatch: Any, block_count: int) -> None:
