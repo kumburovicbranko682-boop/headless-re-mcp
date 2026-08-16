@@ -241,6 +241,65 @@ class TestJsUnpackSaysWhenTheFileListWasCut:
         assert result["file_count"] == 3
         assert result["has_more"] is False
         assert len(result["files"]) == 3
+        assert result["partial"] is False
+        assert result["exit_code"] == 0
+
+
+class TestJsReSaysWhenTheRunWasPartial:
+    """webcrack exit 1 with stdout used to come back as a clean deobfuscation."""
+
+    def test_deobfuscate_nonzero_with_stdout_is_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "app.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._run",
+            lambda *args, **kwargs: ("var a = 1;", "warn: something failed\n", 1),
+        )
+        result = JsClient(exe).deobfuscate(source)
+        assert result["code"] == "var a = 1;"
+        assert result["partial"] is True
+        assert result["exit_code"] == 1
+        assert "incomplete" in str(result["note"])
+        assert "something failed" in str(result["stderr"])
+
+    def test_deobfuscate_clean_exit_is_not_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "app.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._run",
+            lambda *args, **kwargs: ("var a = 1;", "", 0),
+        )
+        result = JsClient(exe).deobfuscate(source)
+        assert result["partial"] is False
+        assert result["exit_code"] == 0
+        assert "note" not in result
+
+    def test_unpack_nonzero_with_files_is_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exe = tmp_path / "webcrack"
+        exe.write_text("x", encoding="utf-8")
+        source = tmp_path / "bundle.js"
+        source.write_text("x", encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "m0.js").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._run",
+            lambda *args, **kwargs: ("", "unpack warning\n", 1),
+        )
+        result = JsClient(exe).unpack_bundle(source, out)
+        assert result["file_count"] == 1
+        assert result["partial"] is True
+        assert result["exit_code"] == 1
 
 
 class TestProxyScoping:

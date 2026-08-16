@@ -25,14 +25,22 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_deobfuscate(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Deobfuscate and unminify a JavaScript file via webcrack (returns code)."""
+        """Deobfuscate and unminify a JavaScript file via webcrack (returns code).
+
+        webcrack can exit non-zero after writing usable code. Read partial and
+        exit_code rather than treating the output as a clean deobfuscation.
+        """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
     @tools.tool(name="js.beautify")
     def js_beautify(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Return a readable, unminified form of a JavaScript file via webcrack."""
+        """Return a readable, unminified form of a JavaScript file via webcrack.
+
+        webcrack can exit non-zero after writing usable code. Read partial and
+        exit_code rather than treating the output as clean.
+        """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
     @tools.tool(name="js.unpack_bundle")
@@ -42,7 +50,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Unpack a webpack/browserify bundle into module files via webcrack.
 
         The file list is capped. Read has_more and file_count rather than
-        treating files as every module.
+        treating files as every module. webcrack can exit non-zero after
+        writing a usable tree: read partial and exit_code rather than treating
+        the unpack as clean.
         """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 
@@ -50,14 +60,22 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat."""
+        """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
+
+        wasm2wat can exit non-zero after writing usable text. Read partial and
+        exit_code rather than treating the WAT as complete.
+        """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
     @tools.tool(name="wasm.info")
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
     ) -> dict[str, Any]:
-        """Dump sections and details of a .wasm module via wasm-objdump."""
+        """Dump sections and details of a .wasm module via wasm-objdump.
+
+        wasm-objdump can exit non-zero after writing usable text. Read partial
+        and exit_code rather than treating the dump as complete.
+        """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
     return tools.bindings
