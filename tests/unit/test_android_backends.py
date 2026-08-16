@@ -1624,6 +1624,39 @@ class TestDeviceUninstallIsBounded:
         assert result["uninstalled"] is True
 
 
+class TestForceStopDoesNotInventSuccess:
+    """``stopped: True`` used to mean the am command returned, not that it stopped.
+
+    Measured: a device whose force-stop printed
+    ``Error type 3 / Error: Activity class does not exist.`` still answered
+    ``{'stopped': True, 'package': 'com.missing.app'}``.
+    """
+
+    def _backend(self, output: str) -> AdbBackend:
+        class _Dev:
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                return output
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend
+
+    def test_an_error_line_is_not_stopped(self) -> None:
+        with pytest.raises(AdbError) as info:
+            self._backend("Error type 3\nError: Activity class does not exist.").force_stop(
+                "emulator-5554", "com.missing.app"
+            )
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("stopped") is not True
+
+    def test_empty_output_is_stopped(self) -> None:
+        result = self._backend("").force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is True
+        assert result["package"] == "com.example.app"
+
+
 class TestCurrentActivityIsBounded:
     """A wedged app_current used to park the tool worker with no deadline.
 

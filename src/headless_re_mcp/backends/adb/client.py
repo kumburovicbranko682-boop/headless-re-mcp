@@ -359,9 +359,21 @@ class AdbBackend:
         dev = self._device(serial)
         pkg = _check_package(package)
         try:
-            _shell(dev, ["am", "force-stop", pkg])
+            raw = _shell(dev, ["am", "force-stop", pkg])
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
+        text = str(raw)
+        # Measured: "Error type 3\nError: Activity class does not exist."
+        # still answered stopped=True. Empty output is the success case;
+        # an Error line is not evidence the package was stopped.
+        if "error" in text.lower():
+            raise AdbError(
+                "backend_error",
+                "force-stop reported an error",
+                package=pkg,
+                stopped=False,
+                output=text[:800],
+            )
         return {"stopped": True, "package": pkg}
 
     def current_activity(self, serial: str) -> JsonObject:
