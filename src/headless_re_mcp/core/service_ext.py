@@ -922,6 +922,14 @@ class ExtAnalysisMixin(UiDriveMixin):
             ):
                 raise ValueError("audit_limit must be 1..200")
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"report.generate cannot run in {session.state.value} state"
+                )
             knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
             artifacts = self.services.artifacts.list_artifacts(session_id, limit=100)
             audit = (
