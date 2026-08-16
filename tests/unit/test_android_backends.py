@@ -1545,6 +1545,53 @@ class TestDeviceUninstallIsBounded:
         assert result["uninstalled"] is True
 
 
+class TestCurrentActivityIsBounded:
+    """A wedged app_current used to park the tool worker with no deadline.
+
+    Measured: device.current_activity called app_current() with no timeout,
+    so a 2.5s block was waited out in full and still returned a package.
+    """
+
+    def _backend(self, device: Any) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_blocking_app_current_fails_instead_of_waiting_it_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.2)
+
+        class _Dev:
+            def app_current(self) -> SimpleNamespace:
+                time.sleep(5)
+                return SimpleNamespace(package="com.example.app", activity=".Main")
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as info:
+            self._backend(_Dev()).current_activity("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert time.monotonic() - started < 1.5
+
+    def test_a_finished_app_current_is_success(self) -> None:
+        from types import SimpleNamespace
+
+        class _Dev:
+            def app_current(self) -> SimpleNamespace:
+                return SimpleNamespace(package="com.example.app", activity=".Main")
+
+        result = self._backend(_Dev()).current_activity("emulator-5554")
+        assert result["package"] == "com.example.app"
+        assert result["activity"] == ".Main"
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

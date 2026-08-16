@@ -362,7 +362,12 @@ class AdbBackend:
     def current_activity(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
-            current = dev.app_current()
+            # adbutils.app_current() dumpsys with no timeout. Measured: a
+            # 2.5s block was waited out in full and still returned a
+            # package/activity pair.
+            current = _deadline(dev.app_current, timeout=_SHELL_TIMEOUT)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
         return {
