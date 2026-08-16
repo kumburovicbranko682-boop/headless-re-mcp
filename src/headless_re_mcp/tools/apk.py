@@ -131,7 +131,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
     ) -> dict[str, Any]:
-        """Decompile one class to Java via jadx (requires jadx + JRE)."""
+        """Decompile one class to Java via jadx (requires jadx + JRE).
+
+        A leftover class from a previous export is not success when jadx
+        itself wrote nothing this run.
+        """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
     @tools.tool(name="apk.decode")
@@ -186,7 +190,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile the whole APK to a Java source tree via jadx.
 
         The file list is a window; read `truncated` and `java_file_count`
-        rather than assuming `java_files` is the whole tree.
+        rather than assuming `java_files` is the whole tree. A leftover tree
+        from a previous export is not success when jadx wrote nothing this run.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)

@@ -1135,6 +1135,84 @@ class TestApktoolBoundaries:
         assert caught.value.details["exit_code"] == 1
 
 
+class TestJadxDoesNotInventSourcesFromLeftovers:
+    """A failed jadx run used to look like this run's decompile.
+
+    Measured: exit 1 with a leftover Old.java still came back as
+    java_file_count=1. The session reuses the same directory.
+    """
+
+    def test_a_failed_export_is_not_the_leftover_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import JadxClient, JadxError
+
+        out = tmp_path / "out"
+        leftover = out / "sources" / "Old.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Old {}", encoding="utf-8")
+        monkeypatch.setattr(
+            jadx_mod, "run_bounded", lambda *args, **kwargs: Completed(1, b"", b"ERROR")
+        )
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        with pytest.raises(JadxError) as caught:
+            JadxClient(stub).export_sources(apk, out)
+        assert caught.value.code == "backend_error"
+        assert caught.value.details["exit_code"] == 1
+
+    def test_a_failed_decompile_is_not_the_leftover_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import JadxClient, JadxError
+
+        out = tmp_path / "out"
+        leftover = out / "sources" / "com" / "example" / "Main.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Main {}", encoding="utf-8")
+        monkeypatch.setattr(
+            jadx_mod, "run_bounded", lambda *args, **kwargs: Completed(1, b"", b"ERROR")
+        )
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        with pytest.raises(JadxError) as caught:
+            JadxClient(stub).decompile(apk, out, "com.example.Main")
+        assert caught.value.code == "backend_error"
+
+    def test_a_partial_run_that_wrote_sources_is_still_returned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as jadx_mod
+        from headless_re_mcp.backends.jadx.client import JadxClient
+
+        out = tmp_path / "out"
+        leftover = out / "sources" / "Old.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Old {}", encoding="utf-8")
+
+        def wrote(*args: object, **kwargs: object) -> Completed:
+            fresh = out / "sources" / "New.java"
+            fresh.write_text("class New {}", encoding="utf-8")
+            return Completed(1, b"", b"partial")
+
+        monkeypatch.setattr(jadx_mod, "run_bounded", wrote)
+        stub = tmp_path / "jadx"
+        stub.write_text("x", encoding="utf-8")
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"PK")
+        result = JadxClient(stub).export_sources(apk, out)
+        assert result["java_file_count"] == 2
+
+
 class TestExportListingsSayWhenTheyStopped:
     """The file list is a window; the count is the tree.
 

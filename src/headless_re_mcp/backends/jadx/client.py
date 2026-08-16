@@ -119,6 +119,13 @@ class JadxClient:
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Session export reuses this directory. A failed run that leaves
+        # yesterday's .java in place used to look like this run's output.
+        before = {
+            path: path.stat().st_mtime_ns
+            for path in out_dir.rglob("*.java")
+            if path.is_file()
+        }
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
         try:
@@ -132,8 +139,11 @@ class JadxClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")
         stderr = completed.stderr.decode("utf-8", errors="replace")
         # jadx exits non-zero on partial decompile failures but still writes
-        # usable sources, so only fail hard when nothing landed on disk.
-        if completed.returncode != 0 and not any(out_dir.rglob("*.java")):
+        # usable sources, so only fail hard when this run wrote nothing.
+        # Measured: exit 1 with a leftover Old.java from a previous export
+        # still came back as java_file_count=1. The session reuses the same
+        # directory, so a failed retry looked like a fresh decompile.
+        if completed.returncode != 0 and not _wrote_java(out_dir, before):
             raise JadxError(
                 "backend_error",
                 "jadx produced no sources",
@@ -141,6 +151,18 @@ class JadxClient:
                 stderr=stderr[:_MAX_STDERR],
             )
         return stdout, stderr, int(completed.returncode)
+
+
+def _wrote_java(out_dir: Path, before: dict[Path, int]) -> bool:
+    if not out_dir.is_dir():
+        return False
+    for path in out_dir.rglob("*.java"):
+        if not path.is_file():
+            continue
+        previous = before.get(path)
+        if previous is None or path.stat().st_mtime_ns != previous:
+            return True
+    return False
 
 
 def _class_to_java_path(class_name: str) -> Path:
