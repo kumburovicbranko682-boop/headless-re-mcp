@@ -173,3 +173,66 @@ def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  #
 
     assert policy.configured is False
     assert policy.required is True
+
+
+def test_the_default_runner_is_the_one_that_binds_children() -> None:
+    """The injectable run is for tests. The default has to be the bounded one."""
+    import inspect
+
+    from headless_re_mcp.core import isolation
+
+    assert IsolationRunner().run is None
+    assert IsolationRunner().run is not subprocess.run
+    assert "run_bounded" in inspect.getsource(isolation.IsolationRunner._invoke)
+
+
+def test_a_command_that_finishes_is_still_reported_as_performed() -> None:
+    import sys
+
+    policy = IsolationPolicy(command=(sys.executable, "-c", "import sys; sys.exit(0)"))
+    outcome = IsolationRunner(policy).rotate(reason="quant")
+
+    assert outcome["ok"] is True
+    assert outcome["performed"] is True
+
+
+def test_a_real_timeout_returns_instead_of_waiting_out_the_child(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The operator's command is a launcher. Killing only it leaves the tool.
+
+    Measured against a Python launcher that starts a sleeper: a 1s deadline
+    returned in 1.0s and the child was still running. On Windows the post-kill
+    drain has no timeout, so the same shape can also park the scheduler for
+    good -- isolation runs off the loop, but a supervisor polling /readyz will
+    restart the process in the middle of a rollback that never finished.
+    """
+    import os
+    import sys
+    import time
+    from contextlib import suppress
+
+    marker = tmp_path / "child.pid"
+    launcher = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time\\nwhile True: time.sleep(0.2)'])\n"
+        f"Path({str(marker)!r}).write_text(str(child.pid))\n"
+        "while True: time.sleep(0.2)\n"
+    )
+    policy = IsolationPolicy(
+        command=(sys.executable, "-c", launcher),
+        timeout_s=0.8,
+        required=False,
+    )
+    started = time.monotonic()
+    try:
+        outcome = IsolationRunner(policy).rotate(reason="quant")
+        elapsed = time.monotonic() - started
+
+        assert outcome["ok"] is False
+        assert "Timeout" in str(outcome["detail"])
+        assert elapsed < 10.0
+    finally:
+        if marker.is_file():
+            with suppress(OSError, ValueError):
+                os.kill(int(marker.read_text()), 9)
