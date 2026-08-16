@@ -93,6 +93,10 @@ class JsClient:
     def unpack_bundle(self, path: Path, out_dir: Path, *, timeout: float = 300.0) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # A reused output dir used to make a failed unpack look like this
+        # run's modules. Measured: exit 1 with a leftover old.js still came
+        # back as file_count=1.
+        before = _file_stamps(out_dir)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )
@@ -101,7 +105,7 @@ class JsClient:
             if out_dir.is_dir()
             else []
         )
-        if code != 0 and not files:
+        if code != 0 and not _wrote_files(out_dir, before):
             raise JsReError(
                 "backend_error",
                 "webcrack unpack failed",
@@ -178,6 +182,24 @@ class WasmClient:
             "truncated": len(stdout) > _MAX_INLINE,
             "bytes": len(stdout),
         }
+
+
+def _file_stamps(root: Path) -> dict[Path, int]:
+    if not root.is_dir():
+        return {}
+    return {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
+
+
+def _wrote_files(root: Path, before: dict[Path, int]) -> bool:
+    if not root.is_dir():
+        return False
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        previous = before.get(path)
+        if previous is None or path.stat().st_mtime_ns != previous:
+            return True
+    return False
 
 
 def _discover_webcrack() -> Path | None:

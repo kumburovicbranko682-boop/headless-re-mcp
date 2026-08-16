@@ -42,7 +42,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Unpack a webpack/browserify bundle into module files via webcrack.
 
         The file list is a window; read `truncated` and `file_count` rather
-        than assuming `files` is the whole tree.
+        than assuming `files` is the whole tree. A leftover tree from a
+        previous unpack is not success when webcrack wrote nothing this run.
         """
         return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
 

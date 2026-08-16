@@ -254,6 +254,54 @@ class TestJsReDoesNotInventSuccess:
         assert caught.value.code == "backend_error"
 
 
+class TestJsUnpackDoesNotInventModulesFromLeftovers:
+    """A failed webcrack unpack used to look like this run's modules.
+
+    Measured: exit 1 with a leftover old.js still came back as file_count=1.
+    """
+
+    def test_a_failed_unpack_is_not_the_leftover_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "old.js").write_text("stale", encoding="utf-8")
+        monkeypatch.setattr(jsre, "_run", lambda cmd, timeout: ("Error: cannot parse\n", "", 1))
+        src = tmp_path / "bundle.js"
+        src.write_text("x", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        with pytest.raises(JsReError) as caught:
+            JsClient(stub).unpack_bundle(src, out)
+        assert caught.value.code == "backend_error"
+        assert caught.value.details["exit_code"] == 1
+
+    def test_a_partial_run_that_wrote_modules_is_still_returned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre
+
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "old.js").write_text("stale", encoding="utf-8")
+
+        def wrote(cmd: object, timeout: float) -> tuple[str, str, int]:
+            del cmd, timeout
+            (out / "chunk.js").write_text("partial", encoding="utf-8")
+            return ("", "failed midway", 1)
+
+        monkeypatch.setattr(jsre, "_run", wrote)
+        src = tmp_path / "bundle.js"
+        src.write_text("x", encoding="utf-8")
+        stub = tmp_path / "webcrack"
+        stub.write_text("x", encoding="utf-8")
+        result = JsClient(stub).unpack_bundle(src, out)
+        assert result["file_count"] == 2
+        assert "chunk.js" in result["files"]
+
+
 class TestWasmInfoSaysWhenItStopped:
     """wasm.wat already reports bytes; wasm.info used to omit them.
 
