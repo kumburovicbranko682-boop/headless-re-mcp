@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -300,6 +301,45 @@ class TestFridaEnumerationsSayWhenTheyStopped:
 
         assert _page(None, 10) == ([], False)
         assert _page([], 10) == ([], False)
+
+
+class TestApkManifestSaysWhenItWasCut:
+    """A capped manifest used to look exactly like a complete one.
+
+    Measured: a 250,021-character manifest came back as 200,000 characters
+    with no `truncated` field, so a caller would treat a mid-file slice as
+    the whole AndroidManifest.xml.
+    """
+
+    def _client(self, xml: str) -> ApkClient:
+        class _Axml:
+            def get_xml(self) -> bytes:
+                return xml.encode("utf-8")
+
+        class _Apk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
+            def get_android_manifest_axml(self) -> _Axml:
+                return _Axml()
+
+        client = ApkClient()
+        client._available = True
+        client._apk = lambda path: _Apk()  # type: ignore[method-assign]
+        return client
+
+    def test_a_cut_manifest_is_labelled(self, tmp_path: Path) -> None:
+        xml = "<manifest>" + ("x" * 250_000) + "</manifest>"
+        result = self._client(xml).manifest(tmp_path / "app.apk")
+        assert result["truncated"] is True
+        assert result["bytes"] == len(xml)
+        assert len(result["manifest_xml"]) == 200_000
+
+    def test_a_short_manifest_is_not_labelled_partial(self, tmp_path: Path) -> None:
+        xml = "<manifest package='com.example.app'/>"
+        result = self._client(xml).manifest(tmp_path / "app.apk")
+        assert result["truncated"] is False
+        assert result["manifest_xml"] == xml
 
 
 class TestApkClassification:

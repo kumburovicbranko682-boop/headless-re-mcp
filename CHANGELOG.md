@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.manifest` 截断后看起来仍是完整清单**。250,021 字符的清单被切成 200,000 且没有
+  `truncated`，agent 会把一段切到一半的 XML 当成整份 AndroidManifest。现在带回
+  `truncated` 与 `bytes`。
 - **`device.connect` 把拒绝当成连上**。判断是 `"connected" in text or "already" in text`。
   实测 `not connected` 和 `already in use` 都变成 `connected: True`。现在只认
   `connected to <endpoint>` / `already connected to <endpoint>`，并排除
