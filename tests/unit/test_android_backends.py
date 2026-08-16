@@ -647,6 +647,34 @@ class TestDevicePullIsNotARegisteredArtifact:
             service.close_all()
 
 
+class TestFridaApplicationPaging:
+    def test_an_application_page_says_when_more_exist(self) -> None:
+        """A 256-app page used to look complete even with total=300.
+
+        Measured: 300 apps, limit 256, count=256 total=300, no has_more.
+        """
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class _App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = f"App{index}"
+                self.pid = 0
+
+        class _Dev:
+            def enumerate_applications(self) -> list[_App]:
+                return [_App(index) for index in range(300)]
+
+        client = FridaClient()
+        client._resolve_device = lambda *_a, **_k: _Dev()  # type: ignore[method-assign]
+        result = client.applications("usb", limit=256)
+        assert result["count"] == 256
+        assert result["total"] == 300
+        assert result["has_more"] is True
+        complete = client.applications("usb", limit=300)
+        assert complete["has_more"] is False
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
