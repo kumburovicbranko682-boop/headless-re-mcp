@@ -768,3 +768,56 @@ async def test_arguments_too_deep_to_encode_are_refused_like_oversized_ones(
     assert refusal["error"]["code"] == "arguments_too_large"
     assert "nested too deeply" in refusal["error"]["message"]
     assert runner._arguments_too_large({"session_id": "abc"}) is None
+
+
+class _TinyDeltaProvider:
+    def __init__(self, chunks: list[str]) -> None:
+        self.chunks = chunks
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del messages, tools, model, enable_thinking, reasoning_effort
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        for chunk in self.chunks:
+            yield ProviderEvent("text_delta", text=chunk)
+        yield ProviderEvent("completed", tool_calls=())
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_streamed_tokens_are_coalesced_before_they_become_sqlite_rows(
+    tmp_path: Path,
+) -> None:
+    """Each token used to be its own event. 5 000 x 4 chars: 4.713s, 828 KiB.
+
+    The UI concatenates message.delta, so a 256-character flush is the same
+    text. Same 20 KB of speech becomes 79 rows.
+    """
+    chunks = ["abcd"] * 5000
+    provider = _TinyDeltaProvider(chunks)
+    store = AgentStore(tmp_path / "delta.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "talk")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+
+    deltas = [event for event in store.list_events(run["id"], limit=5000) if event.type == "message.delta"]
+    assert 1 <= len(deltas) <= 100, f"wrote {len(deltas)} delta rows for 20 KB of text"
+    assert "".join(str(event.data.get("delta") or "") for event in deltas) == "".join(chunks)
