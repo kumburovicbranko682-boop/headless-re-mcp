@@ -92,12 +92,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:
-        """Capture a device screenshot to a PNG artifact."""
+        """Capture a device screenshot to a PNG under artifact_root/device/.
+
+        Returns path and serial. The file is not a registered artifact --
+        artifacts.read cannot open it -- and only the newest 32 device
+        captures are kept.
+        """
         return _dump(analysis.device_screenshot(serial))
 
     @tools.tool(name="device.pull")
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
-        """Pull a file from the device into a local artifact."""
+        """Pull a device file to artifact_root/device/.
+
+        Returns remote and local. The file is not a registered artifact --
+        artifacts.read cannot open it -- and only the newest 32 device
+        captures are kept.
+        """
         return _dump(analysis.device_pull(serial, remote_path))
 
     @tools.tool(name="device.push")

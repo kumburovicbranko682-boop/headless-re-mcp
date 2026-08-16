@@ -61,3 +61,21 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
     assert len(files) == _MAX_DEVICE_ARTIFACTS
     total = sum(path.stat().st_size for path in files)
     assert total == _MAX_DEVICE_ARTIFACTS * 256 * 1024
+
+
+def test_device_capture_descriptions_do_not_call_the_file_an_artifact() -> None:
+    """The tools return a bare path. Calling that an artifact sent the agent to artifacts.read."""
+    from headless_re_mcp.tools.device import build_device_tools
+
+    class _Dummy:
+        def __getattr__(self, name: str):  # noqa: ANN204
+            return lambda *args, **kwargs: None
+
+    docs = {binding.name: binding.handler.__doc__ or "" for binding in build_device_tools(_Dummy())}  # type: ignore[arg-type]
+    for name in ("device.screenshot", "device.pull"):
+        text = docs[name]
+        assert "not a registered artifact" in text
+        assert "artifacts.read cannot open it" in text
+        assert "newest 32" in text
+        assert "PNG artifact" not in text
+        assert "local artifact" not in text
