@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`apk.strings` 等 DEX 分析在 androguard 卡住时仍会一直挂着**。轻量
+  解析加截止后，`AnalyzeAPK` 睡 8s 时 `strings()` 仍要 8.000s 才回。
+  现在完整分析默认 180s 截止，超时报 `timeout`。
 - **`apk.open` 在 androguard 解析卡住时仍会一直挂着**。假 `APK()` 睡 8s
   时，`open()` 要 8.000s 才回。过夜 worker 会占到进程死掉。现在轻量解析
   默认 30s 截止，超时报 `timeout`。

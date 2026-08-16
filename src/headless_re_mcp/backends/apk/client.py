@@ -24,6 +24,10 @@ T = TypeVar("T")
 # 8.000s. The deadline lives on this side because a stuck zip/xml walk cannot
 # be trusted to honour one of its own.
 _APK_PARSE_TIMEOUT = 30.0
+# Full DEX analysis of a large app is slower than reading the manifest.
+# Measured: strings() against an AnalyzeAPK that slept 8s still returned
+# only after 8.000s even after the light parse had a deadline.
+_APK_ANALYSIS_TIMEOUT = 180.0
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -69,11 +73,13 @@ class ApkClient:
         self._available = False
         if timeout is None:
             self._timeout = _APK_PARSE_TIMEOUT
+            self._analysis_timeout = _APK_ANALYSIS_TIMEOUT
         else:
             value = float(timeout)
             if value <= 0:
                 raise ApkError("invalid_params", "timeout must be positive", timeout=value)
             self._timeout = value
+            self._analysis_timeout = value
         try:
             import androguard  # noqa: F401
 
@@ -186,8 +192,15 @@ class ApkClient:
                 return cached
         from androguard.misc import AnalyzeAPK
 
+        def analyze() -> tuple[Any, Any, Any]:
+            return AnalyzeAPK(str(resolved))
+
         try:
-            apk, dex, analysis = AnalyzeAPK(str(resolved))
+            apk, dex, analysis = self._call(
+                "analyze", analyze, timeout=self._analysis_timeout
+            )
+        except ApkError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to analyze APK: {exc}") from exc
         parsed = _ParsedApk(apk, analysis, dex)

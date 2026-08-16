@@ -699,6 +699,46 @@ class TestApkOpenHasADeadline:
         release.set()
 
 
+class TestApkAnalyzeHasADeadline:
+    """Full DEX analysis still parked after the light parse had a deadline.
+
+    Measured: ``strings()`` against an ``AnalyzeAPK`` that slept 8s still
+    returned only after 8.000s. An unattended agent then holds a worker
+    until the process dies.
+    """
+
+    def test_a_hung_analysis_returns_timeout_instead_of_blocking(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import types
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _hung_analyze(path: str) -> tuple[object, object, object]:
+            del path
+            entered.set()
+            release.wait()
+            raise RuntimeError("should not finish")
+
+        misc = types.ModuleType("androguard.misc")
+        misc.AnalyzeAPK = _hung_analyze
+        monkeypatch.setitem(sys.modules, "androguard.misc", misc)
+
+        apk = _apk(tmp_path / "hung.apk")
+        client = ApkClient(timeout=0.3)
+        client._available = True
+        started = time.monotonic()
+        with pytest.raises(ApkError) as info:
+            client.strings(apk, limit=10)
+        elapsed = time.monotonic() - started
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert entered.is_set()
+        release.set()
+
+
 class TestApkManifestSaysWhenItWasCut:
     """A capped manifest used to look exactly like a complete one.
 
