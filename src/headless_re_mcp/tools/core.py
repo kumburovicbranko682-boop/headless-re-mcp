@@ -587,7 +587,11 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         )
 
     def static_function_create(session_id: str, address: int) -> dict[str, Any]:
-        """Create a function at an address."""
+        """Create a function at an address.
+
+        The write is checked on the way out: a create that did not produce a
+        function starting at that address is an error, not ok.
+        """
         return _dump(analysis.static_function_create(session_id, address=address))
 
     def static_function_delete(session_id: str, address: int) -> dict[str, Any]:

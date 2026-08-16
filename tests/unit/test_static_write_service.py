@@ -833,3 +833,24 @@ def test_the_type_apply_tool_says_an_unchanged_type_fails() -> None:
     }
     assert docs["static_type_apply"]
     assert "did not land" in docs["static_type_apply"]
+
+
+def test_the_function_create_tool_says_a_missed_create_fails() -> None:
+    """The worker already refuses a create that points at another range.
+
+    An agent that only reads the tool text treats any return as a function
+    it just made.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import core as core_mod
+
+    tree = ast.parse(inspect.getsource(core_mod.build_static_extended_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["static_function_create"]
+    assert "error" in docs["static_function_create"]
