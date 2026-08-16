@@ -654,6 +654,45 @@ def test_a_tool_result_larger_than_the_budget_does_not_erase_the_conversation() 
     assert str(kept["tool_call_id"]) in offered, "trimming must not orphan the result"
 
 
+def test_compaction_counts_tool_call_arguments_not_just_spoken_text() -> None:
+    """tool_calls go to the provider as part of the assistant message.
+
+    Counting only content treated an 80 KB argument list as free: an 8 KB
+    budget forwarded 80 KB and never dropped earlier turns. The arguments
+    are what a model that lost its place mid-call produces, and they are
+    already in the conversation before the size check refuses to run them.
+    """
+    conversation: list[JsonObject] = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "do the work"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "type": "function",
+                    "function": {"name": "static.strings", "arguments": "A" * 80_000},
+                }
+            ],
+        },
+    ]
+
+    compacted = compact_messages(conversation, threshold_percent=10, max_chars=20_000)
+    budget = max(8_000, int(20_000 * 10 / 100))
+    encoded = sum(
+        len(str(item.get("content") or "")) + len(str(item.get("tool_calls") or ""))
+        for item in compacted
+    )
+
+    assert encoded <= budget + 200, f"forwarded {encoded} characters against a {budget} budget"
+    assistant = next(item for item in compacted if item.get("role") == "assistant")
+    args = str(assistant["tool_calls"][0]["function"]["arguments"])
+    assert len(args) < 80_000
+    assert "dropped to fit the context" in args
+    assert assistant["tool_calls"][0]["id"] == "call1"
+
+
 def test_redaction_covers_the_configuration_secrets_it_missed() -> None:
     """Key names that are unambiguously credentials, and nothing more."""
     payload = {

@@ -8,21 +8,62 @@ from typing import Any
 JsonObject = dict[str, Any]
 
 
-def _shrink(item: JsonObject, limit: int) -> JsonObject:
-    """Return ``item`` with its content cut to ``limit`` characters, marked."""
-    content = str(item.get("content", ""))
-    if len(content) <= limit:
-        return item
+def _message_size(item: JsonObject) -> int:
+    """What compaction has to fit, not just the text the model spoke.
+
+    ``tool_calls`` live on the assistant message and go to the provider as
+    part of it. Counting only ``content`` treated an 80 KB argument list as
+    free, so an 8 KB budget forwarded 80 KB and never dropped earlier turns.
+    """
+    return len(str(item.get("content") or "")) + len(str(item.get("tool_calls") or ""))
+
+
+def _shrink_arguments(arguments: str, limit: int) -> str:
+    if len(arguments) <= limit:
+        return arguments
     kept = max(0, limit - 64)
+    dropped = len(arguments) - kept
+    return f"{arguments[:kept]}\n...[{dropped} characters dropped to fit the context]"
+
+
+def _shrink(item: JsonObject, limit: int) -> JsonObject:
+    """Return ``item`` cut to ``limit`` characters, including tool_calls."""
     trimmed = dict(item)
-    dropped = len(content) - kept
-    trimmed["content"] = f"{content[:kept]}\n...[{dropped} characters dropped to fit the context]"
+    content = str(trimmed.get("content") or "")
+    if len(content) > limit:
+        kept = max(0, limit - 64)
+        dropped = len(content) - kept
+        trimmed["content"] = f"{content[:kept]}\n...[{dropped} characters dropped to fit the context]"
+    if _message_size(trimmed) <= limit:
+        return trimmed
+    calls = trimmed.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        return trimmed
+    remaining = max(64, limit - len(str(trimmed.get("content") or "")))
+    per = max(32, remaining // len(calls))
+    slim: list[JsonObject] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        fn_obj = fn if isinstance(fn, dict) else {}
+        slim.append(
+            {
+                "id": call.get("id"),
+                "type": call.get("type") or "function",
+                "function": {
+                    "name": fn_obj.get("name"),
+                    "arguments": _shrink_arguments(str(fn_obj.get("arguments") or ""), per),
+                },
+            }
+        )
+    trimmed["tool_calls"] = slim
     return trimmed
 
 
 def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_chars: int = 120_000) -> list[JsonObject]:
     budget = max(8_000, int(max_chars * max(10, min(threshold_percent, 95)) / 100))
-    total = sum(len(str(item.get("content", ""))) for item in messages)
+    total = sum(_message_size(item) for item in messages)
     if total <= budget:
         return messages
     system = [item for item in messages if item.get("role") == "system"][:1]
@@ -32,7 +73,7 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
     for item in reversed(messages):
         if item is prompt:
             continue
-        size = len(str(item.get("content", "")))
+        size = _message_size(item)
         if not tail and size > budget:
             # Tool results are capped well above this budget, so one large read
             # arrives here. Kept whole it was the only message that fit, then
@@ -40,7 +81,7 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
             # the task nor the output. Half the budget leaves room for the turn
             # it answers, which is what keeps it from being orphaned.
             item = _shrink(item, budget // 2)
-            size = len(str(item.get("content", "")))
+            size = _message_size(item)
         if tail and used + size > budget:
             break
         tail.append(item)
