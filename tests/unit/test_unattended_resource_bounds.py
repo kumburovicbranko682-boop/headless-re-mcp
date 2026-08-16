@@ -903,6 +903,87 @@ class TestDeviceCapturesAreRegistered:
             assert "_register_device_capture" in inspect.getsource(method)
 
 
+class TestJsUnpackIsRegistered:
+    """js.unpack_bundle writes a fresh uuid tree every call and never registered it.
+
+    Measured: 2500 module files, 0 artifact rows, artifacts.read by path
+    failed. An unattended loop that unpacks bundles therefore grows the
+    artifact root with files nothing can read back and nothing can reclaim.
+    """
+
+    def _service(self, tmp_path: Any, monkeypatch: Any) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        class _FakeJs:
+            def unpack_bundle(
+                self, path: Any, out_dir: Any, *, timeout: float = 300.0
+            ) -> dict[str, Any]:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                files: list[str] = []
+                for index in range(40):
+                    item = out_dir / f"m{index}.js"
+                    item.write_text("x", encoding="utf-8")
+                    files.append(str(item.relative_to(out_dir)))
+                return {"output_dir": str(out_dir), "file_count": 40, "files": files}
+
+        monkeypatch.setattr(
+            "headless_re_mcp.core.service_jsre.JsClient",
+            lambda *args, **kwargs: _FakeJs(),
+        )
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        return AnalysisService(settings)
+
+    def test_unpacked_files_are_readable_reclaimable_artifacts(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+            source = tmp_path / "bundle.js"
+            source.write_text("module.exports=1;", encoding="utf-8")
+            result = service.js_unpack_bundle(str(source))
+
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_error" not in result.data
+            assert len(result.data["artifact_ids"]) == 40
+
+            listed = service.artifacts_list(limit=256)
+            assert listed.ok and listed.data is not None
+            assert listed.data["total"] == 40
+            assert {item["kind"] for item in listed.data["artifacts"]} == {"js_unpack"}
+
+            read = service.artifacts_read(str(result.data["artifact_ids"][0]), offset=0, limit=8)
+            assert read.ok and read.data is not None
+            assert read.data["data"]
+        finally:
+            service.close_all()
+
+    def test_a_registration_failure_does_not_fail_the_unpack(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+
+            def explode(**_: object) -> dict:  # type: ignore[type-arg]
+                raise RuntimeError("repository is down")
+
+            service.record_artifact = explode  # type: ignore[assignment]
+            source = tmp_path / "bundle.js"
+            source.write_text("module.exports=1;", encoding="utf-8")
+            result = service.js_unpack_bundle(str(source))
+
+            assert result.ok, result.error
+            assert result.data is not None
+            assert result.data["artifact_ids"] == []
+            assert "repository is down" in result.data["artifact_error"]
+            assert Path(result.data["output_dir"]).is_dir()
+        finally:
+            service.close_all()
+
+
 def _minimal_pe(path: Any) -> Any:
     image = bytearray(0x200)
     image[:2] = b"MZ"
