@@ -294,7 +294,22 @@ class WebBackend:
                 handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {"url": handle.page.url, "title": _safe_title(handle.page)}
+            landed = str(handle.page.url or "")
+            requested = url.strip()
+            # Measured: goto that left the page on about:blank still returned
+            # that URL as success, so an unattended agent treats a failed
+            # navigation as having opened the target.
+            if (not landed or landed == "about:blank") and requested not in {
+                "",
+                "about:blank",
+            }:
+                raise WebError(
+                    "backend_error",
+                    "navigation did not leave about:blank",
+                    url=requested,
+                    landed=landed,
+                )
+            return {"url": landed, "title": _safe_title(handle.page)}
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
