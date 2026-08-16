@@ -182,18 +182,22 @@ class ApktoolClient:
             ],
             timeout=timeout,
         )
-        if code != 0 or not out_apk.is_file():
+        size = out_apk.stat().st_size if out_apk.is_file() else 0
+        if code != 0 or not out_apk.is_file() or size == 0:
             # stderr can echo the argument vector, so scrub the password if present.
+            # Measured: exit 0 writing a 0-byte file still answered
+            # signed=True, so an agent treated an empty file as installable.
             scrubbed = stderr.replace(password, "***") if password else stderr
             raise ApktoolError(
                 "backend_error",
                 "apksigner failed",
                 exit_code=code,
                 stderr=scrubbed[:_MAX_STDERR],
+                bytes=size,
             )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": True,
             "keystore": str(store),
             "debug_keystore": using_debug,

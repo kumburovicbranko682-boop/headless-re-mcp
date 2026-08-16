@@ -2329,3 +2329,46 @@ class TestApktoolBoundaries:
         with pytest.raises(ApktoolError) as info:
             client.sign(_apk(tmp_path / "a.apk"), tmp_path / "signed.apk")
         assert info.value.code == "capability_unavailable"
+
+
+class TestApkSignDoesNotInventAPackage:
+    """A 0-byte apksigner output used to look like a signed APK.
+
+    Measured: exit 0 writing an empty file still answered
+    ``{'signed': True, 'size': 0}``. An unattended agent then treats an
+    empty file as installable.
+    """
+
+    def _sign(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes
+    ) -> dict[str, object]:
+        from headless_re_mcp.backends.apktool import client as apktool
+
+        apk = _apk(tmp_path / "a.apk")
+        out = tmp_path / "signed.apk"
+        keystore = tmp_path / "debug.keystore"
+        keystore.write_bytes(b"ks")
+        signer = tmp_path / "apksigner"
+        signer.write_bytes(b"")
+
+        def _run(cmd: list[str], *, timeout: float, redact_from: int | None = None) -> tuple:
+            del cmd, timeout, redact_from
+            out.write_bytes(payload)
+            return "", "", 0
+
+        monkeypatch.setattr(apktool, "_run", _run)
+        return ApktoolClient(None, signer).sign(
+            apk, out, keystore=keystore, keystore_password="p", key_alias="a"
+        )
+
+    def test_empty_apk_is_not_signed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(ApktoolError) as info:
+            self._sign(tmp_path, monkeypatch, b"")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("bytes") == 0
+        assert info.value.details.get("signed") is not True
+
+    def test_nonempty_apk_is_signed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = self._sign(tmp_path, monkeypatch, b"PK\x03\x04signed")
+        assert result["signed"] is True
+        assert int(result["size"]) > 0
