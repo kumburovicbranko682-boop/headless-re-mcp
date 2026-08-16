@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **agent 线程标题截断后看起来仍是完整标题**。250 字符的 title 存成
+  200 且没有 `truncated`。过夜任务列表会显示被切掉的名字。现在创建回包
+  标 `truncated`。
 - **agent 任务目标截断后看起来仍是完整目标**。9000 字符的 objective
   存成 8000 且没有 `truncated`。过夜任务会按被切掉的简报跑。现在创建
   回包标 `truncated`。

@@ -142,7 +142,12 @@ def register_agent_routes(
         if session_id is not None and not isinstance(session_id, str):
             raise HTTPException(status_code=400, detail="invalid_session_id")
         item = store.create_thread(title=title, session_id=session_id)
-        return JSONResponse({"ok": True, "thread": item.dump()}, status_code=201)
+        payload = item.dump()
+        # Measured: a 250-character title came back as 200 with no
+        # truncated, so an unattended agent treated a cut name as the
+        # whole thread title.
+        payload["truncated"] = len(title) > len(item.title)
+        return JSONResponse({"ok": True, "thread": payload}, status_code=201)
 
     @app.get("/api/agent/threads/{thread_id}")
     def get_thread(thread_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:

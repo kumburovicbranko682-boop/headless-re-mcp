@@ -313,3 +313,34 @@ def test_mission_create_says_when_the_objective_was_cut(
     assert len(cut["mission"]["objective"]) == 8000
     assert cut["mission"]["truncated"] is True
     assert intact["mission"]["truncated"] is False
+
+
+def test_thread_create_says_when_the_title_was_cut(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """POST /threads sliced the title at 200 and said nothing.
+
+    Measured: a 250-character title came back as 200 with no truncated,
+    so an unattended agent treated a cut name as the whole thread title.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        cut = client.post(
+            "/api/agent/threads",
+            headers=headers,
+            json={"title": "T" * 250},
+        ).json()
+        intact = client.post(
+            "/api/agent/threads",
+            headers=headers,
+            json={"title": "short"},
+        ).json()
+    assert cut["ok"] is True
+    assert len(cut["thread"]["title"]) == 200
+    assert cut["thread"]["truncated"] is True
+    assert intact["thread"]["truncated"] is False
