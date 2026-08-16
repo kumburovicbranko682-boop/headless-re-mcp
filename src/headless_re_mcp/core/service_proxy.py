@@ -79,6 +79,19 @@ class ProxyAnalysisMixin:
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
+            # A bare body path is a dead end: nothing on the tool surface opens
+            # one. Measured: 250000-byte spill, 0 artifact rows, no artifact_id.
+            response = data.get("response")
+            spill = response.get("body_path") if isinstance(response, dict) else None
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="proxy_flow_body",
+                    source="proxy.flow.get",
+                    payload=data,
+                )
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

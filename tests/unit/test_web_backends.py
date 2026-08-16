@@ -384,6 +384,65 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestProxyFlowBodyIsRegistered:
+    """proxy.flow.get spills bodies over 200 KiB and never registered them.
+
+    Measured: 250000-byte body written to disk, 0 artifact rows, no
+    artifact_id -- so the agent cannot read the capture back and retention
+    cannot reclaim it.
+    """
+
+    def test_spilled_body_is_a_readable_artifact(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        class _Req:
+            method = "GET"
+            pretty_url = "https://example.com/big"
+            headers = {"accept": "*/*"}
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "application/octet-stream"}
+            raw_content = b"B" * 250_000
+
+        class _Flow:
+            request = _Req()
+            response = _Resp()
+
+        class _Rec:
+            def raw(self, flow_id: str) -> object:
+                return _Flow()
+
+        class _Inst:
+            recorder = _Rec()
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session("https://example.com", target="web")
+            session_id = str(created.data["session"]["id"])
+            service._proxy._get = lambda sid: _Inst()  # type: ignore[method-assign]
+            result = service.proxy_flow_get(session_id, "flow-1")
+            assert result.ok, result.error
+            assert result.data is not None
+            assert result.data.get("artifact_id")
+            assert Path(result.data["response"]["body_path"]).is_file()
+
+            listed = service.artifacts_list(session_id)
+            assert listed.ok and listed.data is not None
+            assert listed.data["total"] == 1
+            assert listed.data["artifacts"][0]["kind"] == "proxy_flow_body"
+
+            read = service.artifacts_read(str(result.data["artifact_id"]), offset=0, limit=1)
+            assert read.ok and read.data is not None
+            assert read.data["data"].startswith("42")
+        finally:
+            service.close_all()
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
