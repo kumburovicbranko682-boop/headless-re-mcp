@@ -140,12 +140,17 @@ def _capabilities() -> frozenset[str]:
 
 def _page_items(items: list[JsonObject], offset: int, limit: int) -> JsonObject:
     window = items[offset : offset + limit]
+    # total is already here. Measured: 500 items and limit=100 came back as
+    # returned=100, total=500, and no has_more. Every static list tool shares
+    # this helper, so a caller that only reads the window treats the page as
+    # the database.
     return {
         "items": window,
         "offset": offset,
         "limit": limit,
         "returned": len(window),
         "total": len(items),
+        "has_more": offset + len(window) < len(items),
     }
 
 

@@ -10,7 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
-from headless_re_mcp.backends.ida.worker import _DATABASE_IN_USE, _open_database_error
+from headless_re_mcp.backends.ida.worker import (
+    _DATABASE_IN_USE,
+    _open_database_error,
+    _page_items,
+)
 
 
 def test_a_database_held_elsewhere_is_named_and_marked_retryable() -> None:
@@ -49,3 +53,18 @@ def test_the_worker_envelope_carries_retryable_through_to_the_client() -> None:
 
     assert parsed.code == "worker_start_failed"
     assert parsed.retryable is True
+
+
+def test_a_function_page_says_what_was_left_out() -> None:
+    """500 items and limit=100 came back as returned=100, total=500, no has_more."""
+    result = _page_items([{"i": index} for index in range(500)], 0, 100)
+    assert result["returned"] == 100
+    assert result["total"] == 500
+    assert result["has_more"] is True
+    assert len(result["items"]) == 100
+
+
+def test_the_last_function_page_is_complete() -> None:
+    result = _page_items([{"i": index} for index in range(500)], 400, 100)
+    assert result["returned"] == 100
+    assert result["has_more"] is False
