@@ -18,6 +18,7 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -286,22 +287,19 @@ def probe_xvlkc(executable: Path, *, timeout: float = 5.0) -> tuple[bool, str]:
     exe = Path(executable)
     if not exe.is_file():
         return False, ""
-    options: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout,
-        "check": False,
-    }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = subprocess.run([str(exe)], **options)
-    except (OSError, subprocess.TimeoutExpired):
+        # subprocess.run kills only the launcher. Measured: a wrapper that
+        # spawned a sleeper returned in 0.40s and left the child in state S,
+        # so the next unpack started while the probe's child still held the box.
+        completed = run_bounded([str(exe)], timeout=timeout, creationflags=creationflags)
+    except (OSError, TimedOut):
         return False, ""
-    text = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+    text = (
+        completed.stdout.decode("utf-8", errors="replace")
+        + "\n"
+        + completed.stderr.decode("utf-8", errors="replace")
+    ).strip()
     lowered = text.casefold()
     if any(token in lowered for token in ("xvlk", "usage", "unpack", "input")):
         return True, text[:2000]
