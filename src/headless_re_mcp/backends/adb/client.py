@@ -415,13 +415,21 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         try:
-            raw = _shell(dev, ["logcat", "-d", "-t", str(capped)])
+            # Ask for one extra line so a full page is distinguishable from
+            # the end of the buffer. Measured: 500 lines on the device and
+            # requested=200 came back as 200 lines with no has_more.
+            raw = _shell(dev, ["logcat", "-d", "-t", str(capped + 1)])
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"logcat failed: {exc}") from exc
-        text = str(raw)
-        return {"lines": text.splitlines()[-capped:], "requested": capped}
+        collected = str(raw).splitlines()
+        return {
+            "lines": collected[-capped:],
+            "requested": capped,
+            "count": min(len(collected), capped),
+            "has_more": len(collected) > capped,
+        }
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
         dev = self._device(serial)

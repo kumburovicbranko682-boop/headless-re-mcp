@@ -2985,3 +2985,43 @@ class TestDevicePropertiesArePaged:
         assert result["has_more"] is False
         assert result["properties"]["ro.build.version.sdk"] == "33"
 
+
+class TestDeviceLogcatSaysWhenItStopped:
+    """logcat -t N looks complete once it fills the requested window.
+
+    Measured: 500 lines on the device and requested=200 came back as 200
+    lines with no has_more.
+    """
+
+    def _backend(self, device: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._device = lambda serial: device  # type: ignore[method-assign]
+        return backend
+
+    def test_a_full_window_says_what_was_left_out(self) -> None:
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                requested = int(cmd[-1]) if isinstance(cmd, list) else 201
+                return "\n".join(f"line {index}" for index in range(requested))
+
+        result = self._backend(Device()).logcat("emulator-5554", lines=200)
+        assert result["requested"] == 200
+        assert result["count"] == 200
+        assert len(result["lines"]) == 200
+        assert result["has_more"] is True
+
+    def test_a_short_buffer_is_complete(self) -> None:
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del cmd, timeout, kw
+                return "a\nb"
+
+        result = self._backend(Device()).logcat("emulator-5554", lines=200)
+        assert result["count"] == 2
+        assert result["has_more"] is False
+        assert result["lines"] == ["a", "b"]
+
