@@ -21,6 +21,9 @@ from typing import Any
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# call_soon_threadsafe returning is not the replay finishing. Measured:
+# schedule-only loop, replayed=True, command never ran.
+_REPLAY_WAIT_S = 10.0
 
 
 class ProxyError(RuntimeError):
@@ -380,9 +383,30 @@ class ProxyBackend:
             raise ProxyError("invalid_state", "proxy is not running")
         try:
             new_flow = flow.copy()
-            inst._loop.call_soon_threadsafe(master.commands.call, "replay.client", [new_flow])
+            done = threading.Event()
+            error: list[BaseException] = []
+
+            def _do() -> None:
+                try:
+                    master.commands.call("replay.client", [new_flow])
+                except BaseException as exc:  # noqa: BLE001 - reported after wait
+                    error.append(exc)
+                finally:
+                    done.set()
+
+            inst._loop.call_soon_threadsafe(_do)
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
+        if not done.wait(timeout=_REPLAY_WAIT_S):
+            raise ProxyError(
+                "timeout",
+                "replay did not run on the proxy loop",
+                flow_id=flow_id,
+            )
+        if error:
+            raise ProxyError(
+                "backend_error", f"replay failed: {error[0]}", flow_id=flow_id
+            ) from error[0]
         return {"replayed": True, "flow_id": flow_id}
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:

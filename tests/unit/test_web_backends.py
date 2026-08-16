@@ -616,6 +616,87 @@ class TestProxyFlowBodyIsRegistered:
             service.close_all()
 
 
+class TestProxyReplayWaitsForTheLoop:
+    """Scheduling a replay is not the same as the proxy having done it.
+
+    Measured: call_soon_threadsafe queued the command and returned
+    replayed=True while the command never ran. An unattended agent then
+    treats a request that never left the process as captured.
+    """
+
+    def _backend(self, loop: object, master: object) -> ProxyBackend:
+        class _Flow:
+            def copy(self) -> _Flow:
+                return self
+
+        class _Rec:
+            def raw(self, flow_id: str) -> object:
+                del flow_id
+                return _Flow()
+
+        class _Inst:
+            recorder = _Rec()
+            _loop = loop
+            _master = master
+
+        backend = ProxyBackend()
+        backend._get = lambda session_id: _Inst()  # type: ignore[method-assign]
+        return backend
+
+    def test_a_command_that_never_runs_is_not_replayed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.proxy import client as proxy_mod
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn: object, *args: object) -> None:
+                del fn, args
+
+        class _Master:
+            commands = type("C", (), {"call": staticmethod(lambda *a: None)})()
+
+        monkeypatch.setattr(proxy_mod, "_REPLAY_WAIT_S", 0.2)
+        with pytest.raises(ProxyError) as info:
+            self._backend(_Loop(), _Master()).replay("s", "flow-1")
+        assert info.value.code == "timeout"
+
+    def test_a_command_that_fails_on_the_loop_is_not_replayed(self) -> None:
+        class _Loop:
+            def call_soon_threadsafe(self, fn: object, *args: object) -> None:
+                del args
+                fn()  # type: ignore[operator]
+
+        class _Master:
+            class commands:
+                @staticmethod
+                def call(name: str, args: object) -> None:
+                    del name, args
+                    raise RuntimeError("no such flow to replay")
+
+        with pytest.raises(ProxyError) as info:
+            self._backend(_Loop(), _Master()).replay("s", "flow-1")
+        assert info.value.code == "backend_error"
+
+    def test_a_command_that_ran_is_replayed(self) -> None:
+        ran: list[str] = []
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn: object, *args: object) -> None:
+                del args
+                fn()  # type: ignore[operator]
+
+        class _Master:
+            class commands:
+                @staticmethod
+                def call(name: str, args: object) -> None:
+                    del args
+                    ran.append(name)
+
+        result = self._backend(_Loop(), _Master()).replay("s", "flow-1")
+        assert result == {"replayed": True, "flow_id": "flow-1"}
+        assert ran == ["replay.client"]
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
