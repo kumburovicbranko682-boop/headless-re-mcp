@@ -1006,9 +1006,10 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Run configured de4dot into an artifact path; never overwrite the input.
 
-        Answers with de4dot, before, after, input_unchanged, stats, and
-        claims_universal_unpack false. There is no output field and no ok
-        field inside data.
+        Answers with de4dot, before, after, input_unchanged, stats,
+        artifact_id, and claims_universal_unpack false. There is no output
+        field and no ok field inside data. artifact_id is the artifacts
+        table row; without it the image is invisible to artifacts.gc.
         """
         return _dump(analysis.dotnet_deobfuscate(session_id, timeout=timeout))
 
