@@ -187,6 +187,107 @@ class TestProxyStartHonesty:
         assert not hasattr(proxy_client._ProxyInstance, "_run_fallback")
 
 
+class TestProxyFlowBodiesAreRegistered:
+    """A spilled flow body used to be a path nothing could reclaim.
+
+    Measured: 8 spilled bodies (2_000_000 bytes) against an 80 KiB budget
+    left artifacts.list at total=0 and artifacts.gc at count=0, with
+    2_000_000 bytes still on disk afterwards. The tool says large bodies
+    spill to an artifact; nothing could read or reclaim them.
+    """
+
+    def _service(self, tmp_path: Any, *, budget: int = 512 * 1024 * 1024) -> Any:
+        from dataclasses import replace
+        from pathlib import Path
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        class _FakeProxy:
+            def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> dict[str, Any]:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                out = artifact_dir / f"flow-{flow_id}.bin"
+                out.write_bytes(b"x" * 250_000)
+                return {
+                    "id": flow_id,
+                    "request": {"method": "GET", "url": "https://example.com/", "headers": {}},
+                    "response": {
+                        "status": 200,
+                        "headers": {},
+                        "size": 250_000,
+                        "body_path": str(out),
+                    },
+                }
+
+            def close_all(self) -> None:
+                return None
+
+        settings = replace(
+            Settings.load(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_max_total_bytes=budget,
+        )
+        service = AnalysisService(settings)
+        service._proxy_backend = _FakeProxy()  # type: ignore[assignment]
+        return service
+
+    def test_a_spilled_body_is_readable_and_reclaimable(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path, budget=80_000)
+        try:
+            result = service.proxy_flow_get("sess", "flow-0")
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_error" not in result.data
+            assert result.data["artifact_id"]
+
+            listed = service.repository.list_artifacts("sess")
+            kinds = {item["kind"] for item in listed["artifacts"]}
+            assert kinds == {"proxy_flow_body"}
+
+            read = service.artifacts_read(str(result.data["artifact_id"]), offset=0, limit=4)
+            assert read.ok and read.data is not None
+            assert read.data["data"] == "78787878"
+        finally:
+            service.close_all()
+
+    def test_unattended_spills_stay_inside_the_budget(self, tmp_path: Any) -> None:
+        """The measured leak: 8 writes, 0 rows, GC a no-op, 2 MiB left behind."""
+        budget = 80_000
+        service = self._service(tmp_path, budget=budget)
+        try:
+            for index in range(8):
+                assert service.proxy_flow_get("sess", f"flow-{index}").ok
+
+            listed = service.repository.list_artifacts(None, offset=0, limit=100)
+            assert listed["total"] > 0
+            trees = tmp_path / "artifacts" / "proxy"
+            file_bytes = sum(
+                path.stat().st_size for path in trees.rglob("*") if path.is_file()
+            )
+            # 2_000_000 written against 80 KiB. Unregistered, all of it stayed.
+            # One spilled body is 250 KiB, so the tree can hold at most one.
+            assert file_bytes <= 250_000
+        finally:
+            service.close_all()
+
+    def test_a_registration_failure_does_not_fail_the_capture(self, tmp_path: Any) -> None:
+        service = self._service(tmp_path)
+        try:
+
+            def explode(**_: object) -> dict[str, Any]:
+                raise RuntimeError("repository is down")
+
+            service.record_artifact = explode  # type: ignore[method-assign]
+            result = service.proxy_flow_get("sess", "flow-0")
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_id" not in result.data
+            assert "repository is down" in result.data["artifact_error"]
+            assert result.data["response"]["body_path"]
+        finally:
+            service.close_all()
+
+
 class TestFailedProxyStartLeavesNothingBehind:
     """mitmproxy installs a root-logger handler in ``Master.__init__``.
 

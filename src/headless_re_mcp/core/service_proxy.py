@@ -79,6 +79,20 @@ class ProxyAnalysisMixin:
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
+            response = data.get("response")
+            spill = response.get("body_path") if isinstance(response, dict) else None
+            # Measured: 8 spilled bodies (2_000_000 bytes) left artifacts.list
+            # at total=0 and artifacts.gc at count=0, with the files still on
+            # disk. A bare path is a dead end: nothing can read or reclaim it.
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="proxy_flow_body",
+                    source="proxy.flow.get",
+                    payload=data,
+                )
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
