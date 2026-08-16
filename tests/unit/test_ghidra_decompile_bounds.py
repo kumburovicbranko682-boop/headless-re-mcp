@@ -63,3 +63,24 @@ class TestGhidraDecompileSaysWhenItStopped:
         result = client.decompile(binary, project, "0x1000")
         assert result["decompiled"] == "int f() { return 0; }"
         assert "truncated" not in result
+
+
+class TestGhidraDecompileDescriptionMatchesTheCut:
+    """ghidra.decompile now cuts C at 200000 chars, but the tool text hid that.
+
+    Measured: 250000-char C, decompiled length 200000, truncated=true, while
+    the description never mentioned the cut -- so a model treats the slice
+    as the whole function.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.ghidra import build_ghidra_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_ghidra_tools(service)}
+            doc = tools["ghidra.decompile"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc

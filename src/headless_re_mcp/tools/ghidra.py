@@ -69,7 +69,7 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         A second reading of code IDA decompiled differently, or of code it
-        could not.
+        could not. Check truncated: decompiled C is cut at 200000 characters.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings
