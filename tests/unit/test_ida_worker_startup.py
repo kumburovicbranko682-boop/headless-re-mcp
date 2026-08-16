@@ -20,6 +20,7 @@ from headless_re_mcp.backends.ida.worker import (
     _decompile,
     _functions,
     _globals,
+    _metadata,
     _names,
     _open_database_error,
     _overview,
@@ -277,6 +278,52 @@ def test_overview_does_not_keep_every_function(monkeypatch: Any) -> None:
     assert result["function_count"] == 20_000
     assert result["string_count"] == 20_000
     assert result["entry_function"] == 0
+    assert "functions" not in result
+    assert "strings" not in result
+    assert functions.yielded == 20_000
+    assert strings.yielded == 20_000
+
+
+def test_metadata_does_not_keep_every_function(monkeypatch: Any) -> None:
+    """Metadata used to list every function and string just to count them.
+
+    Measured: 20000 addresses and 20000 strings were materialized for a
+    snapshot that only reports the counts.
+    """
+    import sys
+    import types
+
+    class Counting:
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        def __iter__(self):
+            for index in range(20_000):
+                self.yielded += 1
+                yield index
+
+    functions = Counting()
+    strings = Counting()
+    idautils = types.ModuleType("idautils")
+    idautils.Functions = lambda: functions  # type: ignore[attr-defined]
+    idautils.Strings = lambda: strings  # type: ignore[attr-defined]
+    ida_ida = types.ModuleType("ida_ida")
+    ida_ida.inf_get_start_ip = lambda: 0x401000  # type: ignore[attr-defined]
+    ida_ida.inf_is_64bit = lambda: True  # type: ignore[attr-defined]
+    ida_ida.inf_get_procname = lambda: "metapc"  # type: ignore[attr-defined]
+    ida_nalt = types.ModuleType("ida_nalt")
+    ida_nalt.get_imagebase = lambda: 0x1000  # type: ignore[attr-defined]
+    ida_nalt.get_input_file_path = lambda: "sample.exe"  # type: ignore[attr-defined]
+    ida_hexrays = types.ModuleType("ida_hexrays")
+    ida_hexrays.init_hexrays_plugin = lambda: False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "idautils", idautils)
+    monkeypatch.setitem(sys.modules, "ida_ida", ida_ida)
+    monkeypatch.setitem(sys.modules, "ida_nalt", ida_nalt)
+    monkeypatch.setitem(sys.modules, "ida_hexrays", ida_hexrays)
+    result = _metadata({})
+    assert result["function_count"] == 20_000
+    assert result["string_count"] == 20_000
+    assert result["start_ip"] == 0x401000
     assert "functions" not in result
     assert "strings" not in result
     assert functions.yielded == 20_000

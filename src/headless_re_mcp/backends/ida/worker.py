@@ -176,8 +176,18 @@ def _metadata(_params: JsonObject) -> JsonObject:
     import ida_nalt
     import idautils
 
-    functions = list(idautils.Functions())
-    strings = list(idautils.Strings())
+    # Measured: metadata listed 20000 functions and 20000 strings just to
+    # count them and maybe pick a fallback start_ip. The snapshot then
+    # held two full tables the caller never asked for.
+    function_count = 0
+    first_function = None
+    for ea in idautils.Functions():
+        if first_function is None:
+            first_function = int(ea)
+        function_count += 1
+    string_count = 0
+    for _ in idautils.Strings():
+        string_count += 1
     image_base = int(ida_nalt.get_imagebase())
     input_path = ""
     try:
@@ -188,7 +198,7 @@ def _metadata(_params: JsonObject) -> JsonObject:
     try:
         start_ip = int(ida_ida.inf_get_start_ip())
     except Exception:
-        start_ip = int(functions[0]) if functions else image_base
+        start_ip = image_base if first_function is None else first_function
     bitness = 64
     try:
         bitness = 64 if ida_ida.inf_is_64bit() else 32
@@ -223,8 +233,8 @@ def _metadata(_params: JsonObject) -> JsonObject:
         "start_ip": start_ip,
         "bitness": bitness,
         "processor": proc,
-        "function_count": len(functions),
-        "string_count": len(strings),
+        "function_count": function_count,
+        "string_count": string_count,
         "hashes": hashes,
         "capabilities": sorted(_capabilities()),
         "note": "read-only metadata snapshot from idalib",
