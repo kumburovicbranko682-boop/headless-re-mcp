@@ -272,7 +272,7 @@ class TestWebConsoleSaysWhenItStopped:
 class TestWebDomSnapshotDescriptionMatchesTheCut:
     """web.dom.snapshot already cuts HTML at 200000 bytes, but the tool text hid that.
 
-    Measured: the payload sets truncated when the document is larger, while
+    Measured: 200001-byte document, 200000 returned, truncated=true, while
     the description said "return the current page HTML" -- so a model treats
     the slice as the whole DOM.
     """
@@ -381,6 +381,27 @@ class TestJsUnpackSaysWhenItStopped:
         result = self._result(tmp_path, 2000)
         assert result["file_count"] == 2000
         assert result["has_more"] is False
+
+
+class TestWasmInfoDescriptionMatchesTheCut:
+    """wasm.info already cuts at 400000 bytes, but the tool text hid that.
+
+    Measured: 400001-byte stdout, objdump length 400000, truncated=true,
+    while the description never mentioned the cut -- so a model treats the
+    slice as the whole dump.
+    """
+
+    def test_the_tool_text_says_to_check_truncated(self) -> None:
+        from headless_re_mcp.core.service import AnalysisService
+        from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
+
+        service = AnalysisService()
+        try:
+            tools = {item.name: item for item in build_js_wasm_tools(service)}
+            doc = tools["wasm.info"].handler.__doc__ or ""
+        finally:
+            service.close_all()
+        assert "truncated" in doc
 
 
 class TestWasmWatDescriptionMatchesTheCut:
