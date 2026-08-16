@@ -107,7 +107,11 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         address: int | None = None,
     ) -> dict[str, Any]:
-        """Decompile the function containing address, or the first function when omitted."""
+        """Decompile the function containing address, or the first function when omitted.
+
+        Check truncated: a large function is previewed inline and the rest
+        lands as an artifact you can read back.
+        """
         return _dump(analysis.static_decompile(session_id, address=address))
 
     def static_metadata(session_id: str) -> dict[str, Any]:
