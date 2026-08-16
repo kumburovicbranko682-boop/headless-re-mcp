@@ -47,6 +47,15 @@ def _frida_rpc(exc: FridaError) -> XdbgRpcError:
     )
 
 
+def _r2_rpc(exc: R2Error) -> XdbgRpcError:
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -305,7 +314,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.open", "r2 binary open validated")
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_r2_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -335,7 +344,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_r2_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -348,7 +357,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(_r2_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -952,7 +961,7 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
         _timeline_append(service, session_id, "r2.request", "r2 whitelist command", commands=commands)
         return _success(data, session_id=session_id, backend="radare2")
     except R2Error as exc:
-        return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        return _failure(_r2_rpc(exc), session_id=session_id)
     except BaseException as exc:
         return _failure(exc, session_id=session_id)
 
