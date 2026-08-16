@@ -666,6 +666,62 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestFridaModulesSayWhenTheyStopped:
+    """100 modules with limit=64 used to come back as count=64, no has_more."""
+
+    def _modules(self, n: int, *, limit: int = 64) -> dict[str, Any]:
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class _Sync:
+            def modules(self) -> list[dict[str, object]]:
+                return [
+                    {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
+                    for index in range(n)
+                ]
+
+        class _Script:
+            exports_sync = _Sync()
+
+            def load(self) -> None:
+                return None
+
+        class _Session:
+            def create_script(self, source: str) -> _Script:
+                assert source
+                return _Script()
+
+            def detach(self) -> None:
+                return None
+
+        class _Frida:
+            def attach(self, pid: int) -> _Session:
+                assert pid == 7
+                return _Session()
+
+        client = FridaClient()
+        client._require = lambda pid, allowed_pid: None  # type: ignore[method-assign]
+        client._frida = _Frida()
+        return client.modules(7, allowed_pid=7, limit=limit)
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        result = self._modules(100, limit=64)
+        assert result["count"] == 64
+        assert result["total"] == 100
+        assert result["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        result = self._modules(3, limit=64)
+        assert result["count"] == 3
+        assert result["total"] == 3
+        assert result["has_more"] is False
+
+    def test_a_result_that_exactly_fills_the_page_is_complete(self) -> None:
+        result = self._modules(64, limit=64)
+        assert result["count"] == 64
+        assert result["total"] == 64
+        assert result["has_more"] is False
+
+
 class TestFridaApplicationsSayWhenTheyStopped:
     """300 applications with limit=256 used to come back as count=256, no has_more."""
 
