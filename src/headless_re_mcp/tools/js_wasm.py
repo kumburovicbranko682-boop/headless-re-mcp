@@ -75,7 +75,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
         wasm-objdump can exit non-zero after writing usable text. Read partial
-        and exit_code rather than treating the dump as complete.
+        and exit_code rather than treating the dump as complete. Oversized
+        text is cut and marked truncated.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
