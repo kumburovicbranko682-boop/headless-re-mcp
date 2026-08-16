@@ -36,9 +36,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_manifest(session_id))
 
     @tools.tool(name="apk.permissions")
-    def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions."""
-        return _dump(analysis.apk_permissions(session_id))
+    def apk_permissions(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+    ) -> dict[str, Any]:
+        """List declared and requested permissions.
+
+        Read `total`, `requested_total` and `has_more` rather than assuming
+        either list is complete.
+        """
+        return _dump(analysis.apk_permissions(session_id, limit=limit))
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:

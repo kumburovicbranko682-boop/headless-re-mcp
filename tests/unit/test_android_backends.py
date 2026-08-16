@@ -465,6 +465,50 @@ class TestApkCertificatesSayWhenTheySkipped:
         assert caught.value.code == "backend_error"
 
 
+class TestApkPermissionsArePaged:
+    """A permission list has no page size; a fat SDK dump is thousands of names.
+
+    Measured: 3000 declared and 2500 requested came back in full with only
+    count=3000. An overnight agent then ships every permission into context.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, declared: int, requested: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class FakeApk:
+            def get_permissions(self) -> list[str]:
+                return [f"android.permission.P{index}" for index in range(declared)]
+
+            def get_requested_permissions(self) -> list[str]:
+                return [f"android.permission.R{index}" for index in range(requested)]
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+        return client
+
+    def test_a_long_list_says_what_was_left_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3000, 2500).permissions(
+            tmp_path / "app.apk", limit=500
+        )
+        assert result["count"] == 500
+        assert result["total"] == 3000
+        assert result["requested_total"] == 2500
+        assert result["has_more"] is True
+        assert len(result["permissions"]) == 500
+        assert len(result["requested_permissions"]) == 500
+
+    def test_a_short_list_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 2, 2).permissions(tmp_path / "app.apk", limit=500)
+        assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["requested_total"] == 2
+        assert result["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
