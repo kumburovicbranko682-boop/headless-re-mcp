@@ -490,6 +490,14 @@ class UnpackCliMixin:
         """
         try:
             session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.vmp.dump cannot run in {session.state.value} state"
+                )
             if self.settings.vmp_dumper is None:
                 return Result[JsonObject](
                     ok=False,
@@ -573,6 +581,15 @@ class UnpackCliMixin:
                 disable_reloc=disable_reloc,
                 search_roots=search_roots,
             )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.vmp.dump cannot run in {session.state.value} state"
+                )
             return _success(
                 {
                     "vmp_dumper": result.to_dict(),
