@@ -184,18 +184,28 @@ class AdbBackend:
     def list_devices(self) -> JsonObject:
         client = self._client()
         try:
-            devices = client.device_list()
+            devices = _call_bounded(
+                client.device_list, timeout=_SHELL_TIMEOUT, op="device_list"
+            )
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
         items = []
         for dev in devices:
             serial = getattr(dev, "serial", "")
-            state = "device"
             try:
-                state = client.device(serial=serial).get_state()
+                state = _call_bounded(
+                    client.device(serial=serial).get_state,
+                    timeout=_SHELL_TIMEOUT,
+                    op="get_state",
+                )
+            except AdbError as exc:
+                # One wedged device must not hide the rest of the list.
+                state = "timeout" if exc.code == "timeout" else "unknown"
             except Exception:  # noqa: BLE001
                 state = "unknown"
-            items.append({"serial": serial, "state": state})
+            items.append({"serial": serial, "state": str(state)})
         return {"devices": items, "count": len(items)}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
@@ -216,7 +226,8 @@ class AdbBackend:
 
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
-        try:
+
+        def work() -> JsonObject:
             return {
                 "serial": _check_serial(serial),
                 "state": dev.get_state(),
@@ -226,6 +237,11 @@ class AdbBackend:
                 "release": dev.getprop("ro.build.version.release"),
                 "abi": dev.getprop("ro.product.cpu.abi"),
             }
+
+        try:
+            return _call_bounded(work, timeout=_SHELL_TIMEOUT, op="info")
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 

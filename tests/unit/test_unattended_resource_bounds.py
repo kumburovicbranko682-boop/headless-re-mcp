@@ -2503,6 +2503,83 @@ class TestAdbOpsCannotHoldAWorker:
             assert caught.value.details["op"] == op
             assert time.monotonic() - started < 1.0, op
 
+    def test_a_wedged_device_list_comes_back_instead_of_hanging(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class HungClient:
+            def device_list(self) -> list[object]:
+                threading.Event().wait()
+                return []
+
+        backend = self._backend(object())
+        backend._client = lambda: HungClient()  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            backend.list_devices()
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "device_list"
+        assert time.monotonic() - started < 1.0
+
+    def test_one_wedged_device_does_not_hide_the_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as adb_client
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class Row:
+            def __init__(self, serial: str) -> None:
+                self.serial = serial
+
+        class MixedClient:
+            def device_list(self) -> list[Row]:
+                return [Row("good"), Row("wedged")]
+
+            def device(self, serial: str) -> object:
+                if serial == "wedged":
+
+                    def hang() -> None:
+                        threading.Event().wait()
+
+                    return type("H", (), {"get_state": staticmethod(hang)})()
+                return type("G", (), {"get_state": staticmethod(lambda: "device")})()
+
+        backend = self._backend(object())
+        backend._client = lambda: MixedClient()  # type: ignore[method-assign]
+        result = backend.list_devices()
+        by_serial = {item["serial"]: item["state"] for item in result["devices"]}
+        assert by_serial["good"] == "device"
+        assert by_serial["wedged"] == "timeout"
+
+    def test_a_wedged_info_comes_back_as_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from headless_re_mcp.backends.adb import client as adb_client
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        monkeypatch.setattr(adb_client, "_SHELL_TIMEOUT", 0.05)
+
+        class Hung:
+            def get_state(self) -> str:
+                threading.Event().wait()
+                return "device"
+
+        started = time.monotonic()
+        with pytest.raises(AdbError) as caught:
+            self._backend(Hung()).info("emulator-5554")
+        assert caught.value.code == "timeout"
+        assert caught.value.details["op"] == "info"
+        assert time.monotonic() - started < 1.0
+
     def test_a_screenshot_that_finishes_is_untouched(self, tmp_path: Any) -> None:
         from pathlib import Path
 
