@@ -226,6 +226,48 @@ class _FakeParsed:
         return self._methods
 
 
+class TestApkComponentsAreBounded:
+    """A component list used to be the whole manifest with no way to see a cut."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, activities: int) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Apk:
+            def get_activities(self) -> list[str]:
+                return [f"A{index}" for index in range(activities)]
+
+            def get_services(self) -> list[str]:
+                return ["S0"]
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "A0"
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+        return client
+
+    def test_a_large_activity_list_is_cut_and_said_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3000).components(tmp_path / "app.apk", limit=500)
+        assert len(result["activities"]) == 500
+        assert result["totals"]["activities"] == 3000
+        assert result["has_more"] is True
+
+    def test_a_short_list_is_not_labelled_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._client(monkeypatch, 3).components(tmp_path / "app.apk", limit=500)
+        assert result["has_more"] is False
+        assert result["totals"]["activities"] == 3
+
+
 class TestApkManifestSaysWhenItWasCut:
     """A 200_000-character slice used to look exactly like the whole manifest."""
 

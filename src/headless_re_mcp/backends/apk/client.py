@@ -20,6 +20,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_MANIFEST_CHARS = 200_000
+_MAX_COMPONENTS = 2000
 
 
 class ApkError(RuntimeError):
@@ -222,14 +223,33 @@ class ApkClient:
             "v1_signed": bool(names),
         }
 
-    def components(self, path: Path) -> JsonObject:
+    def components(self, path: Path, *, limit: int = 500) -> JsonObject:
         apk = self._apk(path)
+        capped = max(1, min(int(limit), _MAX_COMPONENTS))
+
+        def _page(values: Any) -> tuple[list[Any], int, bool]:
+            items = sorted(values)
+            return items[:capped], len(items), len(items) > capped
+
+        activities, activity_total, activity_more = _page(apk.get_activities())
+        services, service_total, service_more = _page(apk.get_services())
+        receivers, receiver_total, receiver_more = _page(apk.get_receivers())
+        providers, provider_total, provider_more = _page(apk.get_providers())
+        # Measured: 3000 activities came back as one 114 KiB object with no
+        # has_more, so an agent treated the page as every component.
         return {
-            "activities": sorted(apk.get_activities()),
-            "services": sorted(apk.get_services()),
-            "receivers": sorted(apk.get_receivers()),
-            "providers": sorted(apk.get_providers()),
+            "activities": activities,
+            "services": services,
+            "receivers": receivers,
+            "providers": providers,
             "main_activity": apk.get_main_activity(),
+            "totals": {
+                "activities": activity_total,
+                "services": service_total,
+                "receivers": receiver_total,
+                "providers": provider_total,
+            },
+            "has_more": activity_more or service_more or receiver_more or provider_more,
         }
 
     def native_libs(self, path: Path) -> JsonObject:
