@@ -250,12 +250,13 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
-        if completed.returncode not in {0, 1} and not out:
+        if completed.returncode not in {0, 1}:
             raise WindbgError(
                 "backend_error",
                 "cdb user-mode probe failed",
                 exit_code=completed.returncode,
                 stderr=err[:2000],
+                stdout=out[:2000],
             )
         return {
             "pid": pid,
@@ -294,6 +295,18 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        # cdb's `q` often exits 1 after a successful session. Measured: exit 2
+        # with an empty buffer, and exit 2 with "Could not open dump file",
+        # both came back as a modules list. The caller then treats a failed
+        # open as an empty dump.
+        if completed.returncode not in {0, 1}:
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+                stdout=out[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

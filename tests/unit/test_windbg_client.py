@@ -95,6 +95,51 @@ def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
     assert payload["modules"] == "ok"
 
 
+def test_a_failed_dump_open_is_not_an_empty_module_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exit 2 with an empty buffer, and with an error line, both looked like modules."""
+    import subprocess
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    def failed(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=b"Could not open dump file\n", stderr=b""
+        )
+
+    monkeypatch.setattr(windbg_module, "run_bounded", failed)
+    with pytest.raises(WindbgError) as caught:
+        WindbgClient(cdb).modules(dump)
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["exit_code"] == 2
+
+
+def test_cdb_exit_one_is_still_a_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def quit_one(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout=b"lm ok", stderr=b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", quit_one)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    payload = WindbgClient(cdb).modules(dump)
+    assert payload["modules"] == "lm ok"
+
+
 def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch) -> None:
     store = r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.0_x64__abc\amd64\cdb.exe"
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
