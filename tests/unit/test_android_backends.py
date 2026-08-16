@@ -1165,6 +1165,41 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestApkClassPaging:
+    def test_a_class_page_says_when_more_exist(self, tmp_path: Path) -> None:
+        """A class page used to look complete even with total > count.
+
+        Measured: 5 classes, limit 2, count=2 total=5, no has_more.
+        """
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Klass:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_external(self) -> bool:
+                return False
+
+        class _Analysis:
+            def get_classes(self) -> list[_Klass]:
+                return [_Klass(f"Lfoo/C{index};") for index in range(5)]
+
+        class _Parsed:
+            analysis = _Analysis()
+
+        client = ApkClient()
+        client._parsed = lambda path: _Parsed()  # type: ignore[method-assign]
+        apk = tmp_path / "a.apk"
+        apk.write_bytes(b"apk")
+        result = client.classes(apk, offset=0, limit=2)
+        assert result["count"] == 2
+        assert result["total"] == 5
+        assert result["has_more"] is True
+        rest = client.classes(apk, offset=2, limit=10)
+        assert rest["count"] == 3
+        assert rest["has_more"] is False
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")
