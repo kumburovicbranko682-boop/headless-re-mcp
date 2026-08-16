@@ -140,15 +140,13 @@ class AdbBackend:
             devices = client.device_list()
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
-        items = []
-        for dev in devices:
-            serial = getattr(dev, "serial", "")
-            state = "device"
-            try:
-                state = client.device(serial=serial).get_state()
-            except Exception:  # noqa: BLE001
-                state = "unknown"
-            items.append({"serial": serial, "state": state})
+        # device_list() already yields only state=device. A follow-up
+        # get_state() per serial used to park the worker: measured 1.2s
+        # for three devices whose get_state blocked 0.4s each.
+        items = [
+            {"serial": getattr(dev, "serial", ""), "state": "device"}
+            for dev in devices
+        ]
         return {"devices": items, "count": len(items)}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:

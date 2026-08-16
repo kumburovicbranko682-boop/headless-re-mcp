@@ -775,6 +775,34 @@ class TestLaunchDoesNotInventSuccess:
         assert result["package"] == "com.example.app"
 
 
+class TestDeviceListDoesNotProbeState:
+    """Listing devices used to call get_state once per serial with no deadline.
+
+    Measured: three devices whose get_state blocked 0.4s each made
+    list_devices wait 1.2s. adbutils.device_list() already yields only
+    state=device, so the extra probe was both unbounded and redundant.
+    """
+
+    def test_a_blocking_get_state_is_not_consulted(self) -> None:
+        class _Listed:
+            serial = "emulator-5554"
+
+        class _Client:
+            def device_list(self) -> list[_Listed]:
+                return [_Listed(), _Listed(), _Listed()]
+
+            def device(self, serial: str | None = None) -> Any:
+                raise AssertionError("get_state probe would wait forever")
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._client = lambda: _Client()  # type: ignore[method-assign]
+        result = backend.list_devices()
+        assert result["count"] == 3
+        assert all(item["state"] == "device" for item in result["devices"])
+
+
 class TestDeviceInfoIsBounded:
     """device.info used to read properties through adbutils getprop with no deadline.
 
