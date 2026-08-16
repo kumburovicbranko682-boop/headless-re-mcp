@@ -331,6 +331,46 @@ async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_stream_stops_reading_an_oversized_sse_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """aiter_lines() has no byte ceiling, so a line without a newline is the body.
+
+    Eight 256-byte chunks with no newline were all consumed (2,048 bytes) and
+    the stream answered completed -- the junk line did not start with data: so
+    it was skipped. A 64 KiB no-newline body was likewise retained in full
+    (16/16 chunks, 65,536 bytes) with no error. A 512-byte test limit should
+    refuse on the third chunk and leave the rest unread.
+    """
+    monkeypatch.setattr(openai_compatible, "_MAX_SSE_LINE_BYTES", 512, raising=False)
+
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.chunks_read = 0
+
+        async def __aiter__(self):  # type: ignore[no-untyped-def]
+            for _ in range(8):
+                self.chunks_read += 1
+                yield b"x" * 256
+
+    stream = CountingStream()
+
+    def endless_line(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(endless_line),
+    )
+
+    with pytest.raises(ValueError, match="SSE line exceeded 512 bytes"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+    assert stream.chunks_read == 3
+
+
+@pytest.mark.asyncio
 async def test_tool_call_stream_is_rejected_before_unbounded_buffering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

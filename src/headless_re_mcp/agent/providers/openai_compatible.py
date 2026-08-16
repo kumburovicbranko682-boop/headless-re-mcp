@@ -17,10 +17,55 @@ _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_ERROR_DETAIL_CHARS = 500
 _MAX_MODELS_BODY_BYTES = 1024 * 1024
 _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
+# A little above the tool-call buffer so a single legal arguments payload
+# still fits inside one SSE line after the JSON envelope.
+_MAX_SSE_LINE_BYTES = _MAX_TOOL_CALL_BUFFER_BYTES + 64 * 1024
 _MAX_TOOL_CALLS = 128
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
+
+
+async def _aiter_bounded_sse_lines(
+    response: Any, *, max_line_bytes: int | None = None
+) -> AsyncIterator[str]:
+    """Yield SSE lines, refusing one that grows past ``max_line_bytes``.
+
+    ``aiter_lines()`` has no ceiling. A provider that never sends a newline --
+    or sends one enormous ``data:`` frame -- is then the whole body, held for
+    the rest of the 600-second response window. Measured here: eight 256-byte
+    chunks with no newline were all consumed (2,048 bytes) and the stream
+    answered completed, because the junk line did not start with ``data:`` and
+    was skipped. A 64 KiB no-newline body was likewise retained in full.
+    """
+    limit = _MAX_SSE_LINE_BYTES if max_line_bytes is None else max_line_bytes
+    buf = bytearray()
+    async for chunk in response.aiter_bytes():
+        start = 0
+        while start < len(chunk):
+            newline = chunk.find(b"\n", start)
+            if newline < 0:
+                piece = chunk[start:]
+                if len(buf) + len(piece) > limit:
+                    raise ValueError(f"provider SSE line exceeded {limit} bytes")
+                buf.extend(piece)
+                break
+            piece = chunk[start:newline]
+            if len(buf) + len(piece) > limit:
+                raise ValueError(f"provider SSE line exceeded {limit} bytes")
+            line = bytes(buf) + piece
+            buf.clear()
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            yield line.decode("utf-8", "replace")
+            start = newline + 1
+    if buf:
+        if len(buf) > limit:
+            raise ValueError(f"provider SSE line exceeded {limit} bytes")
+        line = bytes(buf)
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        yield line.decode("utf-8", "replace")
 
 
 async def _read_bounded_error_detail(response: Any) -> str:
@@ -170,7 +215,7 @@ class OpenAICompatibleProvider:
                     request=exc.request,
                     response=exc.response,
                 ) from exc
-            async for line in response.aiter_lines():
+            async for line in _aiter_bounded_sse_lines(response):
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
