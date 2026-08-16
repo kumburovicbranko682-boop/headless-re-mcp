@@ -421,6 +421,26 @@ def test_frida_applications_says_when_the_page_is_not_the_whole_set() -> None:
     assert got["has_more"] is True
 
 
+def test_apk_permissions_does_not_return_every_permission_as_if_it_were_small() -> None:
+    """3000 permissions serialised to 165_839 bytes with no total/has_more."""
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    class _FakeApk:
+        def get_permissions(self) -> list[str]:
+            return [f"android.permission.P{i}" for i in range(3000)]
+
+        def get_requested_permissions(self) -> list[str]:
+            return [f"android.permission.P{i}" for i in range(3000)]
+
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    got = client.permissions(Path("dummy.apk"))
+    assert got["count"] == 2000
+    assert got["total"] == 3000
+    assert got["has_more"] is True
+
+
 def test_apk_native_libs_does_not_return_every_lib_as_if_it_were_small() -> None:
     """5000 native libs serialised to 138_945 bytes with no total/has_more."""
     from headless_re_mcp.backends.apk.client import ApkClient

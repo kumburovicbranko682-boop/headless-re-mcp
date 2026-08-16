@@ -37,7 +37,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.permissions")
     def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions."""
+        """List declared and requested permissions.
+
+        Capped; read `total`, `requested_total` and `has_more`.
+        """
         return _dump(analysis.apk_permissions(session_id))
 
     @tools.tool(name="apk.certificates")

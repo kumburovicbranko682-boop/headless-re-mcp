@@ -161,6 +161,8 @@ until 1.0 the tool surface may still change between minor versions.
   回包没有 total/has_more。现在每类最多回 2000 个并标明还有更多。
 - **`apk.native_libs` 没有上限**。5000 个 so 序列化成 138_945 字节，没有
   total/has_more。现在最多回 2000 个并标明还有更多。 ABI 仍按完整列表算。
+- **`apk.permissions` 没有上限**。3000 条权限序列化成 165_839 字节，没有
+  total/has_more。现在最多回 2000 条并标明还有更多。
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 

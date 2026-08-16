@@ -190,10 +190,15 @@ class ApkClient:
             requested = sorted(apk.get_requested_permissions())
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested = declared
+        declared_page = declared[:_MAX_COMPONENTS]
+        requested_page = requested[:_MAX_COMPONENTS]
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
+            "permissions": declared_page,
+            "requested_permissions": requested_page,
+            "count": len(declared_page),
+            "total": len(declared),
+            "requested_total": len(requested),
+            "has_more": len(declared) > len(declared_page) or len(requested) > len(requested_page),
         }
 
     def certificates(self, path: Path) -> JsonObject:
