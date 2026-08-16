@@ -13,8 +13,10 @@ from typing import Any
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.ida.worker import (
     _DATABASE_IN_USE,
+    _MAX_CFG_NODES,
     _MAX_DECOMPILE_CHARS,
     _bytes_read,
+    _cfg,
     _decompile,
     _functions,
     _open_database_error,
@@ -192,3 +194,62 @@ def test_a_short_decompile_is_complete(monkeypatch: Any) -> None:
     assert result["code"] == "int f(void) { return 1; }"
     assert result["truncated"] is False
     assert result["bytes"] == len(result["code"])
+
+
+def _install_flowchart(monkeypatch: Any, block_count: int) -> None:
+    import sys
+    import types
+
+    class Block:
+        def __init__(self, index: int, total: int) -> None:
+            self.id = index
+            self.start_ea = 0x1000 + index * 16
+            self.end_ea = self.start_ea + 16
+            self.type = 0
+            self._total = total
+
+        def succs(self) -> list[Block]:
+            nxt = self.id + 1
+            return [Block(nxt, self._total)] if nxt < self._total else []
+
+    class Chart:
+        def __init__(self, total: int) -> None:
+            self._total = total
+
+        def __iter__(self) -> Any:
+            for index in range(self._total):
+                yield Block(index, self._total)
+
+    class Func:
+        start_ea = 0x1000
+        end_ea = 0x1000 + 16
+
+    ida_gdl = types.ModuleType("ida_gdl")
+    ida_gdl.FlowChart = lambda function: Chart(block_count)  # type: ignore[attr-defined]
+    ida_funcs = types.ModuleType("ida_funcs")
+    ida_funcs.get_func = lambda ea: Func()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ida_gdl", ida_gdl)
+    monkeypatch.setitem(sys.modules, "ida_funcs", ida_funcs)
+
+
+def test_a_huge_cfg_says_how_much_was_cut(monkeypatch: Any) -> None:
+    """5000 blocks came back in full with no truncated or has_more."""
+    _install_flowchart(monkeypatch, 5000)
+    result = _cfg({"address": 0x1000})
+    assert result["node_count"] == _MAX_CFG_NODES
+    assert result["total_nodes"] == 5000
+    assert result["total_edges"] == 4999
+    assert result["truncated"] is True
+    assert result["has_more"] is True
+    assert len(result["nodes"]) == _MAX_CFG_NODES
+    kept = {node["id"] for node in result["nodes"]}
+    assert all(edge["src"] in kept and edge["dst"] in kept for edge in result["edges"])
+
+
+def test_a_short_cfg_is_complete(monkeypatch: Any) -> None:
+    _install_flowchart(monkeypatch, 3)
+    result = _cfg({"address": 0x1000})
+    assert result["node_count"] == 3
+    assert result["total_nodes"] == 3
+    assert result["truncated"] is False
+    assert result["has_more"] is False

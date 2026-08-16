@@ -27,6 +27,9 @@ _DATABASE_IN_USE = 4
 # dump came back in full with no truncated or bytes, so the RPC line was the
 # whole function and a larger one would sit on the pipe until the host OOM'd.
 _MAX_DECOMPILE_CHARS = 200_000
+# Measured: a 5000-block CFG came back as 411063 JSON bytes with no
+# truncated or has_more, so the RPC line was the whole graph.
+_MAX_CFG_NODES = 1024
 
 
 def _open_database_error(code: int, binary: Path) -> RuntimeError:
@@ -711,6 +714,13 @@ def _cfg(params: JsonObject) -> JsonObject:
         )
         for succ in block.succs():
             edges.append({"src": int(block.id), "dst": int(succ.id)})
+    total_nodes = len(nodes)
+    total_edges = len(edges)
+    truncated = total_nodes > _MAX_CFG_NODES
+    if truncated:
+        kept = {node["id"] for node in nodes[:_MAX_CFG_NODES]}
+        nodes = nodes[:_MAX_CFG_NODES]
+        edges = [edge for edge in edges if edge["src"] in kept and edge["dst"] in kept]
     return {
         "address": int(function.start_ea),
         "function_end": int(function.end_ea),
@@ -718,6 +728,10 @@ def _cfg(params: JsonObject) -> JsonObject:
         "edges": edges,
         "node_count": len(nodes),
         "edge_count": len(edges),
+        "total_nodes": total_nodes,
+        "total_edges": total_edges,
+        "truncated": truncated,
+        "has_more": truncated,
         "note": "function-local CFG from ida_gdl.FlowChart",
     }
 
