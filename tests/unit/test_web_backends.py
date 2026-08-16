@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -201,6 +203,38 @@ class TestJsReDegradation:
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
+
+
+class TestWebConsoleSaysWhenItStopped:
+    """A page that hit the cap looks exactly like one that ended.
+
+    Measured: 500 buffered lines with limit=20 came back as count=20 and no
+    has_more, so a caller would treat a slice as the whole console.
+    """
+
+    def _backend(self, n: int) -> WebBackend:
+        from headless_re_mcp.backends.web.client import _MAX_CONSOLE, _WebSession
+
+        handle = object.__new__(_WebSession)
+        handle.console = deque(
+            ({"type": "log", "text": str(index)} for index in range(n)),
+            maxlen=_MAX_CONSOLE,
+        )
+        handle.lock = threading.RLock()
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        return backend
+
+    def test_hitting_the_cap_is_reported(self) -> None:
+        page = self._backend(500).console("s", limit=20)
+        assert page["count"] == 20
+        assert page["total"] == 500
+        assert page["has_more"] is True
+
+    def test_a_complete_answer_is_not_labelled_partial(self) -> None:
+        page = self._backend(3).console("s", limit=20)
+        assert page["count"] == 3
+        assert page["has_more"] is False
 
 
 class TestProxyScoping:

@@ -359,8 +359,14 @@ class WebBackend:
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            total = len(handle.console)
             items = list(handle.console)[-limit:]
-        return {"console": items, "count": len(items)}
+        return {
+            "console": items,
+            "count": len(items),
+            "total": total,
+            "has_more": total > len(items),
+        }
 
     def scripts(self, session_id: str, *, wasm_only: bool = False) -> JsonObject:
         handle = self._get(session_id)

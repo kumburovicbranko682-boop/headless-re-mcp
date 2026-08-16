@@ -56,6 +56,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`web.console` 停在上限时看起来和“到此为止”完全一样**。缓冲里 500 条、limit=20 时回
+  `count=20` 且没有 `has_more`。现在带回 `total` / `has_more`。
 - **`device.packages` 一次回完整列表，没有任何上限**。2000 个包名整包返回，也没有
   `has_more`。现在默认 500、工具面上限 2000，截断时标 `has_more`。
 - **`device.properties` 停在上限时看起来和“到此为止”完全一样**。80 条属性、limit=10 时回
