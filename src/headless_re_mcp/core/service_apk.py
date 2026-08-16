@@ -120,10 +120,36 @@ class ApkAnalysisMixin:
         self, session_id: str, class_name: str, timeout: float = 300.0
     ) -> Result[JsonObject]:
         try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.decompile cannot run in {session.state.value} state"
+                )
             binary = self._apk_binary(session_id)
             client = JadxClient(getattr(self.settings, "jadx", None))
             out_dir = self._jadx_out_dir(session_id)
             data = client.decompile(binary, out_dir, class_name, timeout=timeout)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.decompile cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a tree written
+                # after that is invisible to the next close and to artifacts.gc.
+                with suppress(OSError):
+                    if out_dir.is_dir():
+                        shutil.rmtree(out_dir)
+                raise
             _record_backend(self, session_id, "apk", endpoint=str(out_dir))
             _timeline_append(
                 self, session_id, "apk.decompile", "jadx decompiled class", class_name=class_name
