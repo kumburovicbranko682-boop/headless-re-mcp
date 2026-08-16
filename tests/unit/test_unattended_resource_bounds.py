@@ -2679,6 +2679,38 @@ class TestFridaServerEnsureDoesNotInventAProcess:
         assert result == {"running": True, "pushed": False, "port": 27042}
         assert all("su" not in cmd for cmd in device.cmds)
 
+    def test_a_launch_timeout_is_not_a_started_server(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Device:
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                if "su" in str(cmd):
+                    raise TimeoutError("adb timed out after 8")
+                return "root 1 0 init"
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Device()).ensure_frida_server("emulator-5554")
+        assert caught.value.code == "timeout"
+        assert "did not confirm" in caught.value.message
+
+    def test_a_launch_timeout_that_left_a_process_is_running(self) -> None:
+        class Device:
+            def __init__(self) -> None:
+                self.launched = False
+
+            def shell(self, cmd: object, timeout: float | None = None, **kw: object) -> str:
+                del timeout, kw
+                if "su" in str(cmd):
+                    self.launched = True
+                    raise TimeoutError("adb timed out after 8")
+                if self.launched:
+                    return "root 99 1 /data/local/tmp/frida-server"
+                return "root 1 0 init"
+
+        result = self._backend(Device()).ensure_frida_server("emulator-5554")
+        assert result["running"] is True
+
 
 class TestDevicePackagesArePaged:
     """pm list has no page size; a full device image is thousands of names.

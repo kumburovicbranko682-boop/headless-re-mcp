@@ -459,12 +459,18 @@ class AdbBackend:
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
-            return {
-                "running": None,
-                "pushed": pushed,
-                "port": port,
-                "note": f"launch attempted; verify manually ({exc})",
-            }
+            # Re-check rather than guess. The previous reply was running=None
+            # inside a success envelope, and the service then wrote
+            # "frida-server ensured" on the timeline. An unattended agent
+            # treats that as a started server.
+            if _frida_server_present(dev):
+                return {"running": True, "pushed": pushed, "port": port}
+            raise AdbError(
+                "timeout" if _is_timeout(exc) else "backend_error",
+                f"frida-server launch did not confirm ({exc})",
+                pushed=pushed,
+                port=port,
+            ) from exc
         # The launch command returning is not the process existing. Measured:
         # `su: not found` and an empty su both came back as running=True, and
         # nothing re-checked ps, so an unattended agent would attach to a
