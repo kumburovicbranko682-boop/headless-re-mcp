@@ -293,6 +293,8 @@ class ApkClient:
             "count": len(window),
             "total": len(methods),
             "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(window) < len(methods),
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
