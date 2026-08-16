@@ -289,6 +289,67 @@ class TestHookTemplateSaysWhatItActuallyLeavesBehind:
         assert fake.session.script.destroyed is True
 
 
+class _HungFrida:
+    """A frida whose attach never returns — the wedged-target case."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def attach(self, pid: int) -> object:
+        del pid
+        self.entered.set()
+        self.release.wait()
+        return object()
+
+
+class TestFridaAttachHasADeadline:
+    """A wedged attach used to park the caller for as long as the target stayed silent.
+
+    Measured here: ``attach()`` against a ``frida.attach`` that slept 8s
+    returned only after 8.000s, and was still running at 2s. An unattended
+    agent that hits a process which stopped answering then holds a worker
+    until the process dies.
+    """
+
+    def _client(self, frida: _HungFrida, *, timeout: float = 0.3) -> FridaClient:
+        client = FridaClient(timeout=timeout)
+        client._available = True
+        client._frida = frida
+        return client
+
+    def test_a_hung_attach_returns_timeout_instead_of_blocking(self) -> None:
+        frida = _HungFrida()
+        client = self._client(frida)
+        started = time.monotonic()
+        with pytest.raises(FridaError) as info:
+            client.attach(4242, allowed_pid=4242)
+        elapsed = time.monotonic() - started
+
+        assert info.value.code == "timeout"
+        assert elapsed < 1.0
+        assert frida.entered.is_set()
+        frida.release.set()
+
+    def test_a_live_attach_is_not_slowed_down_by_the_deadline(self) -> None:
+        class _Session:
+            def detach(self) -> None:
+                return None
+
+        class _Live:
+            def attach(self, pid: int) -> _Session:
+                del pid
+                return _Session()
+
+        client = FridaClient(timeout=0.3)
+        client._available = True
+        client._frida = _Live()
+        started = time.monotonic()
+        page = client.attach(4242, allowed_pid=4242)
+        assert page["attached"] is True
+        assert time.monotonic() - started < 0.3
+
+
 class _FakeCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"

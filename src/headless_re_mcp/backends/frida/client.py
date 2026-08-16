@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterable
-from typing import Any
+import threading
+from collections.abc import Callable, Iterable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
+from typing import Any, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
+
+# A wedged attach used to hold the caller for as long as the target stayed
+# silent. Measured: attach() against a frida.attach that slept 8s returned
+# only after 8.000s and was still running at 2s. The deadline lives on this
+# side because a stuck transport cannot be trusted to honour one of its own.
+_FRIDA_TIMEOUT = 30.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -153,9 +163,16 @@ class FridaError(RuntimeError):
 
 
 class FridaClient:
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: float | None = None) -> None:
         self._frida: Any = None
         self._available = False
+        if timeout is None:
+            self._timeout = _FRIDA_TIMEOUT
+        else:
+            value = float(timeout)
+            if value <= 0:
+                raise FridaError("invalid_params", "timeout must be positive", timeout=value)
+            self._timeout = value
         try:
             import frida
 
@@ -168,6 +185,35 @@ class FridaClient:
     @property
     def available(self) -> bool:
         return self._available
+
+    def _call(self, op: str, work: Callable[[], T], *, timeout: float | None = None) -> T:
+        """Run one Frida operation, or return rather than wait it out.
+
+        The thread cannot be interrupted if attach itself is stuck; it is a
+        daemon, so it costs the process a thread and nothing else. The caller
+        gets a timeout instead of parking a worker for the rest of the
+        process life.
+        """
+        deadline = self._timeout if timeout is None else timeout
+        future: Future[T] = Future()
+
+        def run() -> None:
+            try:
+                future.set_result(work())
+            except BaseException as exc:  # noqa: BLE001 - handed to the caller
+                if not future.done():
+                    future.set_exception(exc)
+
+        threading.Thread(target=run, name=f"frida-{op}", daemon=True).start()
+        try:
+            return future.result(timeout=deadline)
+        except FutureTimeout as exc:
+            raise FridaError(
+                "timeout",
+                f"{op} did not finish within {deadline:g}s",
+                op=op,
+                timeout=deadline,
+            ) from exc
 
     # ------------------------------------------------------------------
     # Local-device operations (unchanged contract: one allowed pid).
@@ -185,16 +231,19 @@ class FridaClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
-        session = self._frida.attach(pid)
-        try:
-            return {
-                "pid": pid,
-                "attached": True,
-                "device": "local",
-                "note": "probe attach; detached immediately",
-            }
-        finally:
-            session.detach()
+        def work() -> JsonObject:
+            session = self._frida.attach(pid)
+            try:
+                return {
+                    "pid": pid,
+                    "attached": True,
+                    "device": "local",
+                    "note": "probe attach; detached immediately",
+                }
+            finally:
+                session.detach()
+
+        return self._call("attach", work)
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)

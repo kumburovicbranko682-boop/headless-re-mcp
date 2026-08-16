@@ -56,6 +56,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 修复（长期无人值守）
 
+- **`frida.attach` 在目标不回时会一直挂着**。假 frida `attach()` 睡 8s
+  时，调用要 8.000s 才回，2s 时仍在跑。过夜 worker 会占到进程死掉。
+  现在默认 30s 截止，超时报 `timeout`。
 - **`device.pull` 在拉取被拒绝时仍报成功**。假设备 `sync.pull()` 返回
   `False` 时仍回 `{remote, local}`，本地文件也不存在。agent 会去读空路径。
   现在显式 `False` 报 `backend_error`；`None` 仍算成功。
