@@ -392,6 +392,27 @@ class TestWebScreenshotDoesNotReportAGhost:
         assert "local file" in docs["web_screenshot"]
 
 
+def test_the_dom_tool_names_a_cut_document() -> None:
+    """The reply already set truncated; the description did not.
+
+    An agent that only reads the tool text treats a cut html field as the
+    whole document.
+    """
+    import ast
+    import inspect
+
+    from headless_re_mcp.tools import web as web_mod
+
+    tree = ast.parse(inspect.getsource(web_mod.build_web_tools))
+    docs = {
+        node.name: ast.get_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert docs["web_dom_snapshot"]
+    assert "truncated" in docs["web_dom_snapshot"]
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
