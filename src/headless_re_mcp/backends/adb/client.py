@@ -565,9 +565,8 @@ class AdbBackend:
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
             text = text[-_MAX_LOGCAT_CHARS:]
-        entries = text.splitlines()[-capped:]
         return {
-            "lines": entries,
+            "lines": text.splitlines()[-capped:],
             "requested": capped,
             "truncated": truncated,
         }
