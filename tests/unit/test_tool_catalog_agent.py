@@ -64,3 +64,25 @@ def test_protocol_independent_tool_domains_bind_complete_fresh_catalog() -> None
         or "fastapi" in path.read_text(encoding="utf-8")
     ]
     assert transport_imports == []
+
+
+def test_mutating_catalog_tools_are_writes_not_auto_execute() -> None:
+    """Breakpoint put/disable and page-rights changes must not auto-run."""
+    for name in (
+        "workflow.breakpoint.put",
+        "workflow.breakpoint.disable",
+        "memory.protection",
+    ):
+        spec = COMMAND_CATALOG.require(name)
+        assert spec.write is True
+        assert spec.agent_auto_execute is False
+        assert spec.effects == frozenset({ToolEffect.STATE_CHANGE})
+
+
+def test_query_catalog_tools_are_read_only() -> None:
+    """Text search and patch listing are queries, not writes."""
+    for name in ("static.search.text", "patches.list"):
+        spec = COMMAND_CATALOG.require(name)
+        assert spec.write is False
+        assert spec.agent_auto_execute is True
+        assert spec.effects == frozenset({ToolEffect.READ_ONLY})
