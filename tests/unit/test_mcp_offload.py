@@ -17,7 +17,12 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 import headless_re_mcp.mcp.adapter as adapter
-from headless_re_mcp.core.commands import CommandCatalog, CommandSpec, CommandTransport
+from headless_re_mcp.core.commands import (
+    CommandCatalog,
+    CommandSpec,
+    CommandTransport,
+    ResourcePolicy,
+)
 from headless_re_mcp.mcp.adapter import offload, register_tool
 from headless_re_mcp.tools.catalog import ToolEffect
 
@@ -123,3 +128,48 @@ def test_registration_offloads_the_server_copy_but_not_the_catalog_one() -> None
     assert not asyncio.iscoroutinefunction(spec.handler)
     assert spec.handler(value="x") == {"ok": True, "value": "x"}
     assert asyncio.iscoroutinefunction(server._tool_manager.get_tool("probe.echo").fn)
+
+
+@pytest.mark.anyio
+async def test_catalog_timeout_returns_and_frees_the_limiter_slot() -> None:
+    """Offload used to ignore ResourcePolicy.timeout_seconds.
+
+    Measured: a handler that slept past the catalog bound kept its limiter
+    slot until the debugger's own timeout. Sixteen of those and every later
+    tool queued behind work that had already missed its deadline.
+    """
+    catalog = CommandCatalog(
+        [
+            CommandSpec(
+                name="probe.slow",
+                service_method="probe_slow",
+                transports=frozenset({CommandTransport.MCP, CommandTransport.AGENT}),
+                effects=frozenset({ToolEffect.READ_ONLY}),
+                resource_policy=ResourcePolicy(timeout_seconds=0.2),
+            )
+        ]
+    )
+    server: FastMCP[None] = FastMCP(name="probe")
+
+    def hanging() -> dict[str, Any]:
+        time.sleep(5.0)
+        return {"ok": True}
+
+    register_tool(server, hanging, name="probe.slow", catalog=catalog)
+    fn = server._tool_manager.get_tool("probe.slow").fn
+    limiter = adapter._limiter()
+    before = limiter.borrowed_tokens
+
+    began = time.monotonic()
+    result = await fn()
+    elapsed = time.monotonic() - began
+
+    assert elapsed < 1.5
+    assert result["ok"] is False
+    assert result["error"]["code"] == "tool_timeout"
+    assert limiter.borrowed_tokens == before
+
+    def quick() -> dict[str, Any]:
+        return {"ok": True, "n": 1}
+
+    assert await offload(quick, timeout=1.0)() == {"ok": True, "n": 1}

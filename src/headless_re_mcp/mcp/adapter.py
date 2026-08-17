@@ -54,7 +54,11 @@ def apply_result_budget(
     return wrapped
 
 
-def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
+def offload(
+    handler: Callable[..., dict[str, Any]],
+    *,
+    timeout: float = 60.0,
+) -> Callable[..., Any]:
     """Run a blocking handler off the event loop.
 
     FastMCP calls a synchronous tool directly inside the event loop, and these
@@ -62,21 +66,39 @@ def offload(handler: Callable[..., dict[str, Any]]) -> Callable[..., Any]:
     decompile would otherwise stall every other request on the connection,
     including the ones asking what went wrong. ``functools.wraps`` keeps the
     typed signature so schema generation is unaffected.
+
+    The catalog timeout is the outer deadline. ``abandon_on_cancel`` lets a
+    disconnect return immediately; ``fail_after`` does the same when the
+    catalog bound fires, so the limiter slot is reusable instead of waiting
+    out a backend that has already missed it. Default is 60s, the same as
+    ``ResourcePolicy.timeout_seconds``.
     """
+    bound = max(0.1, float(timeout))
 
     @wraps(handler)
     async def offloaded(*args: Any, **kwargs: Any) -> dict[str, Any]:
         def call() -> dict[str, Any]:
             return handler(*args, **kwargs)
 
-        # Abandon on cancel: a client that disconnects mid-launch must not keep
-        # the server waiting out the debugger's timeout before it can respond to
-        # anything else. The thread finishes on its own and frees its slot.
-        return await anyio.to_thread.run_sync(
-            call,
-            abandon_on_cancel=True,
-            limiter=_limiter(),
-        )
+        try:
+            with anyio.fail_after(bound):
+                return await anyio.to_thread.run_sync(
+                    call,
+                    abandon_on_cancel=True,
+                    limiter=_limiter(),
+                )
+        except TimeoutError:
+            return {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "tool_timeout",
+                    "message": f"tool exceeded {bound:g}s",
+                    "details": {},
+                    "retryable": True,
+                },
+                "meta": {},
+            }
 
     return offloaded
 
@@ -117,7 +139,7 @@ def register_tool(
     # The server gets the offloaded form so the event loop stays free, while the
     # catalog keeps the direct one: the agent transport calls it synchronously.
     server.add_tool(
-        offload(bound.handler),
+        offload(bound.handler, timeout=bound.resource_policy.timeout_seconds),
         name=name,
         description=description,
         structured_output=True,
