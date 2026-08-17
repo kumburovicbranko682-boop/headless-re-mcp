@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Callable, Iterable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
+from inspect import signature
+from threading import Thread
+from typing import Any, TypeVar
+
+from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# attach / spawn / Java.perform can block forever on a paused debuggee or a
+# process without a JIT. 30s matches adb shell and windbg attach: enough for a
+# slow USB spawn, short enough that a wedged probe cannot keep a worker.
+_PROBE_TIMEOUT_S = 30.0
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -175,6 +186,89 @@ class FridaError(RuntimeError):
         self.details = details
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    return "timeout" in name or "timed out" in str(exc).lower()
+
+
+def _accepts_timeout(func: Any) -> bool:
+    """Whether the callable names ``timeout`` — not merely ``**kwargs``.
+
+    Frida's ``spawn`` takes ``**kwargs`` for aux options; passing a deadline
+    there would be a spawn argument, not a hang bound.
+    """
+    target = getattr(func, "__func__", func)
+    try:
+        params = signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    return "timeout" in params
+
+
+def _bound_timeout(timeout: float) -> float:
+    value = float(timeout)
+    if value <= 0:
+        raise FridaError("invalid_params", "timeout must be positive")
+    return min(value, MAX_WORKFLOW_TIMEOUT)
+
+
+def _timeout_error(timeout: float) -> FridaError:
+    return FridaError("timeout", f"frida did not respond within {timeout:g}s")
+
+
+def _detach_all(sessions: list[Any]) -> None:
+    while sessions:
+        session = sessions.pop()
+        with contextlib.suppress(Exception):
+            session.detach()
+
+
+def _kill_spawned(device: Any, pids: list[int]) -> None:
+    while pids:
+        pid = pids.pop()
+        with contextlib.suppress(Exception):
+            device.kill(pid)
+
+
+def _run_deadline(
+    work: Callable[[], T],
+    *,
+    timeout: float,
+    on_timeout: Callable[[], None] | None = None,
+) -> T:
+    """Bound a Frida native call that may not accept a timeout argument.
+
+    ``Future.result(timeout=)`` is the same outer deadline the web runner uses
+    when a driver call can never return. The worker is a daemon so a still-stuck
+    attach cannot keep the process alive after the caller has moved on.
+    """
+    done: Future[T] = Future()
+
+    def run() -> None:
+        try:
+            done.set_result(work())
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            if not done.done():
+                done.set_exception(exc)
+
+    thread = Thread(target=run, name="frida-deadline", daemon=True)
+    thread.start()
+    try:
+        return done.result(timeout=timeout)
+    except FutureTimeout as exc:
+        if on_timeout is not None:
+            with contextlib.suppress(Exception):
+                on_timeout()
+        raise _timeout_error(timeout) from exc
+
+
+def _invoke(method: Any, *args: Any, timeout: float, **kwargs: Any) -> Any:
+    extra = dict(kwargs)
+    if _accepts_timeout(method):
+        extra["timeout"] = timeout
+    return method(*args, **extra)
+
+
 class FridaClient:
     def __init__(self) -> None:
         self._frida: Any = None
@@ -196,7 +290,8 @@ class FridaClient:
     # Local-device operations (unchanged contract: one allowed pid).
     # These serve PE sessions whose debuggee runs on the local machine.
     # ------------------------------------------------------------------
-    def attach(self, pid: int, *, allowed_pid: int) -> JsonObject:
+    def attach(self, pid: int, *, allowed_pid: int,
+               timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
         if not self._available or self._frida is None:
             raise FridaError("capability_unavailable", "frida Python module is not installed")
         if type(pid) is not int or pid <= 0:
@@ -208,7 +303,7 @@ class FridaClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
-        session = self._frida.attach(pid)
+        session = self._attach_local(pid, timeout=timeout)
         try:
             return {
                 "pid": pid,
@@ -217,11 +312,12 @@ class FridaClient:
                 "note": "probe attach; detached immediately",
             }
         finally:
-            session.detach()
+            with contextlib.suppress(Exception):
+                session.detach()
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
-        session = self._frida.attach(pid)
+        session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -250,7 +346,8 @@ class FridaClient:
                 "has_more": total > len(items),
             }
         finally:
-            session.detach()
+            with contextlib.suppress(Exception):
+                session.detach()
 
     def exports(
         self,
@@ -264,7 +361,7 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._frida.attach(pid)
+        session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -292,7 +389,8 @@ class FridaClient:
                 "has_more": has_more,
             }
         finally:
-            session.detach()
+            with contextlib.suppress(Exception):
+                session.detach()
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
@@ -300,7 +398,7 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._frida.attach(pid)
+        session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
@@ -312,9 +410,11 @@ class FridaClient:
                 "data": data.hex(),
             }
         finally:
-            session.detach()
+            with contextlib.suppress(Exception):
+                session.detach()
 
-    def hook_template(self, pid: int, template: str, *, allowed_pid: int) -> JsonObject:
+    def hook_template(self, pid: int, template: str, *, allowed_pid: int,
+                      timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
         self._require(pid, allowed_pid)
         source = _HOOK_TEMPLATES.get(template)
         if source is None:
@@ -324,19 +424,56 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
-        session = self._frida.attach(pid)
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> JsonObject:
+            session = _invoke(self._frida.attach, pid, timeout=deadline)
+            sessions.append(session)
+            try:
+                script = session.create_script(source)
+                script.load()
+                return {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": "local",
+                    **_PROBE_DISCLOSURE,
+                }
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
         try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": "local",
-                **_PROBE_DISCLOSURE,
-            }
-        finally:
-            session.detach()
+            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if _is_timeout(exc):
+                _detach_all(sessions)
+                raise _timeout_error(deadline) from exc
+            raise
+
+    def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> Any:
+            session = _invoke(self._frida.attach, pid, timeout=deadline)
+            sessions.append(session)
+            return session
+
+        try:
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if _is_timeout(exc):
+                _detach_all(sessions)
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
 
     def _require(self, pid: int, allowed_pid: int) -> None:
         if pid != allowed_pid:
@@ -426,7 +563,13 @@ class FridaClient:
             "has_more": len(apps) > capped,
         }
 
-    def spawn(self, device_id: str | None, package: str) -> JsonObject:
+    def spawn(
+        self,
+        device_id: str | None,
+        package: str,
+        *,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
         device = self._resolve_device(device_id)
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
@@ -437,22 +580,47 @@ class FridaClient:
                 "package must be an Android package id",
                 package=pkg,
             )
-        pid: int | None = None
+        deadline = _bound_timeout(timeout)
+        pids: list[int] = []
+
+        def work() -> int:
+            try:
+                spawned = int(_invoke(device.spawn, pkg, timeout=deadline))
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
+            pids.append(spawned)
+            try:
+                _invoke(device.resume, spawned, timeout=deadline)
+            except FridaError:
+                with contextlib.suppress(Exception):
+                    device.kill(spawned)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    device.kill(spawned)
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError(
+                    "backend_error",
+                    f"spawned pid {spawned} but resume failed; process was killed: {exc}",
+                    package=pkg,
+                    pid=spawned,
+                ) from exc
+            return spawned
+
         try:
-            pid = int(device.spawn(pkg))
+            pid = _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _kill_spawned(device, pids)
+            )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
+            _kill_spawned(device, pids)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
-        try:
-            device.resume(pid)
-        except Exception as exc:  # noqa: BLE001
-            with contextlib.suppress(Exception):
-                device.kill(pid)
-            raise FridaError(
-                "backend_error",
-                f"spawned pid {pid} but resume failed; process was killed: {exc}",
-                package=pkg,
-                pid=pid,
-            ) from exc
         return {"package": pkg, "pid": pid, "device": str(device_id or "local")}
 
     def java_enumerate(
@@ -465,41 +633,58 @@ class FridaClient:
         class_name: str | None = None,
         name_filter: str | None = None,
         limit: int = 200,
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> JsonObject:
+            try:
+                session = _invoke(device.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                script = session.create_script(_JAVA_SCRIPT)
+                script.load()
+                if mode == "classes":
+                    values, has_more = _page(
+                        script.exports_sync.classes(name_filter or "", capped + 1), capped
+                    )
+                    return {"classes": values, "count": len(values), "has_more": has_more}
+                if mode == "methods":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    values, has_more = _page(
+                        script.exports_sync.methods(class_name, capped + 1), capped
+                    )
+                    return {
+                        "class_name": class_name,
+                        "methods": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                raise FridaError("invalid_params", "mode must be classes or methods")
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
         try:
-            session = device.attach(pid)
-        except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
-        try:
-            script = session.create_script(_JAVA_SCRIPT)
-            script.load()
-            if mode == "classes":
-                values, has_more = _page(
-                    script.exports_sync.classes(name_filter or "", capped + 1), capped
-                )
-                return {"classes": values, "count": len(values), "has_more": has_more}
-            if mode == "methods":
-                if not class_name:
-                    raise FridaError("invalid_params", "class_name is required")
-                values, has_more = _page(
-                    script.exports_sync.methods(class_name, capped + 1), capped
-                )
-                return {
-                    "class_name": class_name,
-                    "methods": values,
-                    "count": len(values),
-                    "has_more": has_more,
-                }
-            raise FridaError("invalid_params", "mode must be classes or methods")
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
-        finally:
-            session.detach()
 
     def hook_template_device(
         self,
@@ -508,6 +693,7 @@ class FridaClient:
         template: str,
         *,
         allowed_pids: Iterable[int],
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
         source = _HOOK_TEMPLATES.get(template)
@@ -519,22 +705,42 @@ class FridaClient:
                 allowed=sorted(_HOOK_TEMPLATES),
             )
         device = self._resolve_device(device_id)
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> JsonObject:
+            try:
+                session = _invoke(device.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                script = session.create_script(source)
+                script.load()
+                return {
+                    "pid": pid,
+                    "template": template,
+                    "loaded": True,
+                    "device": str(device_id or "local"),
+                    **_PROBE_DISCLOSURE,
+                }
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
         try:
-            session = device.attach(pid)
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
-        try:
-            script = session.create_script(source)
-            script.load()
-            return {
-                "pid": pid,
-                "template": template,
-                "loaded": True,
-                "device": str(device_id or "local"),
-                **_PROBE_DISCLOSURE,
-            }
-        finally:
-            session.detach()
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
         if not self._available or self._frida is None:

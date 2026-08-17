@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.frida.client import FridaClient
+from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.tools.frida import build_frida_tools
 
 
@@ -315,6 +316,83 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     doc = _tool_docstring("frida.spawn")
     assert "Answers with pid" in doc
     assert "There is no process_id" in doc
+
+
+def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
+    """device.spawn / resume with no deadline parked a worker forever.
+
+    Measured: resume that never returned left the spawned pid running and the
+    caller blocked. The probe now kills that pid and raises timeout.
+    """
+    killed: list[int] = []
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            time.sleep(10)
+
+        def kill(self, pid: int) -> None:
+            killed.append(pid)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert killed == [4242]
+
+
+def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
+    """Java.perform on a non-JIT process used to occupy the worker forever.
+
+    Measured: exports_sync.classes that never returned left the session
+    attached. The probe now detaches and raises timeout.
+    """
+    state = {"detached": False}
+
+    class _HangApi:
+        def classes(self, name_filter: str, count: int) -> list[str]:
+            del name_filter, count
+            time.sleep(10)
+            return []
+
+    class _HangScript:
+        exports_sync = _HangApi()
+
+        def load(self) -> None:
+            return None
+
+    class _HangSession:
+        def create_script(self, source: str) -> _HangScript:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            state["detached"] = True
+
+    class _HangDevice:
+        def attach(self, pid: int) -> _HangSession:
+            del pid
+            return _HangSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _HangDevice()  # type: ignore[method-assign]
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert state["detached"] is True
 
 
 def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:

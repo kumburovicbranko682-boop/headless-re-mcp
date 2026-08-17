@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+import time
 from pathlib import Path
 
-from headless_re_mcp.backends.frida.client import FridaClient
+import pytest
+
+from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.tools.frida import build_frida_tools
 
 
@@ -56,3 +59,27 @@ def test_frida_attach_answers_with_pid_not_session() -> None:
     assert "device" in described
     assert "note" in described
     assert "no session" in described
+
+
+def test_frida_attach_times_out_instead_of_parking_the_worker() -> None:
+    """frida.attach on a paused debuggee used to block the caller forever.
+
+    Measured: a mock attach that never returns held the thread until the
+    process was killed. The probe now has a deadline and raises the timeout
+    envelope rather than occupying a worker.
+    """
+
+    class _Frida:
+        def attach(self, pid: int) -> object:
+            del pid
+            time.sleep(10)
+            raise AssertionError("attach should have been abandoned")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.attach(1, allowed_pid=1, timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
