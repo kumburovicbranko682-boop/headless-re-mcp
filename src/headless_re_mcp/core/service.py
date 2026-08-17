@@ -290,6 +290,9 @@ _FATAL_WORKER_ERRORS = frozenset(
         "worker_protocol_error",
     }
 )
+# Consumer-side cursor bookkeeping must not map to rpc_protocol_error: that
+# code is fatal and would tear down x64dbg and the debuggee it still owns.
+_CONSUMER_CURSOR_ERROR = "event_cursor_inconsistent"
 _MAX_WORKFLOW_EVENT_BUDGET = 100_000
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 _RUN_CONTROL_TRANSITION_EVENTS: dict[str, frozenset[str]] = {
@@ -527,6 +530,8 @@ class AnalysisService(
         runtime = self._runtime_owner.pop(session_id, kind)
         if runtime is None:
             return
+        if kind == BackendKind.X64DBG:
+            self._stop_event_drain(runtime)
         with suppress(BaseException):
             runtime.worker.terminate()
         if kind == BackendKind.X64DBG:
@@ -685,11 +690,14 @@ class AnalysisService(
                     self.registry.transition(session_id, SessionState.OPENING)
                 self._runtime_owner.begin_open(session_id, kind)
 
+            launched: BackendWorker | None = None
+            event_log: PersistentDebugEventLog | None = None
+            drain_cursor: DebugEventCursor | None = None
+            event_cursor: DebugEventCursor | None = None
             try:
-                worker = factory(session, self.settings)
-                event_log: PersistentDebugEventLog | None = None
-                drain_cursor: DebugEventCursor | None = None
-                event_cursor = None
+                launched = factory(session, self.settings)
+                if launched is None:
+                    raise RuntimeError("backend factory returned no worker")
                 if kind == BackendKind.X64DBG:
                     event_cursor = DebugEventCursor()
                     drain_cursor = DebugEventCursor()
@@ -699,9 +707,12 @@ class AnalysisService(
                 self._abandon_open(
                     session_id, kind, opening_session=opening_session, cause=exc
                 )
+                self._release_partial_backend_open(launched, event_log)
                 raise
+            worker = launched
 
             with self._lock:
+                runtime: _BackendRuntime | None = None
                 try:
                     # Re-checked because the lock was released: a session that was
                     # already READY can be closed while its second backend starts,
@@ -757,7 +768,9 @@ class AnalysisService(
                     self._abandon_open(
                         session_id, kind, opening_session=opening_session, cause=exc
                     )
-                    worker.terminate()
+                    if runtime is not None:
+                        self._stop_event_drain(runtime)
+                    self._release_partial_backend_open(worker, event_log)
                     raise
             return _success(
                 {
@@ -790,6 +803,19 @@ class AnalysisService(
                 )
                 with suppress(KeyError, InvalidStateTransition):
                     self.registry.transition(session_id, target)
+
+    @staticmethod
+    def _release_partial_backend_open(
+        worker: BackendWorker | None,
+        event_log: PersistentDebugEventLog | None,
+    ) -> None:
+        """Tear down a worker/log that never became a registered runtime."""
+        if event_log is not None:
+            with suppress(BaseException):
+                event_log.close()
+        if worker is not None:
+            with suppress(BaseException):
+                worker.terminate()
 
     def close_session(self, session_id: str) -> Result[JsonObject]:
         return self.services.runtime.close_session(session_id)
@@ -1119,46 +1145,54 @@ class AnalysisService(
                         "dynamic runtime has no durable event log",
                     )
                 dynamic = cast(DynamicWorker, runtime.worker)
-                # Catch up durable log from the native ring (short polls).
-                drain_native_into_log(
-                    dynamic,
-                    drain_cursor,
-                    event_log,
-                    timeout=0.05,
-                    max_rounds=64,
-                )
-                served = event_log.read_after(cursor.value, limit=limit)
-                if not served.batch.events and not served.unrecovered_gap:
-                    # Long-poll once for new native events, then serve from log.
+                waiting = self._workflow_navigation_is_waiting(session_id)
+                if waiting:
+                    # Navigate owns the native ring while WAITING. Serving the
+                    # durable log only avoids a second events.read that desyncs
+                    # the cursor and used to fail the runtime.
+                    served = event_log.read_after(cursor.value, limit=limit)
+                else:
+                    # Catch up durable log from the native ring (short polls).
                     drain_native_into_log(
                         dynamic,
                         drain_cursor,
                         event_log,
-                        timeout=float(timeout),
-                        max_rounds=1,
+                        timeout=0.05,
+                        max_rounds=64,
                     )
                     served = event_log.read_after(cursor.value, limit=limit)
+                    if not served.batch.events and not served.unrecovered_gap:
+                        # Long-poll once for new native events, then serve from log.
+                        drain_native_into_log(
+                            dynamic,
+                            drain_cursor,
+                            event_log,
+                            timeout=float(timeout),
+                            max_rounds=1,
+                        )
+                        served = event_log.read_after(cursor.value, limit=limit)
                 batch = served.batch
-                try:
-                    cursor.advance(batch)
-                except DebugEventProtocolError as exc:
-                    raise XdbgRpcError(
-                        "rpc_protocol_error",
-                        f"x64dbg event cursor is inconsistent: {exc}",
-                    ) from exc
-                self._consume_workflow_batch_locked(
-                    session_id,
-                    runtime,
-                    batch,
-                    # ``timeout`` bounds the native events.read long-poll.  A UI
-                    # burst peek may intentionally use 50 ms, but consuming the
-                    # resulting breakpoint event can require a bounded
-                    # ensure-paused transition.  Reusing the peek timeout made
-                    # that transition fail reliably under full-suite load.
-                    timeout=max(5.0, float(timeout)),
-                )
-                if batch.dropped > 0 or served.unrecovered_gap:
-                    runtime.snapshot_resync_required = True
+                if not waiting:
+                    try:
+                        cursor.advance(batch)
+                    except DebugEventProtocolError as exc:
+                        raise XdbgRpcError(
+                            _CONSUMER_CURSOR_ERROR,
+                            f"x64dbg event cursor is inconsistent: {exc}",
+                        ) from exc
+                    self._consume_workflow_batch_locked(
+                        session_id,
+                        runtime,
+                        batch,
+                        # ``timeout`` bounds the native events.read long-poll.  A UI
+                        # burst peek may intentionally use 50 ms, but consuming the
+                        # resulting breakpoint event can require a bounded
+                        # ensure-paused transition.  Reusing the peek timeout made
+                        # that transition fail reliably under full-suite load.
+                        timeout=max(5.0, float(timeout)),
+                    )
+                    if batch.dropped > 0 or served.unrecovered_gap:
+                        runtime.snapshot_resync_required = True
                 workflow_id = self._require_workflow(session_id).id
                 payload = batch.to_dict()
                 payload["durable_log"] = True
@@ -1813,6 +1847,13 @@ class AnalysisService(
             )
         return workflow
 
+    def _workflow_navigation_is_waiting(self, session_id: str) -> bool:
+        workflow = self._workflow_owner.get(session_id)
+        if workflow is None:
+            return False
+        navigation = workflow.state.navigation
+        return navigation is not None and navigation.status == NavigationStatus.WAITING
+
     def _require_mutable_workflow(self, session_id: str) -> WorkflowRuntime:
         workflow = self._require_workflow(session_id)
         if workflow.status == WorkflowRunStatus.FAILED:
@@ -1882,7 +1923,7 @@ class AnalysisService(
             return
         if workflow.state.lifecycle.cursor != batch.cursor:
             raise XdbgRpcError(
-                "rpc_protocol_error",
+                _CONSUMER_CURSOR_ERROR,
                 "workflow and dynamic event cursors diverged",
                 details={
                     "workflow_cursor": workflow.state.lifecycle.cursor,
@@ -2034,7 +2075,7 @@ class AnalysisService(
                 cursor.advance(batch)
             except DebugEventProtocolError as exc:
                 raise XdbgRpcError(
-                    "rpc_protocol_error",
+                    _CONSUMER_CURSOR_ERROR,
                     f"x64dbg event cursor is inconsistent: {exc}",
                 ) from exc
             self._consume_workflow_batch_locked(
@@ -2369,6 +2410,8 @@ class AnalysisService(
         runtime = self._runtime_owner.get(session_id, kind)
         if runtime is not None:
             return runtime
+        if session.target is not TargetKind.PE:
+            session.require_pe()
         if kind == BackendKind.IDA:
             raise IdaWorkerError("backend_unavailable", "IDA worker is not open")
         raise XdbgRpcError("backend_unavailable", "x64dbg worker is not open")

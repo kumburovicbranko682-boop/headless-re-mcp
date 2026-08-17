@@ -2226,3 +2226,216 @@ def test_a_dump_onto_a_full_volume_says_the_disk_is_full(tmp_path: Path) -> None
     assert result.error.details["available_disk_bytes"] == 1024
     assert result.error.details["required_bytes"] == 8 * 1024 * 1024
     assert "artifact_root" in result.error.details
+
+
+class _BlockingEventWorker(FakeDynamicWorker):
+    """Holds the native events.read that navigation uses while WAITING."""
+
+    def __init__(self) -> None:
+        from threading import Event
+
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def read_events(
+        self,
+        cursor: int,
+        *,
+        limit: int = 100,
+        timeout: float = 10.0,
+    ) -> DebugEventBatch:
+        self.event_reads.append((cursor, limit, timeout))
+        self.entered.set()
+        assert self.release.wait(10)
+        return DebugEventBatch(
+            events=(),
+            cursor=cursor,
+            next_cursor=cursor,
+            oldest_sequence=1 if cursor else 0,
+            latest_sequence=cursor,
+            dropped=0,
+            dropped_total=0,
+            has_more=False,
+            capacity=1024,
+        )
+
+
+def test_events_consume_during_navigation_does_not_read_native_or_kill_worker(
+    tmp_path: Path,
+) -> None:
+    from threading import Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _BlockingEventWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime_owner.get(session_id, BackendKind.X64DBG)
+    assert runtime is not None and runtime.event_log is not None
+    runtime.event_log.append_events((_debug_event(1, "debug.paused"),))
+
+    outcome: dict[str, object] = {}
+
+    def navigate() -> None:
+        outcome["nav"] = service.workflow_navigate_to_event(
+            session_id,
+            "breakpoint.hit",
+            timeout=8.0,
+            event_budget=8,
+        )
+
+    thread = Thread(target=navigate)
+    thread.start()
+    assert worker.entered.wait(5)
+    native_reads = len(worker.event_reads)
+
+    consumed = service.workflow_events_consume(session_id, timeout=0.2)
+    peeked = service.dynamic_events(session_id, timeout=0.2)
+
+    assert len(worker.event_reads) == native_reads
+    assert consumed.ok and consumed.data is not None
+    assert [event["sequence"] for event in consumed.data["events"]] == [1]
+    assert peeked.ok and peeked.data is not None
+    assert [event["sequence"] for event in peeked.data["events"]] == [1]
+    assert runtime.event_cursor is not None
+    assert runtime.event_cursor.value == 0
+    assert not worker.terminated
+    assert service.registry.get(session_id).state != SessionState.FAILED
+    assert service.dynamic_state(session_id).ok
+
+    cancelled = service.workflow_cancel(session_id, timeout=3.0)
+    worker.release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert cancelled.ok, cancelled.error
+    assert not worker.terminated
+    assert service.registry.get(session_id).state != SessionState.FAILED
+
+
+def test_navigate_cursor_desync_does_not_kill_the_debuggee(tmp_path: Path) -> None:
+    from threading import Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _BlockingEventWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    outcome: dict[str, object] = {}
+
+    def navigate() -> None:
+        outcome["nav"] = service.workflow_navigate_to_event(
+            session_id,
+            "breakpoint.hit",
+            timeout=8.0,
+            event_budget=8,
+        )
+
+    thread = Thread(target=navigate)
+    thread.start()
+    assert worker.entered.wait(5)
+    runtime = service._runtime_owner.get(session_id, BackendKind.X64DBG)
+    assert runtime is not None and runtime.event_cursor is not None
+    runtime.event_cursor.value = 99
+    worker.release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+    navigated = outcome["nav"]
+    assert not navigated.ok and navigated.error is not None
+    assert navigated.error.code == "event_cursor_inconsistent"
+    assert not worker.terminated
+    assert service.registry.get(session_id).state != SessionState.FAILED
+    assert service.dynamic_state(session_id).ok
+
+
+def test_open_dynamic_terminates_worker_if_event_log_create_fails(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+
+    def fail_log(*_args: object, **_kwargs: object) -> object:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "headless_re_mcp.core.service.PersistentDebugEventLog",
+        fail_log,
+    )
+
+    opened = service.open_dynamic(session_id)
+
+    assert not opened.ok and opened.error is not None
+    assert worker.terminated
+    assert BackendKind.X64DBG not in service.registry.get(session_id).backends
+
+
+def test_recover_discards_dead_runtime_stops_drain_and_closes_log(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    dead = FakeDynamicWorker()
+    replacement = FakeDynamicWorker()
+    service = _service_with_dynamic_workers(tmp_path, [dead, replacement])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    service._health.stop()
+
+    runtime = service._runtime_owner.get(session_id, BackendKind.X64DBG)
+    assert runtime is not None and runtime.event_log is not None
+    closed: list[bool] = []
+    inner_close = runtime.event_log.close
+
+    def spy_close() -> None:
+        closed.append(True)
+        inner_close()
+
+    runtime.event_log.close = spy_close  # type: ignore[method-assign]
+
+    class _FakePump:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self, *, timeout: float = 2.0) -> None:
+            del timeout
+            self.stopped = True
+
+    pump = _FakePump()
+    runtime.event_drain_pump = pump  # type: ignore[assignment]
+    dead.exit_code = 1  # type: ignore[attr-defined]
+
+    recovered = service.session_recover(session_id, ["x64dbg"])
+
+    assert recovered.ok and recovered.data is not None
+    assert recovered.data["backends"][0]["action"] == "reopened"
+    assert dead.terminated
+    assert pump.stopped
+    assert closed
+    assert service.dynamic_state(session_id).ok
+
+
+def test_pe_tools_on_web_session_report_target_mismatch(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session = created.data["session"]
+    assert isinstance(session, dict)
+    session_id = str(session["id"])
+
+    dynamic = service.dynamic_state(session_id)
+    static = service.static_functions(session_id)
+
+    assert not dynamic.ok and dynamic.error is not None
+    assert dynamic.error.code == "target_mismatch"
+    assert not static.ok and static.error is not None
+    assert static.error.code == "target_mismatch"

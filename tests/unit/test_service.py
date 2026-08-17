@@ -631,3 +631,42 @@ def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:
     assert not result.ok
     assert result.error is not None
     assert result.error.code == "file_not_found"
+
+
+def test_pe_tools_on_apk_and_web_sessions_report_target_mismatch(tmp_path: Path) -> None:
+    import zipfile
+
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", b"dex\n035\x00")
+        archive.writestr("lib/arm64-v8a/libx.so", b"\x7fELF")
+        archive.writestr("META-INF/CERT.RSA", b"sig")
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        apk_created = service.create_session(str(apk), target="apk")
+        assert apk_created.ok and apk_created.data is not None
+        apk_session = apk_created.data["session"]
+        assert isinstance(apk_session, dict)
+        apk_id = str(apk_session["id"])
+        apk_static = service.static_functions(apk_id)
+        apk_dynamic = service.dynamic_state(apk_id)
+        assert not apk_static.ok and apk_static.error is not None
+        assert apk_static.error.code == "target_mismatch"
+        assert not apk_dynamic.ok and apk_dynamic.error is not None
+        assert apk_dynamic.error.code == "target_mismatch"
+
+        web_created = service.create_session("https://example.com/app", target="web")
+        assert web_created.ok and web_created.data is not None
+        web_session = web_created.data["session"]
+        assert isinstance(web_session, dict)
+        web_id = str(web_session["id"])
+        web_static = service.static_functions(web_id)
+        web_dynamic = service.dynamic_state(web_id)
+        assert not web_static.ok and web_static.error is not None
+        assert web_static.error.code == "target_mismatch"
+        assert not web_dynamic.ok and web_dynamic.error is not None
+        assert web_dynamic.error.code == "target_mismatch"
+    finally:
+        service.close_all()
