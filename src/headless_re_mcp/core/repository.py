@@ -493,7 +493,9 @@ class InMemoryAnalysisRepository:
         for sid in closed[keep:]:
             self._sessions.pop(sid, None)
             self._timeline.pop(sid, None)
-            for knowledge_key in [item for item in self._knowledge if item[0] == sid]:
+            for knowledge_key in [
+                key for key in self._knowledge if key[0] == sid
+            ]:
                 self._knowledge.pop(knowledge_key, None)
             for backend_key in [item for item in self._backends if item[0] == sid]:
                 self._backends.pop(backend_key, None)
