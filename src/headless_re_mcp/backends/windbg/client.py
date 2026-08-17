@@ -10,6 +10,10 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
+# cdb -c treats these as command composition, so a head token of `lm` must
+# not smuggle `lm; !process` or `k\n.shell` past the allow-list. `&` is the
+# same metacharacter this client already refuses in disasm addresses.
+_CMD_SEPARATORS = ";\n\r|&"
 
 
 class WindbgError(RuntimeError):
@@ -18,6 +22,16 @@ class WindbgError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_allowed_cmd(cmd: str) -> None:
+    """Refuse anything that is not a single allow-listed cdb command."""
+    text = cmd.strip()
+    head = text.split(" ", 1)[0]
+    if any(ch in text for ch in _CMD_SEPARATORS) or (
+        head not in _ALLOWED_CMDS and text not in _ALLOWED_CMDS
+    ):
+        raise WindbgError("invalid_params", "cdb command not whitelisted", command=cmd)
 
 
 # cdb prints the whole session, and the analytical answer is in it. A listing
@@ -224,9 +238,7 @@ class WindbgClient:
                 allowed_pid=allowed_pid,
             )
         for cmd in commands:
-            head = cmd.strip().split(" ", 1)[0]
-            if head not in _ALLOWED_CMDS and cmd.strip() not in _ALLOWED_CMDS:
-                raise WindbgError("invalid_params", "cdb command not whitelisted", command=cmd)
+            _require_allowed_cmd(cmd)
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         # -pv: non-invasive; can coexist with another debugger on the same PID.
@@ -268,9 +280,7 @@ class WindbgClient:
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:
-            head = cmd.strip().split(" ", 1)[0]
-            if head not in _ALLOWED_CMDS and cmd.strip() not in _ALLOWED_CMDS:
-                raise WindbgError("invalid_params", "cdb command not whitelisted", command=cmd)
+            _require_allowed_cmd(cmd)
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
