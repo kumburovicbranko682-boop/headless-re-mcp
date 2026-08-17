@@ -170,11 +170,15 @@ class AgentOrchestrator:
 
     async def cancel(self, run_id: str) -> JsonObject:
         run = self.store.request_cancel(run_id)
+        async with self._lock:
+            task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
         return run.dump()
 
     async def decide(self, run_id: str, tool_call_id: str, args_sha256: str, *, approved: bool) -> JsonObject:
         run = self.store.get_run(run_id)
-        if run is None or run.status in TERMINAL_RUN_STATUSES:
+        if run is None or run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
             raise ValueError("run is terminal or missing")
         decision = self.store.decide_tool_call(run_id, tool_call_id, args_sha256, approved=approved)
         self.store.append_event(run_id, "approval.approved" if approved else "approval.rejected", {"tool_call_id": tool_call_id, "args_sha256": args_sha256})
@@ -249,6 +253,9 @@ class AgentOrchestrator:
             text_bytes = 0
             completed_calls: tuple[ProviderToolCall, ...] = ()
             stream_completed = False
+            if self._check_cancelled(run_id):
+                await self._finish_cancel(run_id)
+                return
             async for event in provider.stream_chat(
                 messages=compacted,
                 tools=tools,
@@ -289,9 +296,15 @@ class AgentOrchestrator:
                 assistant_tool_calls.append({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}})
             conversation.append({"role": "assistant", "content": visible_text or None, "tool_calls": assistant_tool_calls})
             for call in completed_calls:
+                if self._check_cancelled(run_id):
+                    await self._finish_cancel(run_id)
+                    return
                 result = await self._handle_tool_call(run_id, call.id or uuid.uuid4().hex, call.name, call.arguments)
                 conversation.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, ensure_ascii=False, default=str)})
                 self.store.add_message(run.thread_id, "tool", json.dumps(result, ensure_ascii=False, default=str), run_id=run_id, tool_call_id=call.id)
+                if self._check_cancelled(run_id):
+                    await self._finish_cancel(run_id)
+                    return
                 current = self.store.get_run(run_id)
                 if current is None or current.status in TERMINAL_RUN_STATUSES:
                     return
@@ -340,7 +353,53 @@ class AgentOrchestrator:
             },
         }
 
+    async def _invoke_tool_bounded(
+        self,
+        run_id: str,
+        name: str,
+        arguments: JsonObject,
+        timeout: float,
+    ) -> JsonObject:
+        """Run a catalog tool, but come back as soon as the run is cancelled.
+
+        ``asyncio.wait_for`` alone only notices its own deadline. A cancel
+        that arrives while the backend is still inside the worker thread would
+        otherwise leave this run free to start the next write.
+        """
+        work = asyncio.create_task(
+            anyio.to_thread.run_sync(
+                self._invoke_counted,
+                name,
+                arguments,
+                # The timeout has to return now rather than wait out a backend
+                # that already missed it; the thread finishes on its own and
+                # frees its slot then.
+                abandon_on_cancel=True,
+                limiter=self._tool_limiter(),
+            ),
+            name=f"agent-tool-{run_id}",
+        )
+        deadline = time.monotonic() + timeout
+        try:
+            while not work.done():
+                if self._check_cancelled(run_id):
+                    raise asyncio.CancelledError
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait({work}, timeout=min(0.05, remaining))
+            if self._check_cancelled(run_id):
+                if work.done() and not work.cancelled():
+                    work.exception()
+                raise asyncio.CancelledError
+            return work.result()
+        finally:
+            if not work.done():
+                work.cancel()
+
     async def _handle_tool_call(self, run_id: str, call_id: str, name: str, arguments: JsonObject) -> JsonObject:
+        if self._check_cancelled(run_id):
+            raise asyncio.CancelledError
         spec = self.catalog.require(name)
         if CommandTransport.AGENT not in spec.transports or not spec.effects:
             raise PermissionError(f"tool is unavailable to Agent: {name}")
@@ -384,12 +443,16 @@ class AgentOrchestrator:
                     )
                     return rejection
                 if current["approved"] is True:
+                    if self._check_cancelled(run_id):
+                        raise asyncio.CancelledError
                     if not self.store.consume_approval(run_id, call_id, str(proposed["args_sha256"])):
                         raise PermissionError("approval could not be consumed")
                     break
                 await asyncio.sleep(0.1)
             else:
                 raise RuntimeError("tool approval timed out")
+        if self._check_cancelled(run_id):
+            raise asyncio.CancelledError
         self.store.transition(run_id, RunStatus.EXECUTING_TOOL)
         self.store.append_event(run_id, "tool.started", {"tool_call_id": call_id, "name": name})
         timeout = min(self.tool_timeout, spec.resource_policy.timeout_seconds)
@@ -415,19 +478,7 @@ class AgentOrchestrator:
             )
             raise RuntimeError(f"tool workers are stuck: {name}")
         try:
-            value = await asyncio.wait_for(
-                anyio.to_thread.run_sync(
-                    self._invoke_counted,
-                    name,
-                    arguments,
-                    # The timeout has to return now rather than wait out a backend
-                    # that already missed it; the thread finishes on its own and
-                    # frees its slot then.
-                    abandon_on_cancel=True,
-                    limiter=self._tool_limiter(),
-                ),
-                timeout=timeout,
-            )
+            value = await self._invoke_tool_bounded(run_id, name, arguments, timeout)
         except TimeoutError as exc:
             failure = {"ok": False, "error": {"code": "tool_timeout", "message": f"tool exceeded {timeout:g}s"}}
             self.store.complete_tool_call(run_id, call_id, failure, ok=False)

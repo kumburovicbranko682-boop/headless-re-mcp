@@ -17,7 +17,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from headless_re_mcp.agent.models import (
     MISSION_COMPLETE_MARKER,
@@ -33,6 +33,7 @@ from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 RunStarter = Callable[..., Awaitable[JsonObject]]
+RunCanceller = Callable[[str], Awaitable[JsonObject]]
 
 _CONTINUATION_CONTRACT = (
     "You are working a long-running objective across several bounded runs.\n"
@@ -69,6 +70,10 @@ class MissionScheduler:
     # the orchestrator's own 3600s ceiling so it only fires when that failed.
     run_wait_timeout_s: float = 3900.0
     run_poll_interval_s: float = 0.05
+    # Optional: when start_run is orchestrator.start_run, cancel() is also
+    # discovered on that same object so a timeout can stop the asyncio task
+    # without the web layer having to wire a second callback.
+    cancel_run: RunCanceller | None = None
     _warned_unrotated: bool = field(default=False, init=False)
     _task: asyncio.Task[None] | None = field(default=None, init=False)
     _stop: asyncio.Event | None = field(default=None, init=False)
@@ -173,7 +178,41 @@ class MissionScheduler:
         current = self.store.get_mission(mission.id)
         return current is None or current.status is not MissionStatus.FAILED
 
+    def _mission_cancelled(self, mission_id: str) -> bool:
+        current = self.store.get_mission(mission_id)
+        return current is None or current.status is MissionStatus.CANCELLED
+
+    def _bound_cancel(self) -> RunCanceller | None:
+        if self.cancel_run is not None:
+            return self.cancel_run
+        owner = getattr(self.start_run, "__self__", None)
+        candidate = getattr(owner, "cancel", None)
+        if callable(candidate):
+            return cast(RunCanceller, candidate)
+        return None
+
+    async def _stop_inflight_run(self, run_id: str) -> None:
+        """Stop the current run, not just this wait.
+
+        A status flip leaves the orchestrator task and its tool thread running.
+        Prefer the orchestrator's cancel so the tracked asyncio.Task is
+        cancelled; fall back to the store flag the run loop already watches.
+        """
+        cancel = self._bound_cancel()
+        if cancel is not None:
+            try:
+                await cancel(run_id)
+                return
+            except (KeyError, ValueError):
+                return
+        try:
+            self.store.request_cancel(run_id)
+        except KeyError:
+            return
+
     async def _advance(self, mission: AgentMission) -> None:
+        if self._mission_cancelled(mission.id):
+            return
         if mission.budget_left <= 0:
             self.store.set_mission_status(
                 mission.id,
@@ -183,6 +222,8 @@ class MissionScheduler:
             return
 
         if mission.runs_used == 0 and self.isolation is not None:
+            if self._mission_cancelled(mission.id):
+                return
             # Only before the first run of a mission: that is the sample
             # boundary. A failure here is fatal to the mission by design, since
             # continuing would analyse a new sample on a dirty machine.
@@ -195,6 +236,8 @@ class MissionScheduler:
             outcome = await asyncio.to_thread(
                 self.isolation.rotate, reason=f"mission:{mission.id}"
             )
+            if self._mission_cancelled(mission.id):
+                return
             if not outcome.get("ok", True):
                 self.store.set_mission_status(
                     mission.id,
@@ -204,6 +247,8 @@ class MissionScheduler:
                 return
             self._note_if_nothing_was_rotated(outcome)
 
+        if self._mission_cancelled(mission.id):
+            return
         attempt = mission.runs_used + 1
         self.store.add_message(
             mission.thread_id,
@@ -214,6 +259,8 @@ class MissionScheduler:
                 budget=mission.max_runs,
             ),
         )
+        if self._mission_cancelled(mission.id):
+            return
         started = await self.start_run(
             mission.thread_id,
             profile_id=mission.provider_profile,
@@ -221,12 +268,12 @@ class MissionScheduler:
         )
         run_id = str(started["id"])
         self.store.note_mission_run(mission.id, run_id)
-        status = await self._await_run(run_id)
-
-        if self.store.get_mission(mission.id) is None:
+        if self._mission_cancelled(mission.id):
+            await self._stop_inflight_run(run_id)
             return
-        current = self.store.get_mission(mission.id)
-        if current is not None and current.status is MissionStatus.CANCELLED:
+        status = await self._await_run(run_id, mission.id)
+
+        if self._mission_cancelled(mission.id):
             return
 
         # A run that spent its tool rounds or its deadline has used a bound, not
@@ -302,7 +349,7 @@ class MissionScheduler:
             },
         )
 
-    async def _await_run(self, run_id: str) -> RunStatus:
+    async def _await_run(self, run_id: str, mission_id: str) -> RunStatus:
         """Wait for a run to reach a terminal state, but not forever.
 
         The orchestrator bounds its own runs, so in the normal case this always
@@ -313,12 +360,17 @@ class MissionScheduler:
         the exact failure an unattended deployment cannot see.
         """
         deadline = time.monotonic() + self.run_wait_timeout_s
+        stopped = False
         while True:
             run = self.store.get_run(run_id)
             if run is None:
                 return RunStatus.INTERRUPTED
             if run.status in TERMINAL_RUN_STATUSES:
                 return run.status
+            if not stopped and (run.cancel_requested or self._mission_cancelled(mission_id)):
+                await self._stop_inflight_run(run_id)
+                stopped = True
+                continue
             if time.monotonic() >= deadline:
                 record_alert(
                     "run_wait_timeout",
@@ -328,6 +380,11 @@ class MissionScheduler:
                         "waited_s": round(self.run_wait_timeout_s, 1),
                     },
                 )
+                if not stopped:
+                    await self._stop_inflight_run(run_id)
+                current = self.store.get_run(run_id)
+                if current is not None and current.status in TERMINAL_RUN_STATUSES:
+                    return current.status
                 error = (
                     f"scheduler wait timed out after {self.run_wait_timeout_s:g}s"
                 )

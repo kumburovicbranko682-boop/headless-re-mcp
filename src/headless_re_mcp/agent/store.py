@@ -510,8 +510,13 @@ class AgentStore:
 
     def consume_approval(self, run_id: str, tool_call_id: str, args_sha256: str) -> bool:
         with self.transaction() as con:
-            run = con.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
+            run = con.execute(
+                "SELECT status, cancel_requested FROM runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
             if run is None or RunStatus(run["status"]) in TERMINAL_RUN_STATUSES:
+                return False
+            if int(run["cancel_requested"] or 0):
                 return False
             row = con.execute("SELECT * FROM tool_calls WHERE id=? AND run_id=?", (tool_call_id, run_id)).fetchone()
             if row is None or str(row["args_sha256"]) != args_sha256 or row["consumed_at"] is not None:
@@ -692,6 +697,8 @@ class AgentStore:
             ).fetchone()
             if row is None:
                 return None
+            if MissionStatus(row["status"]) in TERMINAL_MISSION_STATUSES:
+                return None
             mission_id = str(row["id"])
             changed = con.execute(
                 "UPDATE missions SET status=?,updated_at=? WHERE id=? AND status=?",
@@ -700,6 +707,8 @@ class AgentStore:
             if not changed:
                 return None
             row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None or MissionStatus(row["status"]) in TERMINAL_MISSION_STATUSES:
+                return None
         return self._mission_from_row(row)
 
     def note_mission_run(self, mission_id: str, run_id: str) -> None:
@@ -788,10 +797,54 @@ class AgentStore:
             (thread_id, *done, keep),
         )
 
+    def _mark_runs_cancel_requested(
+        self,
+        con: sqlite3.Connection,
+        *,
+        thread_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        now = utc_now()
+        done = tuple(status.value for status in TERMINAL_RUN_STATUSES)
+        placeholders = ",".join("?" * len(done))
+        if thread_id is not None:
+            con.execute(
+                f"UPDATE runs SET cancel_requested=1,updated_at=? "
+                f"WHERE thread_id=? AND status NOT IN ({placeholders})",
+                (now, thread_id, *done),
+            )
+        if run_id is not None:
+            con.execute(
+                f"UPDATE runs SET cancel_requested=1,updated_at=? "
+                f"WHERE id=? AND status NOT IN ({placeholders})",
+                (now, run_id, *done),
+            )
+
     def cancel_mission(self, mission_id: str) -> AgentMission:
+        """Stop the objective and every run still carrying it out.
+
+        Status alone is not enough: the orchestrator keys off
+        ``cancel_requested``, and a PENDING row that is only flipped after a
+        claim would let the next tick start another run.
+        """
+        with self.transaction() as con:
+            row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            current = MissionStatus(row["status"])
+            if current not in TERMINAL_MISSION_STATUSES:
+                now = utc_now()
+                con.execute(
+                    "UPDATE missions SET status=?,error=?,updated_at=? WHERE id=?",
+                    (MissionStatus.CANCELLED.value, "cancelled", now, mission_id),
+                )
+                self._mark_runs_cancel_requested(
+                    con,
+                    thread_id=str(row["thread_id"]),
+                    run_id=str(row["last_run_id"]) if row["last_run_id"] else None,
+                )
+                self._trim_terminal_missions(con, str(row["thread_id"]))
+                self._maybe_trim_finished_threads(con)
         mission = self.get_mission(mission_id)
-        if mission is None:
-            raise KeyError(mission_id)
-        if mission.status in TERMINAL_MISSION_STATUSES:
-            return mission
-        return self.set_mission_status(mission_id, MissionStatus.CANCELLED, error="cancelled")
+        assert mission is not None
+        return mission
