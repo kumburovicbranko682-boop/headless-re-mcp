@@ -5,7 +5,9 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-新增 Android 与 Web 两个目标域，工具面从 199 增至 263（149 只读 / 114 写）。
+新增 Android 与 Web 两个目标域，工具面从 199 增至 263（148 只读 / 115 写）。
+`memory.protection` 与 `workflow.breakpoint.put` / `disable` 是写；`static.search.text`
+与 `patches.list` 是读。
 
 ### 新增（会话目标类型）
 
@@ -120,6 +122,30 @@ until 1.0 the tool surface may still change between minor versions.
   `VERIFIED`。
 - **IAT 重建只写新的 `.himps`，代码还在读原来的 IAT**。有确认的 `iat_va` 时按
   RVA 原地打补丁，并把 FirstThunk / IAT 目录指回去。
+- **取消的 mission 仍会再开一轮、再写一次工具**。调度器只把状态翻成 CANCELLED，
+  编排器还在等审批或卡在 worker 线程里。现在 claim / 审批 / 工具调用都会看
+  `cancel_requested`，超时等待也会去取消那条 asyncio 任务。
+- **超长 objective 先建空 inbox 再拒绝**。空 thread 不会被 trim，重试会把库撑大。
+  现在先 `validate_mission`，过了才建 thread。
+- **压缩后的请求仍会超过自己报的预算**。8,000 字符上限选出的尾巴，再加上系统提示
+  和压缩通知，线上变成 8,115。现在先给这两条留位置再选尾巴。
+- **`cdb -c` 只看第一个 token**。`lm; !process` 和 `k\n.shell` 能穿过白名单。
+  现在分号、换行、管道和 `&` 一律拒绝。
+- **命名管道取消后无限等**。`CancelIoEx` 失败时 `WaitForSingleObject` 用
+  `INFINITE`，请求锁就锁到进程退出。现在最多等两秒。
+- **Frida attach / spawn 能永远卡住**，而 `hook.template` 在 `detach` 之后仍报
+  钩子还在。现在有 30 秒上限，回复里写明脚本已随 session 销毁。
+- **`unpack.verify` 在 APK 会话上仍会解析产物树里的 PE**。先 `require_pe()`。
+- **敌意 `NumberOfSections=0xFFFF` 会按节数分配重建头**。超过 96 节直接拒绝。
+  导入名按描述符 + ILT（原地 IAT 时不再加上一份 IAT 长度）落盘。
+- **工作流导航在等的时候，第二次 `events.read` 会把游标拆开**，再被映射成会拆掉
+  x64dbg 的 `rpc_protocol_error`。导航等待时只读持久日志；游标不一致改报
+  `event_cursor_inconsistent`。
+- **MCP 卸载不认 catalog 超时**。断开能回来，超时还是占着 limiter。现在
+  `fail_after` 用工具自己的 timeout，超时回 `tool_timeout`。
+- **healthz 的 `urlopen` 超时是按 recv 重置的**。监听方一字节一字节滴，启动器
+  和拉起它的 supervisor 会一直等到滴完。每个 recv 共用同一条 deadline。
+- **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 

@@ -162,7 +162,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-263 个工具的读写归类（149 只读 / 114 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+263 个工具的读写归类（148 只读 / 115 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 
@@ -330,7 +330,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
-- 单元测试 952 passed / 1 skipped（唯一 skip 是需要 IDA 的 UPX 夹具），连续 10 轮全绿无抖动
+- 单元测试 1512 passed / 1 skipped（唯一 skip 是需要 IDA 的 UPX 夹具）
 - 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
