@@ -880,6 +880,8 @@ class UnpackMixin:
         an attached debuggee PID. Gates never claim universal unpack success.
         """
         try:
+            session = self.registry.get(session_id)
+            session.require_pe()
             target = Path(path).expanduser().resolve(strict=True)
             from headless_re_mcp.core.service import _session_owns_artifact_path
 
