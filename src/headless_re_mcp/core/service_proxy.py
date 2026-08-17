@@ -127,7 +127,15 @@ class ProxyAnalysisMixin:
 
     def proxy_ca_install_android(self, session_id: str, serial: str) -> Result[JsonObject]:
         try:
-            self.registry.get(session_id)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"proxy.ca.install_android cannot run in {session.state.value} state"
+                )
             cert = self._proxy.ca_cert_path()
             if cert is None:
                 raise ProxyError(
@@ -139,6 +147,15 @@ class ProxyAnalysisMixin:
             )
             remote_tmp = "/data/local/tmp/mitmproxy-ca-cert.pem"
             backend.push(serial, str(cert), remote_tmp)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"proxy.ca.install_android cannot run in {session.state.value} state"
+                )
             data = {
                 "pushed_to": remote_tmp,
                 "note": (
