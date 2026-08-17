@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-import http.client
 import json
 import socket
-import threading
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -58,90 +54,88 @@ def choose_bind_port(
     return preferred, "exhausted"
 
 
-def _close_raw_socket(resp: Any) -> None:
-    """Drop the TCP connection so a give-up cannot drain the rest of the body.
+def _recv_until(sock: socket.socket, *, cap: int, deadline: float) -> bytes:
+    """Read at most ``cap`` bytes, giving up when ``deadline`` is reached.
 
-    Leaving ``urlopen`` after a bounded read still tries to consume whatever
-    remains so the socket can be reused. A trickle that reset the read timeout
-    also reset that drain, and the launcher stayed parked until the listener
-    finished.
+    ``urlopen(..., timeout=)`` is per-recv. A body that delivers one byte
+    inside that window resets it, and leaving the response still drains
+    whatever remains so the socket can be reused. A leftover listener that
+    dribbles then parks the launcher — and the supervisor that started it —
+    until the trickle finishes. Slice the deadline onto every recv instead.
     """
-    fp = getattr(resp, "fp", None)
-    raw = getattr(fp, "raw", None)
-    sock = getattr(raw, "_sock", None)
-    if sock is None:
-        return
-    with contextlib.suppress(OSError):
-        sock.shutdown(socket.SHUT_RDWR)
-    with contextlib.suppress(OSError):
-        sock.close()
-
-
-def _read_healthz_body(resp: Any, *, cap: int, deadline: float) -> bytes | None:
-    """Read at most ``cap`` bytes, or give up when ``deadline`` is reached.
-
-    ``urlopen(..., timeout=)`` is the socket timeout. A body that delivers one
-    byte inside that window resets it, so ``read()`` of an unending trickle
-    never returns. The join is the overall bound; closing the raw socket is
-    what stops the leftover drain from waiting out the rest of the body.
-    """
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        _close_raw_socket(resp)
-        return None
-    box: list[bytes | BaseException] = []
-
-    def work() -> None:
+    buf = bytearray()
+    while len(buf) < cap:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock.settimeout(max(0.01, min(0.05, remaining)))
         try:
-            box.append(resp.read(cap + 1))
-        except BaseException as exc:  # noqa: BLE001 - handed to the caller
-            box.append(exc)
-
-    thread = threading.Thread(target=work, name="healthz-read", daemon=True)
-    thread.start()
-    thread.join(remaining)
-    if thread.is_alive():
-        _close_raw_socket(resp)
-        return None
-    if not box:
-        _close_raw_socket(resp)
-        return None
-    result = box[0]
-    if isinstance(result, BaseException):
-        _close_raw_socket(resp)
-        raise result
-    if len(result) > cap:
-        _close_raw_socket(resp)
-        return None
-    return result
+            chunk = sock.recv(min(512, cap - len(buf)))
+        except TimeoutError:
+            continue
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
 
 
-def probe_our_healthz(host: str, port: int, *, timeout: float = 0.6) -> JsonObject | None:
-    """If an existing Headless RE web console answers /healthz, return its JSON."""
-    url = f"http://{host}:{int(port)}/healthz"
-    deadline = time.monotonic() + max(0.05, float(timeout))
+def _parse_healthz_http(raw: bytes) -> JsonObject | None:
+    header_end = raw.find(b"\r\n\r\n")
+    if header_end < 0:
+        return None
+    header_blob = raw[:header_end]
+    body = raw[header_end + 4 :]
+    for line in header_blob.split(b"\r\n")[1:]:
+        if not line.lower().startswith(b"content-length:"):
+            continue
+        try:
+            length = int(line.split(b":", 1)[1].strip())
+        except ValueError:
+            return None
+        if length > _MAX_HEALTHZ_BYTES:
+            return None
+        if len(body) < length:
+            return None
+        body = body[:length]
+        break
+    if len(body) > _MAX_HEALTHZ_BYTES:
+        return None
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - loopback only
-            length = resp.headers.get("Content-Length")
-            if length is not None:
-                try:
-                    if int(length) > _MAX_HEALTHZ_BYTES:
-                        _close_raw_socket(resp)
-                        return None
-                except ValueError:
-                    pass
-            raw = _read_healthz_body(resp, cap=_MAX_HEALTHZ_BYTES, deadline=deadline)
-            if raw is None:
-                return None
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        ValueError,
-        OSError,
-        http.client.HTTPException,
-    ):
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except ValueError:
         return None
     if isinstance(data, dict) and data.get("service") == "headless-re-mcp-web":
         return data
     return None
+
+
+def probe_our_healthz(host: str, port: int, *, timeout: float = 0.6) -> JsonObject | None:
+    """If an existing Headless RE web console answers /healthz, return its JSON."""
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    sock: socket.socket | None = None
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        sock = socket.create_connection((host, int(port)), timeout=remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        sock.settimeout(remaining)
+        request = (
+            f"GET /healthz HTTP/1.0\r\nHost: {host}:{int(port)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        sock.sendall(request)
+        raw = _recv_until(sock, cap=_MAX_HEALTHZ_BYTES + 1024, deadline=deadline)
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
+    return _parse_healthz_http(raw)
