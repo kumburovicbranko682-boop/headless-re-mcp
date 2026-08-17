@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import time
 from collections import deque
@@ -706,3 +707,51 @@ def test_reconnect_refuses_once_the_worker_is_gone() -> None:
     # Rebuilding a connection to a dead worker would hang until the pipe timeout
     # and then report a transport problem instead of the real cause.
     assert failure.value.code == "worker_exited"
+
+
+def test_named_pipe_timeout_does_not_wait_forever_after_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CancelIoEx then WaitForSingleObject(INFINITE) held the request lock.
+
+    Measured: when cancel returned 0 the waiter never came back. A timed-out
+    read then pinned every later RPC on that client for the process life.
+    """
+    waits: list[int] = []
+
+    class _Kernel:
+        def ResetEvent(self, event: object) -> int:
+            del event
+            return 1
+
+        def WaitForSingleObject(self, event: object, milliseconds: int) -> int:
+            del event
+            waits.append(int(milliseconds))
+            return client_module._NamedPipeTransport._WAIT_TIMEOUT
+
+        def CancelIoEx(self, handle: object, overlapped: object) -> int:
+            del handle, overlapped
+            return 0
+
+    monkeypatch.setattr(client_module.ctypes, "get_last_error", lambda: 997)
+
+    transport = client_module._NamedPipeTransport.__new__(
+        client_module._NamedPipeTransport
+    )
+    transport._kernel32 = _Kernel()  # type: ignore[method-assign]
+    transport._handle = 1
+    transport._event = 1
+    transport._closed = False
+    transport._CANCEL_WAIT_MS = 50
+
+    buffer = ctypes.create_string_buffer(4)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="named-pipe I/O timed out"):
+        transport._run_io(lambda *_args: 0, buffer, 4, 0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert len(waits) == 2
+    assert waits[0] != 0xFFFFFFFF
+    assert waits[1] == 50
+    assert waits[1] != 0xFFFFFFFF

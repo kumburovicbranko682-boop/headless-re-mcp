@@ -93,7 +93,11 @@ class _NamedPipeTransport:
     _ERROR_OPERATION_ABORTED = 995
     _WAIT_OBJECT_0 = 0
     _WAIT_TIMEOUT = 258
-    _INFINITE = 0xFFFFFFFF
+    # CancelIoEx is best-effort. Waiting forever after it failed held the
+    # request lock for the rest of the process life. Two seconds is enough for
+    # a healthy cancel to signal and short enough that a wedged driver cannot
+    # pin the client.
+    _CANCEL_WAIT_MS = 2_000
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
     def __init__(self, handle: int, pipe_name: str) -> None:
@@ -266,7 +270,8 @@ class _NamedPipeTransport:
         wait_result = self._kernel32.WaitForSingleObject(self._event, wait_ms)
         if wait_result == self._WAIT_TIMEOUT:
             self._kernel32.CancelIoEx(self._handle, ctypes.byref(overlapped))
-            self._kernel32.WaitForSingleObject(self._event, self._INFINITE)
+            cancel_ms = max(1, min(0xFFFFFFFE, int(self._CANCEL_WAIT_MS)))
+            self._kernel32.WaitForSingleObject(self._event, cancel_ms)
             raise TimeoutError("named-pipe I/O timed out")
         if wait_result != self._WAIT_OBJECT_0:
             raise OSError(ctypes.get_last_error(), "WaitForSingleObject failed")
