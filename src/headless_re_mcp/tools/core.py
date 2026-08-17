@@ -64,11 +64,11 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
     ) -> dict[str, Any]:
         """List sessions known to this MCP server process, one page at a time.
 
-        Answers with sessions, count, total, offset and has_more. There is no
-        items or session_ids field. Each entry is the same nested session
-        object session.create returns, so the id is session.id, not a
-        top-level session_id. Read total and has_more rather than assuming
-        the page is the whole list.
+        Answers with sessions, count, total, offset and has_more. There is no items
+        or session_ids field. Each entry is the same nested session object
+        session.create returns, so the id is session.id, not a top-level
+        session_id. Read total and has_more rather than assuming the page is
+        the whole list.
         """
         return _dump(analysis.list_sessions(offset=offset, limit=limit))
 

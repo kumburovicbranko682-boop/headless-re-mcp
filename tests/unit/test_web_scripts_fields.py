@@ -58,10 +58,13 @@ def test_web_scripts_says_when_older_scripts_were_dropped(monkeypatch: Any) -> N
     payload = backend.scripts("s")
     assert payload["count"] == 5
     assert len(payload["scripts"]) == 5
-    assert payload["has_more"] is True
+    assert payload["total"] == 5
+    assert payload["has_more"] is False
+    assert payload["dropped"] == 3
     doc = _tool_docstring("web.scripts")
     assert "Answers with scripts" in doc
     assert "has_more" in doc
+    assert "dropped" in doc
 
 
 def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) -> None:
@@ -78,6 +81,8 @@ def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) ->
     monkeypatch.setattr(backend, "_get", lambda session_id: handle)
     payload = backend.scripts("s", wasm_only=True)
     assert payload["count"] == 4
-    assert payload["has_more"] is True
+    assert payload["has_more"] is False
+    assert payload["dropped"] == 3
     doc = _tool_docstring("web.wasm.list")
     assert "has_more" in doc
+    assert "dropped" in doc

@@ -677,11 +677,15 @@ class TestWebScriptBufferIsBounded:
                 handle.scripts.popitem(last=False)
                 handle.scripts_dropped += 1
         backend._sessions["s"] = handle
-        result = backend.scripts("s", limit=_MAX_SCRIPTS)
-        assert result["count"] == _MAX_SCRIPTS
+        result = backend.scripts("s", offset=0, limit=1000)
+        assert result["count"] == 1000
         assert result["total"] == _MAX_SCRIPTS
-        assert result["has_more"] is False
+        assert result["has_more"] is True
         assert result["dropped"] == 10
+        tail = backend.scripts("s", offset=1000, limit=1000)
+        assert tail["count"] == 1000
+        assert tail["has_more"] is False
+        assert tail["dropped"] == 10
 
     def test_a_full_script_buffer_says_older_wasm_modules_were_dropped(self) -> None:
         from headless_re_mcp.backends.web.client import WebBackend
@@ -1948,13 +1952,9 @@ class TestATimeoutBindsWhatTheToolStarted:
             ctypes.windll.kernel32.CloseHandle(handle)
 
     def test_the_process_the_launcher_started_is_killed_too(self) -> None:
-        import os
         import time
 
         from headless_re_mcp.core.process_tree import terminate_process_tree
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         process, grandchild = self._launcher()
         try:
@@ -1973,13 +1973,9 @@ class TestATimeoutBindsWhatTheToolStarted:
                 process.kill()
 
     def test_a_pid_without_a_popen_handle_is_still_bound(self) -> None:
-        import os
         import time
 
         from headless_re_mcp.core.process_tree import terminate_pid_tree
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         process, grandchild = self._launcher()
         try:
@@ -1999,14 +1995,10 @@ class TestATimeoutBindsWhatTheToolStarted:
                 process.kill()
 
     def test_a_tool_that_overruns_is_reported_with_what_was_killed(self) -> None:
-        import os
         import sys
         import time
 
         from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         started = time.monotonic()
         with pytest.raises(TimedOut) as caught:
@@ -2054,15 +2046,11 @@ class TestATimeoutBindsWhatTheToolStarted:
         assert len(completed.stderr) == 0
 
     def test_a_launcher_that_exits_zero_does_not_kill_its_helper(self) -> None:
-        import os
         import sys
         from contextlib import suppress
 
         from headless_re_mcp.backends.common.bounded_run import run_bounded
         from headless_re_mcp.core.process_tree import terminate_pid_tree
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         completed = run_bounded(
             [sys.executable, "-c", _EXIT0_LAUNCHER],
@@ -2078,15 +2066,11 @@ class TestATimeoutBindsWhatTheToolStarted:
                 terminate_pid_tree(child)
 
     def test_capture_process_kills_leftover_children(self) -> None:
-        import os
         import sys
         from contextlib import suppress
 
         from headless_re_mcp.core.process_tree import terminate_pid_tree
         from headless_re_mcp.dotnet.de4dot import _capture_process
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         capture = _capture_process(
             [sys.executable, "-c", _EXIT0_LAUNCHER],
@@ -3315,8 +3299,12 @@ class TestExportedFileListsDiscloseTruncation:
         out.mkdir()
         for index in range(5):
             (out / f"{index}.js").write_text("x", encoding="utf-8")
-        result = mod.JsClient(tmp_path / "webcrack").unpack_bundle(tmp_path / "app.js", out)
+        result = mod.JsClient(tmp_path / "webcrack").unpack_bundle(
+            tmp_path / "app.js", out, offset=0, limit=3
+        )
         assert result["file_count"] == 5
+        assert result["total"] == 5
+        assert result["count"] == 3
         assert len(result["files"]) == 3
         assert result["has_more"] is True
 
@@ -3845,15 +3833,11 @@ class TestIsolationKillsWhatItStarted:
 
     def test_a_snapshot_script_that_starts_a_child_is_reaped(self) -> None:
         import ast
-        import os
         import re
         import sys
         import time
 
         from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
-
-        if os.name != "nt":
-            pytest.skip("descendant enumeration here is Win32 (skip != pass)")
 
         started = time.monotonic()
         outcome = IsolationRunner(

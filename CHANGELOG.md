@@ -145,6 +145,16 @@ until 1.0 the tool surface may still change between minor versions.
   `fail_after` 用工具自己的 timeout，超时回 `tool_timeout`。
 - **healthz 的 `urlopen` 超时是按 recv 重置的**。监听方一字节一字节滴，启动器
   和拉起它的 supervisor 会一直等到滴完。每个 recv 共用同一条 deadline。
+- **`js.unpack_bundle` 的文件列表停在 2000 且没有页**。2500 个模块会报
+  `file_count=2500` 却只给 2000 个名字。现在按 offset/limit 翻页，并返回
+  `total` / `has_more`。
+- **超时杀进程树在 Linux 上只杀到启动器**。`/proc/<pid>/task/<pid>/children`
+  没有走，doctor / isolation / r2 的子进程会留下。现在 POSIX 也走同一套
+  descendants。
+- **`web.scripts` 的 `has_more` 曾表示环形缓冲淘汰**。翻页之后 `has_more` 只
+  表示这一页，淘汰数在 `dropped`。
+- **Scylla 探针超时仍报 READY**。GUI 起得来但从不退出，doctor 会把可选工具
+  标成可用。超时现在是 `timeout_after_start` 且 `ok=False`。
 - **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：

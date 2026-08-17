@@ -133,7 +133,8 @@ def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     assert payload["count"] == 5
     assert len(payload["scripts"]) == 5
     assert all(row["language"] == "WebAssembly" for row in payload["scripts"])
-    assert payload["has_more"] is True
+    assert payload["has_more"] is False
+    assert payload["dropped"] == 3
     doc = _tool_docstring("web.wasm.list")
     assert "Answers with scripts" in doc
     assert "no modules field" in doc

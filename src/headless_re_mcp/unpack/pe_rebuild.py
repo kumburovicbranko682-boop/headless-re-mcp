@@ -253,18 +253,17 @@ def remap_dump_to_file(
         pe_offset + 24 + _u16(dump, pe_offset + 20) + (len(sections) + 1) * 40,
         file_alignment,
     )
-    # The count cap still leaves the loader's 96 as a multiplier: each section
-    # is copied out of the dump. Measured at 96 overlapping sections on a 1 MB
-    # dump: 101 MB out, 213 MB peak heap, while the memory gate -- dump * 4 --
-    # estimated 4 MB and let it through. A truthful remap is smaller than the
-    # dump (file layout vs SizeOfImage). More than that factor means the
-    # section table is multiplying the dump, not describing it.
-    planned = size_of_headers
+    # FileAlignment padding is already capped at 64 KiB. This gate is for the
+    # section table copying the dump over and over: overlapping sections each
+    # claim the whole image, so the count is the multiplier. Measuring the
+    # padded size would also refuse a legal 64 KiB FileAlignment on a small
+    # dump, which the format still allows.
+    planned = pe_offset + 24 + _u16(dump, pe_offset + 20) + (len(sections) + 1) * 40
     for section in sections:
         mapped = max(int(section["virtual_size"]), int(section["raw_size"]))
         if mapped > len(dump):
             mapped = len(dump)
-        planned += _align(mapped, file_alignment) if mapped else 0
+        planned += mapped
     limit = len(dump) * PE_REBUILD_MEMORY_FACTOR
     if planned > limit:
         raise PeRebuildError(

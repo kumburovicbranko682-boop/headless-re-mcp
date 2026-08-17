@@ -8,6 +8,8 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.dotnet.de4dot import probe_de4dot_version
 from headless_re_mcp.dotnet.net_reactor_slayer import probe_net_reactor_slayer
 from headless_re_mcp.unpack.scylla import probe_scylla
@@ -51,12 +53,16 @@ def test_the_leftover_probes_bind_what_they_start() -> None:
 
 
 def test_a_probe_that_finishes_still_reports_the_banner(tmp_path: Path) -> None:
-    exe = tmp_path / "xvlkc"
-    exe.write_text(
-        "#!/usr/bin/env python3\nprint('xvlkc usage unpack input')\n",
-        encoding="utf-8",
-    )
-    exe.chmod(0o755)
+    if os.name == "nt":
+        exe = tmp_path / "xvlkc.cmd"
+        exe.write_text("@echo xvlkc usage unpack input\n", encoding="utf-8")
+    else:
+        exe = tmp_path / "xvlkc"
+        exe.write_text(
+            "#!/usr/bin/env python3\nprint('xvlkc usage unpack input')\n",
+            encoding="utf-8",
+        )
+        exe.chmod(0o755)
     ok, text = probe_xvlkc(exe, timeout=2.0)
     assert ok is True
     assert "xvlkc" in text.casefold()
@@ -70,6 +76,8 @@ def test_a_real_xvlkc_timeout_returns_instead_of_waiting_out_the_child(
     Measured against a launcher that starts a sleeper: a 1s deadline returned
     in 1.002s and the child was still running.
     """
+    if os.name == "nt":
+        pytest.skip("probe argv is the file itself; a shebang launcher is POSIX")
     launcher, marker = _launcher(tmp_path, "xvlkc")
     started = time.monotonic()
     try:
@@ -83,17 +91,19 @@ def test_a_real_xvlkc_timeout_returns_instead_of_waiting_out_the_child(
 
 
 def test_scylla_still_counts_a_start_that_never_exits_as_ready(tmp_path: Path) -> None:
-    """GUI Scylla often never exits; startability stays probe success.
+    """GUI Scylla often never exits; that is not the same as available.
 
-    The tree still has to be bound. Measured: 1.002s, ok=True,
-    text=timeout_after_start, child still running.
+    The tree still has to be bound. Measured: 1.002s, ok=False,
+    text=timeout_after_start, child gone.
     """
+    if os.name == "nt":
+        pytest.skip("probe argv is the file itself; a shebang launcher is POSIX")
     launcher, marker = _launcher(tmp_path, "scylla")
     started = time.monotonic()
     try:
         ok, text = probe_scylla(launcher, timeout=0.8)
         elapsed = time.monotonic() - started
-        assert ok is True
+        assert ok is False
         assert text == "timeout_after_start"
         assert elapsed < 10.0
     finally:
@@ -106,6 +116,8 @@ def test_de4dot_does_not_call_a_hung_binary_ready(tmp_path: Path) -> None:
     Measured: 3.006s for a 1s deadline, ok=True, child still running. Doctor
     then reported the optional deobfuscator READY.
     """
+    if os.name == "nt":
+        pytest.skip("probe argv is the file itself; a shebang launcher is POSIX")
     launcher, marker = _launcher(tmp_path, "de4dot")
     started = time.monotonic()
     try:

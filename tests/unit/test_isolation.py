@@ -230,7 +230,7 @@ def test_a_real_timeout_returns_instead_of_waiting_out_the_child(tmp_path) -> No
         elapsed = time.monotonic() - started
 
         assert outcome["ok"] is False
-        assert "Timeout" in str(outcome["detail"])
+        assert "timed out" in str(outcome["detail"]).lower()
         assert elapsed < 10.0
     finally:
         if marker.is_file():

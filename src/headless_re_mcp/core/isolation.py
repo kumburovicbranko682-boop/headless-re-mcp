@@ -47,37 +47,6 @@ def _split_command(raw: str) -> tuple[str, ...]:
     return tuple(part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL)))
 
 
-def _run_isolation_command(
-    command: list[str],
-    **kwargs: Any,
-) -> subprocess.CompletedProcess[str]:
-    """Run the operator's command with a deadline that binds what it started.
-
-    Isolation is a script the operator supplies -- typically a .ps1 that starts
-    the hypervisor's snapshot tool. ``subprocess.run(timeout=...)`` kills that
-    script and nothing else, then on Windows drains the pipes with no timeout.
-    Measured: a 1s deadline returned in 1.0s and left the child running. The
-    CLI tools already go through ``run_bounded`` for that reason; this is the
-    same shape, on the path that runs between every unattended sample.
-    """
-    timeout = float(kwargs.get("timeout") or DEFAULT_TIMEOUT_S)
-    creationflags = int(kwargs.get("creationflags") or 0)
-    try:
-        completed = run_bounded(
-            list(command),
-            timeout=timeout,
-            creationflags=creationflags,
-        )
-    except TimedOut as exc:
-        raise subprocess.TimeoutExpired(cmd=list(command), timeout=timeout) from exc
-    return subprocess.CompletedProcess(
-        args=list(command),
-        returncode=completed.returncode,
-        stdout=completed.stdout.decode("utf-8", errors="replace"),
-        stderr=completed.stderr.decode("utf-8", errors="replace"),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class IsolationPolicy:
     """The command to run between samples, if the deployment has one."""

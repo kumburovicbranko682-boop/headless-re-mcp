@@ -1,4 +1,4 @@
-"""Process-tree helpers for UI child-PID discovery (Windows)."""
+"""Process-tree helpers for UI child-PID discovery and timeout kills."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import subprocess
 from contextlib import suppress
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -69,10 +70,12 @@ def process_image_path(pid: int) -> str | None:
 
 
 def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PIDS) -> list[int]:
-    """Return direct child PIDs of ``parent_pid`` (bounded, Toolhelp32)."""
-    if os.name != "nt" or type(parent_pid) is not int or parent_pid <= 0:
+    """Return direct child PIDs of ``parent_pid`` (bounded)."""
+    if type(parent_pid) is not int or parent_pid <= 0:
         return []
     limit = _child_enum_limit(max_pids)
+    if os.name != "nt":
+        return _enumerate_direct_children_proc(parent_pid, limit)
     kernel32 = ctypes.windll.kernel32
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1, 0xFFFFFFFF):
@@ -94,6 +97,59 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
                 break
     finally:
         kernel32.CloseHandle(snap)
+    children.sort()
+    return children
+
+
+def _enumerate_direct_children_proc(parent_pid: int, limit: int) -> list[int]:
+    """Linux: ``/proc/<pid>/task/<pid>/children``, then a /proc scan."""
+    children_file = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
+    try:
+        text = children_file.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return _scan_proc_ppid(parent_pid, limit)
+    children: list[int] = []
+    for token in text.split():
+        try:
+            child = int(token)
+        except ValueError:
+            continue
+        if child > 0 and child != parent_pid:
+            children.append(child)
+            if len(children) >= limit:
+                break
+    children.sort()
+    return children
+
+
+def _scan_proc_ppid(parent_pid: int, limit: int) -> list[int]:
+    children: list[int] = []
+    try:
+        entries = Path("/proc").iterdir()
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        child = int(entry.name)
+        if child <= 0 or child == parent_pid:
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        fields = stat[close + 2 :].split()
+        try:
+            ppid = int(fields[1])
+        except (IndexError, ValueError):
+            continue
+        if ppid == parent_pid:
+            children.append(child)
+            if len(children) >= limit:
+                break
     children.sort()
     return children
 
@@ -137,7 +193,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
-    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
 
@@ -168,7 +224,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
     if not isinstance(pid, int) or pid <= 0:
         return []
     descendants: list[int] = []
-    if os.name == "nt":
+    if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
     killed: list[int] = []
