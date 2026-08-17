@@ -5,8 +5,12 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.detection.pe import scan_pe
 from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTION_COUNT,
+    PeRebuildError,
     parse_runtime_headers,
     rebuild_imports,
     remap_dump_to_file,
@@ -186,3 +190,95 @@ def test_rebuild_imports_patches_the_original_iat_when_rva_is_known() -> None:
     assert rebuilt[offset : offset + 8] != b"\xAA" * 8
     first_thunk = struct.unpack_from("<Q", rebuilt, offset)[0]
     assert first_thunk != 0
+
+
+def _file_offset_for_rva(image: bytes, rva: int, *, length: int = 1) -> int:
+    headers = parse_runtime_headers(image)
+    for section in headers["sections"]:
+        va = int(section["virtual_address"])
+        raw_size = int(section["raw_size"])
+        raw_offset = int(section["raw_offset"])
+        if raw_size <= 0:
+            continue
+        if va <= rva and rva + length <= va + raw_size:
+            return raw_offset + (rva - va)
+    raise AssertionError(f"RVA {rva:#x} size {length} is not in the rebuilt file")
+
+
+def _ascii_at_rva(image: bytes, rva: int) -> str:
+    offset = _file_offset_for_rva(image, rva)
+    end = image.index(b"\0", offset)
+    return image[offset:end].decode("ascii")
+
+
+def test_rebuild_imports_in_place_names_sit_at_published_rvas() -> None:
+    dump = _make_runtime_dump_with_rdata()
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "VirtualAlloc",
+            "ordinal": 0,
+            "thunk_va": 0x140002000,
+        },
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "VirtualProtect",
+            "ordinal": 0,
+            "thunk_va": 0x140002008,
+        },
+        {"kind": "null", "thunk_va": 0x140002010, "value": 0},
+    ]
+    rebuilt, report = rebuild_imports(remapped, entries, iat_rva=0x2000)
+    assert any("in-place" in change for change in report.changes)
+
+    headers = parse_runtime_headers(rebuilt)
+    import_dir = headers["directories"][1]
+    desc_off = _file_offset_for_rva(rebuilt, int(import_dir["rva"]), length=20)
+    original_first_thunk, _ts, _fc, name_rva, first_thunk = struct.unpack_from(
+        "<IIIII", rebuilt, desc_off
+    )
+    assert name_rva != 0
+    assert _ascii_at_rva(rebuilt, name_rva) == "kernel32.dll"
+
+    expected = ("VirtualAlloc", "VirtualProtect")
+    ilt_rva = original_first_thunk
+    iat_rva = first_thunk
+    for api_name in expected:
+        ilt_off = _file_offset_for_rva(rebuilt, ilt_rva, length=8)
+        iat_off = _file_offset_for_rva(rebuilt, iat_rva, length=8)
+        hint_name_rva = struct.unpack_from("<Q", rebuilt, ilt_off)[0]
+        iat_name_rva = struct.unpack_from("<Q", rebuilt, iat_off)[0]
+        assert hint_name_rva == iat_name_rva
+        assert hint_name_rva != 0
+        assert _ascii_at_rva(rebuilt, hint_name_rva + 2) == api_name
+        ilt_rva += 8
+        iat_rva += 8
+
+
+def test_hostile_number_of_sections_is_refused_before_header_growth() -> None:
+    dump = bytearray(_make_runtime_dump())
+    pe_offset = struct.unpack_from("<I", dump, 0x3C)[0]
+    # 200 section-table slots still fit inside this 0x3000 dump, so a missing
+    # cap would parse them and grow SizeOfHeaders by (200+1)*40 before failing.
+    struct.pack_into("<H", dump, pe_offset + 6, MAX_SECTION_COUNT + 104)
+    with pytest.raises(PeRebuildError, match="NumberOfSections") as caught:
+        remap_dump_to_file(bytes(dump))
+    assert str(MAX_SECTION_COUNT) in str(caught.value)
+
+
+def test_write_rebuilt_pe_deletes_partial_when_publish_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "rebuilt.exe"
+
+    def fail_replace(self: Path, _dst: Path) -> Path:
+        raise OSError("simulated publish failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated publish failure"):
+        write_rebuilt_pe(target, b"MZ" + b"\0" * 64)
+    assert not target.exists()
+    assert list(tmp_path.glob("*.partial")) == []

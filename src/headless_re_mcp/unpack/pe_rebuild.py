@@ -7,6 +7,7 @@ universal unpack success.
 from __future__ import annotations
 
 import struct
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,10 @@ def _u64(data: bytes | bytearray, offset: int) -> int:
 # seconds.
 MAX_FILE_ALIGNMENT = 0x10000
 MAX_SECTION_ALIGNMENT = 0x1000000
+# Windows loaders historically stop at 96 sections. A hostile NumberOfSections
+# of 0xFFFF still fits a u16 and was being used to size the rewritten headers
+# and to iterate allocations, one section at a time.
+MAX_SECTION_COUNT = 96
 
 
 def _usable_alignment(value: Any, *, floor: int, ceiling: int, what: str) -> int:
@@ -129,6 +134,11 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     file_header = pe_offset + 4
     machine = _u16(image, file_header)
     section_count = _u16(image, file_header + 2)
+    if section_count > MAX_SECTION_COUNT:
+        raise PeRebuildError(
+            f"NumberOfSections {section_count} exceeds the {MAX_SECTION_COUNT} "
+            "the rebuild will accept; the dump's headers are not usable for a rebuild"
+        )
     optional_size = _u16(image, file_header + 16)
     characteristics = _u16(image, file_header + 18)
     optional = file_header + 20
@@ -226,6 +236,11 @@ def remap_dump_to_file(
     sections = list(headers["sections"])
     if not sections:
         raise PeRebuildError("dump has no sections to remap")
+    if len(sections) > MAX_SECTION_COUNT:
+        raise PeRebuildError(
+            f"NumberOfSections {len(sections)} exceeds the {MAX_SECTION_COUNT} "
+            "the rebuild will accept; the dump's headers are not usable for a rebuild"
+        )
 
     size_of_headers = _align(
         pe_offset + 24 + _u16(dump, pe_offset + 20) + (len(sections) + 1) * 40,
@@ -443,24 +458,27 @@ def rebuild_imports(
     iat_size = ilt_size
     placed_iat_rva = iat_rva
     in_place_iat = placed_iat_rva is not None
-    iat_file_off = 0
-    if placed_iat_rva is not None:
-        iat_file_off = _rva_to_file_offset(
-            headers, placed_iat_rva, length=iat_size, image=out
-        )
+    iat_file_off = (
+        _rva_to_file_offset(headers, placed_iat_rva, length=iat_size, image=out)
+        if placed_iat_rva is not None
+        else 0
+    )
     # Pad name blob
     while len(name_blob) % 2:
         name_blob.append(0)
     iat_in_section = 0 if in_place_iat else iat_size
-    names_rva_base = new_va + descriptor_size + ilt_size + iat_in_section
+    names_off = descriptor_size + ilt_size + iat_in_section
+    names_rva_base = new_va + names_off
 
-    section_payload = bytearray(descriptor_size + ilt_size + iat_in_section + len(name_blob))
+    section_payload = bytearray(names_off + len(name_blob))
 
     ilt_cursor = descriptor_size
     iat_cursor = descriptor_size + ilt_size
     in_place_cursor = 0
     desc_cursor = 0
-    first_iat_rva = placed_iat_rva if placed_iat_rva is not None else new_va + iat_cursor
+    first_iat_rva = (
+        placed_iat_rva if placed_iat_rva is not None else new_va + iat_cursor
+    )
 
     for module_name, apis in modules:
         key = module_name.lower()
@@ -514,8 +532,10 @@ def rebuild_imports(
         else:
             iat_cursor += pointer_size
 
-    # null descriptor already zeroed
-    section_payload[descriptor_size + ilt_size + iat_size :] = name_blob
+    # null descriptor already zeroed. Names must sit at names_off so the
+    # published Name / thunk RVAs resolve; iat_size is the on-disk IAT span and
+    # is zero in-section when the IAT is patched in place.
+    section_payload[names_off:] = name_blob
 
     raw_size = _align(len(section_payload), file_alignment)
     padded = bytes(section_payload).ljust(raw_size, b"\0")
@@ -590,6 +610,11 @@ def write_rebuilt_pe(path: Path, data: bytes) -> str:
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".partial")
-    partial.write_bytes(data)
-    partial.replace(path)
+    try:
+        partial.write_bytes(data)
+        partial.replace(path)
+    except OSError:
+        with suppress(OSError):
+            partial.unlink(missing_ok=True)
+        raise
     return hashlib.sha256(data).hexdigest()
