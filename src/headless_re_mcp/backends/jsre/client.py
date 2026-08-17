@@ -129,13 +129,23 @@ class JsClient:
         # webcrack always unminifies; expose it under a formatting-focused name.
         return self.deobfuscate(path, timeout=timeout)
 
-    def unpack_bundle(self, path: Path, out_dir: Path, *, timeout: float = 300.0) -> JsonObject:
+    def unpack_bundle(
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )
-        files, file_count, has_more = _capped_file_listing(out_dir, cap=_MAX_LISTED_FILES)
+        files, file_count, listed_more = _capped_file_listing(
+            out_dir, cap=_MAX_COUNTED_FILES
+        )
         if code != 0 and not files:
             raise JsReError(
                 "backend_error",
@@ -143,11 +153,17 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_LISTED_FILES))
+        window = files[start : start + cap]
         return {
             "output_dir": str(out_dir),
             "file_count": file_count,
-            "files": files,
-            "has_more": has_more,
+            "files": window,
+            "count": len(window),
+            "total": file_count,
+            "offset": start,
+            "has_more": start + len(window) < file_count or listed_more,
         }
 
 

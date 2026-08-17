@@ -182,9 +182,11 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
         patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
         patch("headless_re_mcp.backends.jsre.client._MAX_LISTED_FILES", 3),
     ):
-        payload = mod.JsClient(tool).unpack_bundle(src, out)
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=3)
 
     assert payload["file_count"] == 5
+    assert payload["total"] == 5
+    assert payload["count"] == 3
     assert len(payload["files"]) == 3
     assert payload["has_more"] is True
     assert "has_more" in _tool_docstring("js.unpack_bundle")

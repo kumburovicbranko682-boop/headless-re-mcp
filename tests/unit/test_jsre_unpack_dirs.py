@@ -42,9 +42,15 @@ class _FakeJs:
         pass
 
     def unpack_bundle(
-        self, path: Path, out_dir: Path, *, timeout: float = 300.0
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
     ) -> dict[str, object]:
-        del path, timeout
+        del path, timeout, offset, limit
         _fill_unpack(out_dir)
         return {"output_dir": str(out_dir), "file_count": 100, "files": []}
 
@@ -71,3 +77,37 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
     assert len(dirs) == _MAX_JSRE_UNPACK_DIRS
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
     assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
+
+
+def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """files[:2000] with no has_more hid every name past the cap.
+
+    2 000 typical paths encoded to 90 KiB; a page of 100 is 4.6 KiB.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        if not any(out_dir.iterdir()):
+            for index in range(250):
+                (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    out = tmp_path / "out"
+    client = JsClient(executable=Path("/bin/true"))
+    page = client.unpack_bundle(bundle, out, offset=0, limit=10)
+    assert page["count"] == 10
+    assert page["total"] == 250
+    assert page["file_count"] == 250
+    assert page["has_more"] is True
+    tail = client.unpack_bundle(bundle, out, offset=240, limit=20)
+    assert tail["count"] == 10
+    assert tail["has_more"] is False
+    assert set(page["files"]) & set(tail["files"]) == set()

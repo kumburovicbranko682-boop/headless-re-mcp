@@ -47,15 +47,21 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="js.unpack_bundle")
     def js_unpack_bundle(
-        path: str, timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0
+        path: str,
+        timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0,
+        offset: int = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
     ) -> dict[str, Any]:
         """Unpack a webpack/browserify bundle into module files via webcrack.
 
-        Answers with output_dir, file_count and files, plus has_more when
-        the listed files were cut at the buffer. An input over 16 MiB is
-        refused as too_large rather than handed to webcrack.
+        Answers with output_dir, file_count, files, count, total, offset and
+        has_more. The file list is paged: read total and has_more rather than
+        assuming files is complete. An input over 16 MiB is refused as
+        too_large rather than handed to webcrack.
         """
-        return _dump(analysis.js_unpack_bundle(path, timeout=timeout))
+        return _dump(
+            analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="wasm.wat")
     def wasm_wat(
