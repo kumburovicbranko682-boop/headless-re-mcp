@@ -35,6 +35,26 @@ def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     assert [event.seq for event in events] == sorted({event.seq for event in events})
 
 
+def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "thread-events.db")
+    thread = store.create_thread()
+    other = store.create_thread()
+    first = store.create_run(thread.id, provider_profile="default", model="fake", deadline_seconds=30)
+    second = store.create_run(thread.id, provider_profile="default", model="fake", deadline_seconds=30)
+    stray = store.create_run(other.id, provider_profile="default", model="fake", deadline_seconds=30)
+    store.append_event(first.id, "llm.started", {"round": 1})
+    store.append_event(second.id, "llm.started", {"round": 1})
+    store.append_event(stray.id, "llm.started", {"round": 9})
+    store.transition(first.id, RunStatus.STREAMING)
+    store.transition(first.id, RunStatus.COMPLETED)
+    listed = store.list_thread_events(thread.id)
+    assert [event.type for event in listed].count("llm.started") == 2
+    assert all(event.run_id != stray.id for event in listed)
+    dumped = listed[0].dump()
+    assert isinstance(dumped.get("created_ms"), int)
+    assert dumped["created_ms"] > 0
+
+
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "agent.db")
     first_thread = store.create_thread()
@@ -712,3 +732,25 @@ def test_oversized_thread_session_ids_are_refused_not_stored(tmp_path: Path) -> 
     thread = store.create_thread(session_id="abc123")
     assert store.get_thread(thread.id) is not None
     assert store.get_thread(thread.id).session_id == "abc123"
+
+
+def test_bind_thread_session_updates_and_clears(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "bind-thread.db")
+    thread = store.create_thread()
+    bound = store.bind_thread_session(thread.id, "session-one")
+    assert bound.session_id == "session-one"
+    cleared = store.bind_thread_session(thread.id, None)
+    assert cleared.session_id is None
+    with pytest.raises(KeyError):
+        store.bind_thread_session("missing", "session-one")
+
+
+def test_delete_thread_removes_messages(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "delete-thread.db")
+    thread = store.create_thread(title="scratch")
+    store.add_message(thread.id, "user", "hello")
+    store.delete_thread(thread.id)
+    assert store.get_thread(thread.id) is None
+    assert store.list_threads() == []
+    with pytest.raises(KeyError):
+        store.delete_thread(thread.id)

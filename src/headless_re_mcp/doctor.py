@@ -84,6 +84,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             probe_ida(current),
             probe_x64dbg_source(current),
             probe_x64dbg_binaries(current),
+            probe_x64dbg_scyllahide(current),
             probe_native_toolchain(),
             probe_isolation(current),
             probe_die(current),
@@ -344,6 +345,51 @@ def probe_x64dbg_binaries(settings: Settings) -> Probe:
         "One or more x64dbg headless executables failed the runtime gate",
         gates,
         "Rebuild the failing architecture and inspect its gate diagnostics.",
+    )
+
+
+def probe_x64dbg_scyllahide(settings: Settings) -> Probe:
+    """Optional: ScyllaHide plugin files next to the live headless executables."""
+    from headless_re_mcp.backends.x64dbg.stealth import inspect_layout, layout_for_headless
+
+    layouts = {
+        Architecture.X86: layout_for_headless(settings.x64dbg_headless_x86, Architecture.X86),
+        Architecture.X64: layout_for_headless(settings.x64dbg_headless_x64, Architecture.X64),
+    }
+    details: dict[str, Any] = {
+        architecture.value: inspect_layout(layout)
+        for architecture, layout in layouts.items()
+    }
+    configured = [item for item in details.values() if item.get("configured")]
+    if not configured:
+        return Probe(
+            "x64dbg_scyllahide",
+            ProbeStatus.MISSING,
+            "x64dbg headless is not configured; ScyllaHide plugin path is unknown",
+            details,
+            "Set HEADLESS_RE_X64DBG_HEADLESS_X86/X64, then install ScyllaHide into that plugins directory.",
+        )
+    missing = [
+        arch
+        for arch, item in details.items()
+        if item.get("configured") and not item.get("plugin_present")
+    ]
+    if missing:
+        return Probe(
+            "x64dbg_scyllahide",
+            ProbeStatus.MISSING,
+            "ScyllaHide plugin files are missing next to one or more live headless executables",
+            details,
+            (
+                "Copy ScyllaHideX64DBGPlugin and HookLibrary into "
+                "<headless-dir>/plugins for: " + ", ".join(missing)
+            ),
+        )
+    return Probe(
+        "x64dbg_scyllahide",
+        ProbeStatus.READY,
+        "ScyllaHide plugin files are present beside the configured headless executables",
+        details,
     )
 
 

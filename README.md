@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析、x64dbg `headless.exe` 动态调试、Android 设备/APK 逆向与 Web（CDP/JS/WASM/抓包）收成 263 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传，也不弹 IDA/x64dbg GUI。
+Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析、x64dbg `headless.exe` 动态调试、Android 设备/APK 逆向与 Web（CDP/JS/WASM/抓包）收成 265 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传，也不弹 IDA/x64dbg GUI。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -114,7 +114,9 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 
 `session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web），也可显式传 `target`。PE 专属工具对非 PE 会话返回结构化 `target_mismatch`，不会深入后端才失败。
 
-工作方向（`workspace_profile`）把工具面裁剪到单一场景：`pe` 隐藏 Android 与 Web 工具，`android` 隐藏 Web 工具，`web` 隐藏 Android 工具，默认 `full` 不裁剪。裁剪只影响**可见性**，完整 catalog 仍是唯一权威；读写策略是另一条独立边界。监控台开屏会让你选择方向，选择同时作用于 MCP 客户端下次连接看到的工具集与监控台 Agent 的工具面。
+未干净关闭的会话会按同一 ID 从 `sessions.db` 水合回来（`state=created`，`metadata.restored=true`），不自动拉起 IDA/x64dbg。监控台重启后继续用旧 id，不要再 `session.create` 一条新的。
+
+工作方向（`workspace_profile`）把工具面裁剪到单一场景：`pe` 隐藏 Android 与 Web 工具，`android` 隐藏 Web 工具，`web` 隐藏 Android 工具，默认 `full` 不裁剪。裁剪只影响**可见性**，完整 catalog 仍是唯一权威；读写策略是另一条独立边界。监控台开屏会让你选择方向，选择同时作用于 MCP 客户端下次连接看到的工具集、监控台 Agent 的工具面，以及检查器布局（PE 虚拟桌面 / Web 页面监视 / Android APK；侧栏在 Web 方向改为 URL）。
 
 动态写操作仅接受明确参数与白名单寄存器；无 `dynamic.command`。同样的原则贯穿新增面：**没有 `device.shell`、没有 `web.evaluate`、不接受调用方自带 Frida 脚本**——设备与浏览器上的每个能力都是具名且校验过参数的工具。设备序列号与包名按严格正则校验，杜绝参数注入。
 
@@ -129,14 +131,26 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `health_check_interval_s` 控制后台巡检间隔，设为 `0` 关闭（此时仍保留调用时重连）。
 
-### 无人值守（默认全部关闭）
+### 无人值守（加壳分析默认开；完全访问是开关）
 
-以下能力都是显式 opt-in，不配置时行为与之前完全一致。
+监控台对话框右侧是两档：`请求批准`（写操作停下等人）和 `完全访问`（放开
+`state_change` + `file_write`）。`PUT /api/agent/autonomy` 传
+`{"mode":"request"|"full_access"}` 即可切换并持久化。
 
-- **写操作自动批准**：`agent_auto_approve_effects` / `agent_auto_approve_tools` 按 effect 类别或
-  工具名放开；`agent_never_auto_approve` 优先级高于一切授权（含只读基线），写进去就是无条件停止。
-  自动执行的写操作会发 `approval.auto` 事件并写明是哪条规则批准的——审计日志分不清"策略批准"
-  和"人工批准"就不算审计日志。`GET /api/agent/autonomy` 可读回策略与它实际放开的工具清单。
+未在 config/环境里写 autonomy 键时，`Settings.load()` 默认放开加壳 PE 分析所需的
+`state_change` 以及 `dynamic.stealth.set` / unpack / `static.open` 等文件写入；
+`patches.apply` / `static.bytes.patch`、APK/Web 改包仍要人批。显式空列表
+（`agent_auto_approve_effects: []` 且 `agent_auto_approve_tools: []`）仍是 fail-closed。
+
+细粒度的 `agent_auto_approve_effects` / `agent_auto_approve_tools` 仍可用。
+`agent_never_auto_approve` 优先级高于一切授权（含只读基线），写进去就是无条件停止。
+自动执行的写操作会发 `approval.auto` 事件并写明是哪条规则批准的。
+`GET /api/agent/autonomy` 可读回 `mode`、策略与它实际放开的工具清单。
+
+加壳样本：`packer.classify` / `unpack.recommend` 给出 `stealth_profile`
+（tmd/Themida/WinLicense → `themida`）。`dynamic.open` / `dynamic.launch`
+省略该参数时按映射自动写 ScyllaHide ini，不必再等用户说「切到 tmd」。
+
 - **持久目标与调度**：run 有界（分钟级、十来轮工具），mission 是跨 run 存活的目标。调度器按最早
   优先认领、一次喂一个 run，完成判据是 run 自己输出 `MISSION_COMPLETE` 标记，而不是"没有再调用
   工具"——后者会在模型停下来思考时误判。`max_runs` 是强制预算。重启时在途 mission 退回 PENDING
@@ -162,7 +176,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-263 个工具的读写归类（148 只读 / 115 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+265 个工具的读写归类（149 只读 / 116 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 

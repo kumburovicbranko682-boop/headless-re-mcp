@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from headless_re_mcp.backends.x64dbg.stealth import remember_stealth_hint
 from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
@@ -288,9 +289,17 @@ class DetectAnalysisMixin:
                 raise InvalidStateTransition(
                     f"detect.scan cannot run in {session.state.value} state"
                 )
+            report_dict = merged.to_dict()
+            findings_payload = report_dict.get("findings")
+            if isinstance(findings_payload, list):
+                _, hint = remember_stealth_hint(
+                    [item for item in findings_payload if isinstance(item, dict)],
+                    architecture=session.architecture,
+                )
+                self.registry.update_metadata(session_id, hint)
             return _success(
                 {
-                    "report": merged.to_dict(),
+                    "report": report_dict,
                     "die_enabled": use_die,
                     "exeinfope_enabled": use_exeinfope,
                     "claims_universal_unpack": False,
@@ -402,12 +411,19 @@ class DetectAnalysisMixin:
                 FindingCategory.OBFUSCATOR.value,
             }
         ]
+        session = self.registry.get(session_id)
+        stealth_profile, hint = remember_stealth_hint(
+            candidates,
+            architecture=session.architecture,
+        )
+        self.registry.update_metadata(session_id, hint)
         return _success(
             {
                 "candidates": candidates,
                 "conclusion": "candidates" if candidates else "none_detected",
                 "report_sha256": report.get("sha256"),
                 "claims_universal_unpack": False,
+                "stealth_profile": stealth_profile,
             },
             session_id=session_id,
             backend="detection",

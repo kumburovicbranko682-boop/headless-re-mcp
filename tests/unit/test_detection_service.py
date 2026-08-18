@@ -150,6 +150,7 @@ def test_detection_explain_and_packer_classify_are_non_authoritative(tmp_path: P
     assert classified.ok and classified.data is not None
     assert classified.data["conclusion"] == "candidates"
     assert classified.data["candidates"][0]["category"] == "packer"
+    assert classified.data["stealth_profile"] is None
 
 
 def test_detection_rejects_changed_input_and_invalid_timeout(tmp_path: Path) -> None:

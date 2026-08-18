@@ -89,6 +89,8 @@ class AnalysisRepository(Protocol):
         self, *, offset: int = 0, limit: int = 100
     ) -> tuple[list[JsonObject], int]: ...
 
+    def peek_session(self, session_id: str) -> JsonObject | None: ...
+
     def append_audit(
         self,
         *,
@@ -295,6 +297,10 @@ class SqliteAnalysisRepository:
         self, *, offset: int = 0, limit: int = 100
     ) -> tuple[list[JsonObject], int]:
         return self.store.list_unclean_sessions(offset=offset, limit=limit)
+
+    def peek_session(self, session_id: str) -> JsonObject | None:
+        """Stored session row, even when this process no longer has it live."""
+        return self.store.get_session(session_id)
 
     def check_writable(self) -> None:
         """Raise unless the store would accept a write; used by the readiness probe."""
@@ -658,6 +664,11 @@ class InMemoryAnalysisRepository:
         window = max(1, min(int(limit), 1000))
         start = max(0, int(offset))
         return ordered[start : start + window], len(ordered)
+
+    def peek_session(self, session_id: str) -> JsonObject | None:
+        with self._lock:
+            row = self._sessions.get(session_id)
+            return dict(row) if row is not None else None
 
     def append_audit(
         self,

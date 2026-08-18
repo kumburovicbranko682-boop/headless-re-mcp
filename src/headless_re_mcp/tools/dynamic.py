@@ -73,12 +73,22 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         working_directory: str | None = None,
         timeout: RunControlTimeout = 30.0,
         pass_system_breakpoint: bool = False,
+        stealth_profile: str | None = None,
     ) -> dict[str, Any]:
         """Launch the session binary and wait for its initial debugger pause.
 
-        Answers with state, submitted and pass_system_breakpoint. When
+        Answers with state, submitted, pass_system_breakpoint, stealth_profile,
+        stealth_applied, stealth_ready and stealth_enabled. When
         pass_system_breakpoint is true, resume once after the first pause
         (typical system/entry breakpoint) so unpack workflows can continue.
+        Default leaves the debuggee paused; ui.virtual_desktop.snapshot
+        window_count stays 0 until dynamic.resume lets it create windows.
+        stealth_profile is a ScyllaHide whitelist id (vmp/themida/obsidium/
+        armadillo/basic/off) or an alias (tmd/winlicense/oreans/vmprotect).
+        Omit it to apply packer.classify's stealth_profile automatically.
+        If the debugger is not open, the profile is written then the backend
+        is opened; if it is already open and the requested profile differs,
+        the call is refused.
         """
         return _dump(
             analysis.dynamic_launch(
@@ -87,6 +97,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
                 working_directory=working_directory,
                 timeout=timeout,
                 pass_system_breakpoint=pass_system_breakpoint,
+                stealth_profile=stealth_profile,
             )
         )
 
@@ -320,4 +331,33 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         delete as still armed.
         """
         return _dump(analysis.dynamic_breakpoint_remove(session_id, address))
+
+    @tools.tool(name="dynamic.stealth.status")
+    def dynamic_stealth_status(session_id: str | None = None) -> dict[str, Any]:
+        """Report ScyllaHide plugin files and the current profile per architecture.
+
+        Answers with enabled, default_profile, allowed_profiles, ready,
+        architectures (plugin_present, current_profile, plugins_dir) and
+        live_sessions. Missing plugins set ready false; this does not claim
+        injection succeeded. optional session_id adds session_architecture.
+        """
+        return _dump(analysis.dynamic_stealth_status(session_id=session_id))
+
+    @tools.tool(name="dynamic.stealth.set")
+    def dynamic_stealth_set(
+        profile: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Write a whitelisted ScyllaHide profile before the debugger is opened.
+
+        profile is vmp, themida, obsidium, armadillo, basic, or off
+        (aliases: tmd/winlicense/oreans → themida, vmprotect → vmp).
+        Writes CurrentProfile in the live headless plugins ini. Refused with
+        debugger_already_open if any debugger of that architecture is already
+        running. armadillo is x86-only. off writes Disabled so hide is actually
+        turned off. Prefer calling this after packer.classify; open/launch will
+        apply stealth_profile themselves if this is skipped.
+        """
+        return _dump(analysis.dynamic_stealth_set(profile, session_id=session_id))
+
     return tools.bindings

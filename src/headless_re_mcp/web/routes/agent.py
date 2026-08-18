@@ -21,14 +21,15 @@ from headless_re_mcp.agent import (
 )
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.models import TERMINAL_RUN_STATUSES, MissionStatus
+from headless_re_mcp.agent.personas import PersonaStore
 from headless_re_mcp.agent.providers import OpenAICompatibleProvider
 from headless_re_mcp.agent.scheduler import MissionScheduler
-from headless_re_mcp.config import Settings, default_config_path
+from headless_re_mcp.config import Settings, default_config_path, update_config_values
 from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.watchdog import Watchdog, WatchdogPolicy
 from headless_re_mcp.tools.assembly import bind_all_tools
-from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport
+from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport, ToolEffect
 
 JsonObject = dict[str, Any]
 
@@ -79,6 +80,7 @@ def register_agent_routes(
     )
     configs = ProviderConfigStore(config_path)
     autonomy = AutonomyPolicy.from_settings(settings)
+    personas = PersonaStore(settings.artifact_root / "meta" / "personas")
     orchestrator = AgentOrchestrator(
         store,
         catalog,
@@ -88,6 +90,7 @@ def register_agent_routes(
         # Settings in place, so the web agent focuses on the chosen direction
         # without recreating the orchestrator.
         tool_profile_provider=lambda: getattr(service.settings, "workspace_profile", "full"),
+        persona_provider=personas.current_prompt,
     )
     watchdog_policy = WatchdogPolicy.from_settings(settings)
     watchdog = Watchdog(service, policy=watchdog_policy)
@@ -102,6 +105,7 @@ def register_agent_routes(
     app.state.agent_store = store
     app.state.provider_configs = configs
     app.state.agent_orchestrator = orchestrator
+    app.state.persona_store = personas
     app.state.mission_scheduler = scheduler
     app.state.watchdog = watchdog
     app.state.tool_catalog = catalog
@@ -137,7 +141,91 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
-        return JSONResponse({"ok": True, "thread": item.dump(), "messages": [message.dump() for message in store.list_messages(thread_id)]})
+        return JSONResponse(
+            {
+                "ok": True,
+                "thread": item.dump(),
+                "messages": [message.dump() for message in store.list_messages(thread_id)],
+                "events": [event.dump() for event in store.list_thread_events(thread_id)],
+            }
+        )
+
+    @app.patch("/api/agent/threads/{thread_id}")
+    def bind_thread(thread_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        if "session_id" not in body:
+            raise HTTPException(status_code=400, detail="session_id_required")
+        session_id = body.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="invalid_session_id")
+        bound_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
+        try:
+            item = store.bind_thread_session(thread_id, bound_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="thread_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "thread": item.dump()})
+
+    @app.delete("/api/agent/threads/{thread_id}")
+    def delete_thread(thread_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        try:
+            store.delete_thread(thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="thread_not_found") from exc
+        return JSONResponse({"ok": True})
+
+    @app.get("/api/agent/personas")
+    def list_personas(authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        return JSONResponse({"ok": True, **personas.list_public()})
+
+    @app.post("/api/agent/personas/select")
+    def select_persona(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        persona_id = body.get("id")
+        if not isinstance(persona_id, str) or not persona_id.strip():
+            raise HTTPException(status_code=400, detail="persona_id_required")
+        try:
+            listed = personas.select(persona_id.strip())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="persona_not_found") from exc
+        return JSONResponse({"ok": True, **listed})
+
+    @app.post("/api/agent/personas/import")
+    def import_persona(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        try:
+            path = body.get("path")
+            content = body.get("content")
+            title = body.get("title")
+            if isinstance(path, str) and path.strip():
+                listed = personas.import_path(Path(path.strip()))
+            elif isinstance(content, str):
+                listed = personas.import_markdown(
+                    title=str(title or "imported"),
+                    body=content,
+                    source="upload",
+                )
+            else:
+                raise HTTPException(status_code=400, detail="persona_source_required")
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, **listed})
+
+    @app.delete("/api/agent/personas/{persona_id}")
+    def delete_persona(persona_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:
+        authorize(authorization)
+        try:
+            listed = personas.delete(persona_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="persona_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, **listed})
 
     @app.post("/api/agent/threads/{thread_id}/messages", status_code=201)
     def add_message(thread_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -190,17 +278,65 @@ def register_agent_routes(
             raise HTTPException(status_code=404, detail="run_not_found") from exc
         return JSONResponse({"ok": True, "run": run}, status_code=202)
 
+    def _persist_autonomy(policy: AutonomyPolicy) -> None:
+        update_config_values(
+            {
+                "agent_auto_approve_effects": sorted(item.value for item in policy.auto_approve_effects),
+                "agent_auto_approve_tools": sorted(policy.auto_approve_tools),
+                "agent_never_auto_approve": sorted(policy.never_auto_approve),
+            }
+        )
+
+    def _autonomy_body(policy: AutonomyPolicy) -> dict[str, object]:
+        unattended = sorted(
+            spec.name
+            for spec in catalog.for_transport(CommandTransport.AGENT)
+            if spec.write and policy.decide(spec).approved
+        )
+        return {
+            "ok": True,
+            "mode": policy.mode.value,
+            "policy": policy.describe(),
+            "auto_executable_writes": unattended,
+            "auto_executable_write_count": len(unattended),
+        }
+
+    def _remember_approval(run_id: str, tool_call_id: str, remember: str) -> AutonomyPolicy:
+        call = store.get_tool_call(run_id, tool_call_id)
+        name = str(call["name"])
+        spec = catalog.require(name)
+        if remember == "tool":
+            policy = orchestrator.autonomy.grant(tools=(name,))
+        elif remember == "effect":
+            policy = orchestrator.autonomy.grant(
+                effects=tuple(item.value for item in spec.effects if item is not ToolEffect.READ_ONLY)
+            )
+        else:
+            raise ValueError("remember must be 'tool' or 'effect'")
+        orchestrator.autonomy = policy
+        _persist_autonomy(policy)
+        return policy
+
     async def _decision(run_id: str, tool_call_id: str, body: JsonObject, approved: bool) -> JSONResponse:
         value = body.get("args_sha256")
         if not isinstance(value, str) or len(value) != 64:
             raise HTTPException(status_code=400, detail="args_sha256_required")
+        remember = body.get("remember")
+        if remember not in (None, "", "tool", "effect"):
+            raise HTTPException(status_code=400, detail="remember_invalid")
+        policy = None
         try:
             decision = await orchestrator.decide(run_id, tool_call_id, value, approved=approved)
+            if approved and remember in {"tool", "effect"}:
+                policy = _remember_approval(run_id, tool_call_id, str(remember)).describe()
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="tool_call_not_found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return JSONResponse({"ok": True, "tool_call": decision})
+        payload: dict[str, object] = {"ok": True, "tool_call": decision}
+        if policy is not None:
+            payload["policy"] = policy
+        return JSONResponse(payload)
 
     @app.post("/api/agent/runs/{run_id}/tool-calls/{tool_call_id}/approve")
     async def approve(run_id: str, tool_call_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -365,20 +501,43 @@ def register_agent_routes(
         exactly which write tools were opened up.
         """
         authorize(authorization)
-        policy = orchestrator.autonomy
-        unattended = sorted(
-            spec.name
-            for spec in catalog.for_transport(CommandTransport.AGENT)
-            if spec.write and policy.decide(spec).approved
-        )
-        return JSONResponse(
-            {
-                "ok": True,
-                "policy": policy.describe(),
-                "auto_executable_writes": unattended,
-                "auto_executable_write_count": len(unattended),
-            }
-        )
+        return JSONResponse(_autonomy_body(orchestrator.autonomy))
+
+    @app.put("/api/agent/autonomy")
+    def update_autonomy(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
+        """Switch the two-mode policy, or grant/revoke individual rules.
+
+        ``mode`` is the Web UI switch: ``request`` restores the fail-closed
+        default, ``full_access`` auto-approves every write effect class. It
+        replaces the current grants rather than stacking on them. The older
+        add/remove lists stay for remembered tools and for scripts.
+        """
+        authorize(authorization)
+        if body.get("mode") not in (None, ""):
+            try:
+                policy = orchestrator.autonomy.with_mode(str(body["mode"]))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            orchestrator.autonomy = policy
+            _persist_autonomy(policy)
+            return JSONResponse(_autonomy_body(policy))
+        add_tools = body.get("add_tools") or []
+        add_effects = body.get("add_effects") or []
+        remove_tools = body.get("remove_tools") or []
+        if not isinstance(add_tools, list) or not isinstance(add_effects, list) or not isinstance(remove_tools, list):
+            raise HTTPException(status_code=400, detail="autonomy_lists_required")
+        try:
+            policy = orchestrator.autonomy.grant(
+                tools=[str(item) for item in add_tools],
+                effects=[str(item) for item in add_effects],
+            )
+            if remove_tools:
+                policy = policy.revoke_tools(str(item) for item in remove_tools)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        orchestrator.autonomy = policy
+        _persist_autonomy(policy)
+        return JSONResponse(_autonomy_body(policy))
 
     @app.get("/api/providers")
     def providers(authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -389,11 +548,17 @@ def register_agent_routes(
     def save_provider(profile_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
         authorize(authorization)
         try:
+            try:
+                existing = configs.get(profile_id)
+            except KeyError:
+                existing = None
+            incoming_key = body.get("api_key")
+            api_key = str(incoming_key) if isinstance(incoming_key, str) and incoming_key.strip() else (existing.api_key if existing else None)
             profile = ProviderProfile(
                 id=profile_id,
-                base_url=str(body.get("base_url") or ""),
-                model=str(body.get("model") or ""),
-                api_key=str(body["api_key"]) if body.get("api_key") else None,
+                base_url=str(body.get("base_url") or (existing.base_url if existing else "")),
+                model=str(body.get("model") or (existing.model if existing else "")),
+                api_key=api_key,
                 known_models=[str(x) for x in body.get("known_models", []) if isinstance(x, str)],
                 model_catalogs=[dict(x) for x in body.get("model_catalogs", []) if isinstance(x, dict)],
                 enable_thinking=bool(body.get("enable_thinking", False)),
@@ -411,6 +576,10 @@ def register_agent_routes(
         try:
             provider = OpenAICompatibleProvider(configs.get(profile_id), timeout=30.0)
             models = await provider.list_models()
+            if models:
+                current = configs.get(profile_id)
+                current.known_models = models
+                configs.save(current, make_current=False)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="profile_not_found") from exc
         except Exception as exc:

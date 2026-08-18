@@ -1,3 +1,5 @@
+const TOKEN_MISSING = "缺少 Web 令牌，请用启动时带 token 的链接重新打开";
+
 let token = "";
 
 export function bootstrapToken(locationLike: Location = window.location): string {
@@ -15,29 +17,38 @@ export function bootstrapToken(locationLike: Location = window.location): string
 
 export function setTokenForTests(value: string): void { token = value; }
 
+function authHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+}
+
+function throwIfFailed(response: Response, payload: Record<string, unknown>): void {
+  if (response.ok) return;
+  if (response.status === 401) throw new Error(TOKEN_MISSING);
+  const error = payload.error as Record<string, unknown> | undefined;
+  throw new Error(String(error?.message ?? payload.detail ?? `HTTP ${response.status}`));
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!token) throw new Error("Web token missing; reopen the launch URL");
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
+  const headers = authHeaders(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const payload = await response.json().catch(() => ({ detail: response.statusText })) as Record<string, unknown>;
-  if (!response.ok) throw new Error(String(payload.detail ?? `HTTP ${response.status}`));
+  throwIfFailed(response, payload);
   return payload as T;
 }
 
 export async function apiBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-  if (!token) throw new Error("Web token missing; reopen the launch URL");
   const response = await fetch(path, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(),
     credentials: "same-origin",
     cache: "no-store",
     signal,
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText })) as Record<string, unknown>;
-    const error = payload.error as Record<string, unknown> | undefined;
-    throw new Error(String(error?.message ?? payload.detail ?? `HTTP ${response.status}`));
+    throwIfFailed(response, payload);
   }
   return response.blob();
 }
@@ -45,17 +56,15 @@ export async function apiBlob(path: string, signal?: AbortSignal): Promise<Blob>
 export type FrameResult = { blob: Blob; degraded: boolean; reason: string | null; backend: string | null };
 
 export async function apiFrame(path: string, signal?: AbortSignal): Promise<FrameResult> {
-  if (!token) throw new Error("Web token missing; reopen the launch URL");
   const response = await fetch(path, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(),
     credentials: "same-origin",
     cache: "no-store",
     signal,
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText })) as Record<string, unknown>;
-    const error = payload.error as Record<string, unknown> | undefined;
-    throw new Error(String(error?.message ?? payload.detail ?? `HTTP ${response.status}`));
+    throwIfFailed(response, payload);
   }
   const blob = await response.blob();
   return {
@@ -72,10 +81,12 @@ export async function streamEvents(
   onEvent: (event: { type: string; data: string; id?: string }) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  if (!token) throw new Error("Web token missing");
+  const headers = authHeaders();
+  headers.set("Accept", "text/event-stream");
   const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/events?after=${after}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" }, signal, credentials: "same-origin",
+    headers, signal, credentials: "same-origin",
   });
+  if (response.status === 401) throw new Error(TOKEN_MISSING);
   if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
 import secrets
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +34,7 @@ except ImportError:  # pragma: no cover - optional web extra
 JsonObject = dict[str, Any]
 _STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 _SPA_DIR = Path(__file__).resolve().parents[1] / "spa"
+_WEB_STARTED_AT = datetime.now(UTC).isoformat()
 _LEGACY_MONITOR_MARKERS = (
     '<meta name="legacy-monitor-contract" content="'
     "\u5b9e\u65f6\u5de5\u4f5c\u6d41\u76d1\u63a7 wizard-backdrop "
@@ -44,6 +47,29 @@ _LEGACY_MONITOR_MARKERS = (
 
 def _result_payload(result: Result[Any]) -> JsonObject:
     return result.model_dump(mode="json")
+
+
+def repair_encoded_token_query(query_string: bytes) -> bytes:
+    """Turn ``token%3DSECRET`` back into ``token=SECRET``.
+
+    Chat and some JSON viewers encode the ``=`` so the address bar shows
+    ``?token%3D…``. Starlette then treats the whole ``token=SECRET`` as the
+    parameter *name*, ``Query(alias='token')`` is empty, and ``/`` answers
+    ``{"detail":"unauthorized"}``.
+    """
+    if not query_string or b"token%3d" not in query_string.lower():
+        return query_string
+    raw = query_string.decode("ascii", errors="replace")
+    lower = raw.lower()
+    marker = "token%3d"
+    idx = lower.find(marker)
+    if idx < 0:
+        return query_string
+    prefix = raw[:idx]
+    rest = raw[idx + len(marker) :]
+    amp = rest.find("&")
+    secret, tail = (rest[:amp], rest[amp:]) if amp >= 0 else (rest, "")
+    return f"{prefix}token={secret}{tail}".encode("ascii", errors="replace")
 
 
 def register_legacy_routes(
@@ -63,6 +89,7 @@ def register_legacy_routes(
             StreamingResponse,
         )
         from fastapi.staticfiles import StaticFiles
+        from starlette.datastructures import MutableHeaders
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("web extra required: pip install 'headless-re-mcp[web]'") from exc
 
@@ -83,6 +110,16 @@ def register_legacy_routes(
         if not addr.is_loopback:
             raise HTTPException(status_code=403, detail="loopback_only")
 
+    def _bootstrap_cookie_ok(token_cookie: str | None) -> bool:
+        if not token_cookie:
+            return False
+        sessions: set[str] = app.state.bootstrap_sessions
+        return any(
+            len(token_cookie) == len(session_token)
+            and secrets.compare_digest(token_cookie, session_token)
+            for session_token in tuple(sessions)
+        )
+
     def _require_token(
         authorization: str | None,
         token_query: str | None,
@@ -93,19 +130,42 @@ def register_legacy_routes(
             provided = authorization[7:].strip()
         elif token_query:
             provided = token_query.strip()
-        elif token_cookie and any(
-            secrets.compare_digest(token_cookie, session_token)
-            for session_token in app.state.bootstrap_sessions
-        ):
+        elif _bootstrap_cookie_ok(token_cookie):
             return
         if not provided or not secrets.compare_digest(provided, token):
             raise HTTPException(status_code=401, detail="unauthorized")
+
+    @app.middleware("http")
+    async def repair_token_query(request: Request, call_next: Callable[..., Any]) -> Any:
+        repaired = repair_encoded_token_query(request.scope.get("query_string", b""))
+        if repaired != request.scope.get("query_string", b""):
+            request.scope["query_string"] = repaired
+        return await call_next(request)
 
     @app.middleware("http")
     async def loopback_guard(request: Request, call_next: Callable[..., Any]) -> Any:
         if request.url.path == "/healthz":
             return await call_next(request)
         _require_loopback(request)
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def promote_bootstrap_cookie(request: Request, call_next: Callable[..., Any]) -> Any:
+        """Let the HttpOnly session cookie authenticate APIs after /?token= is stripped.
+
+        The SPA removes the token from the visible URL so it is not copied or
+        logged. Refresh then loads HTML via this cookie but used to 401 every
+        /api call because those routes only accepted Bearer. Promote a valid
+        bootstrap cookie to an internal Authorization header so the existing
+        per-route checks keep working without sending the master token back to JS.
+        """
+        if request.url.path in {"/healthz", "/readyz", "/metrics"}:
+            return await call_next(request)
+        if _bootstrap_cookie_ok(request.cookies.get("headless_re_bootstrap")) and not request.headers.get(
+            "authorization"
+        ):
+            headers = MutableHeaders(scope=request.scope)
+            headers["authorization"] = f"Bearer {token}"
         return await call_next(request)
 
     @app.get("/healthz")
@@ -115,7 +175,12 @@ def register_legacy_routes(
         Deliberately touches nothing else, so a restart loop can never be caused
         by a slow backend. Readiness is a separate question, answered by /readyz.
         """
-        return {"ok": True, "service": "headless-re-mcp-web", "build": build_info()}
+        return {
+            "ok": True,
+            "service": "headless-re-mcp-web",
+            "build": build_info(),
+            "started_at": _WEB_STARTED_AT,
+        }
 
     @app.get("/readyz")
     def readyz() -> JSONResponse:
@@ -153,7 +218,17 @@ def register_legacy_routes(
         authorization: str | None = Header(default=None),
         token_q: str | None = Query(default=None, alias="token"),
     ) -> HTMLResponse:
-        _require_token(authorization, token_q, request.cookies.get("headless_re_bootstrap"))
+        try:
+            _require_token(authorization, token_q, request.cookies.get("headless_re_bootstrap"))
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            return HTMLResponse(
+                "<!doctype html><meta charset=utf-8><title>需要访问令牌</title>"
+                "<p>请用启动日志里的完整链接打开本机工作台。"
+                "地址必须是 <code>?token=…</code>，不要把等号编成 <code>%3D</code>。</p>",
+                status_code=401,
+            )
         selected_static = _SPA_DIR if (_SPA_DIR / "index.html").is_file() else _STATIC_DIR
         index_path = selected_static / "index.html"
         html = index_path.read_text(encoding="utf-8")
@@ -383,6 +458,236 @@ def register_legacy_routes(
         _require_token(authorization, token_q)
         return JSONResponse(_result_payload(service.list_sessions()))
 
+    @app.get("/api/sessions/unclean")
+    def sessions_unclean(
+        offset: int = 0,
+        limit: int = 20,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Sample paths left behind when this process died, newest first."""
+        _require_token(authorization, token_q)
+        cap = max(1, min(int(limit), 100))
+        start = max(0, int(offset))
+        return JSONResponse(_result_payload(service.sessions_unclean(offset=start, limit=cap)))
+
+    @app.post("/api/sessions")
+    def sessions_create(
+        body: JsonObject,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        binary = body.get("binary")
+        if not isinstance(binary, str) or not binary.strip():
+            raise HTTPException(status_code=400, detail="binary_required")
+        target = body.get("target")
+        kind = target.strip() if isinstance(target, str) and target.strip() else None
+        result = service.create_session(binary.strip(), kind)
+        return JSONResponse(_result_payload(result))
+
+    @app.post("/api/ui/pick-file")
+    def pick_file(
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Native open-file dialog on this machine (loopback console only)."""
+        _require_token(authorization, token_q)
+        from headless_re_mcp.core.windows import pick_open_file_status
+
+        if os.name != "nt":
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "data": {
+                        "path": None,
+                        "cancelled": False,
+                        "available": False,
+                        "busy": False,
+                    },
+                }
+            )
+        picked = pick_open_file_status()
+        path = picked.get("path") if isinstance(picked, dict) else None
+        return JSONResponse(
+            {
+                "ok": True,
+                "data": {
+                    "path": path if isinstance(path, str) and path.strip() else None,
+                    "cancelled": bool(picked.get("cancelled")) if isinstance(picked, dict) else False,
+                    "available": bool(picked.get("available", True)) if isinstance(picked, dict) else True,
+                    "busy": bool(picked.get("busy")) if isinstance(picked, dict) else False,
+                    "error": picked.get("error") if isinstance(picked, dict) else None,
+                },
+            }
+        )
+
+    @app.post("/api/sessions/{session_id}/static/open")
+    def session_open_static(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.open_static(session_id)))
+
+    @app.post("/api/sessions/{session_id}/dynamic/open")
+    def session_open_dynamic(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.open_dynamic(session_id)))
+
+    @app.post("/api/sessions/{session_id}/dynamic/resume")
+    def session_dynamic_resume(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.dynamic_resume(session_id)))
+
+    @app.post("/api/sessions/{session_id}/dynamic/pause")
+    def session_dynamic_pause(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.dynamic_pause(session_id)))
+
+    @app.post("/api/sessions/{session_id}/close")
+    def session_close(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.close_session(session_id)))
+
+    def _body_text(body: JsonObject | None, key: str) -> str:
+        if not isinstance(body, dict):
+            return ""
+        value = body.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    @app.post("/api/sessions/{session_id}/web/open")
+    def session_web_open(
+        session_id: str,
+        body: JsonObject | None = None,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        headless = True if not isinstance(body, dict) or "headless" not in body else bool(body.get("headless"))
+        return JSONResponse(
+            _result_payload(service.web_open(session_id, url=_body_text(body, "url"), headless=headless))
+        )
+
+    @app.post("/api/sessions/{session_id}/web/navigate")
+    def session_web_navigate(
+        session_id: str,
+        body: JsonObject | None = None,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        url = _body_text(body, "url")
+        if not url:
+            raise HTTPException(status_code=400, detail="url_required")
+        return JSONResponse(_result_payload(service.web_navigate(session_id, url)))
+
+    @app.post("/api/sessions/{session_id}/web/close")
+    def session_web_close(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.web_close(session_id)))
+
+    @app.get("/api/sessions/{session_id}/web/status")
+    def session_web_status(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.web_status(session_id)))
+
+    @app.get("/api/sessions/{session_id}/web/network")
+    def session_web_network(
+        session_id: str,
+        offset: int = 0,
+        limit: int = 40,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(
+            _result_payload(service.web_network_list(session_id, offset=offset, limit=limit))
+        )
+
+    @app.get("/api/sessions/{session_id}/web/console")
+    def session_web_console(
+        session_id: str,
+        limit: int = 40,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.web_console(session_id, limit=limit)))
+
+    @app.get("/api/sessions/{session_id}/web/scripts")
+    def session_web_scripts(
+        session_id: str,
+        offset: int = 0,
+        limit: int = 40,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(
+            _result_payload(service.web_scripts(session_id, offset=offset, limit=limit))
+        )
+
+    @app.get("/api/sessions/{session_id}/web/preview")
+    def session_web_preview(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> Any:
+        """Capture the current page to a stable PNG for the inspector."""
+        _require_token(authorization, token_q)
+        captured = service.web_preview(session_id)
+        if not captured.ok or captured.data is None:
+            error = captured.error.model_dump(mode="json") if captured.error else None
+            return JSONResponse({"ok": False, "error": error}, status_code=409)
+        path_value = captured.data.get("path")
+        if not isinstance(path_value, str):
+            raise HTTPException(status_code=500, detail="preview_path_missing")
+        path = Path(path_value).resolve()
+        artifact_root = service.settings.artifact_root.expanduser().resolve()
+        if not path.is_file() or not path.is_relative_to(artifact_root):
+            raise HTTPException(status_code=404, detail="preview_not_found")
+        return FileResponse(
+            path,
+            media_type="image/png",
+            filename=f"web-{session_id}.png",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post("/api/sessions/{session_id}/apk/open")
+    def session_apk_open(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.apk_open(session_id)))
+
     @app.get("/api/sessions/{session_id}")
     def session_get(
         session_id: str,
@@ -391,6 +696,16 @@ def register_legacy_routes(
     ) -> JSONResponse:
         _require_token(authorization, token_q)
         return JSONResponse(_result_payload(service.get_session(session_id)))
+
+    @app.get("/api/sessions/{session_id}/last-known")
+    def session_last_known(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> JSONResponse:
+        """Live session, or the stored binary path after a console restart."""
+        _require_token(authorization, token_q)
+        return JSONResponse(_result_payload(service.peek_session_record(session_id)))
 
     @app.get("/api/sessions/{session_id}/static/functions")
     def static_functions(
@@ -709,13 +1024,18 @@ def register_legacy_routes(
 
     @app.get("/api/audit")
     def audit(
+        session_id: str | None = None,
         offset: int = 0,
         limit: int = 100,
         authorization: str | None = Header(default=None),
         token_q: str | None = Query(default=None, alias="token"),
     ) -> JSONResponse:
         _require_token(authorization, token_q)
-        return JSONResponse(_result_payload(service.audit_list(offset=offset, limit=limit)))
+        return JSONResponse(
+            _result_payload(
+                service.audit_list(session_id=session_id, offset=offset, limit=limit)
+            )
+        )
 
     @app.post("/api/write/{action}")
     def write_action(

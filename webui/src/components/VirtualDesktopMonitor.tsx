@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiFrame } from "../api/client";
+import {
+  captureDegradedHint,
+  captureFailureHint,
+  desktopPreviewHint,
+  desktopPreviewTitle,
+  pickBestHwnd,
+  stripErrorPrefix,
+  windowIsCapturable,
+} from "../lib/desktopPreview";
+import { isSessionGone, inspectorDisconnectedHint } from "../lib/sessionGone";
 
 type DesktopWindow = {
   hwnd: number;
@@ -18,11 +28,22 @@ type DesktopSnapshot = {
   name?: string;
   input_desktop: boolean;
   window_count: number;
+  desktop_window_count?: number;
   windows: DesktopWindow[];
   debuggee_pid?: number | null;
   debugger_pid?: number;
   allowed_pids?: number[];
   capture_mode?: string;
+  debuggee_state?: string | null;
+  hint?: string | null;
+  suggestion?: string | null;
+};
+
+const MODE_LABEL: Record<string, string> = {
+  hidden_win32: "隐藏桌面",
+  input_desktop: "当前桌面",
+  default: "当前桌面",
+  unavailable: "不可用",
 };
 
 type DesktopEnvelope = {
@@ -31,39 +52,59 @@ type DesktopEnvelope = {
   error?: { code?: string; message?: string };
 };
 
-export function VirtualDesktopMonitor({ sessionId }: { sessionId: string }) {
+export function VirtualDesktopMonitor({ sessionId, onSessionMissing }: { sessionId: string; onSessionMissing?: (id: string) => void }) {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [selectedHwnd, setSelectedHwnd] = useState<number | null>(null);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [degraded, setDegraded] = useState<{ reason: string | null; backend: string | null } | null>(null);
-  const [live, setLive] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const frameUrlRef = useRef<string | null>(null);
   const capturingRef = useRef(false);
+  const windowsRef = useRef<DesktopWindow[]>([]);
 
   const loadSnapshot = useCallback(async () => {
     if (!sessionId) { setSnapshot(null); return; }
+    try {
     const result = await api<DesktopEnvelope>(`/api/sessions/${encodeURIComponent(sessionId)}/virtual-desktop`);
     if (!result.ok || !result.data) {
       setSnapshot(null);
-      setError(result.error?.message ?? "Dynamic backend is not open");
+      const gone = isSessionGone(result.error);
+      setError(gone ? inspectorDisconnectedHint() : (result.error?.message ?? "动态后端未打开"));
+      if (gone) onSessionMissing?.(sessionId);
       return;
     }
     const data = result.data;
-    setSnapshot(data);
+    const windows = Array.isArray(data.windows) ? data.windows : [];
+    setSnapshot({ ...data, windows, window_count: data.window_count ?? windows.length });
     setError(null);
     setSelectedHwnd((current) => {
-      if (current && data.windows.some((row) => row.hwnd === current)) return current;
-      const ranked = [...data.windows].sort((a, b) => Number(b.visible) - Number(a.visible) || b.area - a.area);
-      return ranked[0]?.hwnd ?? null;
+      if (current && windows.some((row) => row.hwnd === current)) return current;
+      return pickBestHwnd(windows);
     });
-  }, [sessionId]);
+    if (windows.length > 0 && pickBestHwnd(windows) === null) {
+      setDegraded({ reason: "empty_capture", backend: null });
+    }
+    } catch (reason) {
+      setSnapshot(null);
+      setError(stripErrorPrefix(String(reason)));
+    }
+  }, [onSessionMissing, sessionId]);
 
   const capture = useCallback(async () => {
     if (!sessionId || !selectedHwnd || capturingRef.current) return;
+    const row = windowsRef.current.find((item) => item.hwnd === selectedHwnd);
+    if (row && !windowIsCapturable(row)) {
+      if (frameUrlRef.current) {
+        URL.revokeObjectURL(frameUrlRef.current);
+        frameUrlRef.current = null;
+      }
+      setFrameUrl(null);
+      setDegraded({ reason: "empty_capture", backend: null });
+      setError(null);
+      return;
+    }
     capturingRef.current = true;
-    setBusy(true);
     try {
       const frame = await apiFrame(`/api/sessions/${encodeURIComponent(sessionId)}/virtual-desktop/frame?hwnd=${selectedHwnd}`);
       const next = URL.createObjectURL(frame.blob);
@@ -73,63 +114,97 @@ export function VirtualDesktopMonitor({ sessionId }: { sessionId: string }) {
       setDegraded(frame.degraded ? { reason: frame.reason, backend: frame.backend } : null);
       setError(null);
     } catch (reason) {
-      setError(String(reason));
+      const mapped = captureFailureHint(String(reason));
+      if (mapped.kind === "degraded") {
+        setDegraded({ reason: mapped.reason, backend: null });
+        setError(null);
+      } else {
+        setError(mapped.text);
+        setDegraded(null);
+      }
     } finally {
       capturingRef.current = false;
-      setBusy(false);
     }
   }, [selectedHwnd, sessionId]);
 
+  const call = async (label: string, path: string) => {
+    if (!sessionId) return;
+    setBusy(label); setError(null);
+    try {
+      const result = await api<{ ok?: boolean; error?: { message?: string } }>(path, { method: "POST", body: JSON.stringify({}) });
+      if (result.ok === false) throw new Error(result.error?.message ?? `${label} failed`);
+      await loadSnapshot();
+    } catch (reason) {
+      setError(stripErrorPrefix(String(reason)));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   useEffect(() => {
-    setLive(false);
     setSelectedHwnd(null);
     setError(null);
     setDegraded(null);
     void loadSnapshot();
     if (!sessionId) return undefined;
-    const timer = window.setInterval(() => void loadSnapshot(), 1500);
+    const timer = window.setInterval(() => void loadSnapshot(), 1000);
     return () => window.clearInterval(timer);
   }, [loadSnapshot, sessionId]);
 
   useEffect(() => {
-    if (!live) return undefined;
+    if (!selectedHwnd) {
+      if (frameUrlRef.current) {
+        URL.revokeObjectURL(frameUrlRef.current);
+        frameUrlRef.current = null;
+      }
+      setFrameUrl(null);
+      return undefined;
+    }
     void capture();
-    const timer = window.setInterval(() => void capture(), 2000);
+    const timer = window.setInterval(() => void capture(), 800);
     return () => window.clearInterval(timer);
-  }, [capture, live]);
+  }, [capture, selectedHwnd]);
 
   useEffect(() => () => {
     if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
   }, []);
+
+  windowsRef.current = snapshot?.windows ?? [];
 
   const selected = useMemo(
     () => snapshot?.windows.find((row) => row.hwnd === selectedHwnd) ?? null,
     [selectedHwnd, snapshot],
   );
 
-  if (!sessionId) return <div className="desktop-empty">Select an analysis session to monitor its desktop.</div>;
+  if (!sessionId) return <div className="desktop-empty">打开分析会话后会自动监视虚拟桌面。</div>;
+
+  const paused = snapshot?.debuggee_state === "paused";
+  const running = snapshot?.debuggee_state === "running";
+  const modeClass = snapshot?.available ? (paused ? "paused" : "ready") : "off";
 
   return <section className="desktop-monitor">
     <div className="desktop-toolbar">
-      <span className={`desktop-mode ${snapshot?.available ? "ready" : "off"}`}>{snapshot?.mode ?? "unavailable"}</span>
-      <button onClick={() => void loadSnapshot()}>Refresh</button>
-      <button disabled={!selectedHwnd || busy || !snapshot?.available} onClick={() => void capture()}>{busy ? "Capturing…" : "Capture"}</button>
-      <label><input type="checkbox" checked={live} disabled={!selectedHwnd || !snapshot?.available} onChange={(event) => setLive(event.target.checked)} /> 2s live</label>
+      <span className={`desktop-mode ${modeClass}`}>{snapshot?.available ? (MODE_LABEL[snapshot.mode] ?? (snapshot.mode || "监视中")) : "等待动态后端"}</span>
+      <span className="desktop-live-tag">强制监视</span>
+      {paused && <button type="button" className="primary" disabled={Boolean(busy)} onClick={() => void call("继续运行", `/api/sessions/${encodeURIComponent(sessionId)}/dynamic/resume`)}>{busy === "继续运行" ? "继续中…" : "继续运行"}</button>}
+      {running && <button type="button" disabled={Boolean(busy)} onClick={() => void call("暂停", `/api/sessions/${encodeURIComponent(sessionId)}/dynamic/pause`)}>{busy === "暂停" ? "暂停中…" : "暂停"}</button>}
     </div>
     {snapshot && <div className="desktop-meta">
-      <span>{snapshot.name ?? "Default desktop"}</span><span>{snapshot.window_count} windows</span>
-      <span>target {snapshot.debuggee_pid ?? "idle"}</span><span>input: {snapshot.input_desktop ? "yes" : "no"}</span>
+      <span>{snapshot.name ?? "默认桌面"}</span>
+      <span>{snapshot.window_count} 个目标窗口{typeof snapshot.desktop_window_count === "number" && snapshot.desktop_window_count !== snapshot.window_count ? ` · 桌面共 ${snapshot.desktop_window_count}` : ""}</span>
+      <span>目标 {snapshot.debuggee_pid ?? "空闲"}{snapshot.debuggee_state ? ` · ${snapshot.debuggee_state}` : ""}</span>
+      <span>输入桌面：{snapshot.input_desktop ? "是" : "否"}</span>
     </div>}
-    {error && <div className="desktop-error">{error}</div>}
+    {error && !degraded && <div className="desktop-error">{error}</div>}
     <div className="desktop-preview">
-      {frameUrl ? <img src={frameUrl} alt={`Hidden desktop window ${selectedHwnd ?? ""}`} /> : <div><b>Passive monitor</b><span>Choose a target window and capture on demand.</span></div>}
+      {frameUrl ? <img src={frameUrl} alt={`桌面窗口 ${selectedHwnd ?? ""}`} /> : <div><b>{desktopPreviewTitle(snapshot)}</b><span>{desktopPreviewHint(snapshot)}</span></div>}
     </div>
-    {degraded && <div className="desktop-degraded">Capture degraded{degraded.reason ? ` · ${degraded.reason}` : ""} — GPU/DirectX/Chromium surfaces can return a blank frame via PrintWindow; no desktop switch was attempted.</div>}
+    {degraded && <div className="desktop-degraded">{captureDegradedHint(degraded.reason)}</div>}
     {selected && <div className="desktop-selection"><b>{selected.title || selected.class_name}</b><span>HWND {selected.hwnd} · PID {selected.pid} · {selected.rect?.width ?? 0}×{selected.rect?.height ?? 0}</span></div>}
     <div className="desktop-windows">
       {(snapshot?.windows ?? []).map((row) => <button className={row.hwnd === selectedHwnd ? "selected" : ""} key={row.hwnd} onClick={() => setSelectedHwnd(row.hwnd)}>
-        <span>{row.title || row.class_name || `Window ${row.hwnd}`}</span>
-        <small>{row.pid} · {row.visible ? "visible" : "hidden"}{row.minimized ? " · minimized" : ""}</small>
+        <span>{row.title || row.class_name || `窗口 ${row.hwnd}`}</span>
+        <small>{row.pid} · {row.visible ? "可见" : "隐藏"}{row.minimized ? " · 最小化" : ""}</small>
       </button>)}
     </div>
   </section>;

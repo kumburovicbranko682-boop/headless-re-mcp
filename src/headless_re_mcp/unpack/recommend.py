@@ -7,7 +7,13 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from headless_re_mcp.backends.x64dbg.stealth import profile_from_candidates
+
 JsonObject = dict[str, Any]
+_STEALTH_FIRST_TOOLS: Final[tuple[str, ...]] = (
+    "dynamic.stealth.set",
+    "dynamic.launch",
+)
 
 _UPX_NAME = re.compile(r"\bupx\b", re.IGNORECASE)
 _DOTNET_NAME = re.compile(r"(\.net|dotnet|dnlib|reactor|confuser)", re.IGNORECASE)
@@ -35,6 +41,7 @@ class UnpackRecommendation(BaseModel):
     authoritative: bool = False
     # For bounded_dynamic: expected recoverability posture before runtime gates.
     recoverability_hint: str | None = None
+    stealth_profile: str | None = None
 
     def to_dict(self) -> JsonObject:
         value = self.model_dump(mode="json")
@@ -64,6 +71,15 @@ def pe_suggests_vm_protector(
     )
 
 
+def _attach_stealth(result: UnpackRecommendation) -> UnpackRecommendation:
+    profile = profile_from_candidates(result.candidates)
+    tools = result.suggested_tools
+    if profile:
+        extra = tuple(name for name in _STEALTH_FIRST_TOOLS if name not in tools)
+        tools = extra + tools
+    return result.model_copy(update={"stealth_profile": profile, "suggested_tools": tools})
+
+
 def recommend_unpack_route(
     candidates: list[JsonObject] | tuple[JsonObject, ...],
     *,
@@ -72,7 +88,23 @@ def recommend_unpack_route(
     force_route: str | None = None,
 ) -> UnpackRecommendation:
     """Map packer candidates to a future workflow route without executing it."""
+    return _attach_stealth(
+        _recommend_unpack_route(
+            candidates,
+            pe_dotnet=pe_dotnet,
+            pe_vm_like=pe_vm_like,
+            force_route=force_route,
+        )
+    )
 
+
+def _recommend_unpack_route(
+    candidates: list[JsonObject] | tuple[JsonObject, ...],
+    *,
+    pe_dotnet: bool = False,
+    pe_vm_like: bool = False,
+    force_route: str | None = None,
+) -> UnpackRecommendation:
     packers = [
         item
         for item in candidates

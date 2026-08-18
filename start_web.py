@@ -95,6 +95,17 @@ def _preflight(settings: object) -> int:
     return 1 if hard_fail else 0
 
 
+def _mandate_hidden_desktop(settings: object, config_path: Path | None) -> object:
+    """Web console always streams x64dbg from a hidden Win32 desktop."""
+    from headless_re_mcp.config import update_config_values
+
+    if not bool(getattr(settings, "hidden_desktop", False)):
+        _log("已强制开启隐藏虚拟桌面（分析会话的窗口在隔离桌面上监视）。")
+    object.__setattr__(settings, "hidden_desktop", True)
+    update_config_values({"hidden_desktop": True}, config_path=config_path)
+    return settings
+
+
 def main(argv: list[str] | None = None) -> int:
     root = _ensure_src_on_path()
 
@@ -126,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     _log(f"项目根目录：{root}")
 
     settings = Settings.load(config_path=args.config) if args.config else Settings.load()
+    settings = _mandate_hidden_desktop(settings, args.config)
     if not args.skip_preflight:
         code = _preflight(settings)
         if code != 0:
@@ -133,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             return code
         # 预检可能写入了 config / external，重新加载 Settings。
         settings = Settings.load(config_path=args.config) if args.config else Settings.load()
+        settings = _mandate_hidden_desktop(settings, args.config)
 
     host = args.host or settings.http_host or "127.0.0.1"
     preferred = args.port if args.port is not None else int(settings.http_port or 8765)

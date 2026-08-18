@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import zipfile
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Protocol
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -134,6 +134,24 @@ class SessionRegistry:
             self._sessions[session.id] = session
         return session.model_copy(deep=True)
 
+    def adopt(self, session: Session) -> Session:
+        """Put an already-identified session into this process.
+
+        ``create`` always mints a new id. After a console restart the same id
+        must come back from SQLite so agent threads and artifacts stay bound.
+        An id already in this registry is left untouched: a live worker must
+        not be replaced by a dormant row.
+        """
+        with self._lock:
+            existing = self._sessions.get(session.id)
+            if existing is not None:
+                return existing.model_copy(deep=True)
+            stored = session.model_copy(deep=True)
+            self._sessions[session.id] = stored
+            if stored.state is SessionState.CLOSED:
+                self._closed_order.append(session.id)
+            return stored.model_copy(deep=True)
+
     def get(self, session_id: str) -> Session:
         with self._lock:
             session = self._sessions.get(session_id)
@@ -210,6 +228,121 @@ class SessionRegistry:
         if session is None:
             raise SessionNotFound.for_id(session_id)
         return session
+
+
+_HYDRATE_LIMIT = 64
+_SKIP_HYDRATE_STATES = frozenset(
+    {SessionState.CLOSED, SessionState.FAILED, SessionState.CLOSING}
+)
+
+
+class SessionRecordSource(Protocol):
+    def list_unclean_sessions(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[list[Any], int]: ...
+
+
+def hydrate_persisted_sessions(
+    registry: SessionRegistry,
+    source: SessionRecordSource,
+    *,
+    limit: int = _HYDRATE_LIMIT,
+) -> int:
+    """Re-bind unclean SQLite rows into an empty in-memory registry.
+
+    Workers do not come back: restored sessions are ``created`` with
+    ``metadata.restored``. The same id is what keeps chat threads, timelines
+    and artifacts attached across a console restart.
+    """
+    window = max(1, min(int(limit), 1000))
+    try:
+        rows, _total = source.list_unclean_sessions(offset=0, limit=window)
+    except Exception:
+        return 0
+    restored = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        session = session_from_store_row(row)
+        if session is None:
+            continue
+        registry.adopt(session)
+        restored += 1
+    return restored
+
+
+def session_from_store_row(row: Mapping[str, Any]) -> Session | None:
+    """Build a dormant Session from a sessions.db row, or skip a bad row."""
+    session_id = str(row.get("id") or "").strip()
+    if not session_id or Path(session_id).name != session_id:
+        return None
+    stored_state = str(row.get("state") or "").strip().lower()
+    try:
+        recorded = SessionState(stored_state) if stored_state else SessionState.CREATED
+    except ValueError:
+        recorded = SessionState.CREATED
+    if recorded in _SKIP_HYDRATE_STATES:
+        return None
+    locator = str(row.get("binary") or "").strip()
+    if not locator:
+        return None
+    kind = classify_target(locator)
+    binary: Path | None = None
+    missing_file = False
+    if kind is TargetKind.WEB and is_http_url(locator):
+        pass
+    else:
+        candidate = Path(locator).expanduser()
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved.is_file():
+            binary = resolved
+            locator = str(resolved)
+        else:
+            missing_file = kind is not TargetKind.WEB
+            binary = None
+    architecture = _architecture_from_stored(row.get("architecture"))
+    sha256 = str(row.get("sha256") or "").strip() or None
+    metadata: dict[str, Any] = {"restored": True}
+    if missing_file:
+        metadata["missing_file"] = True
+    return Session(
+        id=session_id,
+        target=kind,
+        binary=binary,
+        locator=locator,
+        sha256=sha256,
+        architecture=architecture,
+        state=SessionState.CREATED,
+        created_at=_parse_stored_datetime(row.get("created_at")),
+        updated_at=_parse_stored_datetime(row.get("updated_at")),
+        metadata=metadata,
+    )
+
+
+def _architecture_from_stored(value: object) -> Architecture | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    try:
+        return Architecture(text)
+    except ValueError:
+        return None
+
+
+def _parse_stored_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now(UTC)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(UTC)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:

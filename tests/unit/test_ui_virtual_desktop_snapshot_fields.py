@@ -40,6 +40,10 @@ def test_ui_virtual_desktop_snapshot_puts_hwnds_in_windows_not_items() -> None:
     described = " ".join(_tool_docstring("ui.virtual_desktop.snapshot").split())
     assert "Answers with windows" in described
     assert "window_count" in described
+    assert "desktop_window_count" in described
+    assert "debuggee_state" in described
+    assert "paused_before_gui" in described
+    assert "dynamic.resume" in described
     assert "no items field" in described
     assert "no tree field" in described
     worker = (
@@ -53,5 +57,6 @@ def test_ui_virtual_desktop_snapshot_puts_hwnds_in_windows_not_items() -> None:
     chunk = worker[start : worker.index("def capture(", start)]
     assert '"windows": rows' in chunk
     assert '"window_count": len(rows)' in chunk
+    assert '"desktop_window_count": len(all_rows)' in chunk
     assert '"items"' not in chunk
     assert '"tree"' not in chunk

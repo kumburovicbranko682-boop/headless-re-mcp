@@ -24,6 +24,160 @@ _MAX_TOOL_CALLS = 128
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
+_HIDDEN_DELTA_KEYS = ("reasoning_content", "reasoning", "thinking")
+
+
+def _plain_text(value: Any) -> str:
+    """Pull visible text out of a chat-completions delta field.
+
+    Providers disagree: a string, a list of parts, or a small object with
+    ``text`` / ``content``. Anything else is ignored rather than stringified.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_plain_text(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "summary"):
+            piece = value.get(key)
+            if isinstance(piece, str) and piece:
+                return piece
+    return ""
+
+
+def _hidden_texts(delta: dict[str, Any]) -> list[str]:
+    """Thinking / reasoning text. Empty first chunks are ignored, like Harness."""
+    texts: list[str] = []
+    for key in _HIDDEN_DELTA_KEYS:
+        piece = _plain_text(delta.get(key))
+        if piece:
+            texts.append(piece)
+    reasoning = delta.get("reasoning")
+    if isinstance(reasoning, dict):
+        piece = _plain_text(reasoning)
+        if piece:
+            texts.append(piece)
+    extra = delta.get("extra_content")
+    if not isinstance(extra, dict):
+        extra = delta.get("extra") if isinstance(delta.get("extra"), dict) else None
+    if isinstance(extra, dict):
+        google = extra.get("google")
+        if isinstance(google, dict):
+            piece = _plain_text(google.get("thought") or google.get("thoughts"))
+            if piece:
+                texts.append(piece)
+    return texts
+
+
+def _tool_argument_fragment(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return ""
+
+
+def _usage_output_tokens(usage: Any) -> int | None:
+    """Map OpenAI/DeepSeek usage to output tokens (Harness ``outputTokens``)."""
+    if not isinstance(usage, dict):
+        return None
+    for key in ("completion_tokens", "output_tokens", "completionTokens", "outputTokens"):
+        value = usage.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+        if isinstance(value, float) and value >= 0:
+            return int(value)
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        reasoning = details.get("reasoning_tokens")
+        accepted = details.get("accepted_prediction_tokens")
+        total = 0
+        found = False
+        for item in (reasoning, accepted, details.get("text_tokens")):
+            if isinstance(item, int) and item >= 0:
+                total += item
+                found = True
+        if found:
+            return total
+    return None
+
+
+def _normalize_chunk(chunk: Any) -> dict[str, Any]:
+    if not isinstance(chunk, dict):
+        return {}
+    output = chunk.get("output")
+    if isinstance(output, dict) and isinstance(output.get("choices"), list):
+        merged = dict(chunk)
+        merged["choices"] = output["choices"]
+        if merged.get("usage") is None and output.get("usage") is not None:
+            merged["usage"] = output["usage"]
+        return merged
+    return chunk
+
+
+def _sse_payload(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("data:"):
+        data = stripped[5:].strip()
+        return data or None
+    if stripped.startswith("{"):
+        return stripped
+    return None
+
+
+def _ingest_tool_calls(
+    calls: Any,
+    tool_fragments: dict[int, dict[str, str]],
+    tool_buffer_bytes: int,
+) -> tuple[int, list[str]]:
+    """Accumulate streamed or snapshot tool calls. Returns (bytes, output pieces)."""
+    if not isinstance(calls, list):
+        return tool_buffer_bytes, []
+    pieces: list[str] = []
+    for raw_call in calls:
+        if not isinstance(raw_call, dict):
+            continue
+        index = int(raw_call.get("index", 0))
+        if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
+            raise ValueError(
+                "provider tool-call count exceeded "
+                f"{_MAX_TOOL_CALLS} while assembling index {index}"
+            )
+        item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        call_id = raw_call.get("id")
+        if isinstance(call_id, str) and call_id:
+            tool_buffer_bytes += len(call_id.encode("utf-8"))
+            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                raise ValueError(
+                    "provider tool-call buffer exceeded "
+                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                )
+            if call_id not in item["id"]:
+                item["id"] += call_id
+        function_value = raw_call.get("function")
+        function: dict[str, Any] = function_value if isinstance(function_value, dict) else {}
+        function_name = function.get("name")
+        if isinstance(function_name, str) and function_name:
+            tool_buffer_bytes += len(function_name.encode("utf-8"))
+            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                raise ValueError(
+                    "provider tool-call buffer exceeded "
+                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                )
+            if function_name not in item["name"]:
+                item["name"] += function_name
+                pieces.append(function_name)
+        fragment = _tool_argument_fragment(function.get("arguments"))
+        if fragment:
+            tool_buffer_bytes += len(fragment.encode("utf-8"))
+            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
+                raise ValueError(
+                    "provider tool-call buffer exceeded "
+                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
+                )
+            item["arguments"] += fragment
+            pieces.append(fragment)
+    return tool_buffer_bytes, pieces
 
 
 async def _aiter_bounded_sse_lines(
@@ -179,16 +333,19 @@ class OpenAICompatibleProvider:
             "messages": list(messages),
             "tools": list(tools),
             "stream": True,
-            "stream_options": {"include_usage": False},
+            "stream_options": {"include_usage": True},
         }
         if enable_thinking:
             payload["thinking"] = {"type": "enabled"}
+            payload["enable_thinking"] = True
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         url = f"{self.profile.base_url}/chat/completions"
         tool_fragments: dict[int, dict[str, str]] = {}
         tool_buffer_bytes = 0
         finish_reason: str | None = None
+        output_tokens: int | None = None
+        saw_incremental = False
         timeout = httpx.Timeout(self.timeout, connect=min(self.timeout, 30.0))
         async with (
             build_client(
@@ -216,24 +373,22 @@ class OpenAICompatibleProvider:
                     response=exc.response,
                 ) from exc
             async for line in _aiter_bounded_sse_lines(response):
-                if not line.startswith("data:"):
+                data = _sse_payload(line)
+                if data is None:
                     continue
-                data = line[5:].strip()
                 if data == "[DONE]":
                     break
-                if not data:
-                    continue
                 try:
-                    chunk = json.loads(data)
+                    chunk = _normalize_chunk(json.loads(data))
                 except json.JSONDecodeError as exc:
-                    # Every field below is type-checked before use; the line
-                    # being JSON at all was the one thing assumed. Named here so
-                    # the failure reads as the provider's, the way an invalid
-                    # tool-argument fragment already does.
                     raise ValueError(
                         f"provider emitted a stream chunk that is not JSON: {data[:200]}"
                     ) from exc
-                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                usage_tokens = _usage_output_tokens(chunk.get("usage"))
+                if usage_tokens is not None:
+                    output_tokens = usage_tokens
+                    yield ProviderEvent("usage", output_tokens=usage_tokens)
+                choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices:
                     continue
                 choice_value = choices[0]
@@ -243,52 +398,35 @@ class OpenAICompatibleProvider:
                     finish_reason = finish
                 delta_value = choice.get("delta")
                 delta: dict[str, Any] = delta_value if isinstance(delta_value, dict) else {}
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    yield ProviderEvent("text_delta", text=content)
+                message_value = choice.get("message")
+                message: dict[str, Any] = (
+                    message_value if isinstance(message_value, dict) else {}
+                )
+                content = _plain_text(delta.get("content"))
+                hidden = _hidden_texts(delta)
                 calls = delta.get("tool_calls")
-                if isinstance(calls, list):
-                    for raw_call in calls:
-                        if not isinstance(raw_call, dict):
-                            continue
-                        index = int(raw_call.get("index", 0))
-                        if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
-                            raise ValueError(
-                                "provider tool-call count exceeded "
-                                f"{_MAX_TOOL_CALLS} while assembling index {index}"
-                            )
-                        item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        call_id = raw_call.get("id")
-                        if isinstance(call_id, str):
-                            tool_buffer_bytes += len(call_id.encode("utf-8"))
-                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
-                                raise ValueError(
-                                    "provider tool-call buffer exceeded "
-                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
-                                )
-                            item["id"] += call_id
-                        function_value = raw_call.get("function")
-                        function: dict[str, Any] = (
-                            function_value if isinstance(function_value, dict) else {}
-                        )
-                        function_name = function.get("name")
-                        if isinstance(function_name, str):
-                            tool_buffer_bytes += len(function_name.encode("utf-8"))
-                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
-                                raise ValueError(
-                                    "provider tool-call buffer exceeded "
-                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
-                                )
-                            item["name"] += function_name
-                        function_arguments = function.get("arguments")
-                        if isinstance(function_arguments, str):
-                            tool_buffer_bytes += len(function_arguments.encode("utf-8"))
-                            if tool_buffer_bytes > _MAX_TOOL_CALL_BUFFER_BYTES:
-                                raise ValueError(
-                                    "provider tool-call buffer exceeded "
-                                    f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
-                                )
-                            item["arguments"] += function_arguments
+                has_delta = bool(content or hidden or calls)
+                if not has_delta and not saw_incremental:
+                    content = _plain_text(message.get("content"))
+                    hidden = _hidden_texts(message)
+                    calls = message.get("tool_calls")
+                elif not calls and not tool_fragments:
+                    message_calls = message.get("tool_calls")
+                    if isinstance(message_calls, list) and message_calls:
+                        calls = message_calls
+                if content:
+                    saw_incremental = True
+                    yield ProviderEvent("text_delta", text=content)
+                for piece in hidden:
+                    saw_incremental = True
+                    yield ProviderEvent("reasoning_delta", text=piece)
+                if calls:
+                    saw_incremental = True
+                    tool_buffer_bytes, pieces = _ingest_tool_calls(
+                        calls, tool_fragments, tool_buffer_bytes
+                    )
+                    for piece in pieces:
+                        yield ProviderEvent("output_delta", text=piece)
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:
@@ -298,7 +436,12 @@ class OpenAICompatibleProvider:
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
             calls_out.append(ProviderToolCall(item["id"] or f"call_{index}", item["name"], arguments))
-        yield ProviderEvent("completed", tool_calls=tuple(calls_out), finish_reason=finish_reason)
+        yield ProviderEvent(
+            "completed",
+            tool_calls=tuple(calls_out),
+            finish_reason=finish_reason,
+            output_tokens=output_tokens,
+        )
 
     async def list_models(self) -> list[str]:
         try:

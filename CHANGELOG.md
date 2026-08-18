@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。监控台改成对话居中的 Agent 工作台：左侧对话/会话、右侧按 target 换皮的检查器。
+
+监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 / 打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧不再打 x64dbg。
+
+监控台对话框右侧增加 Codex 风格两档审核：`请求批准` / `完全访问`（没有中间档）。
+`PUT /api/agent/autonomy` 现接受 `{"mode":"request"|"full_access"}`，分别清空授权或放开全部写效果；
+`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
+
+x64dbg 用户态 hide：ScyllaHide 装到**正在使用的** headless `plugins/`（不是只写 `external/`），
+AI 通过 `dynamic.stealth.status` / `dynamic.stealth.set` 和 `dynamic.launch(stealth_profile=)`
+选择白名单 profile。`packer.classify` / `unpack.recommend` 给出 `stealth_profile`
+（tmd/Themida/WinLicense → themida）；open/launch 省略参数时按映射自动写 ini。
+`tmd`/`winlicense`/`oreans` 是合法别名。工具面 263 → 265（149 只读 / 116 写）。
+未配置 autonomy 键时，加壳 PE 分析所需的 state_change + 相关 file_write 默认自动批准
+（patches / APK 改包除外）。`enabled=false` 会把 `CurrentProfile` 写成 `Disabled`。
+TitanHide / VT 启动器本阶段不做。
+
 新增 Android 与 Web 两个目标域，工具面从 199 增至 263（148 只读 / 115 写）。
 `memory.protection` 与 `workflow.breakpoint.put` / `disable` 是写；`static.search.text`
 与 `patches.list` 是读。

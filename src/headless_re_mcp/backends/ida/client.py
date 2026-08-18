@@ -23,6 +23,43 @@ from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
 
+# First ``auto_wait`` on a cold IDB can exceed the idle startup window. Progress
+# events slide that window; this cap still bounds a worker that never becomes ready.
+# Bounded analysis plus PE load should finish well under this.
+_MAX_IDA_STARTUP_SECONDS = 240.0
+
+
+def next_receive_deadline(
+    *,
+    now: float,
+    deadline: float,
+    idle_timeout: float,
+    absolute_deadline: float,
+    message: JsonObject,
+    extend_on_progress: bool,
+) -> float:
+    """Slide the receive deadline when the worker is still analysing."""
+    if extend_on_progress and message.get("event") == "progress":
+        return min(now + idle_timeout, absolute_deadline)
+    return deadline
+
+
+def startup_receive_remaining(
+    *,
+    now: float,
+    idle_deadline: float,
+    absolute_deadline: float,
+    extend_on_progress: bool,
+) -> float:
+    """How long to keep waiting for ``ready``.
+
+    A living worker that holds the GIL during ``open_database`` cannot emit
+    progress, so startup waits on the absolute cap rather than idle silence.
+    """
+    if extend_on_progress:
+        return absolute_deadline - now
+    return min(idle_deadline, absolute_deadline) - now
+
 
 class IdaWorkerError(RuntimeError):
     def __init__(
@@ -120,6 +157,8 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             message = self._receive(
                 lambda item: item.get("event") in {"ready", "fatal"},
                 startup_timeout,
+                extend_on_progress=True,
+                absolute_timeout=_MAX_IDA_STARTUP_SECONDS,
             )
             if message.get("event") == "fatal":
                 raise IdaWorkerError.from_payload(message.get("error"))
@@ -238,11 +277,21 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         self,
         predicate: Callable[[JsonObject], bool],
         timeout: float,
+        *,
+        extend_on_progress: bool = False,
+        absolute_timeout: float | None = None,
     ) -> JsonObject:
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        absolute_deadline = started + (absolute_timeout if absolute_timeout is not None else timeout)
         while True:
             self._observe_windows()
-            remaining = deadline - time.monotonic()
+            remaining = startup_receive_remaining(
+                now=time.monotonic(),
+                idle_deadline=deadline,
+                absolute_deadline=absolute_deadline,
+                extend_on_progress=extend_on_progress,
+            )
             if remaining <= 0:
                 raise IdaWorkerError(
                     "worker_timeout",
@@ -261,6 +310,16 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             if predicate(message):
                 self._observe_windows()
                 return message
+            deadline = next_receive_deadline(
+                now=time.monotonic(),
+                deadline=deadline,
+                idle_timeout=timeout,
+                absolute_deadline=absolute_deadline,
+                message=message,
+                extend_on_progress=extend_on_progress,
+            )
+            if message.get("event") == "progress":
+                continue
             self._stdout_log.append(json.dumps(message, ensure_ascii=False))
 
     def _observe_windows(self) -> None:

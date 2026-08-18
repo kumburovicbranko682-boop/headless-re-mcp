@@ -51,6 +51,39 @@ def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
     assert body["data"]["count"] == 0
 
 
+def test_token_query_cookie_authorizes_later_api_calls(tmp_path: Path) -> None:
+    """SPA strips ?token= from the URL; refresh must still reach /api via cookie."""
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+
+    assert client.get("/api/sessions").status_code == 401
+    page = client.get("/?token=" + token)
+    assert page.status_code == 200
+    assert client.cookies.get("headless_re_bootstrap")
+    ok = client.get("/api/sessions")
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+
+
+def test_percent_encoded_token_equals_still_opens_the_console(tmp_path: Path) -> None:
+    from headless_re_mcp.web.routes.legacy import repair_encoded_token_query
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+
+    assert repair_encoded_token_query(f"token%3D{token}".encode()) == f"token={token}".encode()
+    missing = client.get("/")
+    assert missing.status_code == 401
+    assert "需要访问令牌" in missing.text
+    page = client.get(f"/?token%3D{token}")
+    assert page.status_code == 200
+    assert '<div id="root"></div>' in page.text
+
+
 def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Redirect config persistence to a temp path so the gate never writes the
     # real user config (which would leak workspace_profile into other tests).
@@ -293,6 +326,56 @@ def test_web_setup_run_persist_defaults(tmp_path: Path, monkeypatch: pytest.Monk
     assert saved["http_host"] == "127.0.0.1"
     assert "artifact_root" in saved
 
+
+def test_web_pick_file_returns_a_local_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from headless_re_mcp.core import windows as winmod
+    from headless_re_mcp.web.routes import legacy as legacy_mod
+
+    chosen = str(tmp_path / "sample.exe")
+    monkeypatch.setattr(winmod, "pick_open_file_status", lambda **_kwargs: {
+        "path": chosen,
+        "cancelled": False,
+        "available": True,
+        "busy": False,
+        "error": None,
+    })
+    monkeypatch.setattr(legacy_mod.os, "name", "nt")
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+    picked = client.post("/api/ui/pick-file", headers=headers)
+    assert picked.status_code == 200
+    body = picked.json()
+    assert body["ok"] is True
+    assert body["data"]["path"] == chosen
+    assert body["data"]["cancelled"] is False
+    assert body["data"]["available"] is True
+    assert body["data"]["busy"] is False
+
+    monkeypatch.setattr(winmod, "pick_open_file_status", lambda **_kwargs: {
+        "path": None,
+        "cancelled": True,
+        "available": True,
+        "busy": False,
+        "error": None,
+    })
+    cancelled = client.post("/api/ui/pick-file", headers=headers)
+    assert cancelled.json()["data"]["cancelled"] is True
+    assert cancelled.json()["data"]["path"] is None
+
+    monkeypatch.setattr(winmod, "pick_open_file_status", lambda **_kwargs: {
+        "path": None,
+        "cancelled": False,
+        "available": True,
+        "busy": True,
+        "error": None,
+    })
+    busy = client.post("/api/ui/pick-file", headers=headers)
+    assert busy.json()["data"]["busy"] is True
+    assert busy.json()["data"]["cancelled"] is False
+
 def test_web_mcp_export_embeds_discovered_paths(tmp_path: Path) -> None:
     headless = tmp_path / "x64" / "headless.exe"
     headless.parent.mkdir(parents=True)
@@ -336,6 +419,39 @@ def test_web_mcp_export_embeds_discovered_paths(tmp_path: Path) -> None:
     pout = persisted.json()
     assert pout["ok"] is True
     assert pout["written"].get("cursor") or pout["written"].get("bundle")
+
+
+def test_web_can_create_a_session_from_the_console(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    missing = client.post("/api/sessions", headers=headers, json={})
+    assert missing.status_code == 400
+    missing_file = client.post(
+        "/api/sessions",
+        headers=headers,
+        json={"binary": str(tmp_path / "nope.exe")},
+    )
+    assert missing_file.status_code == 200
+    assert missing_file.json()["ok"] is False
+
+    sample = tmp_path / "tiny.exe"
+    from tests.unit.test_session import _write_minimal_pe
+
+    _write_minimal_pe(sample, 0x8664)
+    created = client.post("/api/sessions", headers=headers, json={"binary": str(sample)})
+    assert created.status_code == 200
+    body = created.json()
+    assert body["ok"] is True
+    session_id = body["data"]["session"]["id"]
+    listed = client.get("/api/sessions", headers=headers)
+    ids = [item["id"] for item in listed.json()["data"]["sessions"]]
+    assert session_id in ids
+    closed = client.post(f"/api/sessions/{session_id}/close", headers=headers)
+    assert closed.status_code == 200
 
 
 def test_run_web_rejects_non_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -403,3 +519,116 @@ def test_the_monitor_timeline_follows_the_session_instead_of_its_first_frames(
     assert len(shown) == 48
     assert shown[-1] == "step 300", "the newest entry must be in the frame"
     assert shown[0] == "step 253"
+
+
+def test_web_exposes_dynamic_resume_and_pause(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    app = create_app(service, token="test-token-value-0123456789abcdef", settings=settings)
+    paths = {getattr(route, "path", None) for route in app.routes}
+    assert "/api/sessions/{session_id}/dynamic/resume" in paths
+    assert "/api/sessions/{session_id}/dynamic/pause" in paths
+    resume = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/sessions/{session_id}/dynamic/resume"
+    )
+    assert "POST" in (resume.methods or set())
+
+
+def test_web_sessions_survive_a_console_restart(tmp_path: Path) -> None:
+    from tests.unit.test_session import _write_minimal_pe
+
+    sample = tmp_path / "keep.exe"
+    _write_minimal_pe(sample, 0x8664)
+    first = AnalysisService(_settings(tmp_path))
+    created = first.create_session(str(sample))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    token = "test-token-value-0123456789abcdef"
+    # Simulate a process death: do not close_all on first before the next
+    # service boots from the same artifact root.
+    second = AnalysisService(_settings(tmp_path))
+    try:
+        client = TestClient(create_app(second, token=token, settings=_settings(tmp_path)))
+        headers = {"Authorization": f"Bearer {token}"}
+        listed = client.get("/api/sessions", headers=headers).json()
+        ids = [item["id"] for item in listed["data"]["sessions"]]
+        assert session_id in ids
+        live = client.get(f"/api/sessions/{session_id}", headers=headers).json()
+        assert live["ok"] is True
+        session = live["data"]["session"]
+        assert session["id"] == session_id
+        assert session["state"] == "created"
+        assert session["metadata"]["restored"] is True
+        assert Path(session["locator"] or session["binary"]) == sample.resolve()
+        known = client.get(f"/api/sessions/{session_id}/last-known", headers=headers)
+        body = known.json()
+        assert known.status_code == 200
+        assert body["ok"] is True
+        assert body["data"]["live"] is True
+        assert Path(body["data"]["binary"]) == sample.resolve()
+        unclean = client.get("/api/sessions/unclean", headers=headers).json()
+        unclean_ids = [item["id"] for item in unclean["data"]["sessions"]]
+        assert session_id in unclean_ids
+    finally:
+        second.close_all()
+        first.close_all()
+
+
+def test_web_closed_sessions_are_not_hydrated_after_restart(tmp_path: Path) -> None:
+    from tests.unit.test_session import _write_minimal_pe
+
+    sample = tmp_path / "done.exe"
+    _write_minimal_pe(sample, 0x8664)
+    first = AnalysisService(_settings(tmp_path))
+    created = first.create_session(str(sample))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    closed = first.close_session(session_id)
+    assert closed.ok
+    second = AnalysisService(_settings(tmp_path))
+    try:
+        listed = second.list_sessions()
+        assert listed.ok and listed.data is not None
+        ids = [item["id"] for item in listed.data["sessions"]]
+        assert session_id not in ids
+        known = second.peek_session_record(session_id)
+        assert known.ok and known.data is not None
+        assert known.data["live"] is False
+        assert known.data["state"] == "closed"
+    finally:
+        second.close_all()
+        first.close_all()
+
+
+def test_web_session_http_skips_x64dbg_and_exposes_browser_status(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        created = client.post(
+            "/api/sessions",
+            headers=headers,
+            json={"binary": "https://example.com/app", "target": "web"},
+        )
+        body = created.json()
+        assert created.status_code == 200
+        assert body["ok"] is True
+        assert body["data"]["session"]["target"] == "web"
+        session_id = body["data"]["session"]["id"]
+
+        monitor = client.get(f"/api/sessions/{session_id}/monitor", headers=headers).json()
+        assert monitor["ok"] is True
+        dynamic_error = (monitor["data"].get("dynamic") or {}).get("error") or {}
+        assert "x64dbg" not in str(dynamic_error).lower()
+        assert monitor["data"]["web"]["open"] is False
+
+        status = client.get(f"/api/sessions/{session_id}/web/status", headers=headers).json()
+        assert status["ok"] is True
+        assert status["data"]["open"] is False
+        assert status["data"]["locator"] == "https://example.com/app"
+    finally:
+        service.close_all()

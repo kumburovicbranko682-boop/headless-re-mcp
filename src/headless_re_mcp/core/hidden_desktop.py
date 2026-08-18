@@ -20,6 +20,8 @@ from threading import RLock
 from typing import Any, TextIO
 from uuid import uuid4
 
+from headless_re_mcp.core.windows import window_capture_rank, wnd_enum_callback_type
+
 JsonObject = dict[str, Any]
 
 _DESKTOP_ALL_ACCESS = 0x01FF
@@ -106,7 +108,7 @@ def _api() -> tuple[Any, Any]:
         ctypes.c_void_p,
         ctypes.c_void_p,
     ]
-    user32.EnumDesktopWindows.restype = ctypes.c_bool
+    user32.EnumDesktopWindows.restype = ctypes.c_int
     user32.GetWindowThreadProcessId.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_ulong),
@@ -410,19 +412,17 @@ class HiddenDesktop:
             errors=errors,
         )
 
-    def windows(self, *, allowed_pids: frozenset[int] | None = None) -> list[JsonObject]:
+    def _enumerate_windows(self) -> list[JsonObject]:
         if self._closed:
             return []
         user32, _ = _api()
         rows: list[JsonObject] = []
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        callback_type = wnd_enum_callback_type()
 
         def callback(hwnd: int, _: int) -> bool:
             owner = ctypes.c_ulong()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
             pid = int(owner.value)
-            if allowed_pids is not None and pid not in allowed_pids:
-                return True
             length = max(0, int(user32.GetWindowTextLengthW(hwnd)))
             title = ctypes.create_unicode_buffer(min(length, 4096) + 1)
             user32.GetWindowTextW(hwnd, title, len(title))
@@ -465,6 +465,12 @@ class HiddenDesktop:
                 raise ctypes.WinError(error)
         return rows
 
+    def windows(self, *, allowed_pids: frozenset[int] | None = None) -> list[JsonObject]:
+        rows = self._enumerate_windows()
+        if allowed_pids is None:
+            return rows
+        return [row for row in rows if int(row["pid"]) in allowed_pids]
+
     def process_window_descriptions(self, pid: int) -> list[str]:
         descriptions: list[str] = []
         for row in self.windows(allowed_pids=frozenset({pid})):
@@ -474,7 +480,13 @@ class HiddenDesktop:
         return descriptions
 
     def snapshot(self, *, allowed_pids: frozenset[int] | None = None) -> JsonObject:
-        rows = self.windows(allowed_pids=allowed_pids)
+        all_rows = self._enumerate_windows()
+        rows = (
+            all_rows
+            if allowed_pids is None
+            else [row for row in all_rows if int(row["pid"]) in allowed_pids]
+        )
+        rows.sort(key=window_capture_rank, reverse=True)
         return {
             "available": True,
             "mode": "hidden_win32",
@@ -482,6 +494,7 @@ class HiddenDesktop:
             "qualified_name": self.qualified_name,
             "input_desktop": False,
             "window_count": len(rows),
+            "desktop_window_count": len(all_rows),
             "windows": rows,
         }
 

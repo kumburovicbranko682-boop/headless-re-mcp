@@ -230,7 +230,9 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return non-authoritative packer/protector/obfuscator candidates.
 
         Answers with candidates, conclusion (candidates or none_detected),
-        report_sha256, and claims_universal_unpack false.
+        report_sha256, stealth_profile (whitelist id or null), and
+        claims_universal_unpack false. stealth_profile is tmd/Themida → themida,
+        VMProtect → vmp, or null when the name is not in the hide whitelist.
         """
         return _dump(
             analysis.packer_classify(
@@ -252,7 +254,9 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with recommendation, candidates, pe_vm_like, force_route, and
         authoritative false. The route is inside recommendation, not a top-level
-        route field.
+        route field. recommendation.stealth_profile is the hide whitelist id to
+        apply before dynamic.open/launch; suggested_tools start with
+        dynamic.stealth.set when a profile was mapped.
         """
         return _dump(
             analysis.unpack_recommend(

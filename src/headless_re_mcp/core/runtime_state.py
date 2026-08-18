@@ -86,6 +86,16 @@ class BackendRuntimeOwner(Generic[RuntimeT]):
         with self.lock:
             return [(sid, kind, runtime) for (sid, kind), runtime in self.items.items()]
 
+    def active_session_ids(self, kind: BackendKind) -> tuple[str, ...]:
+        """Session ids whose backend is opening or ready — hide ini is shared per arch."""
+        with self.lock:
+            return tuple(
+                sid
+                for (sid, item_kind), phase in self.phases.items()
+                if item_kind is kind
+                and phase in {BackendRuntimePhase.OPENING, BackendRuntimePhase.READY}
+            )
+
     def is_current(self, session_id: str, kind: BackendKind, runtime: RuntimeT) -> bool:
         with self.lock:
             return self.items.get((session_id, kind)) is runtime

@@ -21,7 +21,12 @@ from headless_re_mcp.core.capabilities_catalog import describe_capability, list_
 from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry, file_sha256
+from headless_re_mcp.core.session import (
+    InvalidStateTransition,
+    SessionNotFound,
+    SessionRegistry,
+    file_sha256,
+)
 from headless_re_mcp.core.store.sqlite_store import KNOWLEDGE_VALUE_MAX_CHARS
 from headless_re_mcp.core.ui_drive import drive_deadline, normalize_drive_steps, run_drive_step
 from headless_re_mcp.core.windows import (
@@ -761,6 +766,44 @@ class ExtAnalysisMixin(UiDriveMixin):
                 "has_more": start + len(items) < total,
             }
         )
+
+    def peek_session_record(self, session_id: str) -> Result[JsonObject]:
+        """Live session if this process still has it, otherwise the stored row.
+
+        After a console restart unclean rows are hydrated back into the
+        registry (same id, dormant). last-known still answers for ids that
+        were closed or never restored.
+        """
+        try:
+            try:
+                session = self.registry.get(session_id)
+            except SessionNotFound:
+                session = None
+            if session is not None:
+                binary = str(session.locator or session.binary or "")
+                state = session.state.value if hasattr(session.state, "value") else str(session.state)
+                return _success(
+                    {
+                        "live": True,
+                        "id": session.id,
+                        "binary": binary,
+                        "state": state,
+                    }
+                )
+            row = _ensure_repository(self).peek_session(session_id)
+            if not row:
+                raise SessionNotFound.for_id(session_id)
+            return _success(
+                {
+                    "live": False,
+                    "id": str(row.get("id") or session_id),
+                    "binary": str(row.get("binary") or ""),
+                    "state": row.get("state"),
+                    "updated_at": row.get("updated_at"),
+                }
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def audit_list(
         self, session_id: str | None = None, offset: int = 0, limit: int = 50

@@ -12,6 +12,7 @@ from typing import Any
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
+from headless_re_mcp.backends.x64dbg.stealth import StealthError
 from headless_re_mcp.core.addressing import AddressSyncError
 from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
 from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
@@ -58,6 +59,13 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             code=exc.code,
             message=str(exc),
             details={**details, **exc.details},
+        )
+    elif isinstance(exc, StealthError):
+        error = RpcError(
+            code=exc.code,
+            message=str(exc),
+            details={**details, **exc.details},
+            retryable=exc.retryable,
         )
     elif isinstance(exc, (IdaWorkerError, XdbgRpcError)):
         error = RpcError(

@@ -450,12 +450,18 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="ui.virtual_desktop.snapshot")
     def ui_virtual_desktop_snapshot(session_id: str) -> dict[str, Any]:
-        """Passive PID-bounded snapshot of the session's hidden Win32 desktop.
+        """Passive PID-bounded snapshot of the session desktop.
 
-        Answers with windows, window_count, available, mode, name,
-        input_desktop, capture_mode, debuggee_pid and allowed_pids. There is
-        no items field and no tree field. Requires the x64dbg worker started
-        under HEADLESS_RE_HIDDEN_DESKTOP; does not switch the input desktop.
+        Answers with windows, window_count, desktop_window_count,
+        debuggee_state, hint, available, mode, name, input_desktop,
+        capture_mode, debuggee_pid and allowed_pids. There is no items
+        field and no tree field. window_count is the debuggee;
+        desktop_window_count is every HWND on that desktop. After
+        dynamic.launch the debuggee is paused, so window_count stays 0
+        until dynamic.resume (hint paused_before_gui). Uses the hidden
+        Win32 desktop when HEADLESS_RE_HIDDEN_DESKTOP is on; otherwise
+        enumerates the current input desktop. Does not switch the input
+        desktop.
         """
         return _dump(analysis.virtual_desktop_snapshot(session_id))
 
@@ -464,12 +470,13 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         hwnd: int | None = None,
     ) -> dict[str, Any]:
-        """Capture one authorized hidden-desktop window to BMP on demand.
+        """Capture one authorized desktop window to BMP on demand.
 
         Answers with format bmp, path, artifact, width, height, degraded,
         degraded_reason, window, intrusion and debuggee_pid. There is no png
         field. Never switches the input desktop; selects the top visible
-        window when hwnd is omitted.
+        window when hwnd is omitted. Works on the hidden desktop or the
+        current input desktop.
         """
         return _dump(analysis.virtual_desktop_capture(session_id, hwnd=hwnd))
     return tools.bindings

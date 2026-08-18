@@ -18,6 +18,8 @@ def test_recommend_upx_route_is_non_authoritative() -> None:
     assert result.route == "upx"
     assert result.authoritative is False
     assert result.confidence >= 0.6
+    assert result.stealth_profile is None
+    assert "dynamic.stealth.set" not in result.suggested_tools
     assert "unpack.upx.test" in result.suggested_tools
     assert "unpack.auto" in result.suggested_tools
 
@@ -46,10 +48,18 @@ def test_recommend_vm_and_generic_and_none_routes() -> None:
     )
 
     assert vm.route == "bounded_dynamic"
+    assert vm.stealth_profile == "vmp"
+    assert vm.suggested_tools[0] == "dynamic.stealth.set"
+    assert "dynamic.launch" in vm.suggested_tools
     assert generic.route == "generic_dynamic"
     assert none.route == "none"
     assert none.authoritative is False
     assert "detect.scan" in none.suggested_tools
+    themida = recommend_unpack_route(
+        [{"category": "protector", "name": "Themida", "summary": "WinLicense / TMD"}]
+    )
+    assert themida.stealth_profile == "themida"
+    assert themida.suggested_tools[0] == "dynamic.stealth.set"
 
 
 def test_recommend_pe_vm_like_and_force_route() -> None:
@@ -66,6 +76,7 @@ def test_recommend_pe_vm_like_and_force_route() -> None:
     vm_like = recommend_unpack_route([], pe_vm_like=True)
     assert vm_like.route == "bounded_dynamic"
     assert any(item.get("name") == "VMProtect-like" for item in vm_like.candidates)
+    assert vm_like.stealth_profile == "vmp"
 
     forced = recommend_unpack_route([], force_route="bounded_dynamic")
     assert forced.route == "bounded_dynamic"

@@ -333,6 +333,7 @@ def _step_persist_defaults(settings: Settings) -> JsonObject:
         "http_port": int(settings.http_port or 8765),
         "artifact_root": str(settings.artifact_root),
         "local_full_access": True,
+        "hidden_desktop": True,
     }
     if settings.ida_home is not None:
         updates["ida_home"] = str(settings.ida_home)

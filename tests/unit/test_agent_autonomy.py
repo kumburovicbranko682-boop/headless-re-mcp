@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from headless_re_mcp.agent.autonomy import AutonomyPolicy
+from headless_re_mcp.agent.autonomy import ApprovalMode, AutonomyPolicy, parse_approval_mode
 from headless_re_mcp.config import Settings
 from headless_re_mcp.tools.catalog import (
     CommandSpec,
@@ -65,6 +65,15 @@ def test_a_named_tool_can_be_granted_without_its_whole_effect_class() -> None:
     # Nothing else in those effect classes came along with it.
     assert policy.decide(STATE).approved is False
     assert policy.decide(WRITE).approved is False
+
+
+def test_grant_and_revoke_are_additive() -> None:
+    policy = AutonomyPolicy().grant(tools=("dynamic.open",), effects=("state_change",))
+    assert policy.decide(STATE).approved is True
+    assert policy.decide(_spec("dynamic.open", ToolEffect.STATE_CHANGE)).approved is True
+    revoked = policy.revoke_tools(("dynamic.open",))
+    assert revoked.decide(_spec("dynamic.open", ToolEffect.STATE_CHANGE)).approved is True
+    assert "dynamic.open" not in revoked.auto_approve_tools
 
 
 def test_a_denial_outranks_every_grant_including_read_only() -> None:
@@ -173,3 +182,77 @@ def test_replace_keeps_the_spec_contract_intact() -> None:
     bound = replace(STATE, description="bound", input_schema={"type": "object"})
     policy = AutonomyPolicy(auto_approve_effects=frozenset({ToolEffect.STATE_CHANGE}))
     assert policy.decide(bound).approved is True
+
+
+def test_settings_load_without_autonomy_keys_uses_packed_analysis_preset(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.delenv("HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS", raising=False)
+    monkeypatch.delenv("HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS", raising=False)
+    monkeypatch.setenv("HEADLESS_RE_ARTIFACT_ROOT", str(tmp_path))
+    settings = Settings.load(tmp_path / "missing-config.json")
+    policy = AutonomyPolicy.from_settings(settings)
+
+    assert "state_change" in settings.agent_auto_approve_effects
+    assert "dynamic.stealth.set" in settings.agent_auto_approve_tools
+    assert policy.decide(STATE).approved is True
+    assert policy.decide(
+        _spec("dynamic.stealth.set", ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE)
+    ).approved is True
+    assert policy.decide(BOTH).approved is True
+    assert policy.decide(
+        _spec("patches.apply", ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE)
+    ).approved is False
+
+
+def test_explicit_empty_autonomy_keys_stay_fail_closed(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS", raising=False)
+    monkeypatch.delenv("HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS", raising=False)
+    monkeypatch.setenv("HEADLESS_RE_ARTIFACT_ROOT", str(tmp_path))
+    config = tmp_path / "config.json"
+    config.write_text(
+        '{"agent_auto_approve_effects": [], "agent_auto_approve_tools": []}',
+        encoding="utf-8",
+    )
+    settings = Settings.load(config)
+    policy = AutonomyPolicy.from_settings(settings)
+    assert settings.agent_auto_approve_effects == ()
+    assert settings.agent_auto_approve_tools == ()
+    assert policy.decide(STATE).approved is False
+    assert policy.decide(BOTH).approved is False
+
+
+def test_approval_mode_collapses_the_allowlist_to_two_switches() -> None:
+    empty = AutonomyPolicy()
+    assert empty.mode is ApprovalMode.REQUEST
+    assert empty.describe()["mode"] == "request"
+    assert parse_approval_mode("ask") is ApprovalMode.REQUEST
+    assert parse_approval_mode("full") is ApprovalMode.FULL_ACCESS
+
+    partial = AutonomyPolicy(auto_approve_effects=frozenset({ToolEffect.STATE_CHANGE}))
+    assert partial.mode is ApprovalMode.REQUEST
+
+    opened = empty.with_mode("full_access")
+    assert opened.mode is ApprovalMode.FULL_ACCESS
+    assert opened.decide(STATE).approved is True
+    assert opened.decide(WRITE).approved is True
+    assert opened.decide(BOTH).approved is True
+    assert opened.auto_approve_tools == frozenset()
+
+    asked = opened.with_mode("request")
+    assert asked.mode is ApprovalMode.REQUEST
+    assert asked.unattended is False
+    assert asked.decide(STATE).approved is False
+    assert asked.never_auto_approve == opened.never_auto_approve
+
+    with pytest.raises(ValueError, match="unknown approval mode"):
+        empty.with_mode("approve_for_me")
+
+
+def test_full_access_still_honors_never_auto_approve() -> None:
+    policy = AutonomyPolicy(never_auto_approve=frozenset({"unpack.start"})).with_mode(
+        ApprovalMode.FULL_ACCESS
+    )
+    assert policy.decide(STATE).approved is True
+    assert policy.decide(BOTH).approved is False
+    assert policy.decide(BOTH).reason == "never_auto_approve"

@@ -431,6 +431,7 @@ def test_healthz_names_the_running_build(tmp_path: Path) -> None:
     assert body["ok"] is True
     assert body["build"]["version"]
     assert "commit" in body["build"]
+    assert body["started_at"]
 
 
 def test_readyz_reports_ready_without_a_token(tmp_path: Path) -> None:

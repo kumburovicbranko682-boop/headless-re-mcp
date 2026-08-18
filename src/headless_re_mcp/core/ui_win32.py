@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.core.windows import UiPidBoundaryError
+from headless_re_mcp.core.windows import UiPidBoundaryError, wnd_enum_callback_type
 
 JsonObject = dict[str, Any]
 
@@ -50,6 +50,8 @@ _MAX_WAIT_SECONDS = 30.0
 _DEFAULT_SEND_TIMEOUT_MS = 5_000
 _MAX_SCREENSHOT_EDGE = 8192
 _MAX_SCREENSHOT_PIXELS = 16_777_216  # 4096*4096
+_SW_SHOWNOACTIVATE = 4
+_BLANK_CAPTURE_REASONS = frozenset({"blank_capture", "mostly_black_capture", "empty_capture"})
 
 
 class _RECT(ctypes.Structure):
@@ -167,7 +169,7 @@ def list_child_windows(
     user32 = _user32()
     children: list[JsonObject] = []
     examined = 0
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    callback_type = wnd_enum_callback_type()
 
     def callback(hwnd: int, _: int) -> bool:
         nonlocal examined
@@ -623,6 +625,64 @@ def invoke_hwnd(
     }
 
 
+def _maybe_reveal_hwnd_for_capture(hwnd: int) -> None:
+    """Un-minimize a 0-area HWND without activating or switching the input desktop."""
+    user32 = _user32()
+    hwnd_ptr = ctypes.c_void_p(int(hwnd))
+    iconic = bool(user32.IsIconic(hwnd_ptr))
+    empty = False
+    rect = _RECT()
+    if user32.GetWindowRect(hwnd_ptr, ctypes.byref(rect)):
+        empty = int(rect.right - rect.left) <= 0 or int(rect.bottom - rect.top) <= 0
+    if iconic or empty:
+        user32.ShowWindow(hwnd_ptr, _SW_SHOWNOACTIVATE)
+
+
+def _copy_dibits(
+    gdi32: Any,
+    mem_dc: Any,
+    bitmap: Any,
+    width: int,
+    height: int,
+) -> tuple[bytes, int]:
+    bmi = _BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+    bmi.biWidth = width
+    bmi.biHeight = height
+    bmi.biPlanes = 1
+    bmi.biBitCount = 24
+    bmi.biCompression = BI_RGB
+    row_stride = ((width * 3 + 3) // 4) * 4
+    buffer = (ctypes.c_ubyte * (row_stride * height))()
+    got = gdi32.GetDIBits(
+        mem_dc,
+        bitmap,
+        0,
+        height,
+        ctypes.byref(buffer),
+        ctypes.byref(bmi),
+        DIB_RGB_COLORS,
+    )
+    if got != height:
+        raise UiPidBoundaryError(
+            "capability_unavailable",
+            "GetDIBits failed for screenshot",
+            got=int(got),
+            height=height,
+            winerror=ctypes.get_last_error(),
+        )
+    return bytes(buffer), row_stride
+
+
+def _prefer_capture_uniformity(current: JsonObject, alternative: JsonObject) -> bool:
+    """True when ``alternative`` is less blank than ``current``."""
+    if not alternative.get("degraded") and current.get("degraded"):
+        return True
+    if alternative.get("degraded") and not current.get("degraded"):
+        return False
+    return float(alternative.get("dark_ratio") or 1.0) < float(current.get("dark_ratio") or 1.0)
+
+
 def _window_capture_size(hwnd: int, *, client_only: bool) -> tuple[int, int]:
     user32 = _user32()
     rect = _RECT()
@@ -812,6 +872,7 @@ def capture_hwnd_screenshot(
             output_path=str(path),
         )
     pid = require_allowed_hwnd(hwnd, allowed_pids)
+    _maybe_reveal_hwnd_for_capture(hwnd)
     width, height = _window_capture_size(hwnd, client_only=client_only)
 
     # Use private WinDLL handles with explicit pointer prototypes so UIA/comtypes
@@ -879,35 +940,24 @@ def capture_hwnd_screenshot(
 
         # Re-check ownership after capture to close TOCTOU against hwnd reuse.
         require_allowed_hwnd(hwnd, allowed_pids)
-
-        bmi = _BITMAPINFOHEADER()
-        bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        bmi.biWidth = width
-        bmi.biHeight = height
-        bmi.biPlanes = 1
-        bmi.biBitCount = 24
-        bmi.biCompression = BI_RGB
-        row_stride = ((width * 3 + 3) // 4) * 4
-        buffer = (ctypes.c_ubyte * (row_stride * height))()
-        got = gdi32.GetDIBits(
-            mem_dc,
-            bitmap,
-            0,
-            height,
-            ctypes.byref(buffer),
-            ctypes.byref(bmi),
-            DIB_RGB_COLORS,
-        )
-        if got != height:
-            raise UiPidBoundaryError(
-                "capability_unavailable",
-                "GetDIBits failed for screenshot",
-                hwnd=hwnd,
-                got=int(got),
-                height=height,
-                winerror=ctypes.get_last_error(),
+        pixels, stride = _copy_dibits(gdi32, mem_dc, bitmap, width, height)
+        uniformity = _estimate_capture_uniformity(pixels, width, height, stride)
+        # PrintWindow can return success with an all-black GPU/DirectX frame.
+        # Retry BitBlt on the same DC without switching the input desktop.
+        if (
+            printed
+            and uniformity.get("degraded")
+            and uniformity.get("degraded_reason") in _BLANK_CAPTURE_REASONS
+            and gdi32.BitBlt(mem_dc, 0, 0, width, height, window_dc, 0, 0, SRCCOPY)
+        ):
+            alt_pixels, alt_stride = _copy_dibits(gdi32, mem_dc, bitmap, width, height)
+            alt_uniformity = _estimate_capture_uniformity(
+                alt_pixels, width, height, alt_stride
             )
-        pixels = bytes(buffer)
+            if _prefer_capture_uniformity(uniformity, alt_uniformity):
+                pixels = alt_pixels
+                uniformity = alt_uniformity
+                backend = "win32_bitblt"
         byte_count = _write_bmp_bgr(path, width, height, pixels)
     finally:
         if mem_dc and old_obj:
@@ -921,7 +971,6 @@ def capture_hwnd_screenshot(
         else:
             user32.ReleaseDC(hwnd_ptr, window_dc)
 
-    uniformity = _estimate_capture_uniformity(pixels, width, height, row_stride)
     return {
         "hwnd": int(hwnd),
         "pid": pid,

@@ -47,6 +47,30 @@ class WebAnalysisMixin:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
+    def web_status(self, session_id: str) -> Result[JsonObject]:
+        try:
+            session = self.registry.get(session_id)
+            data = dict(self._web.status(session_id))
+            data["locator"] = session.locator
+            data["state"] = session.state.value
+            data["target"] = session.target.value
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def web_preview(self, session_id: str) -> Result[JsonObject]:
+        """Overwrite a stable inspect PNG; not registered as an artifact."""
+        try:
+            out = self._web_artifact_dir(session_id) / "preview.png"
+            data = self._web.screenshot(session_id, out, full_page=False)
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def web_open(
         self, session_id: str, url: str = "", headless: bool = True, timeout: float = 30.0
     ) -> Result[JsonObject]:

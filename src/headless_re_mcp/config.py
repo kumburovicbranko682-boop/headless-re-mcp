@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,12 +21,16 @@ class Settings:
     x64dbg_headless_x64: Path | None
     x64dbg_headless_x86: Path | None
     artifact_root: Path
+    # ScyllaHide is loaded from the live headless plugins directory. enabled=false
+    # still writes CurrentProfile=Disabled so the plugin does not keep injecting.
+    x64dbg_stealth_enabled: bool = True
+    x64dbg_stealth_profile: str = "vmp"
     hidden_desktop: bool = False
     # Seconds between background backend health sweeps; 0 disables the monitor.
     health_check_interval_s: float = 5.0
     local_full_access: bool = True
-    # Unattended Agent policy. Empty grants exactly what the fail-closed model
-    # already granted (read-only only), so leaving these alone changes nothing.
+    # Unattended Agent policy. Explicit empty tuples stay fail-closed.
+    # Settings.load() fills packed-analysis defaults when the keys are absent.
     # A denial here outranks every grant, including the read-only baseline.
     agent_auto_approve_effects: tuple[str, ...] = ()
     agent_auto_approve_tools: tuple[str, ...] = ()
@@ -219,7 +224,7 @@ class Settings:
             ),
             hidden_desktop=_as_bool(
                 os.environ.get("HEADLESS_RE_HIDDEN_DESKTOP"),
-                data.get("hidden_desktop", False),
+                data.get("hidden_desktop", True),
             ),
             health_check_interval_s=_as_float(
                 os.environ.get("HEADLESS_RE_HEALTH_CHECK_INTERVAL_S"),
@@ -230,13 +235,17 @@ class Settings:
                 os.environ.get("HEADLESS_RE_LOCAL_FULL_ACCESS"),
                 data.get("local_full_access", True),
             ),
-            agent_auto_approve_effects=_as_tuple(
+            agent_auto_approve_effects=_loaded_string_tuple(
                 os.environ.get("HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS"),
-                data.get("agent_auto_approve_effects", ()),
+                data,
+                "agent_auto_approve_effects",
+                preset=_packed_analysis_auto_approve_effects,
             ),
-            agent_auto_approve_tools=_as_tuple(
+            agent_auto_approve_tools=_loaded_string_tuple(
                 os.environ.get("HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS"),
-                data.get("agent_auto_approve_tools", ()),
+                data,
+                "agent_auto_approve_tools",
+                preset=_packed_analysis_auto_approve_tools,
             ),
             agent_never_auto_approve=_as_tuple(
                 os.environ.get("HEADLESS_RE_AGENT_NEVER_AUTO_APPROVE"),
@@ -284,6 +293,16 @@ class Settings:
                 data.get("artifact_max_total_bytes", DEFAULT_MAX_TOTAL_BYTES),
                 fallback=DEFAULT_MAX_TOTAL_BYTES,
             ),
+            x64dbg_stealth_enabled=_as_bool(
+                os.environ.get("HEADLESS_RE_X64DBG_STEALTH_ENABLED"),
+                data.get("x64dbg_stealth_enabled", True),
+            ),
+            x64dbg_stealth_profile=str(
+                os.environ.get("HEADLESS_RE_X64DBG_STEALTH_PROFILE")
+                or data.get("x64dbg_stealth_profile")
+                or "vmp"
+            ).strip()
+            or "vmp",
         )
 
 
@@ -484,6 +503,33 @@ def _as_command(raw: str | None, default: object) -> tuple[str, ...]:
     if isinstance(default, (list, tuple)):
         return tuple(str(part) for part in default if str(part).strip())
     return ()
+
+
+def _packed_analysis_auto_approve_effects() -> tuple[str, ...]:
+    from headless_re_mcp.agent.autonomy import PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS
+
+    return PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS
+
+
+def _packed_analysis_auto_approve_tools() -> tuple[str, ...]:
+    from headless_re_mcp.agent.autonomy import PACKED_ANALYSIS_AUTO_APPROVE_TOOLS
+
+    return PACKED_ANALYSIS_AUTO_APPROVE_TOOLS
+
+
+def _loaded_string_tuple(
+    raw: str | None,
+    data: dict[str, Any],
+    key: str,
+    *,
+    preset: Callable[[], tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Env wins; an explicit JSON key (including []) is fail-closed; else preset."""
+    if raw is not None:
+        return _as_tuple(raw, ())
+    if key in data:
+        return _as_tuple(None, data.get(key, ()))
+    return preset()
 
 
 def _as_tuple(raw: str | None, default: object) -> tuple[str, ...]:

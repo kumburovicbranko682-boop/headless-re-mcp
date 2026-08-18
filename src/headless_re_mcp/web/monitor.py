@@ -104,21 +104,30 @@ def build_monitor_snapshot(
             or {"code": "session_unavailable", "message": "session not found"},
         }
 
-    dynamic = service.dynamic_state(session_id)
-    workflow = service.workflow_status(session_id)
-    unpack = service.unpack_status(session_id)
+    session_obj = session_data.get("session") if isinstance(session_data.get("session"), dict) else session_data
+    target = session_obj.get("target") if isinstance(session_obj, dict) else None
+    state = session_obj.get("state") if isinstance(session_obj, dict) else None
+    closed = state in {"closed", "closing", "failed"}
+    pe_live = target == "pe" and not closed
+
+    dynamic = service.dynamic_state(session_id) if pe_live else None
+    workflow = service.workflow_status(session_id) if pe_live else None
+    unpack = service.unpack_status(session_id) if pe_live else None
+    web = service.web_status(session_id) if target == "web" and not closed else None
     timeline = _timeline_tail(service, session_id, timeline_limit)
     artifacts = service.artifacts_list(session_id=session_id, offset=0, limit=12)
 
-    events_payload, events_error = _event_tail(service, session_id, events_limit)
+    if pe_live:
+        events_payload, events_error = _event_tail(service, session_id, events_limit)
+    else:
+        events_payload, events_error = {"events": [], "next_cursor": 0}, None
 
     dynamic_data = _safe_data(dynamic) or {}
     workflow_data = _safe_data(workflow)
     unpack_data = _safe_data(unpack)
+    web_data = _safe_data(web) or {}
     timeline_data = _safe_data(timeline) or {}
     artifacts_data = _safe_data(artifacts) or {}
-
-    session_obj = session_data.get("session") if isinstance(session_data.get("session"), dict) else session_data
     workflow_obj = None
     if isinstance(workflow_data, dict):
         workflow_obj = workflow_data.get("workflow") or workflow_data
@@ -141,7 +150,7 @@ def build_monitor_snapshot(
         "session_id": session_id,
         "session": session_obj,
         "dynamic": {
-            "state": dynamic_data.get("state"),
+            "state": dynamic_data.get("state") if pe_live else state,
             "debugging": dynamic_data.get("debugging"),
             "running": dynamic_data.get("running"),
             "process_id": dynamic_data.get("process_id") or dynamic_data.get("debuggee_pid"),
@@ -149,7 +158,15 @@ def build_monitor_snapshot(
             "debugger_pid": dynamic_data.get("debugger_pid"),
             "thread_id": dynamic_data.get("thread_id"),
             "raw": dynamic_data,
-            "error": None if dynamic_data else _safe_error(dynamic),
+            "error": None if (pe_live is False or dynamic_data) else _safe_error(dynamic),
+        },
+        "web": {
+            "open": bool(web_data.get("open")),
+            "opening": bool(web_data.get("opening")),
+            "url": web_data.get("url") or web_data.get("locator"),
+            "title": web_data.get("title"),
+            "locator": web_data.get("locator"),
+            "error": None if web_data or web is None else _safe_error(web),
         },
         "workflow": {
             "present": workflow_obj is not None,

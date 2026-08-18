@@ -35,6 +35,10 @@ class TestWebSessionScoping:
             backend.network_list("never-opened")
         assert info.value.code == "invalid_state"
 
+    def test_status_on_unopened_session_does_not_launch(self) -> None:
+        backend = WebBackend()
+        assert backend.status("never-opened") == {"open": False}
+
     def test_close_on_unopened_session_is_not_an_error(self) -> None:
         backend = WebBackend()
         assert backend.close("never-opened")["closed"] is False

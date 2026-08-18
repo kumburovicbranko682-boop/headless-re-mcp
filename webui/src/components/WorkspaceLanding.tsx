@@ -1,18 +1,19 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import type { WorkspaceProfile } from "../lib/inspectorSurface";
 
-export type WorkspaceProfile = "full" | "pe" | "android" | "web";
+export type { WorkspaceProfile };
 
 type ProfileOption = { id: string; label: string };
 type WorkspaceMode = {
   data?: { profile?: WorkspaceProfile; label?: string; available?: ProfileOption[] };
 };
 
-const DIRECTIONS: { id: WorkspaceProfile; title: string; blurb: string; glyph: string }[] = [
-  { id: "pe", title: "本地 PE 逆向", blurb: "IDA 静态 + x64dbg 动态调试，Windows 可执行文件。", glyph: "🖥" },
-  { id: "web", title: "Web 逆向", blurb: "浏览器 CDP、JS 反混淆、WASM 与抓包。", glyph: "🌐" },
-  { id: "android", title: "Android 应用逆向", blurb: "模拟器/真机、装包、APK 静态与 Frida hook。", glyph: "🤖" },
-  { id: "full", title: "全部工具", blurb: "不裁剪，暴露全部分析工具。", glyph: "✦" },
+const DIRECTIONS: { id: WorkspaceProfile; title: string; blurb: string; index: string }[] = [
+  { id: "pe", title: "本地 PE 逆向", blurb: "IDA 静态与 x64dbg 动态，Windows 可执行文件。", index: "01" },
+  { id: "web", title: "Web 逆向", blurb: "浏览器 CDP、脚本反混淆、WASM 与抓包。", index: "02" },
+  { id: "android", title: "Android 应用逆向", blurb: "模拟器或真机、装包、APK 静态与 Frida。", index: "03" },
+  { id: "full", title: "全部工具", blurb: "不裁剪工具面，一次暴露全部能力。", index: "04" },
 ];
 
 export function WorkspaceLanding({
@@ -45,37 +46,34 @@ export function WorkspaceLanding({
 
   return (
     <main className="landing">
-      <div className="landing-inner">
-        <div className="brand">
-          <div className="logo">RE</div>
-          <div>
-            <b>Headless Workbench</b>
-            <small>选择工作方向</small>
-          </div>
-        </div>
-        <h1>你想逆向什么？</h1>
+      <header className="landing-copy">
+        <p className="landing-kicker">Headless RE-MCP</p>
+        <h1>开始一段分析</h1>
         <p className="landing-sub">
-          选择一个方向即可精简工具面；随时可在侧边栏切换。此选择也决定 MCP 客户端下次连接时看到的工具集。
+          选择工作方向来裁剪工具。会话保存在本机，控制台重启后同一 ID 仍可继续，不会自动打开调试器。
         </p>
-        <div className="landing-grid">
-          {DIRECTIONS.map((direction) => (
+      </header>
+      <ol className="toc">
+        {DIRECTIONS.map((direction) => (
+          <li key={direction.id}>
             <button
-              key={direction.id}
               type="button"
               className={`direction-card${active === direction.id ? " current" : ""}`}
               disabled={busy !== null}
               onClick={() => void choose(direction.id)}
             >
-              <span className="direction-glyph">{direction.glyph}</span>
-              <b>{direction.title}</b>
-              <span className="direction-blurb">{direction.blurb}</span>
+              <span className="direction-index">{direction.index}</span>
+              <span className="direction-body">
+                <b>{direction.title}</b>
+                <span className="direction-blurb">{direction.blurb}</span>
+              </span>
               {active === direction.id && <span className="direction-active">当前</span>}
               {busy === direction.id && <span className="direction-active">切换中…</span>}
             </button>
-          ))}
-        </div>
-        {error && <div className="error">{error}</div>}
-      </div>
+          </li>
+        ))}
+      </ol>
+      {error && <div className="error">{error}</div>}
     </main>
   );
 }

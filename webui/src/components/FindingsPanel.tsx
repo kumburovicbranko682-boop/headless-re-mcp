@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { isSessionGone, inspectorDisconnectedHint } from "../lib/sessionGone";
 
 type KnowledgeEntry = {
   kind: string;
@@ -20,11 +21,11 @@ type Envelope<T> = { ok: boolean; data?: T; error?: { message?: string } };
 
 function summarize(value: KnowledgeEntry["value"]): string {
   if (!value || typeof value !== "object") return "—";
-  const parts = Object.entries(value).slice(0, 3).map(([key, item]) => `${key}=${String(item)}`);
+  const parts = Object.entries(value).slice(0, 3).map(([key, item]) => `${key}=${typeof item === "object" && item !== null ? "[object]" : String(item)}`);
   return parts.length ? parts.join(", ") : "—";
 }
 
-export function FindingsPanel({ sessionId }: { sessionId: string }) {
+export function FindingsPanel({ sessionId, onSessionMissing }: { sessionId: string; onSessionMissing?: (id: string) => void }) {
   const [knowledge, setKnowledge] = useState<KnowledgeData | null>(null);
   const [report, setReport] = useState<ReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,12 +38,14 @@ export function FindingsPanel({ sessionId }: { sessionId: string }) {
     );
     if (!result.ok || !result.data) {
       setKnowledge(null);
-      setError(result.error?.message ?? "Findings are unavailable for this session");
+      const gone = isSessionGone(result.error);
+      setError(gone ? inspectorDisconnectedHint() : (result.error?.message ?? "暂无发现"));
+      if (gone) onSessionMissing?.(sessionId);
       return;
     }
     setKnowledge(result.data);
     setError(null);
-  }, [sessionId]);
+  }, [onSessionMissing, sessionId]);
 
   const generate = useCallback(async () => {
     if (!sessionId || busy) return;
@@ -52,7 +55,7 @@ export function FindingsPanel({ sessionId }: { sessionId: string }) {
         `/api/sessions/${encodeURIComponent(sessionId)}/report`,
         { method: "POST", body: JSON.stringify({}) },
       );
-      if (!result.ok || !result.data) throw new Error(result.error?.message ?? "report failed");
+      if (!result.ok || !result.data) throw new Error(result.error?.message ?? "报告生成失败");
       setReport(result.data);
       setError(null);
     } catch (reason) {
@@ -78,20 +81,20 @@ export function FindingsPanel({ sessionId }: { sessionId: string }) {
     return [...buckets.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [knowledge]);
 
-  if (!sessionId) return <div className="findings-empty">Link a session to collect findings.</div>;
+  if (!sessionId) return <div className="findings-empty">关联会话后才会收集发现。</div>;
 
   return <section className="findings">
     <div className="findings-toolbar">
-      <span className="findings-count">{knowledge?.total ?? 0} findings</span>
-      <button onClick={() => void load()}>Refresh</button>
-      <button disabled={busy} onClick={() => void generate()}>{busy ? "Rendering…" : "Generate report"}</button>
+      <span className="findings-count">{knowledge?.total ?? 0} 条发现</span>
+      <button onClick={() => void load()}>刷新</button>
+      <button disabled={busy} onClick={() => void generate()}>{busy ? "生成中…" : "生成报告"}</button>
     </div>
     {error && <div className="findings-error">{error}</div>}
     {report && <div className="findings-report">
-      Report written with {report.findings} findings · <code>{report.path}</code>
+      已写入报告，含 {report.findings} 条发现 · <code>{report.path}</code>
     </div>}
     {grouped.length === 0
-      ? <div className="findings-empty">Nothing recorded yet. Agents add findings with <code>knowledge.record</code>.</div>
+      ? <div className="findings-empty">还没有记录。Agent 用 <code>knowledge.record</code> 写入发现。</div>
       : grouped.map(([kind, entries]) => <details key={kind} open>
           <summary>{kind} ({entries.length})</summary>
           <div className="findings-list">

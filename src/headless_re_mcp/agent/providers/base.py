@@ -22,6 +22,7 @@ class ProviderEvent:
     text: str | None = None
     tool_calls: tuple[ProviderToolCall, ...] = ()
     finish_reason: str | None = None
+    output_tokens: int | None = None
 
 
 class ProviderPort(Protocol):

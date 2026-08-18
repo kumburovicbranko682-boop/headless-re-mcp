@@ -92,6 +92,7 @@ _READ_ONLY_NAMES = frozenset((
     'dynamic.modules',
     'dynamic.registers.read',
     'dynamic.state',
+    'dynamic.stealth.status',
     'frida.exports',
     'frida.hook.template',
     'frida.memory.read',
@@ -294,6 +295,7 @@ _FILE_WRITE_NAMES = frozenset((
     'batch.analyze',
     'dotnet.deobfuscate',
     'dotnet.reactor.unpack',
+    'dynamic.stealth.set',
     'ghidra.analyze',
     'modules.dump',
     'patches.apply',
@@ -340,7 +342,7 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 263:
+if len(_ALL_TOOL_NAMES) != 265:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])
@@ -362,6 +364,15 @@ _SERVICE_OVERRIDES = {
     "meta.metrics": "tool_metrics",
 }
 
+# Agent tool_timeout is a ceiling; most tools stay at the 60s default.
+# First IDA/x64dbg/Ghidra/APK open of a large sample routinely exceeds that.
+_TOOL_TIMEOUTS: dict[str, float] = {
+    "apk.open": 180.0,
+    "dynamic.open": 180.0,
+    "ghidra.analyze": 180.0,
+    "static.open": 1800.0,
+}
+
 
 def _declared_spec(name: str) -> CommandSpec:
     if name in _READ_ONLY_NAMES:
@@ -375,11 +386,14 @@ def _declared_spec(name: str) -> CommandSpec:
     transports = {CommandTransport.MCP, CommandTransport.AGENT}
     if name in _WEB_NAMES:
         transports.add(CommandTransport.WEB)
+    timeout = _TOOL_TIMEOUTS.get(name)
+    policy = ResourcePolicy(timeout_seconds=timeout) if timeout is not None else ResourcePolicy()
     return CommandSpec(
         name=name,
         service_method=_SERVICE_OVERRIDES.get(name, name.replace(".", "_")),
         transports=frozenset(transports),
         effects=effects,
+        resource_policy=policy,
     )
 
 

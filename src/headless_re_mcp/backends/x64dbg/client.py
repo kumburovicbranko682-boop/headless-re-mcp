@@ -24,8 +24,12 @@ from headless_re_mcp.core.events import (
     parse_debug_event_batch,
 )
 from headless_re_mcp.core.hidden_desktop import DesktopProcess, HiddenDesktop
+from headless_re_mcp.core.desktop_isolation import (
+    DesktopIsolationJob,
+    hide_input_desktop_windows_for_pids,
+)
 from headless_re_mcp.core.models import Architecture
-from headless_re_mcp.core.process_tree import terminate_process_tree
+from headless_re_mcp.core.process_tree import enumerate_direct_children, terminate_process_tree
 from headless_re_mcp.core.session import detect_pe_architecture
 from headless_re_mcp.core.windows import describe_process_windows
 from headless_re_mcp.process_group import assign_to_process_group
@@ -370,6 +374,8 @@ class XdbgClient:
         self._closed = False
         self._transport: _NamedPipeTransport | None = None
         self._desktop: HiddenDesktop | None = None
+        self._isolation_job: DesktopIsolationJob | None = None
+        self._debuggee_pid: int | None = None
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._user_directory = TemporaryDirectory(
@@ -408,6 +414,9 @@ class XdbgClient:
                 encoding="utf-8",
                 errors="replace",
             )
+            self._isolation_job = DesktopIsolationJob.create()
+            if self._isolation_job is not None:
+                self._isolation_job.assign(int(self._process.pid))
         else:
             self._process = subprocess.Popen(
                 argv,
@@ -562,13 +571,9 @@ class XdbgClient:
     ) -> JsonObject:
         desktop = self._desktop
         if desktop is None:
-            return {
-                "available": False,
-                "mode": "default",
-                "input_desktop": True,
-                "window_count": 0,
-                "windows": [],
-            }
+            from headless_re_mcp.core.windows import snapshot_input_desktop
+
+            return snapshot_input_desktop(allowed_pids=allowed_pids)
         return desktop.snapshot(allowed_pids=allowed_pids)
 
     def desktop_capture(
@@ -580,10 +585,16 @@ class XdbgClient:
     ) -> JsonObject:
         desktop = self._desktop
         if desktop is None:
-            raise XdbgRpcError(
-                "capability_unavailable",
-                "the x64dbg worker is not running on a hidden desktop",
-            )
+            from headless_re_mcp.core.ui_win32 import capture_hwnd_screenshot
+            from headless_re_mcp.core.windows import list_input_desktop_windows
+
+            hwnds = {int(row["hwnd"]) for row in list_input_desktop_windows(allowed_pids=allowed_pids)}
+            if int(hwnd) not in hwnds:
+                raise XdbgRpcError(
+                    "window_not_authorized",
+                    "window is not owned by the authorized debuggee on the input desktop",
+                )
+            return capture_hwnd_screenshot(hwnd, allowed_pids, output_path)
         return desktop.capture(
             hwnd,
             allowed_pids=allowed_pids,
@@ -1184,6 +1195,7 @@ class XdbgClient:
         if not isinstance(result, dict):
             raise XdbgRpcError("rpc_protocol_error", "RPC result must be an object")
         self._observe_windows()
+        self._note_debuggee_pid(result)
         return result
 
     def _read_log(self, stream: TextIO, target: deque[str]) -> None:
@@ -1196,6 +1208,33 @@ class XdbgClient:
             if windows:
                 with self._window_lock:
                     self._observed_windows.update(windows)
+            if self._desktop is not None:
+                self._suppress_input_desktop_leaks()
+
+    def _note_debuggee_pid(self, payload: JsonObject) -> None:
+        if "process_id" not in payload and "debuggee_pid" not in payload:
+            return
+        value = payload.get("process_id")
+        if value is None:
+            value = payload.get("debuggee_pid")
+        pid: int | None = None
+        if type(value) is int and value > 0:
+            pid = value
+        elif isinstance(value, str) and value.isdigit():
+            parsed = int(value)
+            if parsed > 0:
+                pid = parsed
+        with self._window_lock:
+            self._debuggee_pid = pid
+
+    def _suppress_input_desktop_leaks(self) -> None:
+        pids = {int(self._process.pid)}
+        with self._window_lock:
+            debuggee = self._debuggee_pid
+        if isinstance(debuggee, int) and debuggee > 0:
+            pids.add(debuggee)
+            pids.update(enumerate_direct_children(debuggee))
+        hide_input_desktop_windows_for_pids(pids)
 
     def _observe_windows(self) -> None:
         """Refuse the call while a window is up, without latching on history.
@@ -1253,6 +1292,11 @@ class XdbgClient:
         if desktop is not None:
             with suppress(OSError):
                 desktop.close()
+        job = getattr(self, "_isolation_job", None)
+        self._isolation_job = None
+        if job is not None:
+            with suppress(OSError):
+                job.close()
         if hasattr(self, "_user_directory"):
             # Belt and braces with ignore_cleanup_errors: this runs from close
             # and from terminate, and a userdir this refuses to remove must not

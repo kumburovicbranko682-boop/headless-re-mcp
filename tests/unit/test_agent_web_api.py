@@ -30,12 +30,37 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         created = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
         assert created.status_code == 201
         thread_id = created.json()["thread"]["id"]
+        bound = client.patch(
+            f"/api/agent/threads/{thread_id}",
+            headers=headers,
+            json={"session_id": "analysis-session"},
+        )
+        assert bound.status_code == 200
+        assert bound.json()["thread"]["session_id"] == "analysis-session"
+        cleared = client.patch(
+            f"/api/agent/threads/{thread_id}",
+            headers=headers,
+            json={"session_id": None},
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["thread"]["session_id"] is None
         message = client.post(
             f"/api/agent/threads/{thread_id}/messages",
             headers=headers,
             json={"content": "inspect"},
         )
         assert message.status_code == 201
+        store = app.state.agent_store
+        run = store.create_run(thread_id, provider_profile="default", model="fake", deadline_seconds=30)
+        store.append_event(run.id, "llm.started", {"round": 1})
+        fetched = client.get(f"/api/agent/threads/{thread_id}", headers=headers)
+        assert fetched.status_code == 200
+        assert any(event["type"] == "llm.started" for event in fetched.json()["events"])
+        removed = client.delete(f"/api/agent/threads/{thread_id}", headers=headers)
+        assert removed.status_code == 200
+        assert client.get(f"/api/agent/threads/{thread_id}", headers=headers).status_code == 404
+        leftover = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
+        thread_id = leftover.json()["thread"]["id"]
 
         secret = "provider-super-secret-value"
         saved = client.put(
@@ -60,6 +85,8 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert "must-not-import" not in preview.text
         assert "localHttpAccessToken" in preview.json()["preview"]["ignored"]
 
+        assert client.get("/api/agent/threads").status_code == 200
+        client.cookies.clear()
         assert client.get("/api/agent/threads").status_code == 401
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
@@ -128,8 +155,83 @@ def test_the_autonomy_policy_is_readable_over_http(tmp_path: Path, monkeypatch) 
         assert client.get("/api/agent/autonomy").status_code == 401
         body = client.get("/api/agent/autonomy", headers=headers).json()
 
+    assert body["mode"] == "request"
+    assert body["policy"]["mode"] == "request"
     assert body["policy"]["unattended"] is True
     assert body["policy"]["auto_approve_effects"] == ["state_change"]
     # The point of the endpoint: see exactly which writes were opened up.
     assert body["auto_executable_write_count"] > 0
     assert "dynamic.launch" in body["auto_executable_writes"]
+
+
+def test_autonomy_can_be_granted_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    written: dict[str, object] = {}
+
+    def fake_update(updates, *, config_path=None):  # type: ignore[no-untyped-def]
+        written.update(updates)
+        return tmp_path / "config.json"
+
+    monkeypatch.setattr("headless_re_mcp.web.routes.agent.update_config_values", fake_update)
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        granted = client.put(
+            "/api/agent/autonomy",
+            headers=headers,
+            json={"add_tools": ["dynamic.open", "dynamic.launch"]},
+        )
+        assert granted.status_code == 200
+        body = granted.json()
+        assert "dynamic.open" in body["policy"]["auto_approve_tools"]
+        assert "dynamic.launch" in body["auto_executable_writes"]
+        listed = client.get("/api/agent/autonomy", headers=headers).json()
+        assert listed["policy"]["auto_approve_tools"] == body["policy"]["auto_approve_tools"]
+
+    assert written["agent_auto_approve_tools"] == ["dynamic.launch", "dynamic.open"]
+
+
+def test_autonomy_mode_can_be_switched_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    written: dict[str, object] = {}
+
+    def fake_update(updates, *, config_path=None):  # type: ignore[no-untyped-def]
+        written.update(updates)
+        return tmp_path / "config.json"
+
+    monkeypatch.setattr("headless_re_mcp.web.routes.agent.update_config_values", fake_update)
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_tools=("dynamic.open",),
+    )
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        opened = client.put("/api/agent/autonomy", headers=headers, json={"mode": "full_access"})
+        assert opened.status_code == 200
+        body = opened.json()
+        assert body["mode"] == "full_access"
+        assert body["policy"]["auto_approve_effects"] == ["file_write", "state_change"]
+        assert body["policy"]["auto_approve_tools"] == []
+        assert "dynamic.launch" in body["auto_executable_writes"]
+        assert "report.generate" in body["auto_executable_writes"]
+
+        asked = client.put("/api/agent/autonomy", headers=headers, json={"mode": "request"})
+        assert asked.status_code == 200
+        reset = asked.json()
+        assert reset["mode"] == "request"
+        assert reset["policy"]["auto_approve_effects"] == []
+        assert reset["policy"]["auto_approve_tools"] == []
+        assert reset["auto_executable_write_count"] == 0
+
+        bad = client.put("/api/agent/autonomy", headers=headers, json={"mode": "approve_for_me"})
+        assert bad.status_code == 400
+
+    assert written["agent_auto_approve_effects"] == []
+    assert written["agent_auto_approve_tools"] == []

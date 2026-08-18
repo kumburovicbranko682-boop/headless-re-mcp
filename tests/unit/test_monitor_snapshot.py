@@ -68,3 +68,34 @@ def test_a_frame_for_a_session_with_no_event_log_says_so(tmp_path: Path) -> None
     assert snapshot["ok"] is True
     assert snapshot["events"]["items"] == []
     assert snapshot["events"]["error"] is not None
+
+
+def test_closed_pe_frame_does_not_call_x64dbg(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.close_session(session_id).ok
+
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    assert snapshot["ok"] is True
+    error = snapshot["dynamic"].get("error") or {}
+    assert "x64dbg" not in str(error).lower()
+    assert snapshot["dynamic"]["state"] == "closed"
+
+
+def test_web_frame_skips_the_debugger(tmp_path: Path) -> None:
+    service = _service(tmp_path, FakeDynamicWorker())
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = created.data["session"]["id"]
+
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    assert snapshot["ok"] is True
+    error = snapshot["dynamic"].get("error") or {}
+    assert "x64dbg" not in str(error).lower()
+    assert snapshot["web"]["open"] is False
+    assert snapshot["web"]["locator"] == "https://example.com/app"

@@ -273,13 +273,7 @@ class AgentStore:
                 con.close()
 
     def create_thread(self, *, title: str = "New analysis", session_id: str | None = None) -> AgentThread:
-        if session_id is not None:
-            sid_limit = max(8, int(self.thread_session_id_max_chars))
-            if len(session_id) > sid_limit:
-                raise ValueError(
-                    f"thread session_id is {len(session_id)} characters, "
-                    f"over the {sid_limit} character limit"
-                )
+        session_id = self._checked_session_id(session_id)
         thread_id = uuid.uuid4().hex
         now = utc_now()
         with self.transaction() as con:
@@ -295,6 +289,38 @@ class AgentStore:
         with self._reading() as con:
             row = con.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
         return AgentThread(**dict(row)) if row else None
+
+    def _checked_session_id(self, session_id: str | None) -> str | None:
+        if session_id is None:
+            return None
+        sid_limit = max(8, int(self.thread_session_id_max_chars))
+        if len(session_id) > sid_limit:
+            raise ValueError(
+                f"thread session_id is {len(session_id)} characters, "
+                f"over the {sid_limit} character limit"
+            )
+        return session_id
+
+    def bind_thread_session(self, thread_id: str, session_id: str | None) -> AgentThread:
+        checked = self._checked_session_id(session_id)
+        now = utc_now()
+        with self.transaction() as con:
+            if con.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone() is None:
+                raise KeyError(thread_id)
+            con.execute(
+                "UPDATE threads SET session_id=?, updated_at=? WHERE id=?",
+                (checked, now, thread_id),
+            )
+        bound = self.get_thread(thread_id)
+        if bound is None:
+            raise KeyError(thread_id)
+        return bound
+
+    def delete_thread(self, thread_id: str) -> None:
+        with self.transaction() as con:
+            deleted = con.execute("DELETE FROM threads WHERE id=?", (thread_id,)).rowcount
+            if deleted == 0:
+                raise KeyError(thread_id)
 
     def add_message(self, thread_id: str, role: str, content: str, *, run_id: str | None = None, tool_call_id: str | None = None) -> AgentMessage:
         if len(content.encode("utf-8")) > 1_048_576:
@@ -455,7 +481,39 @@ class AgentStore:
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
         with self._reading() as con:
             rows = con.execute("SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run_id, max(0, after), max(1, min(limit, 5000)))).fetchall()
-        return [RunEvent(str(row["run_id"]), int(row["seq"]), str(row["type"]), json.loads(row["data_json"]), str(row["created_at"])) for row in rows]
+        return [self._event_from_row(row) for row in rows]
+
+    def list_thread_events(self, thread_id: str, *, limit: int = 4000) -> list[RunEvent]:
+        """Newest-capped event history across every retained run on a thread.
+
+        The web stats strip is session-scoped, not run-scoped. A finished run
+        used to vanish from the UI because the client only kept the live SSE
+        buffer and then wiped it on thread refresh.
+        """
+        bounded = max(1, min(limit, 8000))
+        with self._reading() as con:
+            rows = con.execute(
+                "SELECT run_id, seq, type, data_json, created_at FROM ("
+                "  SELECT e.run_id, e.seq, e.type, e.data_json, e.created_at, r.created_at AS run_created"
+                "  FROM run_events e"
+                "  JOIN runs r ON r.id = e.run_id"
+                "  WHERE r.thread_id=?"
+                "  ORDER BY r.created_at DESC, e.seq DESC"
+                "  LIMIT ?"
+                ") ORDER BY run_created, seq",
+                (thread_id, bounded),
+            ).fetchall()
+        return [self._event_from_row(row) for row in rows]
+
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> RunEvent:
+        return RunEvent(
+            str(row["run_id"]),
+            int(row["seq"]),
+            str(row["type"]),
+            json.loads(row["data_json"]),
+            str(row["created_at"]),
+        )
 
     def propose_tool_call(self, run_id: str, tool_call_id: str, name: str, arguments: JsonObject, effects: list[str]) -> JsonObject:
         id_limit = max(8, int(self.tool_call_id_max_chars))

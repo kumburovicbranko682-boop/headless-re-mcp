@@ -49,6 +49,7 @@ from headless_re_mcp.core.windows import (
     is_pid_alive,
     list_windows_for_pids,
     resolve_allowed_ui_pids,
+    window_capture_rank,
 )
 
 if TYPE_CHECKING:
@@ -59,10 +60,20 @@ if TYPE_CHECKING:
 JsonObject = dict[str, Any]
 
 
+def _as_positive_pid(value: object) -> int | None:
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        if parsed > 0:
+            return parsed
+    return None
+
+
 def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None]:
     """Resolve a bounded target process set for passive desktop monitoring."""
-    value = state.get("process_id") or state.get("debuggee_pid")
-    if type(value) is not int or value <= 0 or not is_pid_alive(value):
+    value = _as_positive_pid(state.get("process_id") or state.get("debuggee_pid"))
+    if value is None or not is_pid_alive(value):
         return frozenset(), None
     from headless_re_mcp.core.process_tree import enumerate_direct_children
 
@@ -71,6 +82,60 @@ def _desktop_monitor_pids(state: JsonObject) -> tuple[frozenset[int], int | None
         if is_pid_alive(child):
             allowed.add(child)
     return frozenset(allowed), value
+
+
+def _annotate_virtual_desktop_snapshot(
+    snapshot: JsonObject,
+    *,
+    session_id: str,
+    state: JsonObject,
+    allowed: frozenset[int],
+    debuggee_pid: int | None,
+    debugger_pid: int | None,
+) -> JsonObject:
+    """Attach debuggee pause/idle context so a 0-window snapshot is not 'empty desktop'."""
+    payload = dict(snapshot)
+    windows = payload.get("windows")
+    if not isinstance(windows, list):
+        windows = []
+    window_count = len(windows)
+    desktop_count = payload.get("desktop_window_count")
+    if type(desktop_count) is not int:
+        desktop_count = window_count
+    debug_state = str(state.get("state") or "idle")
+    payload.update(
+        {
+            "session_id": session_id,
+            "debuggee_pid": debuggee_pid,
+            "debugger_pid": debugger_pid,
+            "allowed_pids": sorted(allowed),
+            "capture_mode": "passive",
+            "debuggee_state": debug_state,
+            "window_count": window_count,
+            "desktop_window_count": desktop_count,
+            "windows": windows,
+        }
+    )
+    if window_count == 0 and "hint" not in payload:
+        if debug_state == "paused":
+            payload["hint"] = "paused_before_gui"
+            payload["suggestion"] = (
+                "The debuggee is paused (typically at the system or entry "
+                "breakpoint) and has not created windows yet. Call "
+                "dynamic.resume, then snapshot again. A live PID after "
+                "dynamic.launch is not a GUI."
+            )
+        elif debug_state == "running":
+            payload["hint"] = "no_debuggee_windows"
+            payload["suggestion"] = (
+                "The debuggee is running but has no top-level window on this desktop yet."
+            )
+        else:
+            payload["hint"] = "debuggee_idle"
+            payload["suggestion"] = "No debuggee is running. Launch or attach first."
+    return payload
+
+
 def _select_desktop_window(
     windows: list[JsonObject],
     requested_hwnd: int | None,
@@ -91,15 +156,9 @@ def _select_desktop_window(
             "not_found",
             "the debuggee has no capturable hidden-desktop window",
         )
-    return max(
-        windows,
-        key=lambda row: (
-            bool(row.get("visible")),
-            not bool(row.get("minimized")),
-            int(row.get("area") or 0),
-            bool(row.get("title")),
-        ),
-    )
+    return max(windows, key=window_capture_rank)
+
+
 def _ui_finalize_windows(
     payload: JsonObject,
     ctx: JsonObject,
@@ -205,15 +264,13 @@ class UiAutomationMixin:
                     "rpc_protocol_error",
                     "desktop monitor returned a non-object snapshot",
                 )
-            payload = dict(snapshot)
-            payload.update(
-                {
-                    "session_id": session_id,
-                    "debuggee_pid": debuggee_pid,
-                    "debugger_pid": runtime.worker.pid,
-                    "allowed_pids": sorted(allowed),
-                    "capture_mode": "passive",
-                }
+            payload = _annotate_virtual_desktop_snapshot(
+                snapshot,
+                session_id=session_id,
+                state=state,
+                allowed=allowed,
+                debuggee_pid=debuggee_pid,
+                debugger_pid=runtime.worker.pid,
             )
             return _success(
                 payload,

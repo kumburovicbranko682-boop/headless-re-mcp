@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,130 @@ def _open_database_error(code: int, binary: Path) -> RuntimeError:
     return RuntimeError(f"idapro.open_database failed with code {code}")
 
 
+_UNPACKED_IDB_EXTS = (".id0", ".id1", ".id2", ".nam", ".til", ".idb")
+_ANALYSIS_BUDGET_S = 45.0
+_PROGRESS_EVERY_S = 2.0
+_OVERVIEW_ITEM_CAP = 50_000
+
+
+def _idb_path_variants(binary: Path, ext: str) -> tuple[Path, Path]:
+    return Path(str(binary) + ext), binary.with_suffix(ext)
+
+
+def _complete_idb_exists(binary: Path) -> bool:
+    """True only for a packed ``*.i64`` from a clean close."""
+    return any(path.is_file() for path in _idb_path_variants(binary, ".i64"))
+
+
+def _should_reuse_idb(binary: Path) -> bool:
+    return _complete_idb_exists(binary)
+
+
+def _unpacked_idb_paths(binary: Path) -> list[Path]:
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for ext in _UNPACKED_IDB_EXTS:
+        for path in _idb_path_variants(binary, ext):
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            found.append(path)
+    return found
+
+
+def _discard_crash_idb(binary: Path) -> list[str]:
+    """Remove the unpacked IDB a killed worker leaves next to the sample.
+
+    idalib writes ``*.id0`` while the database is open and packs ``*.i64`` only
+    on a clean close. Reopening that leftover made the next ``static.open``
+    spend minutes repairing a gigabyte-sized torn database.
+    """
+    removed: list[str] = []
+    for path in _unpacked_idb_paths(binary):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(str(path))
+    return removed
+
+
+def _emit_progress(phase: str, started: float, **extra: object) -> None:
+    payload: JsonObject = {
+        "phase": phase,
+        "elapsed_s": round(time.monotonic() - started, 1),
+    }
+    payload.update(extra)
+    _emit({"event": "progress", "data": payload})
+
+
+def _seed_entry_analysis() -> None:
+    import ida_auto
+    import ida_entry
+    import ida_idaapi
+    import ida_nalt
+
+    bad = int(ida_idaapi.BADADDR)
+    image = int(ida_nalt.get_imagebase())
+    if image != bad:
+        ida_auto.auto_make_proc(image)
+    try:
+        qty = int(ida_entry.get_entry_qty())
+    except Exception:
+        qty = 0
+    for index in range(qty):
+        try:
+            ordinal = ida_entry.get_entry_ordinal(index)
+            ea = int(ida_entry.get_entry(ordinal))
+        except Exception:
+            continue
+        if ea and ea != bad:
+            ida_auto.auto_make_proc(ea)
+
+
+def _drain_auto_analysis(*, budget_s: float = _ANALYSIS_BUDGET_S) -> JsonObject:
+    """Drain the auto queue on the main thread, then stop.
+
+    ``auto_wait()`` does not return until every queue is empty. On a packed
+    sample that is the whole image, so ``static.open`` looked frozen while IDA
+    was still creating functions. ``auto_make_step`` returns to Python after
+    each address, which is how progress is emitted without a second thread.
+    """
+    import ida_auto
+    import ida_ida
+
+    started = time.monotonic()
+    last_emit = started
+    steps = 0
+    truncated = False
+    min_ea = int(ida_ida.inf_get_min_ea())
+    max_ea = int(ida_ida.inf_get_max_ea())
+    _emit_progress("auto_analysis", started, steps=0)
+    while not ida_auto.auto_is_ok():
+        now = time.monotonic()
+        if now - started >= budget_s:
+            truncated = True
+            break
+        if now - last_emit >= _PROGRESS_EVERY_S:
+            _emit_progress("auto_analysis", started, steps=steps)
+            last_emit = now
+        if not ida_auto.auto_make_step(min_ea, max_ea):
+            break
+        steps += 1
+    if truncated or not ida_auto.auto_is_ok():
+        truncated = True
+        try:
+            ida_auto.enable_auto(False)
+            ida_auto.auto_cancel(min_ea, max_ea)
+        except Exception:
+            pass
+    return {
+        "analysis_truncated": truncated,
+        "analysis_steps": steps,
+        "analysis_s": round(time.monotonic() - started, 1),
+    }
+
+
 def _emit(payload: JsonObject) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -84,15 +209,29 @@ def _overview() -> JsonObject:
     import ida_nalt
     import idautils
 
-    functions = list(idautils.Functions())
-    strings = list(idautils.Strings())
     image_base = int(ida_nalt.get_imagebase())
+    function_count = 0
+    entry_function = image_base
+    for ea in idautils.Functions():
+        if function_count == 0:
+            entry_function = int(ea)
+        function_count += 1
+        if function_count >= _OVERVIEW_ITEM_CAP:
+            break
+    string_count = 0
+    try:
+        for _ in idautils.Strings():
+            string_count += 1
+            if string_count >= _OVERVIEW_ITEM_CAP:
+                break
+    except Exception:
+        string_count = 0
     return {
         "kernel_version": ida_kernwin.get_kernel_version(),
         "image_base": image_base,
-        "function_count": len(functions),
-        "string_count": len(strings),
-        "entry_function": int(functions[0]) if functions else image_base,
+        "function_count": function_count,
+        "string_count": string_count,
+        "entry_function": entry_function,
         "badaddr": int(ida_idaapi.BADADDR),
         "capabilities": sorted(_capabilities()),
     }
@@ -1408,13 +1547,35 @@ def run(binary: Path) -> int:
         import idapro
 
         idapro.enable_console_messages(False)
-        import ida_auto
-
-        open_result = idapro.open_database(str(binary), run_auto_analysis=True)
+        started = time.monotonic()
+        discarded = _discard_crash_idb(binary)
+        leftover = _unpacked_idb_paths(binary)
+        if leftover:
+            locked = leftover[0]
+            error = RuntimeError(
+                f"leftover IDA database {locked.name} is still locked; "
+                "another process is using this sample"
+            )
+            error.retryable = True  # type: ignore[attr-defined]
+            raise error
+        reuse_idb = _should_reuse_idb(binary)
+        print(
+            f"ida-worker reuse_idb={reuse_idb} discarded={len(discarded)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _emit_progress("open_database", started, reused_idb=reuse_idb)
+        # Full auto-analysis of a packed image never finishes in a time the
+        # caller will wait. The loader still parses PE headers; we then seed
+        # the entry and drain the queue with a wall-clock budget.
+        open_result = idapro.open_database(str(binary), run_auto_analysis=False)
         if open_result:
             raise _open_database_error(int(open_result), binary)
         opened = True
-        ida_auto.auto_wait()
+        if not reuse_idb:
+            _seed_entry_analysis()
+        analysis = _drain_auto_analysis()
+        _emit_progress("overview", started)
         overview = _overview()
         _emit(
             {
@@ -1423,6 +1584,9 @@ def run(binary: Path) -> int:
                     **overview,
                     "binary": str(binary),
                     "pid": os.getpid(),
+                    "reused_idb": reuse_idb,
+                    "discarded_sidecars": len(discarded),
+                    **analysis,
                 },
             }
         )

@@ -14,7 +14,7 @@ from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import compact_messages
 from headless_re_mcp.agent.models import RunStatus
-from headless_re_mcp.agent.orchestrator import AgentOrchestrator
+from headless_re_mcp.agent.orchestrator import AgentOrchestrator, thread_system_prompt
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.agent.redaction import redact
 from headless_re_mcp.agent.store import AgentStore
@@ -27,6 +27,19 @@ from headless_re_mcp.tools.catalog import (
 )
 
 JsonObject = dict[str, Any]
+
+
+def test_linked_session_is_named_in_the_system_prompt() -> None:
+    assert "session_id=abc" in thread_system_prompt("abc")
+    assert "session_id=" not in thread_system_prompt(None)
+    assert "blunt" in thread_system_prompt(None, "be blunt")
+    assert "dynamic.resume" in thread_system_prompt(None)
+    assert "dynamic.resume" in thread_system_prompt(None, "be blunt")
+    assert "dynamic.stealth.set" in thread_system_prompt(None)
+    assert "dynamic.stealth.set" in thread_system_prompt(None, "be blunt")
+    assert "tmd" in thread_system_prompt(None)
+    assert "without waiting" in thread_system_prompt(None)
+    assert "without waiting" in thread_system_prompt(None, "be blunt")
 
 
 class FakeProvider:
@@ -103,7 +116,10 @@ async def test_read_only_auto_executes_and_multiple_calls_complete(tmp_path: Pat
     run = await runner.start_run(thread.id)
     assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
     assert observed == [1, 2]
-    assert not any(event.type == "approval.required" for event in store.list_events(run["id"]))
+    events = store.list_events(run["id"])
+    assert not any(event.type == "approval.required" for event in events)
+    assert [event.data.get("round") for event in events if event.type == "llm.started"] == [1, 2]
+    assert [event.data.get("round") for event in events if event.type == "llm.completed"] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -412,7 +428,7 @@ async def test_a_wedged_tool_cannot_starve_the_default_thread_pool(
                 break
             await asyncio.sleep(0.01)
         assert entered.is_set()
-        assert await _wait_status(store, run["id"], {RunStatus.FAILED}) is RunStatus.FAILED
+        assert await _wait_status(store, run["id"], {RunStatus.COMPLETED}) is RunStatus.COMPLETED
 
         # The tool thread is still wedged. Reading the run the way the SSE
         # endpoint does has to keep working while it is.
@@ -421,12 +437,16 @@ async def test_a_wedged_tool_cannot_starve_the_default_thread_pool(
             timeout=5.0,
         )
         assert any(event.type == "tool.completed" for event in events)
+        assert any(
+            event.type == "tool.completed" and event.data.get("error") == "tool_timeout"
+            for event in events
+        )
     finally:
         release.set()
 
 
 @pytest.mark.asyncio
-async def test_tool_timeout_and_total_deadline_fail_runs(tmp_path: Path) -> None:
+async def test_tool_timeout_returns_to_the_model_and_deadline_still_fails_runs(tmp_path: Path) -> None:
     def slow_tool() -> JsonObject:
         time.sleep(0.3)
         return {"ok": True}
@@ -442,9 +462,13 @@ async def test_tool_timeout_and_total_deadline_fail_runs(tmp_path: Path) -> None
         tool_timeout=0.1,
     )
     run = await runner.start_run(thread.id)
-    assert await _wait_status(store, run["id"], {RunStatus.FAILED}) is RunStatus.FAILED
-    failed = store.get_run(run["id"])
-    assert failed is not None and "tool timed out" in str(failed.error)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED}) is RunStatus.COMPLETED
+    finished = store.get_run(run["id"])
+    assert finished is not None and finished.error is None
+    assert any(
+        event.type == "tool.completed" and event.data.get("error") == "tool_timeout"
+        for event in store.list_events(run["id"])
+    )
 
     class HangingProvider(FakeProvider):
         async def _events(self) -> AsyncIterator[ProviderEvent]:
@@ -510,11 +534,17 @@ async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) 
         (ProviderToolCall(f"call-{index}", "test.tool", {}),)
         for index in range(4)
     ]
+    hits = {"n": 0}
+
+    def counting_tool() -> dict[str, Any]:
+        hits["n"] += 1
+        return {"ok": True}
+
     store = AgentStore(tmp_path / "rounds.db")
     thread = store.create_thread()
     runner = AgentOrchestrator(
         store,
-        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        CommandCatalog([_single_spec(counting_tool)]),
         _configs(tmp_path / "round-config"),
         provider_factory=lambda _: FakeProvider(calls),
         max_tool_rounds=2,
@@ -522,7 +552,17 @@ async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) 
     run = await runner.start_run(thread.id)
     assert await _wait_status(store, run["id"], {RunStatus.FAILED}) is RunStatus.FAILED
     exhausted = store.get_run(run["id"])
-    assert exhausted is not None and "maximum tool rounds" in str(exhausted.error)
+    assert exhausted is not None
+    assert exhausted.error == "maximum tool rounds exceeded"
+    assert "incident" not in str(exhausted.error)
+    assert "RuntimeError" not in str(exhausted.error)
+    assert hits["n"] == 2
+    assistants = [
+        message.content
+        for message in store.list_messages(thread.id)
+        if message.role == "assistant"
+    ]
+    assert assistants[-1] == "round-2"
 
     oversized_store = AgentStore(tmp_path / "oversized.db")
     oversized_thread = oversized_store.create_thread()
@@ -857,3 +897,144 @@ async def test_streamed_tokens_are_coalesced_before_they_become_sqlite_rows(
     deltas = [event for event in store.list_events(run["id"], limit=5000) if event.type == "message.delta"]
     assert 1 <= len(deltas) <= 100, f"wrote {len(deltas)} delta rows for 20 KB of text"
     assert "".join(str(event.data.get("delta") or "") for event in deltas) == "".join(chunks)
+
+
+class _ToolJsonProvider:
+    def __init__(self) -> None:
+        self.round = 0
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del messages, tools, model, enable_thinking, reasoning_effort
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        if self.round == 0:
+            for piece in ("static", ".open", "{" + '"session_id":"x"' + "}"):
+                yield ProviderEvent("output_delta", text=piece)
+            yield ProviderEvent("completed", tool_calls=(ProviderToolCall("c1", "test.tool", {}),))
+        else:
+            yield ProviderEvent("text_delta", text="done")
+            yield ProviderEvent("completed", tool_calls=())
+        self.round += 1
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_tool_only_rounds_emit_live_token_progress(tmp_path: Path) -> None:
+    """RE turns often generate tool JSON and no chat text.
+
+    tok/s used to stay 0 because the meter only counted message.delta, which
+    this path never writes.
+    """
+    store = AgentStore(tmp_path / "progress.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "inspect")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: _ToolJsonProvider(),
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+    events = store.list_events(run["id"])
+    first_completed = next(event for event in events if event.type == "llm.completed")
+    assert int(first_completed.data.get("tokens") or 0) >= 1
+    assert any(event.type == "llm.progress" for event in events)
+    first_round_deltas = [
+        event
+        for event in events
+        if event.type == "message.delta" and event.seq < first_completed.seq
+    ]
+    assert first_round_deltas == []
+
+
+class _UsageOnlyProvider:
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del messages, tools, model, enable_thinking, reasoning_effort
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent("usage", output_tokens=80)
+        yield ProviderEvent("completed", tool_calls=(), output_tokens=80)
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_provider_usage_becomes_llm_completed_tokens(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "usage.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "hi")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: _UsageOnlyProvider(),
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+    completed = next(event for event in store.list_events(run["id"]) if event.type == "llm.completed")
+    assert int(completed.data.get("tokens") or 0) == 80
+
+
+class _ReasoningProvider:
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del messages, tools, model, enable_thinking, reasoning_effort
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent("reasoning_delta", text="hmm ")
+        yield ProviderEvent("reasoning_delta", text="ok")
+        yield ProviderEvent("text_delta", text="answer")
+        yield ProviderEvent("completed", tool_calls=())
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_deltas_are_flushed_to_the_event_log(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "reason.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "think")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: _ReasoningProvider(),
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+    events = store.list_events(run["id"])
+    reasoning = [event for event in events if event.type == "reasoning.delta"]
+    assert "".join(str(event.data.get("delta") or "") for event in reasoning) == "hmm ok"
+    visible = [event for event in events if event.type == "message.delta"]
+    assert "".join(str(event.data.get("delta") or "") for event in visible) == "answer"

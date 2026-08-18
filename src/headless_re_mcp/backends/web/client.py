@@ -247,6 +247,26 @@ class WebBackend:
         if not self._available:
             raise WebError("capability_unavailable", "playwright is not installed")
 
+    def status(self, session_id: str) -> JsonObject:
+        """Cheap page identity; never launches a browser."""
+        with self._lock:
+            handle = self._sessions.get(session_id)
+        if handle is None:
+            return {"open": False}
+        if type(handle) is object:
+            return {"open": False, "opening": True}
+        if not isinstance(handle, _WebSession):
+            return {"open": False}
+
+        def work() -> JsonObject:
+            return {
+                "open": True,
+                "url": handle.page.url,
+                "title": _safe_title(handle.page),
+            }
+
+        return self._runner(handle).call(work)
+
     def _get(self, session_id: str) -> _WebSession:
         with self._lock:
             handle = self._sessions.get(session_id)

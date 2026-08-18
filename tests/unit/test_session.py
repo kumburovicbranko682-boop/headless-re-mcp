@@ -15,6 +15,8 @@ from headless_re_mcp.core.session import (
     SessionNotFound,
     SessionRegistry,
     detect_pe_architecture,
+    hydrate_persisted_sessions,
+    session_from_store_row,
 )
 
 
@@ -158,3 +160,76 @@ def test_a_missing_session_error_does_not_echo_an_unbounded_id() -> None:
     assert huge not in dumped
     assert len(dumped) < 8_000
     assert "200000" in dumped
+
+
+def test_adopt_keeps_the_original_id(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    registry = SessionRegistry()
+    original = registry.create(binary)
+    other = SessionRegistry()
+    adopted = other.adopt(original)
+    assert adopted.id == original.id
+    assert other.get(original.id).locator == str(binary.resolve())
+    # A second adopt must not replace a live row.
+    shadow = original.model_copy(update={"metadata": {"restored": True}})
+    kept = other.adopt(shadow)
+    assert kept.metadata.get("restored") is not True
+
+
+def test_hydrate_restores_unclean_rows_as_created(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    binary = tmp_path / "keep.exe"
+    _write_minimal_pe(binary, 0x8664)
+    session_id = "ab" * 16
+    rows = [
+        {
+            "id": session_id,
+            "binary": str(binary),
+            "sha256": "a" * 64,
+            "architecture": "x64",
+            "state": "ready",
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "closed_cleanly": 0,
+        },
+        {
+            "id": "cd" * 16,
+            "binary": str(binary),
+            "state": "closed",
+            "closed_cleanly": 0,
+        },
+    ]
+
+    class _Source:
+        def list_unclean_sessions(
+            self, *, offset: int = 0, limit: int = 100
+        ) -> tuple[list[dict[str, object]], int]:
+            return rows[offset : offset + limit], len(rows)
+
+    registry = SessionRegistry()
+    assert hydrate_persisted_sessions(registry, _Source()) == 1
+    restored = registry.get(session_id)
+    assert restored.state == SessionState.CREATED
+    assert restored.metadata.get("restored") is True
+    assert restored.architecture == Architecture.X64
+    with pytest.raises(SessionNotFound):
+        registry.get("cd" * 16)
+
+
+def test_store_row_survives_a_missing_file(tmp_path: Path) -> None:
+    missing = tmp_path / "gone.exe"
+    session = session_from_store_row(
+        {
+            "id": "ef" * 16,
+            "binary": str(missing),
+            "architecture": "x86",
+            "state": "running",
+        }
+    )
+    assert session is not None
+    assert session.binary is None
+    assert session.locator == str(missing)
+    assert session.metadata.get("missing_file") is True
+    assert session.architecture == Architecture.X86

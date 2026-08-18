@@ -20,6 +20,18 @@ from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
 from headless_re_mcp.backends.proxy import ProxyBackend
 from headless_re_mcp.backends.web import WebBackend
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
+from headless_re_mcp.backends.x64dbg.stealth import (
+    DEFAULT_PROFILE_ID,
+    X64_FORBIDDEN_PROFILES,
+    StealthError,
+    apply_profile,
+    canonical_profile_id,
+    inspect_layout,
+    layout_for_headless,
+    profile_id_for_section,
+    stealth_hint_profile,
+    summarize_settings,
+)
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.addressing import (
     AddressSyncError,
@@ -106,7 +118,9 @@ from headless_re_mcp.core.service_workflow import WorkflowAnalysisMixin
 from headless_re_mcp.core.service_workspace import WorkspaceMixin
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
+    SessionNotFound,
     SessionRegistry,
+    hydrate_persisted_sessions,
 )
 from headless_re_mcp.core.windows import (
     is_pid_alive,
@@ -356,6 +370,7 @@ class AnalysisService(
         self._vmp_dumper_runner = vmp_dumper_runner or run_vmp_dumper
         self._scylla_runner = scylla_runner or run_scylla
         self.repository = repository or SqliteAnalysisRepository(self.settings.artifact_root)
+        hydrate_persisted_sessions(self.registry, self.repository)
         # Long-lived optional backends are owned here so concurrent tool calls
         # cannot each construct one. Both constructors are cheap and import
         # nothing: playwright and mitmproxy are only imported on first use.
@@ -457,7 +472,26 @@ class AnalysisService(
         )
 
     def open_dynamic(self, session_id: str) -> Result[JsonObject]:
-        return self.services.runtime.open_dynamic(session_id)
+        try:
+            already_open = session_id in self._runtime_owner.active_session_ids(
+                BackendKind.X64DBG
+            )
+            stealth = (
+                {}
+                if already_open
+                else self._prepare_launch_stealth(session_id, stealth_profile=None)
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
+        stealth.pop("implicit_open", None)
+        opened = self.services.runtime.open_dynamic(session_id)
+        if opened.ok and opened.data is not None and stealth:
+            data = dict(opened.data)
+            data.update(stealth)
+            return _success(
+                data, session_id=session_id, backend=BackendKind.X64DBG.value
+            )
+        return opened
 
     def session_recover(
         self,
@@ -781,7 +815,10 @@ class AnalysisService(
                         capabilities=worker.capabilities,
                     )
                     self.registry.attach_backend(session_id, handle)
-                    self.registry.update_metadata(session_id, {metadata_key: worker.metadata})
+                    self.registry.update_metadata(
+                        session_id,
+                        {metadata_key: worker.metadata, "restored": False},
+                    )
                     if opening_session:
                         current = self.registry.transition(session_id, SessionState.READY)
                     else:
@@ -1268,6 +1305,261 @@ class AnalysisService(
             timeout=timeout,
         )
 
+    def _stealth_layouts(self) -> dict[Architecture, Any]:
+        return {
+            Architecture.X86: layout_for_headless(
+                self.settings.x64dbg_headless_x86, Architecture.X86
+            ),
+            Architecture.X64: layout_for_headless(
+                self.settings.x64dbg_headless_x64, Architecture.X64
+            ),
+        }
+
+    def _live_stealth_sessions(self, architecture: Architecture) -> tuple[str, ...]:
+        live: list[str] = []
+        for session_id in self._runtime_owner.active_session_ids(BackendKind.X64DBG):
+            try:
+                session = self.registry.get(session_id)
+            except SessionNotFound:
+                continue
+            if session.architecture is architecture:
+                live.append(session_id)
+        return tuple(live)
+
+    def _require_arch_idle_for_stealth(self, architecture: Architecture) -> None:
+        live = self._live_stealth_sessions(architecture)
+        if live:
+            raise StealthError(
+                "debugger_already_open",
+                (
+                    f"cannot change the {architecture.value} ScyllaHide profile "
+                    "while a debugger for that architecture is open"
+                ),
+                details={
+                    "architecture": architecture.value,
+                    "live_sessions": list(live),
+                },
+            )
+
+    def dynamic_stealth_status(self, session_id: str | None = None) -> Result[JsonObject]:
+        try:
+            layouts = self._stealth_layouts()
+            payload = summarize_settings(
+                enabled=bool(self.settings.x64dbg_stealth_enabled),
+                default_profile=self.settings.x64dbg_stealth_profile,
+                layouts=layouts,
+            )
+            payload["live_sessions"] = {
+                Architecture.X86.value: list(self._live_stealth_sessions(Architecture.X86)),
+                Architecture.X64.value: list(self._live_stealth_sessions(Architecture.X64)),
+            }
+            payload["ready"] = any(
+                bool(item.get("plugin_present"))
+                for item in payload["architectures"].values()
+            )
+            if session_id is not None:
+                session = self.registry.get(session_id)
+                payload["session_id"] = session_id
+                payload["session_architecture"] = session.require_architecture().value
+            return _success(payload, backend=BackendKind.X64DBG.value)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
+
+    def dynamic_stealth_set(
+        self,
+        profile: str,
+        session_id: str | None = None,
+    ) -> Result[JsonObject]:
+        try:
+            canonical = canonical_profile_id(profile)
+            layouts = self._stealth_layouts()
+            if session_id is not None:
+                session = self.registry.get(session_id)
+                targets: tuple[Architecture, ...] = (session.require_architecture(),)
+            else:
+                targets = tuple(
+                    architecture
+                    for architecture, layout in layouts.items()
+                    if layout is not None
+                )
+            if not targets:
+                raise StealthError(
+                    "plugin_missing",
+                    "no x64dbg headless executable is configured",
+                )
+            applied: list[JsonObject] = []
+            for architecture in targets:
+                if (
+                    architecture is Architecture.X64
+                    and canonical in X64_FORBIDDEN_PROFILES
+                ):
+                    if session_id is not None:
+                        raise StealthError(
+                            "invalid_params",
+                            "armadillo is an x86-only ScyllaHide profile",
+                            details={
+                                "profile": canonical,
+                                "architecture": architecture.value,
+                            },
+                        )
+                    continue
+                layout = layouts[architecture]
+                if layout is None:
+                    raise StealthError(
+                        "plugin_missing",
+                        f"x64dbg {architecture.value} headless executable is not configured",
+                        details={"architecture": architecture.value},
+                    )
+                self._require_arch_idle_for_stealth(architecture)
+                applied.append(
+                    apply_profile(
+                        layout,
+                        canonical,
+                        require_plugin=canonical != "off",
+                    )
+                )
+            if not applied:
+                raise StealthError(
+                    "invalid_params",
+                    "armadillo is an x86-only ScyllaHide profile",
+                    details={"profile": canonical},
+                )
+            return _success(
+                {
+                    "profile": canonical,
+                    "applied": applied,
+                    "enabled": bool(self.settings.x64dbg_stealth_enabled),
+                },
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
+
+    def _cached_or_detected_stealth_profile(self, session_id: str) -> str | None:
+        session = self.registry.get(session_id)
+        cached = stealth_hint_profile(session.metadata)
+        if cached is not None:
+            return cached
+        classified = self.packer_classify(
+            session_id, use_die=True, use_exeinfope=False, timeout=30.0
+        )
+        if not classified.ok or classified.data is None:
+            return None
+        raw = classified.data.get("stealth_profile")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return canonical_profile_id(raw)
+            except StealthError:
+                return None
+        return None
+
+    def _prepare_launch_stealth(
+        self,
+        session_id: str,
+        *,
+        stealth_profile: str | None,
+    ) -> JsonObject:
+        session = self.registry.get(session_id)
+        architecture = session.require_architecture()
+        layout = self._stealth_layouts()[architecture]
+        enabled = bool(self.settings.x64dbg_stealth_enabled)
+        explicit = stealth_profile is not None
+        inspected = inspect_layout(layout)
+        plugin_present = bool(inspected.get("plugin_present"))
+        current = inspected.get("current_profile")
+        if isinstance(current, str):
+            current_id: str | None = current
+        else:
+            current_id = None
+            section = inspected.get("current_section")
+            if isinstance(section, str):
+                current_id = profile_id_for_section(section)
+
+        stealth_source = "default"
+        if explicit:
+            desired = canonical_profile_id(stealth_profile)
+            stealth_source = "explicit"
+        elif not enabled:
+            desired = "off"
+            stealth_source = "disabled"
+        else:
+            detected: str | None = None
+            if plugin_present:
+                detected = self._cached_or_detected_stealth_profile(session_id)
+            if detected is not None:
+                desired = detected
+                stealth_source = "detection"
+            elif current_id is not None:
+                desired = current_id
+                stealth_source = "current"
+            else:
+                try:
+                    desired = canonical_profile_id(self.settings.x64dbg_stealth_profile)
+                except StealthError:
+                    desired = DEFAULT_PROFILE_ID
+
+        session_open = session_id in self._runtime_owner.active_session_ids(
+            BackendKind.X64DBG
+        )
+        payload: JsonObject = {
+            "stealth_profile": desired,
+            "stealth_applied": False,
+            "stealth_ready": plugin_present,
+            "stealth_enabled": enabled,
+            "stealth_source": stealth_source,
+            "implicit_open": not session_open,
+        }
+
+        if layout is None:
+            if explicit:
+                raise StealthError(
+                    "plugin_missing",
+                    f"x64dbg {architecture.value} headless executable is not configured",
+                    details={"architecture": architecture.value},
+                )
+            return payload
+
+        live = self._live_stealth_sessions(architecture)
+
+        need_write = current_id != desired
+        if explicit and desired != "off" and not plugin_present:
+            raise StealthError(
+                "plugin_missing",
+                f"ScyllaHide plugin files are missing for {architecture.value}",
+                details={
+                    "architecture": architecture.value,
+                    "plugins_dir": inspected.get("plugins_dir"),
+                    "plugin": inspected.get("plugin"),
+                    "hook_library": inspected.get("hook_library"),
+                },
+            )
+        if not explicit and not plugin_present and enabled:
+            return payload
+        if need_write:
+            if live:
+                raise StealthError(
+                    "debugger_already_open",
+                    (
+                        f"cannot change the {architecture.value} ScyllaHide profile "
+                        "while a debugger for that architecture is open"
+                    ),
+                    details={
+                        "architecture": architecture.value,
+                        "live_sessions": list(live),
+                        "requested_profile": desired,
+                        "current_profile": current_id,
+                    },
+                )
+            apply_profile(
+                layout,
+                desired,
+                require_plugin=desired != "off" and (enabled or explicit),
+            )
+        payload["stealth_applied"] = bool(enabled and desired != "off" and plugin_present)
+        payload["stealth_profile"] = desired
+        return payload
+
     def dynamic_launch(
         self,
         session_id: str,
@@ -1276,16 +1568,24 @@ class AnalysisService(
         working_directory: str | None = None,
         timeout: float = 30.0,
         pass_system_breakpoint: bool = False,
+        stealth_profile: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             params: JsonObject = {"path": str(session.require_pe())}
+            stealth = self._prepare_launch_stealth(
+                session_id, stealth_profile=stealth_profile
+            )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
         if arguments:
             params["arguments"] = arguments
         if working_directory is not None:
             params["working_directory"] = working_directory
+        if stealth.pop("implicit_open", False):
+            opened = self.services.runtime.open_dynamic(session_id)
+            if not opened.ok:
+                return opened
         launched = self._dynamic_request(
             session_id,
             "debug.launch",
@@ -1297,6 +1597,7 @@ class AnalysisService(
             if launched.ok and launched.data is not None:
                 data = dict(launched.data)
                 data["pass_system_breakpoint"] = False
+                data.update(stealth)
                 return _success(data, session_id=session_id, backend=BackendKind.X64DBG.value)
             return launched
         # First pause is typically the system/entry breakpoint; resume once so
@@ -1311,6 +1612,7 @@ class AnalysisService(
             return resumed
         data = dict(resumed.data)
         data["pass_system_breakpoint"] = True
+        data.update(stealth)
         data["note"] = (
             "Resumed once after initial pause (system/entry breakpoint); "
             "not a guarantee that packer anti-debug or TLS was skipped."

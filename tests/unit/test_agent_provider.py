@@ -114,7 +114,126 @@ async def test_openai_compatible_streams_text_and_fragmented_multiple_calls(
     sent = observed["payload"]
     assert isinstance(sent, dict)
     assert sent["thinking"] == {"type": "enabled"}
+    assert sent["enable_thinking"] is True
+    assert sent["stream_options"] == {"include_usage": True}
     assert sent["reasoning_effort"] == "high"
+    hidden = [event.text for event in events if event.type == "output_delta"]
+    assert '{"session_' in "".join(str(part) for part in hidden)
+    assert "session.get" in hidden
+
+
+@pytest.mark.asyncio
+async def test_reasoning_and_content_parts_count_as_generation(
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "think "}}]},
+            {"choices": [{"delta": {"content": [{"type": "text", "text": "hi"}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event
+        async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.type for event in events if event.type != "completed"] == [
+        "reasoning_delta",
+        "text_delta",
+    ]
+    assert [event.text for event in events if event.type == "reasoning_delta"] == ["think "]
+    assert [event.text for event in events if event.type == "text_delta"] == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_stream_counts_reasoning_usage_and_message_snapshots(
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": ""}}]},
+            {"choices": [{"delta": {"reasoning_content": "plan "}}]},
+            {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 42}},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "function": {
+                                        "name": "static.open",
+                                        "arguments": {"session_id": "s"},
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.text for event in events if event.type == "reasoning_delta"][0] == "plan "
+    usage = next(event for event in events if event.type == "usage")
+    assert usage.output_tokens == 42
+    completed = events[-1]
+    assert completed.output_tokens == 42
+    assert completed.tool_calls[0].name == "static.open"
+    assert completed.tool_calls[0].arguments == {"session_id": "s"}
+
+
+@pytest.mark.asyncio
+async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        body = (
+            json.dumps({"choices": [{"delta": {"content": "hi"}}]})
+            + "\n"
+            + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+            + "\n"
+        )
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.text for event in events if event.type == "text_delta"] == ["hi"]
+    assert events[-1].type == "completed"
 
 
 @pytest.mark.asyncio
