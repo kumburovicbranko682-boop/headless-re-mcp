@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 from collections.abc import Sequence
+from contextlib import suppress
 from ctypes import wintypes
 from typing import Any
 
@@ -417,10 +418,8 @@ def _show_open_file_dialog(title: str | None) -> JsonObject:
 
 
 def _sta_dialog_loop() -> None:
-    try:
+    with suppress(OSError):
         ctypes.windll.ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
-    except OSError:
-        pass
     _STA_READY.set()
     while True:
         title, reply = _STA_JOBS.get()

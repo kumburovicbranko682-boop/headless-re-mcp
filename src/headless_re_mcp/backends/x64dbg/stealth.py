@@ -364,7 +364,7 @@ def _find_named(root: Path, name: str) -> Path | None:
 
 def _parser() -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None)
-    parser.optionxform = str  # type: ignore[method-assign]
+    parser.optionxform = str  # type: ignore[assignment]
     return parser
 
 

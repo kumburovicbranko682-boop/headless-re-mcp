@@ -517,7 +517,7 @@ class FridaClient:
     def enumerate_devices(self) -> JsonObject:
         frida = self._need()
         try:
-            devices = frida.enumerate_devices()
+            devices = _run_deadline(frida.enumerate_devices, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
         items = [
@@ -544,7 +544,7 @@ class FridaClient:
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
-            apps = device.enumerate_applications()
+            apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))

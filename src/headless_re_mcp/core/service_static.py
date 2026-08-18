@@ -13,7 +13,7 @@ from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.core.limits import MAX_STATIC_BATCH_COMMANDS, MAX_STATIC_INLINE_TEXT
 from headless_re_mcp.core.models import BackendKind, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_artifact
+from headless_re_mcp.core.service_ext import _record_artifact, _register_capture
 
 if TYPE_CHECKING:
     from headless_re_mcp.config import Settings
@@ -629,6 +629,14 @@ class StaticAnalysisMixin:
         else:
             artifact_path = written
             payload["patch_artifact"] = str(written)
+            payload = _register_capture(
+                self,
+                session_id,
+                written,
+                kind="static_patch",
+                source=f"static.{operation}",
+                payload=payload,
+            )
         from headless_re_mcp.core.store.timeline import (
             append_session_timeline,
             session_timeline_path,

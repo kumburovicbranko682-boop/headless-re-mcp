@@ -129,7 +129,8 @@ class PersonaStore:
     def list_public(self) -> JsonObject:
         with self._lock:
             data = self._read_index()
-            items = data.get("items") if isinstance(data.get("items"), dict) else {}
+            raw_items = data.get("items")
+            items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
             personas = []
             for persona_id, meta in items.items():
                 if not isinstance(meta, dict):
@@ -225,8 +226,9 @@ class PersonaStore:
             raise ValueError("persona_builtin")
         with self._lock:
             data = self._read_index()
-            items = data.get("items") if isinstance(data.get("items"), dict) else {}
-            meta = items.get(persona_id) if isinstance(items, dict) else None
+            raw_items = data.get("items")
+            items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
+            meta = items.get(persona_id)
             if isinstance(meta, dict) and meta.get("builtin"):
                 raise ValueError("persona_builtin")
             path = self._body_path(persona_id)

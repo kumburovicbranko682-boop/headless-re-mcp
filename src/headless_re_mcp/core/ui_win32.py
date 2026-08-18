@@ -128,10 +128,10 @@ def require_allowed_hwnd(hwnd: int, allowed_pids: frozenset[int]) -> int:
 
 def _window_text(hwnd: int) -> str:
     user32 = _user32()
-    length = int(user32.GetWindowTextLengthW(int(hwnd)))
+    length = min(int(user32.GetWindowTextLengthW(int(hwnd))), _MAX_TEXT_CHARS)
     buffer = ctypes.create_unicode_buffer(length + 1)
     user32.GetWindowTextW(int(hwnd), buffer, length + 1)
-    return buffer.value
+    return buffer.value[:_MAX_TEXT_CHARS]
 
 
 def _class_name(hwnd: int) -> str:

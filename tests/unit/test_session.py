@@ -81,6 +81,22 @@ def test_closed_sessions_are_retained_but_bounded(tmp_path: Path) -> None:
             registry.get(stale)
 
 
+def test_failed_sessions_enter_the_closed_retirement_queue(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, 0x8664)
+    registry = SessionRegistry(retained_closed=3)
+    ids = []
+    for _ in range(6):
+        session = registry.create(binary)
+        ids.append(session.id)
+        registry.transition(session.id, SessionState.FAILED)
+
+    assert len(registry.list()) == 3
+    for stale in ids[:-3]:
+        with pytest.raises(KeyError):
+            registry.get(stale)
+
+
 def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> None:
     """A long-running session must survive any number of closures around it."""
     binary = tmp_path / "fixture.exe"

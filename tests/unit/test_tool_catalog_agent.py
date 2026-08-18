@@ -74,6 +74,7 @@ def test_mutating_catalog_tools_are_writes_not_auto_execute() -> None:
         "workflow.breakpoint.put",
         "workflow.breakpoint.disable",
         "memory.protection",
+        "frida.hook.template",
     ):
         spec = COMMAND_CATALOG.require(name)
         assert spec.write is True

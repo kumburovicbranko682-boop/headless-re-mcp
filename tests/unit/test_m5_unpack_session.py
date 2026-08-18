@@ -199,6 +199,7 @@ def test_service_unpack_plan_start_cancel(tmp_path: Path) -> None:
     assert status.ok
     cancelled = service.unpack_cancel(session_id)
     assert cancelled.ok
+    assert service._unpack_cancel_event(session_id).is_set()
     assert cancelled.data["unpack"]["phase"] == "cancelled"
     assert cancelled.data["original_input_preserved"] is True
     assert cancelled.data["artifacts_retained"] is True

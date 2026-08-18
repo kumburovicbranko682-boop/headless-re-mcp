@@ -74,14 +74,24 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     @tools.tool(name="threads.list")
     def threads_list(
         session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
-        """List debuggee threads.
+        """List debuggee threads with pagination.
 
         Answers with threads, each carrying tid, entry, teb, cip and the
-        suspend count.
+        suspend count, plus count, total, offset, limit and has_more so a
+        page that filled the limit is not read as the whole thread list.
         """
-        return _dump(analysis.threads_list(session_id, timeout=timeout))
+        return _dump(
+            analysis.threads_list(
+                session_id,
+                offset=offset,
+                limit=limit,
+                timeout=timeout,
+            )
+        )
 
     @tools.tool(name="threads.current")
     def threads_current(

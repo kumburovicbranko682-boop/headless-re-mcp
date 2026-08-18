@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -131,3 +132,12 @@ def test_a_session_does_not_keep_every_finding_it_ever_recorded(repository: Any)
     other = repository.list_knowledge("other")
     assert other["total"] == 1
     assert other["entries"][0]["key"] == "keep"
+
+
+def test_audit_json_cap_stays_valid_json() -> None:
+    from headless_re_mcp.core.store.sqlite_store import encode_audit_json
+
+    clipped = encode_audit_json({"note": "x" * 8000})
+    assert len(clipped) <= 4000
+    parsed = json.loads(clipped)
+    assert parsed["truncated"] is True

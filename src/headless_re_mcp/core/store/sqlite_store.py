@@ -91,6 +91,22 @@ CLOSED_SESSION_RETAINED = 64
 # successfully and the next read returned a string fragment. Refuse instead.
 KNOWLEDGE_VALUE_MAX_CHARS = 8000
 AUDIT_TRIM_INTERVAL = 256
+AUDIT_JSON_MAX_CHARS = 4000
+
+
+def encode_audit_json(value: JsonObject, *, limit: int = AUDIT_JSON_MAX_CHARS) -> str:
+    """Keep audit cells valid JSON even when the row is size-capped."""
+    encoded = json.dumps(value, ensure_ascii=False)
+    if len(encoded) <= limit:
+        return encoded
+    wrapper = {"truncated": True, "chars": len(encoded), "preview": ""}
+    budget = max(32, limit - len(json.dumps(wrapper, ensure_ascii=False)))
+    wrapper["preview"] = encoded[:budget]
+    clipped = json.dumps(wrapper, ensure_ascii=False)
+    if len(clipped) <= limit:
+        return clipped
+    wrapper["preview"] = encoded[: max(0, budget - (len(clipped) - limit))]
+    return json.dumps(wrapper, ensure_ascii=False)[:limit]
 
 
 def encode_knowledge_value(value: JsonObject) -> str:
@@ -435,9 +451,9 @@ class SessionStore:
                     session_id,
                     datetime.now(UTC).isoformat(),
                     action,
-                    json.dumps(redacted, ensure_ascii=False)[:4000],
+                    encode_audit_json(redacted),
                     1 if ok else 0,
-                    json.dumps(result_summary, ensure_ascii=False)[:4000],
+                    encode_audit_json(result_summary),
                 ),
             )
             self._audit_writes += 1

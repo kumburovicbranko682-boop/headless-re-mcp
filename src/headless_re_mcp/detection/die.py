@@ -29,6 +29,7 @@ from typing import Any, BinaryIO, Final, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, active_bound_cancel
 from headless_re_mcp.detection.models import (
     DetectionEvidence,
     DetectionFinding,
@@ -261,6 +262,11 @@ def _capture_process(
 
     try:
         process = subprocess.Popen(argv, **_creation_options())
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        pid = getattr(process, "pid", None)
+        if pid:
+            assign_to_process_group(int(pid))
     except FileNotFoundError as exc:
         raise DieExecutableNotFoundError(Path(argv[0])) from exc
     except OSError as exc:
@@ -300,10 +306,17 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     limited = False
+    cancelled = False
+    stop = active_bound_cancel()
     try:
         while True:
             returncode = process.poll()
             if returncode is not None:
+                break
+            if stop is not None and stop.is_set():
+                cancelled = True
+                _terminate_process(process)
+                returncode = process.poll()
                 break
             if limit_event.is_set():
                 limited = True
@@ -324,7 +337,7 @@ def _capture_process(
             except subprocess.TimeoutExpired:
                 continue
     finally:
-        if timed_out or limited:
+        if timed_out or limited or cancelled:
             _terminate_process(process)
         else:
             # The process has exited, but wait once more for a concrete code.
@@ -352,6 +365,8 @@ def _capture_process(
         stdout_capture.exceeded,
         stderr_capture.exceeded,
     )
+    if cancelled:
+        raise BoundedCancelled()
     if timed_out:
         raise DieTimeoutError(
             timeout,

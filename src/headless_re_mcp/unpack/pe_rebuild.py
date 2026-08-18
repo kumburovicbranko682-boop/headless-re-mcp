@@ -634,12 +634,19 @@ def write_rebuilt_pe(path: Path, data: bytes) -> str:
 
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    for stale in path.parent.glob(f"{path.name}*.partial"):
+        with suppress(OSError):
+            stale.unlink()
     partial = path.with_suffix(path.suffix + ".partial")
     try:
         partial.write_bytes(data)
         partial.replace(path)
-    except OSError:
+    except BaseException:
         with suppress(OSError):
             partial.unlink(missing_ok=True)
         raise
+    finally:
+        with suppress(OSError):
+            if partial.exists() and path.exists():
+                partial.unlink()
     return hashlib.sha256(data).hexdigest()

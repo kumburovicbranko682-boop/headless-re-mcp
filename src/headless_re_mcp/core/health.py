@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import threading
 import time
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from headless_re_mcp.core.models import BackendKind
+from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
 
@@ -134,16 +134,21 @@ class BackendHealthMonitor:
             while not self._stop.is_set():
                 # A monitor that can raise would take down the session it exists to
                 # protect; per-backend failures are already recorded in the report.
-                with suppress(Exception):
+                try:
                     self.check_once()
+                except Exception as exc:  # noqa: BLE001 - the sweep must not die
+                    record_alert(
+                        "health_sweep_failed",
+                        fields={"error": f"{type(exc).__name__}: {exc}"},
+                    )
                 self._stop.wait(self.interval_s)
         finally:
             with self._lock:
                 if self._restart_pending and self._thread is None:
                     self._launch_unlocked()
 
-    def check_once(self) -> list[BackendHealth]:
-        """Inspect every open backend once, repairing what can be repaired."""
+    def check_once(self, *, repair: bool = True) -> list[BackendHealth]:
+        """Inspect every open backend once, optionally repairing transports."""
         results: list[BackendHealth] = []
         for session_id, kind, runtime in self.runtimes.snapshot():
             # The snapshot is a copy taken under the owner lock and released, so
@@ -154,10 +159,17 @@ class BackendHealthMonitor:
             if not self.runtimes.is_current(session_id, kind, runtime):
                 continue
             worker = getattr(runtime, "worker", runtime)
-            results.append(self._check_backend(session_id, kind, worker))
+            results.append(self._check_backend(session_id, kind, worker, repair=repair))
         return results
 
-    def _check_backend(self, session_id: str, kind: BackendKind, worker: object) -> BackendHealth:
+    def _check_backend(
+        self,
+        session_id: str,
+        kind: BackendKind,
+        worker: object,
+        *,
+        repair: bool = True,
+    ) -> BackendHealth:
         key = (session_id, kind.value)
         with self._lock:
             previous = self._entries.get(key)
@@ -170,7 +182,7 @@ class BackendHealthMonitor:
         worker_alive = getattr(worker, "exit_code", None) is None
         connected = bool(getattr(worker, "transport_connected", True))
         reconnect = getattr(worker, "reconnect", None)
-        if worker_alive and not connected and callable(reconnect):
+        if repair and worker_alive and not connected and callable(reconnect):
             if self._reconnect_is_due(key):
                 try:
                     reconnect()

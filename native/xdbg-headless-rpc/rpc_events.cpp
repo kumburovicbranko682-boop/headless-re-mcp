@@ -61,6 +61,7 @@ enum class EventKind : std::uint8_t
     DebugStepped,
     DebugAttaching,
     DebugDetaching,
+    UnrecoveredGap,
 };
 
 template<std::size_t Capacity>
@@ -165,6 +166,8 @@ const char* EventKindName(EventKind kind) noexcept
         return "debug.attaching";
     case EventKind::DebugDetaching:
         return "debug.detaching";
+    case EventKind::UnrecoveredGap:
+        return "debug.unrecovered_gap";
     }
     return "unknown";
 }
@@ -580,6 +583,15 @@ void PublishDebugEvent(CBTYPE type, void* callbackInfo) noexcept
     }
     catch(...)
     {
+        try
+        {
+            EventRecord gap;
+            gap.kind = EventKind::UnrecoveredGap;
+            Journal().Publish(std::move(gap));
+        }
+        catch(...)
+        {
+        }
     }
 }
 

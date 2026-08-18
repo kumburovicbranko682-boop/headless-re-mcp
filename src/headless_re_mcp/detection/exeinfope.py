@@ -34,6 +34,7 @@ from typing import Any, BinaryIO, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, active_bound_cancel
 from headless_re_mcp.core.windows import describe_process_windows
 from headless_re_mcp.detection.models import (
     DetectionEvidence,
@@ -364,6 +365,11 @@ def _capture_process(
 ) -> _ProcessCapture:
     try:
         process = subprocess.Popen(argv, **_creation_options())
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        pid = getattr(process, "pid", None)
+        if pid:
+            assign_to_process_group(int(pid))
     except FileNotFoundError as exc:
         raise ExeinfopeExecutableNotFoundError(Path(argv[0])) from exc
     except OSError as exc:
@@ -389,7 +395,9 @@ def _capture_process(
     def monitor() -> None:
         while not stop_monitor.wait(0.05):
             with suppress(OSError, ValueError):
-                observed.update(observer(process.pid))
+                pid = getattr(process, "pid", None)
+                if pid:
+                    observed.update(observer(int(pid)))
 
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
@@ -414,11 +422,18 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     limited = False
+    cancelled = False
+    stop = active_bound_cancel()
     returncode: int | None = None
     try:
         while True:
             returncode = process.poll()
             if returncode is not None:
+                break
+            if stop is not None and stop.is_set():
+                cancelled = True
+                _terminate_process(process)
+                returncode = process.poll()
                 break
             if limit_event.is_set():
                 limited = True
@@ -437,7 +452,7 @@ def _capture_process(
             except subprocess.TimeoutExpired:
                 continue
     finally:
-        if timed_out or limited:
+        if timed_out or limited or cancelled:
             _terminate_process(process)
         else:
             try:
@@ -464,6 +479,8 @@ def _capture_process(
         stderr_capture.exceeded,
         tuple(sorted(observed)),
     )
+    if cancelled:
+        raise BoundedCancelled()
     if timed_out:
         error = ExeinfopeTimeoutError(
             timeout,

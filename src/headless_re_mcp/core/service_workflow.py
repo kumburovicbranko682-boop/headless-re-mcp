@@ -157,6 +157,7 @@ class WorkflowAnalysisMixin:
             *,
             limit: int = 100,
             timeout: float = 10.0,
+            advance_consume_cursor: bool = False,
         ) -> Result[JsonObject]: ...
 
         def _workflow_ensure_paused_locked(
@@ -268,7 +269,12 @@ class WorkflowAnalysisMixin:
         limit: int = DEFAULT_DEBUG_EVENT_BATCH,
         timeout: float = 10.0,
     ) -> Result[JsonObject]:
-        return self.dynamic_events(session_id, limit=limit, timeout=timeout)
+        return self.dynamic_events(
+            session_id,
+            limit=limit,
+            timeout=timeout,
+            advance_consume_cursor=True,
+        )
 
     def workflow_module_track(
         self,

@@ -219,7 +219,7 @@ class Supervisor:
 
             # An immediate re-crash is one failure repeating, not many separate
             # ones, so only short-lived children count toward the loop limit.
-            short_lived = uptime < HEALTHY_UPTIME_S
+            short_lived = reason != "unhealthy" and uptime < HEALTHY_UPTIME_S
             rapid = rapid + 1 if short_lived else 0
             backoff = min(backoff * 2, BACKOFF_CAP_S) if short_lived else BACKOFF_START_S
             if rapid >= MAX_RAPID_RESTARTS:

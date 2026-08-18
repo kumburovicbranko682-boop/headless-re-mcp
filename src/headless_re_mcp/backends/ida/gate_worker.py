@@ -92,7 +92,7 @@ def run(binary: Path, decompile: bool) -> int:
             try:
                 import idapro
 
-                idapro.close_database(False)
+                idapro.close_database(True)
             except Exception:
                 pass
 

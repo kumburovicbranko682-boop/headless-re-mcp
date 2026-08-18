@@ -60,14 +60,7 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=str(exc),
             details={**details, **exc.details},
         )
-    elif isinstance(exc, StealthError):
-        error = RpcError(
-            code=exc.code,
-            message=str(exc),
-            details={**details, **exc.details},
-            retryable=exc.retryable,
-        )
-    elif isinstance(exc, (IdaWorkerError, XdbgRpcError)):
+    elif isinstance(exc, (StealthError, IdaWorkerError, XdbgRpcError)):
         error = RpcError(
             code=exc.code,
             message=str(exc),

@@ -1682,11 +1682,24 @@ Outcome RebuildImports(const json_t* /*params*/)
         "imports.rebuild is reserved for a later M4.3/M4.4 milestone and is intentionally unavailable");
 }
 
-Outcome ListModules()
+Outcome ListModules(const json_t* params)
 {
     auto ready = RequirePaused();
     if(!ready.ok)
         return ready;
+    Outcome error;
+    std::uint64_t offset = 0;
+    std::uint64_t limit = 256;
+    if(Param(params, "offset") != nullptr
+        && !ReadUnsigned(params, "offset", offset, error, 1000000))
+        return error;
+    if(Param(params, "limit") != nullptr)
+    {
+        if(!ReadUnsigned(params, "limit", limit, error, 1024))
+            return error;
+        if(limit == 0)
+            return InvalidField("limit", "limit must be positive");
+    }
 
     const auto functions = DbgFunctions();
     functions->MemUpdateMap();
@@ -1723,24 +1736,37 @@ Outcome ListModules()
             module.size = reportedSize;
     }
 
-    auto values = JsonArray();
-    std::size_t count = 0;
+    std::vector<ModuleRecord> listed;
     for(const auto& item : modules)
     {
         const auto& module = item.second;
         if(module.name.empty() && module.path.empty())
             continue;
+        listed.push_back(module);
+    }
+    const auto total = listed.size();
+    auto values = JsonArray();
+    std::size_t emitted = 0;
+    for(std::size_t index = static_cast<std::size_t>(offset);
+        index < total && emitted < static_cast<std::size_t>(limit);
+        ++index)
+    {
+        const auto& module = listed[index];
         auto value = JsonObject();
         JsonSet(value.get(), "base", AddressValue(module.base));
         JsonSet(value.get(), "size", AddressValue(module.size));
         JsonSet(value.get(), "name", JsonString(module.name));
         JsonSet(value.get(), "path", JsonString(module.path));
         JsonAppend(values.get(), std::move(value));
-        ++count;
+        ++emitted;
     }
     auto result = JsonObject();
     JsonSet(result.get(), "modules", std::move(values));
-    JsonSet(result.get(), "count", JsonInteger(count));
+    JsonSet(result.get(), "count", JsonInteger(emitted));
+    JsonSet(result.get(), "total", JsonInteger(total));
+    JsonSet(result.get(), "offset", JsonInteger(offset));
+    JsonSet(result.get(), "limit", JsonInteger(limit));
+    JsonSet(result.get(), "has_more", JsonBoolean(offset + emitted < total));
     return Outcome::Success(std::move(result));
 }
 
@@ -1885,23 +1911,47 @@ JsonPtr ThreadObject(const THREADALLINFO& thread, bool current)
     return value;
 }
 
-Outcome ListThreads()
+Outcome ListThreads(const json_t* params)
 {
     auto ready = RequireDebugging();
     if(!ready.ok)
         return ready;
+    Outcome error;
+    std::uint64_t offset = 0;
+    std::uint64_t limit = 256;
+    if(Param(params, "offset") != nullptr
+        && !ReadUnsigned(params, "offset", offset, error, 1000000))
+        return error;
+    if(Param(params, "limit") != nullptr)
+    {
+        if(!ReadUnsigned(params, "limit", limit, error, 1024))
+            return error;
+        if(limit == 0)
+            return InvalidField("limit", "limit must be positive");
+    }
 
     THREADLIST list = {};
     DbgGetThreadList(&list);
+    const auto total = static_cast<std::uint64_t>(list.count < 0 ? 0 : list.count);
     auto values = JsonArray();
-    for(int index = 0; index < list.count; ++index)
-        JsonAppend(values.get(), ThreadObject(list.list[index], index == list.CurrentThread));
+    std::uint64_t emitted = 0;
+    for(std::uint64_t index = offset; index < total && emitted < limit; ++index)
+    {
+        JsonAppend(
+            values.get(),
+            ThreadObject(list.list[static_cast<int>(index)], index == static_cast<std::uint64_t>(list.CurrentThread)));
+        ++emitted;
+    }
     if(list.list != nullptr)
         BridgeFree(list.list);
 
     auto result = JsonObject();
     JsonSet(result.get(), "threads", std::move(values));
-    JsonSet(result.get(), "count", JsonInteger(static_cast<std::uint64_t>(list.count < 0 ? 0 : list.count)));
+    JsonSet(result.get(), "count", JsonInteger(emitted));
+    JsonSet(result.get(), "total", JsonInteger(total));
+    JsonSet(result.get(), "offset", JsonInteger(offset));
+    JsonSet(result.get(), "limit", JsonInteger(limit));
+    JsonSet(result.get(), "has_more", JsonBoolean(offset + emitted < total));
     JsonSet(result.get(), "current_index", JsonInteger(static_cast<std::uint64_t>(list.CurrentThread)));
     JsonSet(result.get(), "current_tid", JsonInteger(DbgGetThreadId()));
     return Outcome::Success(std::move(result));
@@ -2679,12 +2729,21 @@ Outcome RestorePatch(const json_t* params)
         return error;
 
     const auto functions = DbgFunctions();
-    if(!functions->PatchRestore(static_cast<duint>(address)))
+    duint cursor = static_cast<duint>(address);
+    std::uint64_t restored_bytes = 0;
+    while(functions->PatchRestore(cursor) && restored_bytes < 4096)
+    {
+        ++restored_bytes;
+        ++cursor;
+    }
+    if(restored_bytes == 0)
         return Outcome::Failure("patch_restore_failed", "x64dbg could not restore the patch");
 
     auto result = JsonObject();
     JsonSet(result.get(), "address", JsonInteger(address));
     JsonSet(result.get(), "restored", JsonBoolean(true));
+    JsonSet(result.get(), "restored_bytes", JsonInteger(restored_bytes));
+    JsonSet(result.get(), "complete", JsonBoolean(restored_bytes < 4096));
     return Outcome::Success(std::move(result));
 }
 
@@ -3177,7 +3236,7 @@ Outcome DispatchDebuggerMethod(const std::string& method, const json_t* params)
     if(method == "memory.protection")
         return MemoryProtection(params);
     if(method == "modules.list")
-        return ListModules();
+        return ListModules(params);
     if(method == "modules.dump")
         return DumpModule(params);
     if(method == "pe.headers.runtime")
@@ -3189,7 +3248,7 @@ Outcome DispatchDebuggerMethod(const std::string& method, const json_t* params)
     if(method == "imports.rebuild")
         return RebuildImports(params);
     if(method == "threads.list")
-        return ListThreads();
+        return ListThreads(params);
     if(method == "threads.current")
         return CurrentThread();
     if(method == "threads.context.read")

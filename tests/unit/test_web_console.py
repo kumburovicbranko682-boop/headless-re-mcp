@@ -327,7 +327,9 @@ def test_web_setup_run_persist_defaults(tmp_path: Path, monkeypatch: pytest.Monk
     assert "artifact_root" in saved
 
 
-def test_web_pick_file_returns_a_local_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_web_pick_file_returns_a_local_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from headless_re_mcp.core import windows as winmod
     from headless_re_mcp.web.routes import legacy as legacy_mod
 

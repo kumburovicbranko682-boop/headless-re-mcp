@@ -16,8 +16,11 @@ hard cap and discard the rest so the child does not block on a full pipe.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 from typing import Any
 
@@ -35,6 +38,32 @@ class TimedOut(RuntimeError):
         super().__init__(f"timed out after {timeout:g}s")
         self.timeout = timeout
         self.killed = killed
+
+
+class BoundedCancelled(RuntimeError):
+    """The caller asked to stop; ``killed`` is the process tree that was cut."""
+
+    def __init__(self, killed: list[int] | None = None) -> None:
+        super().__init__("cancelled by caller")
+        self.killed = list(killed or [])
+
+
+_active_cancel: ContextVar[Event | None] = ContextVar("bounded_run_cancel", default=None)
+
+
+def active_bound_cancel() -> Event | None:
+    """Cancel event bound to this thread, if a dumper or CLI is in flight."""
+    return _active_cancel.get()
+
+
+@contextmanager
+def bound_cancel_scope(cancel: Event) -> Iterator[Event]:
+    """Make ``run_bounded`` / capture loops honor this event on this thread."""
+    token = _active_cancel.set(cancel)
+    try:
+        yield cancel
+    finally:
+        _active_cancel.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +121,7 @@ def run_bounded(
     env: Any = None,
     drain_s: float = 5.0,
     max_output: int = DEFAULT_MAX_OUTPUT,
+    cancel: Event | None = None,
 ) -> Completed:
     """Capture output within the deadline, or kill the whole tree and raise."""
     cap = max(1, int(max_output))
@@ -99,6 +129,7 @@ def run_bounded(
     stderr_chunks: list[bytes] = []
     stdout_trunc = [False]
     stderr_trunc = [False]
+    stop = cancel if cancel is not None else active_bound_cancel()
     with subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -128,12 +159,22 @@ def run_bounded(
         stderr_thread.start()
         readers = (stdout_thread, stderr_thread)
         started = monotonic()
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            killed = terminate_process_tree(process)
-            _join_readers(readers, drain_s)
-            raise TimedOut(timeout, killed) from None
+        deadline = started + timeout
+        while True:
+            if stop is not None and stop.is_set():
+                killed = terminate_process_tree(process)
+                _join_readers(readers, drain_s)
+                raise BoundedCancelled(killed)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                killed = terminate_process_tree(process)
+                _join_readers(readers, drain_s)
+                raise TimedOut(timeout, killed)
+            try:
+                process.wait(timeout=min(0.2, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
         returncode = int(process.returncode or 0)
         remaining = timeout - (monotonic() - started)
         if returncode == 0:

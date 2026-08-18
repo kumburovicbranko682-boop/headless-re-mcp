@@ -14,6 +14,7 @@ from uuid import uuid4
 from headless_re_mcp.core.models import Result, Session
 from headless_re_mcp.core.store import SessionStore
 from headless_re_mcp.core.store.sqlite_store import (
+    AUDIT_RETAINED_ROWS,
     CLOSED_SESSION_RETAINED,
     KNOWLEDGE_RETAINED_PER_SESSION,
     encode_knowledge_value,
@@ -695,6 +696,9 @@ class InMemoryAnalysisRepository:
                     "result_summary": dict(result_summary),
                 }
             )
+            keep = max(1, int(AUDIT_RETAINED_ROWS))
+            if len(self._audit) > keep:
+                self._audit = self._audit[-keep:]
 
     def list_audit(
         self,

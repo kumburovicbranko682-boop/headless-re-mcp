@@ -23,6 +23,8 @@ from typing import Any, BinaryIO, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, active_bound_cancel
+
 JsonObject = dict[str, Any]
 
 DEFAULT_TIMEOUT: Final[float] = 60.0
@@ -223,6 +225,11 @@ def _capture_process(
 ) -> _ProcessCapture:
     try:
         process = subprocess.Popen(argv, **_creation_options())
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        pid = getattr(process, "pid", None)
+        if pid:
+            assign_to_process_group(int(pid))
     except FileNotFoundError as exc:
         raise UpxExecutableNotFoundError(Path(argv[0])) from exc
     except OSError as exc:
@@ -261,7 +268,13 @@ def _capture_process(
 
     deadline = monotonic() + timeout
     timed_out = False
+    cancelled = False
+    stop = active_bound_cancel()
     while True:
+        if stop is not None and stop.is_set():
+            cancelled = True
+            _terminate_process(process)
+            break
         if limit_event.is_set():
             _terminate_process(process)
             break
@@ -295,6 +308,8 @@ def _capture_process(
         stdout_exceeded=stdout_capture.exceeded,
         stderr_exceeded=stderr_capture.exceeded,
     )
+    if cancelled:
+        raise BoundedCancelled()
     if timed_out:
         raise UpxTimeoutError(
             timeout,

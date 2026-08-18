@@ -21,7 +21,7 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut, run_bounded
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -221,6 +221,8 @@ def run_scylla(
                 capture = _capture_process(
                     argv, timeout=timeout, max_output_size=max_output_size
                 )
+            except BoundedCancelled:
+                raise
             except Exception as exc:
                 code = getattr(exc, "code", ScyllaErrorCode.PROCESS_FAILED)
                 raise ScyllaError(

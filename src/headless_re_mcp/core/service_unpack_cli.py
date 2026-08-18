@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, bound_cancel_scope
 from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
@@ -70,6 +71,8 @@ class UnpackCliMixin:
         ) -> Result[JsonObject]: ...
 
         def _annotate_debuggee_pids(self, session_id: str, state: JsonObject) -> JsonObject: ...
+
+        def _unpack_cancel_event(self, session_id: str) -> Any: ...
 
     def unpack_upx_test(
         self,
@@ -435,13 +438,14 @@ class UnpackCliMixin:
             out_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"xvlkc-{uuid4().hex}.exe"
-            result = self._xvlkc_runner(
-                self.settings.xvlkc,
-                session.require_pe(),
-                out_path,
-                input_sha256=session.sha256,
-                timeout=_detection_timeout(timeout),
-            )
+            with bound_cancel_scope(self._unpack_cancel_event(session_id)):
+                result = self._xvlkc_runner(
+                    self.settings.xvlkc,
+                    session.require_pe(),
+                    out_path,
+                    input_sha256=session.sha256,
+                    timeout=_detection_timeout(timeout),
+                )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -460,6 +464,15 @@ class UnpackCliMixin:
                 },
                 session_id=session_id,
                 backend="xvlkc",
+            )
+        except BoundedCancelled:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="unpack_cancelled",
+                    message="XVLKC unpack cancelled by caller",
+                    details={"session_id": session_id},
+                ),
             )
         except XvlkcError as exc:
             return Result[JsonObject](
@@ -569,18 +582,19 @@ class UnpackCliMixin:
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"vmp-dump-{uuid4().hex}.exe"
             search_roots = [Path(session.require_pe()).resolve().parent, out_dir]
-            result = self._vmp_dumper_runner(
-                self.settings.vmp_dumper,
-                session.require_pe(),
-                out_path,
-                input_sha256=session.sha256,
-                timeout=_detection_timeout(timeout),
-                pid=debuggee_pid,
-                module_name=resolved_module,
-                entry_point_rva=entry_point_rva,
-                disable_reloc=disable_reloc,
-                search_roots=search_roots,
-            )
+            with bound_cancel_scope(self._unpack_cancel_event(session_id)):
+                result = self._vmp_dumper_runner(
+                    self.settings.vmp_dumper,
+                    session.require_pe(),
+                    out_path,
+                    input_sha256=session.sha256,
+                    timeout=_detection_timeout(timeout),
+                    pid=debuggee_pid,
+                    module_name=resolved_module,
+                    entry_point_rva=entry_point_rva,
+                    disable_reloc=disable_reloc,
+                    search_roots=search_roots,
+                )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -604,6 +618,15 @@ class UnpackCliMixin:
                 },
                 session_id=session_id,
                 backend="vmp_dumper",
+            )
+        except BoundedCancelled:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="unpack_cancelled",
+                    message="VMP dump cancelled by caller",
+                    details={"session_id": session_id},
+                ),
             )
         except VmpDumperError as exc:
             return Result[JsonObject](
@@ -659,13 +682,14 @@ class UnpackCliMixin:
             out_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"scylla-iat-rebuilt-{uuid4().hex}.exe"
-            result = self._scylla_runner(
-                self.settings.scylla,
-                session.require_pe(),
-                out_path,
-                input_sha256=session.sha256,
-                timeout=_detection_timeout(timeout),
-            )
+            with bound_cancel_scope(self._unpack_cancel_event(session_id)):
+                result = self._scylla_runner(
+                    self.settings.scylla,
+                    session.require_pe(),
+                    out_path,
+                    input_sha256=session.sha256,
+                    timeout=_detection_timeout(timeout),
+                )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -684,6 +708,15 @@ class UnpackCliMixin:
                 },
                 session_id=session_id,
                 backend="scylla",
+            )
+        except BoundedCancelled:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="unpack_cancelled",
+                    message="Scylla rebuild cancelled by caller",
+                    details={"session_id": session_id},
+                ),
             )
         except ScyllaError as exc:
             return Result[JsonObject](

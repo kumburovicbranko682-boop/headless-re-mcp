@@ -43,19 +43,30 @@ export function runFailureHint(type: string, data: Record<string, unknown>): str
 
 export const initialState: AgentState = { threads: [], selectedThread: null, messages: [], events: [], approvals: [], streamingText: "", streamingReasoning: "", activeRun: null, connected: false, error: null };
 
+const MAX_RETAINED_EVENTS = 200;
+
+function capEvents(events: RunEvent[]): RunEvent[] {
+  return events.length <= MAX_RETAINED_EVENTS ? events : events.slice(-MAX_RETAINED_EVENTS);
+}
+
 export function reducer(state: AgentState, action: AgentAction): AgentState {
   switch (action.type) {
     case "threads": return { ...state, threads: action.threads };
-    case "select": return {
-      ...state,
-      selectedThread: action.threadId,
-      messages: action.messages,
-      events: action.events ?? (action.threadId === state.selectedThread ? state.events : []),
-      approvals: [],
-      streamingText: "",
-      streamingReasoning: "",
-      error: null,
-    };
+    case "select": {
+      const same = action.threadId === state.selectedThread;
+      return {
+        ...state,
+        selectedThread: action.threadId,
+        messages: action.messages,
+        events: capEvents(action.events ?? (same ? state.events : [])),
+        approvals: [],
+        streamingText: "",
+        streamingReasoning: "",
+        activeRun: same ? state.activeRun : null,
+        connected: same ? state.connected : false,
+        error: null,
+      };
+    }
     case "messages": return { ...state, messages: action.messages };
     case "run": {
       const messages = action.userMessage
@@ -68,7 +79,7 @@ export function reducer(state: AgentState, action: AgentAction): AgentState {
     case "approval_done": return { ...state, approvals: state.approvals.filter((item) => item.tool_call_id !== action.toolCallId) };
     case "event": {
       if (state.events.some((item) => item.seq === action.event.seq && item.run_id === action.event.run_id)) return state;
-      const events = [...state.events, action.event].sort((a, b) => a.seq - b.seq);
+      const events = capEvents([...state.events, action.event].sort((a, b) => a.seq - b.seq));
       if (action.event.type === "message.delta") {
         return { ...state, events, streamingText: state.streamingText + String(action.event.data.delta ?? "") };
       }

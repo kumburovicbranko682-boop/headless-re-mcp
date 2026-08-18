@@ -373,6 +373,10 @@ class NativeLauncherWindow(QMainWindow):
             cwd=str(self.repo_root),
             **no_window_popen_kwargs(),
         )
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        if self.mcp_proc.pid:
+            assign_to_process_group(self.mcp_proc.pid)
         self._append(f"已启动 MCP serve pid={self.mcp_proc.pid}")
 
     def stop_mcp(self) -> None:
@@ -390,6 +394,10 @@ class NativeLauncherWindow(QMainWindow):
             cwd=str(self.repo_root),
             **no_window_popen_kwargs(),
         )
+        from headless_re_mcp.process_group import assign_to_process_group
+
+        if self.web_proc.pid:
+            assign_to_process_group(self.web_proc.pid)
         self._append(
             f"已启动 serve-web pid={self.web_proc.pid}（请用系统浏览器访问，窗口不内嵌）"
         )

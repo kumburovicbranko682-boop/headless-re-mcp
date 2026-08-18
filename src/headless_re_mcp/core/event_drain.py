@@ -57,6 +57,9 @@ def drain_native_into_log(
         if batch.events:
             event_log.append_events(batch.events)
             appended += len(batch.events)
+            for event in batch.events:
+                if event.kind == "debug.unrecovered_gap":
+                    event_log.note_unrecovered_gap(event.sequence, event.sequence)
         if batch.next_cursor == drain_cursor.value and not batch.events:
             break
         drain_cursor.advance(batch)

@@ -29,7 +29,12 @@ from headless_re_mcp.core.isolation import IsolationPolicy, IsolationRunner
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.watchdog import Watchdog, WatchdogPolicy
 from headless_re_mcp.tools.assembly import bind_all_tools
-from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandCatalog, CommandTransport, ToolEffect
+from headless_re_mcp.tools.catalog import (
+    COMMAND_CATALOG,
+    CommandCatalog,
+    CommandTransport,
+    ToolEffect,
+)
 
 JsonObject = dict[str, Any]
 

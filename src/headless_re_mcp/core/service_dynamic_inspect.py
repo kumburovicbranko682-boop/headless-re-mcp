@@ -214,8 +214,36 @@ class DynamicInspectMixin:
             params,
             timeout=timeout,
         )
-    def threads_list(self, session_id: str, *, timeout: float = 30.0) -> Result[JsonObject]:
-        return self._dynamic_request(session_id, "threads.list", timeout=timeout)
+    def threads_list(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        if type(offset) is not int or offset < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="offset must be a non-negative integer",
+                ),
+            )
+        if type(limit) is not int or not 1 <= limit <= 1024:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="limit must be between 1 and 1024",
+                ),
+            )
+        return self._dynamic_request(
+            session_id,
+            "threads.list",
+            {"offset": offset, "limit": limit},
+            timeout=timeout,
+        )
     def threads_current(self, session_id: str, *, timeout: float = 30.0) -> Result[JsonObject]:
         return self._dynamic_request(session_id, "threads.current", timeout=timeout)
     def threads_context_read(

@@ -39,13 +39,13 @@ def test_analyze_function_puts_the_stop_under_execution_not_rip() -> None:
     service = Path("src/headless_re_mcp/core/service.py").read_text(encoding="utf-8")
     start = service.index("def analyze_function_dynamic(")
     chunk = service[start : service.index("def _explicit_module_operation(", start)]
-    returned = chunk[chunk.rindex("return _success(") :]
-    assert '"function":' in returned
-    assert '"static": static_section' in returned
-    assert '"breakpoint":' in returned
-    assert '"execution": execution' in returned
-    assert '"registers": registers' in returned
-    assert '"rip"' not in returned
+    assert '"function":' in chunk
+    assert '"static": static_section' in chunk
+    assert '"breakpoint":' in chunk
+    assert '"execution": execution' in chunk
+    assert '"registers": registers' in chunk
+    assert "if not resumed.ok" in chunk
+    assert '"rip"' not in chunk
     described = _tool_docstring("dynamic.analyze_function")
     assert "Answers with function" in described
     assert "execution" in described

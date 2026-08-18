@@ -31,6 +31,7 @@ _EVENT_INTEGER_FIELDS: dict[str, frozenset[str]] = {
     "debug.stepped": frozenset(),
     "debug.attaching": frozenset({"process_id"}),
     "debug.detaching": frozenset({"process_id"}),
+    "debug.unrecovered_gap": frozenset(),
 }
 _EVENT_TEXT_FIELDS: dict[str, frozenset[str]] = {
     "debug.init": frozenset({"path"}),

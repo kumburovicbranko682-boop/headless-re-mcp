@@ -316,6 +316,15 @@ class ProxyBackend:
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")
+            for owner, existing in self._instances.items():
+                if existing.host == host and existing.port == port:
+                    raise ProxyError(
+                        "invalid_state",
+                        "port is already reserved by another session",
+                        host=host,
+                        port=port,
+                        owner_session_id=owner,
+                    )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
             inst = _ProxyInstance(host, port)

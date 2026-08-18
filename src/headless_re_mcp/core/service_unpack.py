@@ -15,9 +15,11 @@ from __future__ import annotations
 
 from contextlib import suppress
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, bound_cancel_scope
 from headless_re_mcp.core.limits import rebuild_would_exhaust_memory
 from headless_re_mcp.core.models import BackendKind, Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
@@ -133,10 +135,19 @@ class UnpackMixin:
     _die_scanner: DieScanner
     _runtime_owner: BackendRuntimeOwner[_BackendRuntime]
     _unpack_owner: UnpackStateOwner[UnpackSessionState]
+    _unpack_cancel_events: dict[str, Event]
 
     if TYPE_CHECKING:
 
         def _runtime(self, session_id: str, kind: BackendKind) -> _BackendRuntime: ...
+
+        def _unpack_cancel_event(self, session_id: str) -> Event: ...
+
+        def _reset_unpack_cancel(self, session_id: str) -> Event: ...
+
+        def _signal_unpack_cancel(self, session_id: str) -> None: ...
+
+        def _clear_unpack_cancel(self, session_id: str) -> None: ...
 
         def create_session(self, binary: str) -> Result[JsonObject]: ...
 
@@ -1213,6 +1224,7 @@ class UnpackMixin:
             assert isinstance(plan, dict)
             session = self.registry.get(session_id)
             route = str(plan.get("route", "none"))
+            self._reset_unpack_cancel(session_id)
             state = create_unpack_session(
                 session_id,
                 route=route,
@@ -1230,12 +1242,13 @@ class UnpackMixin:
             bounded_probe: JsonObject | None = None
 
             if route == "upx" and execute_upx:
-                state = self._run_upx_orchestration(
-                    state,
-                    session_id,
-                    timeout=timeout,
-                    open_ida=open_ida,
-                )
+                with bound_cancel_scope(self._unpack_cancel_event(session_id)):
+                    state = self._run_upx_orchestration(
+                        state,
+                        session_id,
+                        timeout=timeout,
+                        open_ida=open_ida,
+                    )
             elif route == "dotnet":
                 # Hand off to M6: run inspect only; never auto-deobfuscate or claim success.
                 inspect = self.dotnet_inspect(session_id, require_verified=False)
@@ -1336,12 +1349,39 @@ class UnpackMixin:
             if bounded_probe is not None:
                 payload["bounded_probe"] = bounded_probe
             return _success(payload, session_id=session_id, backend="unpack")
+        except BoundedCancelled:
+            current = self._unpack_owner.get(session_id)
+            if current is not None and current.phase not in {
+                UnpackPhase.CANCELLED,
+                UnpackPhase.FAILED,
+                UnpackPhase.REANALYZED,
+            }:
+                current = cancel_unpack_session(current, reason="cancelled by caller")
+                self._store_unpack_session(current)
+            if current is not None:
+                return _success(
+                    {
+                        "unpack": current.to_dict(),
+                        "claims_universal_unpack": False,
+                        "original_input_preserved": True,
+                    },
+                    session_id=session_id,
+                    backend="unpack",
+                )
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="unpack_cancelled",
+                    message="unpack cancelled by caller",
+                    details={"session_id": session_id},
+                ),
+            )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
     def unpack_status(self, session_id: str) -> Result[JsonObject]:
         """Return the current unpack orchestration state for a session."""
         try:
-            self.registry.get(session_id)
+            self.registry.get(session_id).require_pe()
             state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](
@@ -1389,6 +1429,7 @@ class UnpackMixin:
                 )
             debuggee_paused_attempted = False
             dynamic_open = self._runtime_owner.get(session_id, BackendKind.X64DBG) is not None
+            self._signal_unpack_cancel(session_id)
             if dynamic_open:
                 debuggee_paused_attempted = True
                 with suppress(Exception):
@@ -1417,7 +1458,7 @@ class UnpackMixin:
     def unpack_artifacts(self, session_id: str) -> Result[JsonObject]:
         """List artifacts produced by the current unpack session."""
         try:
-            self.registry.get(session_id)
+            self.registry.get(session_id).require_pe()
             state = self._unpack_owner.get(session_id)
             if state is None:
                 return Result[JsonObject](

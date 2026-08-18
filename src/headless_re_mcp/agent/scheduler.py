@@ -238,7 +238,7 @@ class MissionScheduler:
             )
             if self._mission_cancelled(mission.id):
                 return
-            if not outcome.get("ok", True):
+            if not outcome.get("ok", False):
                 self.store.set_mission_status(
                     mission.id,
                     MissionStatus.FAILED,

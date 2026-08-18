@@ -2015,6 +2015,60 @@ class TestATimeoutBindsWhatTheToolStarted:
         for pid in caught.value.killed:
             assert self._alive(pid) is False
 
+    def test_a_cancel_kills_the_tool_before_the_deadline(self) -> None:
+        import sys
+        import time
+        from threading import Event, Thread
+
+        from headless_re_mcp.backends.common.bounded_run import (
+            BoundedCancelled,
+            bound_cancel_scope,
+            run_bounded,
+        )
+
+        cancel = Event()
+
+        def fire() -> None:
+            time.sleep(0.2)
+            cancel.set()
+
+        Thread(target=fire, daemon=True).start()
+        started = time.monotonic()
+        with pytest.raises(BoundedCancelled) as caught, bound_cancel_scope(cancel):
+            run_bounded([sys.executable, "-c", _LAUNCHER], timeout=20.0)
+        elapsed = time.monotonic() - started
+        assert elapsed < 8.0
+        assert caught.value.killed
+        for pid in caught.value.killed:
+            assert self._alive(pid) is False
+
+    def test_capture_process_honors_a_bound_cancel(self) -> None:
+        import sys
+        import time
+        from threading import Event, Thread
+
+        from headless_re_mcp.backends.common.bounded_run import (
+            BoundedCancelled,
+            bound_cancel_scope,
+        )
+        from headless_re_mcp.dotnet.de4dot import _capture_process
+
+        cancel = Event()
+
+        def fire() -> None:
+            time.sleep(0.2)
+            cancel.set()
+
+        Thread(target=fire, daemon=True).start()
+        started = time.monotonic()
+        with pytest.raises(BoundedCancelled), bound_cancel_scope(cancel):
+            _capture_process(
+                [sys.executable, "-c", _LAUNCHER],
+                timeout=20.0,
+                max_output_size=4096,
+            )
+        assert time.monotonic() - started < 8.0
+
     def test_a_tool_that_finishes_in_time_is_untouched(self) -> None:
         import sys
 

@@ -192,6 +192,8 @@ async def test_minimal_mcp_tool_surface() -> None:
         "sync.resolve_runtime_address",
         "dynamic.analyze_function",
         "dynamic.trace_api_arguments",
+        "dynamic.stealth.status",
+        "dynamic.stealth.set",
         "meta.metrics",
         "knowledge.record",
         "knowledge.query",

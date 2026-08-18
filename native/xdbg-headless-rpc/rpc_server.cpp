@@ -316,6 +316,7 @@ struct MainThreadJob
     JsonPtr params;
     std::mutex mutex;
     std::condition_variable completed;
+    std::atomic<bool> cancelled{ false };
     bool done = false;
     Outcome outcome;
 };
@@ -404,7 +405,10 @@ private:
             if(security.get() == nullptr)
             {
                 fprintf(stderr, "[headless-rpc] failed to create owner-only pipe ACL\n");
-                return;
+                if(stopping_.load())
+                    return;
+                Sleep(1000);
+                continue;
             }
             auto pipe = CreateNamedPipeW(
                 pipeName_.c_str(),
@@ -417,12 +421,15 @@ private:
                 security.get());
             if(pipe == INVALID_HANDLE_VALUE)
             {
-                if(!stopping_)
+                if(!stopping_.load())
                     fprintf(
                         stderr,
                         "[headless-rpc] CreateNamedPipeW failed: %lu\n",
                         GetLastError());
-                return;
+                if(stopping_.load())
+                    return;
+                Sleep(1000);
+                continue;
             }
 
             auto connected = ConnectNamedPipe(pipe, nullptr)
@@ -671,6 +678,23 @@ private:
             static_cast<std::shared_ptr<MainThreadJob>*>(context));
         const auto job = *holder;
         Outcome outcome;
+        if(job->cancelled.load())
+        {
+            auto details = JsonObject();
+            JsonSet(details.get(), "method", JsonString(job->method));
+            outcome = Outcome::Failure(
+                "dispatch_timeout",
+                "main command thread cancelled the request after the caller deadline",
+                false,
+                std::move(details));
+            {
+                std::lock_guard<std::mutex> lock(job->mutex);
+                job->outcome = std::move(outcome);
+                job->done = true;
+            }
+            job->completed.notify_all();
+            return;
+        }
         try
         {
             outcome = DispatchDebuggerMethod(job->method, job->params.get());
@@ -722,6 +746,7 @@ private:
         }
         if(!completed || !job->done)
         {
+            job->cancelled.store(true);
             auto details = JsonObject();
             JsonSet(details.get(), "method", JsonString(method));
             JsonSet(details.get(), "timeout_ms", JsonInteger(timeout));

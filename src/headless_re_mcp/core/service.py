@@ -242,6 +242,8 @@ class _BackendRuntime:
     drain_cursor: DebugEventCursor | None = None
     event_log: PersistentDebugEventLog | None = None
     event_drain_pump: EventDrainPump | None = None
+    drain_lock: RLock = field(default_factory=RLock)
+    consume_peek_cursor: int | None = None
     # Set when an event batch reports dropped>0; cleared by a fresh modules.list.
     snapshot_resync_required: bool = False
     navigation_cancel: Event = field(default_factory=Event)
@@ -380,6 +382,7 @@ class AnalysisService(
         self._runtime_owner: BackendRuntimeOwner[_BackendRuntime] = BackendRuntimeOwner()
         self._workflow_owner: WorkflowStateOwner[WorkflowRuntime] = WorkflowStateOwner()
         self._unpack_owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
+        self._unpack_cancel_events: dict[str, Event] = {}
         self._trace_owner: TraceStateOwner[_TraceArtifactState] = TraceStateOwner()
         self._debuggee_owner = DebuggeeStateOwner(self.registry)
 
@@ -548,7 +551,7 @@ class AnalysisService(
                     # session recovered right before the next call fails.
                     self._discard_dead_runtime(session_id, kind)
                 entries.append(self._reopen_backend(session_id, kind))
-            return _success(
+            return self._recover_outcome(
                 {
                     "backends": entries,
                     "requested": [kind.value for kind in requested],
@@ -566,6 +569,31 @@ class AnalysisService(
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    @staticmethod
+    def _recover_outcome(payload: JsonObject, *, session_id: str) -> Result[JsonObject]:
+        """Fail the envelope when any requested backend did not come back.
+
+        Callers that only read ``ok`` used to treat a replacement with
+        ``failed > 0`` as recovered and keep issuing calls against a dead id.
+        """
+        try:
+            failed = int(payload.get("failed") or 0)
+        except (TypeError, ValueError):
+            failed = 0
+        if failed <= 0:
+            return _success(payload, session_id=session_id)
+        return Result[JsonObject](
+            ok=False,
+            data=payload,
+            error=RpcError(
+                code="recovery_failed",
+                message=f"recovery finished with {failed} failed backend(s)",
+                details={"session_id": session_id, "failed": failed},
+                retryable=True,
+            ),
+            meta={"session_id": session_id},
+        )
 
     @staticmethod
     def _worker_is_alive(runtime: _BackendRuntime) -> bool:
@@ -641,9 +669,9 @@ class AnalysisService(
         requested: tuple[BackendKind, ...],
     ) -> Result[JsonObject]:
         """Rebuild a failed session as a fresh one over the same binary."""
-        # Release the dead session first: a surviving IDA worker still holds the
-        # database lock for this binary, and a second open would fail with
-        # idapro.open_database code 4.
+        # Snapshot facts first: close_session may trim the old id, and a
+        # surviving IDA worker still holds the database lock until that close.
+        knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
         with suppress(BaseException):
             self.close_session(session_id)
         created = self.create_session(binary)
@@ -656,6 +684,7 @@ class AnalysisService(
                 "session creation did not return a session object",
             )
         replacement_id = str(payload["id"])
+        self._rebind_recovered_knowledge(knowledge, replacement_id)
         entries: list[JsonObject] = []
         for kind in requested:
             if entries and not entries[-1]["ok"]:
@@ -671,7 +700,7 @@ class AnalysisService(
                 )
                 continue
             entries.append(self._reopen_backend(replacement_id, kind))
-        return _success(
+        return self._recover_outcome(
             {
                 "backends": entries,
                 "requested": [kind.value for kind in requested],
@@ -684,6 +713,32 @@ class AnalysisService(
             },
             session_id=replacement_id,
         )
+
+    def _rebind_recovered_knowledge(
+        self,
+        snapshot: JsonObject,
+        replacement_id: str,
+    ) -> None:
+        """Replay facts onto the replacement id after a FAILED session rebuild."""
+        entries = snapshot.get("entries")
+        if not isinstance(entries, list):
+            return
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind")
+            key = item.get("key")
+            value = item.get("value")
+            if not isinstance(kind, str) or not isinstance(key, str):
+                continue
+            payload = value if isinstance(value, dict) else {}
+            with suppress(BaseException):
+                self.services.artifacts.record_knowledge(
+                    session_id=replacement_id,
+                    kind=kind,
+                    key=key,
+                    value=payload,
+                )
 
     def _open_dynamic(self, session_id: str) -> Result[JsonObject]:
         return self._open_backend(
@@ -798,7 +853,7 @@ class AnalysisService(
                             cast(DynamicWorker, worker),
                             drain_cursor,
                             event_log,
-                            lock=runtime.lock,
+                            lock=runtime.drain_lock,
                         )
                         runtime.event_drain_pump = pump
                         pump.start()
@@ -923,6 +978,26 @@ class AnalysisService(
             with suppress(OSError):
                 shutil.rmtree(path)
 
+    def _unpack_cancel_event(self, session_id: str) -> Event:
+        event = self._unpack_cancel_events.get(session_id)
+        if event is None:
+            event = Event()
+            self._unpack_cancel_events[session_id] = event
+        return event
+
+    def _reset_unpack_cancel(self, session_id: str) -> Event:
+        event = Event()
+        self._unpack_cancel_events[session_id] = event
+        return event
+
+    def _signal_unpack_cancel(self, session_id: str) -> None:
+        self._unpack_cancel_event(session_id).set()
+
+    def _clear_unpack_cancel(self, session_id: str) -> None:
+        event = self._unpack_cancel_events.pop(session_id, None)
+        if event is not None:
+            event.set()
+
     def _close_session(self, session_id: str) -> Result[JsonObject]:
         result: Result[JsonObject]
         runtimes: list[tuple[BackendKind, Any]] = []
@@ -951,6 +1026,7 @@ class AnalysisService(
                 self._health.forget(session_id)
                 self._workflow_owner.clear(session_id)
                 self._unpack_owner.clear(session_id)
+                self._clear_unpack_cancel(session_id)
                 self._debuggee_owner.clear(session_id)
                 web_backend = getattr(self, "_web_backend", None)
                 proxy_backend = getattr(self, "_proxy_backend", None)
@@ -1010,6 +1086,7 @@ class AnalysisService(
         # without this the sweep thread outlives every backend it existed for.
         if not self._runtime_owner.snapshot():
             self._health.stop()
+        self._release_adb_forwards_if_idle()
 
         assert session is not None
         try:
@@ -1039,6 +1116,7 @@ class AnalysisService(
         # an analysis stops producing artifacts, and it is infrequent enough that
         # a throttled collection never lands on a hot path.
         self._retention.maybe_collect(self.repository)
+        self._release_adb_forwards_if_idle()
         return result
 
     def record_artifact(self, **fields: Any) -> JsonObject:
@@ -1067,7 +1145,7 @@ class AnalysisService(
         try:
             if session_id is not None:
                 self.registry.get(session_id)
-            self._health.check_once()
+            self._health.check_once(repair=False)
             backends = self._health.report(session_id)
             return _success(
                 {
@@ -1153,6 +1231,23 @@ class AnalysisService(
             )
         return _success({"closed": closed})
 
+    def _release_adb_forwards_if_idle(self) -> None:
+        """Drop process-owned adb forwards once no Android session remains."""
+        live = [
+            session
+            for session in self.registry.list()
+            if session.target is TargetKind.APK
+            and session.state
+            not in {SessionState.CLOSED, SessionState.FAILED, SessionState.CLOSING}
+        ]
+        if live:
+            return
+        adb_backend = getattr(self, "_adb_backend", None)
+        if adb_backend is None:
+            return
+        with suppress(BaseException):
+            adb_backend.release_forwards()
+
     def dynamic_state(self, session_id: str) -> Result[JsonObject]:
         return self.services.dynamic.state(session_id)
 
@@ -1169,6 +1264,7 @@ class AnalysisService(
         *,
         limit: int = DEFAULT_DEBUG_EVENT_BATCH,
         timeout: float = 10.0,
+        advance_consume_cursor: bool = False,
     ) -> Result[JsonObject]:
         if type(limit) is not int or not 1 <= limit <= MAX_DEBUG_EVENT_BATCH:
             return _failure(
@@ -1208,9 +1304,21 @@ class AnalysisService(
                 if waiting:
                     # Navigate owns the native ring while WAITING. Serving the
                     # durable log only avoids a second events.read that desyncs
-                    # the cursor and used to fail the runtime.
-                    served = event_log.read_after(cursor.value, limit=limit)
+                    # the cursor and used to fail the runtime. Consume advances a
+                    # private peek mark; dynamic.events keeps reading from the
+                    # navigate-owned cursor so a peek still sees the same page.
+                    if advance_consume_cursor:
+                        peek_at = (
+                            runtime.consume_peek_cursor
+                            if runtime.consume_peek_cursor is not None
+                            else cursor.value
+                        )
+                        served = event_log.read_after(peek_at, limit=limit)
+                        runtime.consume_peek_cursor = served.batch.next_cursor
+                    else:
+                        served = event_log.read_after(cursor.value, limit=limit)
                 else:
+                    runtime.consume_peek_cursor = None
                     # Catch up durable log from the native ring (short polls).
                     drain_native_into_log(
                         dynamic,
@@ -1477,7 +1585,7 @@ class AnalysisService(
                 current_id = profile_id_for_section(section)
 
         stealth_source = "default"
-        if explicit:
+        if stealth_profile is not None:
             desired = canonical_profile_id(stealth_profile)
             stealth_source = "explicit"
         elif not enabled:
@@ -1795,8 +1903,28 @@ class AnalysisService(
             {"address": address, "data": data},
         )
 
-    def dynamic_modules(self, session_id: str) -> Result[JsonObject]:
-        result = self._dynamic_request(session_id, "modules.list")
+    def dynamic_modules(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+    ) -> Result[JsonObject]:
+        if type(offset) is not int or offset < 0:
+            return _failure(
+                ValueError("offset must be a non-negative integer"),
+                session_id=session_id,
+            )
+        if type(limit) is not int or not 1 <= limit <= 1024:
+            return _failure(
+                ValueError("limit must be between 1 and 1024"),
+                session_id=session_id,
+            )
+        result = self._dynamic_request(
+            session_id,
+            "modules.list",
+            {"offset": offset, "limit": limit},
+        )
         if result.ok:
             try:
                 runtime = self._runtime(session_id, BackendKind.X64DBG)
@@ -2021,20 +2149,36 @@ class AnalysisService(
                 None if pointer is None else pointer == runtime_address
             )
 
-            return _success(
-                {
-                    "function": {
-                        "static_address": static_address,
-                        "runtime_address": runtime_address,
-                        "rva": coordinates.get("rva"),
-                        "rebase_delta": coordinates.get("rebase_delta"),
-                        "module": coordinates.get("module"),
-                    },
-                    "static": static_section,
-                    "breakpoint": {"address": runtime_address, "armed": True},
-                    "execution": execution,
-                    "registers": registers,
+            payload = {
+                "function": {
+                    "static_address": static_address,
+                    "runtime_address": runtime_address,
+                    "rva": coordinates.get("rva"),
+                    "rebase_delta": coordinates.get("rebase_delta"),
+                    "module": coordinates.get("module"),
                 },
+                "static": static_section,
+                "breakpoint": {"address": runtime_address, "armed": True},
+                "execution": execution,
+                "registers": registers,
+            }
+            if not resumed.ok:
+                error = resumed.error or RpcError(
+                    code="debugger_command_failed",
+                    message="dynamic resume failed",
+                    details={"session_id": session_id},
+                )
+                return Result[JsonObject](
+                    ok=False,
+                    data=payload,
+                    error=error,
+                    meta={
+                        "session_id": session_id,
+                        "backend": BackendKind.X64DBG.value,
+                    },
+                )
+            return _success(
+                payload,
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
             )

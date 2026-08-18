@@ -38,8 +38,10 @@ class _Immediate:
 class _Page:
     url = "https://example/app"
 
-    def content(self) -> str:
-        return "x" * (_MAX_INLINE_BODY + 50)
+    def evaluate(self, script: str, cap: int) -> dict[str, Any]:
+        del script
+        html = "x" * (_MAX_INLINE_BODY + 50)
+        return {"html": html[:cap], "truncated": True}
 
     def title(self) -> str:
         return "Example"

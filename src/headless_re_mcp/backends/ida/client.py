@@ -8,6 +8,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from threading import RLock, Thread
 from typing import Any, TextIO
@@ -219,7 +220,17 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             except (BrokenPipeError, OSError) as exc:
                 raise self._process_exit_error() from exc
 
-            response = self._receive(lambda item: item.get("id") == request_id, timeout)
+            try:
+                response = self._receive(
+                    lambda item: item.get("id") == request_id, timeout
+                )
+            except IdaWorkerError as exc:
+                if exc.code == "worker_timeout":
+                    # The worker is still inside Hex-Rays; the next request
+                    # would queue behind that call for the rest of the session.
+                    with suppress(BaseException):
+                        self.terminate()
+                raise
             if response.get("ok") is not True:
                 raise IdaWorkerError.from_payload(response.get("error"))
             data = response.get("data")
@@ -283,7 +294,8 @@ class IdaWorkerClient(ManagedSubprocessMixin):
     ) -> JsonObject:
         started = time.monotonic()
         deadline = started + timeout
-        absolute_deadline = started + (absolute_timeout if absolute_timeout is not None else timeout)
+        extra = absolute_timeout if absolute_timeout is not None else timeout
+        absolute_deadline = started + extra
         while True:
             self._observe_windows()
             remaining = startup_receive_remaining(

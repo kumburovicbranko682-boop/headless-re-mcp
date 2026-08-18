@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -172,8 +173,6 @@ class RunEvent:
 
     def dump(self) -> dict[str, Any]:
         value = asdict(self)
-        try:
+        with suppress(ValueError):
             value["created_ms"] = int(datetime.fromisoformat(self.created_at).timestamp() * 1000)
-        except ValueError:
-            pass
         return value

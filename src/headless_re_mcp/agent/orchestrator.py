@@ -724,7 +724,7 @@ class AgentOrchestrator:
         if self._check_cancelled(run_id):
             raise asyncio.CancelledError
         bounded, truncated = bounded_tool_result(value, max_bytes=spec.resource_policy.max_result_bytes)
-        ok = bool(bounded.get("ok", True))
+        ok = bool(bounded.get("ok", False))
         self.store.complete_tool_call(run_id, call_id, bounded, ok=ok)
         self.store.append_event(run_id, "tool.completed", {"tool_call_id": call_id, "name": name, "ok": ok, "truncated": truncated})
         return bounded

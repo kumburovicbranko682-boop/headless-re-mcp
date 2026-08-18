@@ -367,7 +367,10 @@ def probe_x64dbg_scyllahide(settings: Settings) -> Probe:
             ProbeStatus.MISSING,
             "x64dbg headless is not configured; ScyllaHide plugin path is unknown",
             details,
-            "Set HEADLESS_RE_X64DBG_HEADLESS_X86/X64, then install ScyllaHide into that plugins directory.",
+            (
+                "Set HEADLESS_RE_X64DBG_HEADLESS_X86/X64, then install "
+                "ScyllaHide into that plugins directory."
+            ),
         )
     missing = [
         arch
@@ -1021,7 +1024,7 @@ def probe_ghidra(settings: Settings) -> Probe:
     from headless_re_mcp.backends.ghidra.client import _find_analyze_headless
 
     analyze = _find_analyze_headless(home)
-    if analyze is None:
+    if analyze is None or not analyze.is_file():
         return Probe(
             "ghidra",
             ProbeStatus.MISSING,
@@ -1029,10 +1032,19 @@ def probe_ghidra(settings: Settings) -> Probe:
             {"home": str(home)},
             "Install Ghidra and point HEADLESS_RE_GHIDRA_HOME at its root.",
         )
+    java = shutil.which("java")
+    if java is None:
+        return Probe(
+            "ghidra",
+            ProbeStatus.DETECTED,
+            "analyzeHeadless is present but java is not on PATH",
+            {"home": str(home), "analyze_headless": str(analyze)},
+            "Install a JRE and put java on PATH before treating Ghidra as ready.",
+        )
     return Probe(
         "ghidra",
         ProbeStatus.READY,
         "Ghidra analyzeHeadless is available",
-        {"home": str(home), "analyze_headless": str(analyze)},
+        {"home": str(home), "analyze_headless": str(analyze), "java": java},
         None,
     )

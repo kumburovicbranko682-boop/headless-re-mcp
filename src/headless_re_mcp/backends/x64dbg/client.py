@@ -16,6 +16,10 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.backends.x64dbg.limits import MAX_FRAME_BYTES
+from headless_re_mcp.core.desktop_isolation import (
+    DesktopIsolationJob,
+    hide_input_desktop_windows_for_pids,
+)
 from headless_re_mcp.core.events import (
     DEFAULT_DEBUG_EVENT_BATCH,
     MAX_DEBUG_EVENT_BATCH,
@@ -24,10 +28,6 @@ from headless_re_mcp.core.events import (
     parse_debug_event_batch,
 )
 from headless_re_mcp.core.hidden_desktop import DesktopProcess, HiddenDesktop
-from headless_re_mcp.core.desktop_isolation import (
-    DesktopIsolationJob,
-    hide_input_desktop_windows_for_pids,
-)
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.core.process_tree import enumerate_direct_children, terminate_process_tree
 from headless_re_mcp.core.session import detect_pe_architecture
@@ -588,7 +588,8 @@ class XdbgClient:
             from headless_re_mcp.core.ui_win32 import capture_hwnd_screenshot
             from headless_re_mcp.core.windows import list_input_desktop_windows
 
-            hwnds = {int(row["hwnd"]) for row in list_input_desktop_windows(allowed_pids=allowed_pids)}
+            listed = list_input_desktop_windows(allowed_pids=allowed_pids)
+            hwnds = {int(row["hwnd"]) for row in listed}
             if int(hwnd) not in hwnds:
                 raise XdbgRpcError(
                     "window_not_authorized",
@@ -660,8 +661,18 @@ class XdbgClient:
             params["rights"] = rights
         return self.request("memory.protection", params, timeout=timeout)
 
-    def threads_list(self, *, timeout: float = 10.0) -> JsonObject:
-        return self.request("threads.list", timeout=timeout)
+    def threads_list(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 10.0,
+    ) -> JsonObject:
+        return self.request(
+            "threads.list",
+            {"offset": offset, "limit": limit},
+            timeout=timeout,
+        )
 
     def threads_current(self, *, timeout: float = 10.0) -> JsonObject:
         return self.request("threads.current", timeout=timeout)

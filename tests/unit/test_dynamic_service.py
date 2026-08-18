@@ -295,16 +295,24 @@ class FakeDynamicWorker:
                 "info": self.module_name,
             }
         if command == "modules.list":
+            offset = int(values.get("offset", 0))
+            limit = int(values.get("limit", 256))
+            modules = [
+                {
+                    "base": self.module_base,
+                    "size": self.module_size,
+                    "name": self.module_name,
+                    "path": self.module_path,
+                }
+            ]
+            page = modules[offset : offset + limit]
             return {
-                "modules": [
-                    {
-                        "base": self.module_base,
-                        "size": self.module_size,
-                        "name": self.module_name,
-                        "path": self.module_path,
-                    }
-                ],
-                "count": 1,
+                "modules": page,
+                "count": len(page),
+                "total": len(modules),
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(page) < len(modules),
             }
         if command == "modules.dump":
             output_path = Path(str(values["output_path"]))
@@ -607,6 +615,12 @@ def test_dynamic_session_state_machine(tmp_path: Path) -> None:
     assert memory.data["data"] == "90909090"
     assert modules.ok and modules.data is not None
     assert modules.data["count"] == 1
+    assert worker.requests[-1] == ("modules.list", {"offset": 0, "limit": 256})
+    empty_page = service.dynamic_modules(session_id, offset=1, limit=1)
+    assert empty_page.ok and empty_page.data is not None
+    assert empty_page.data["modules"] == []
+    assert empty_page.data["total"] == 1
+    assert empty_page.data["has_more"] is False
 
     resumed = service.dynamic_resume(session_id)
     assert resumed.ok
@@ -1777,6 +1791,41 @@ def test_analyze_function_dynamic_arms_the_rebased_address(tmp_path: Path) -> No
     assert data["execution"]["stopped_at_breakpoint"] is False
 
 
+class _ResumeFailWorker(FakeDynamicWorker):
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "debug.resume":
+            self.requests.append((command, params or {}))
+            raise XdbgRpcError(
+                "debugger_command_failed",
+                "resume rejected",
+                details={"method": "debug.resume", "command": "resume"},
+            )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_analyze_function_dynamic_fails_closed_when_resume_fails(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, _ResumeFailWorker(), FakeStaticWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.open_static(session_id).ok
+
+    report = service.analyze_function_dynamic(session_id, 0x140001000, decompile=False)
+
+    assert not report.ok and report.error is not None
+    assert report.error.code == "debugger_command_failed"
+    assert report.data is not None
+    assert report.data["execution"]["resumed"] is False
+    assert report.data["breakpoint"] == {"address": 0x140001000, "armed": True}
+
+
 class _ArgumentRegisterWorker(FakeDynamicWorker):
     """Fake reporting Microsoft x64 argument registers while parked on one API."""
 
@@ -2132,12 +2181,39 @@ def test_session_recover_reports_a_failed_reconnect_per_backend(tmp_path: Path) 
 
     # A worker stuck long enough to refuse the reconnect must not be reported as
     # recovered, or the caller keeps issuing calls that cannot succeed.
-    assert recovered.ok and recovered.data is not None
+    assert not recovered.ok and recovered.error is not None
+    assert recovered.error.code == "recovery_failed"
+    assert recovered.data is not None
     entry = recovered.data["backends"][0]
     assert entry["action"] == "reconnected" and entry["ok"] is False
     assert entry["error"]["code"] == "XdbgRpcError"
     assert recovered.data["recovered"] == 0
     assert recovered.data["failed"] == 1
+
+
+def test_failed_session_recover_moves_knowledge_to_the_replacement_id(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    recorded = service.knowledge_record(
+        session_id, "function", "0x140001000", {"name": "main"}
+    )
+    assert recorded.ok
+
+    service._fail_runtime(session_id, BackendKind.X64DBG)
+    recovered = service.session_recover(session_id)
+
+    assert recovered.ok and recovered.data is not None
+    replacement = str(recovered.data["session_id"])
+    assert replacement != session_id
+    found = service.knowledge_query(replacement)
+    assert found.ok and found.data is not None
+    assert found.data["total"] >= 1
+    assert any(entry.get("key") == "0x140001000" for entry in found.data["entries"])
 
 
 def test_session_recover_rejects_unknown_backend(tmp_path: Path) -> None:
@@ -2300,6 +2376,9 @@ def test_events_consume_during_navigation_does_not_read_native_or_kill_worker(
     assert [event["sequence"] for event in consumed.data["events"]] == [1]
     assert peeked.ok and peeked.data is not None
     assert [event["sequence"] for event in peeked.data["events"]] == [1]
+    replayed = service.workflow_events_consume(session_id, timeout=0.2)
+    assert replayed.ok and replayed.data is not None
+    assert [event["sequence"] for event in replayed.data["events"]] == []
     assert runtime.event_cursor is not None
     assert runtime.event_cursor.value == 0
     assert not worker.terminated

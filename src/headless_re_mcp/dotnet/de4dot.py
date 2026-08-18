@@ -17,7 +17,12 @@ from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any, Final
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    BoundedCancelled,
+    TimedOut,
+    active_bound_cancel,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 
@@ -282,7 +287,9 @@ def _capture_process(
         process = subprocess.Popen(argv, **_creation_options())
         from headless_re_mcp.process_group import assign_to_process_group
 
-        assign_to_process_group(process.pid)
+        pid = getattr(process, "pid", None)
+        if pid:
+            assign_to_process_group(int(pid))
     except FileNotFoundError as exc:
         raise De4dotError(
             De4dotErrorCode.EXECUTABLE_NOT_FOUND,
@@ -325,7 +332,13 @@ def _capture_process(
 
     deadline = monotonic() + timeout
     timed_out = False
+    cancelled = False
+    stop = active_bound_cancel()
     while True:
+        if stop is not None and stop.is_set():
+            cancelled = True
+            _terminate_process(process)
+            break
         if limit_event.is_set():
             _terminate_process(process)
             break
@@ -370,6 +383,8 @@ def _capture_process(
         stdout_exceeded=stdout_capture.exceeded,
         stderr_exceeded=stderr_capture.exceeded,
     )
+    if cancelled:
+        raise BoundedCancelled()
     if timed_out:
         raise De4dotError(
             De4dotErrorCode.TIMEOUT,

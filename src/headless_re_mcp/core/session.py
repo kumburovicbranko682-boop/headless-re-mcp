@@ -179,7 +179,10 @@ class SessionRegistry:
                 )
             session.state = target
             session.updated_at = datetime.now(UTC)
-            if target is SessionState.CLOSED:
+            if (
+                target in {SessionState.CLOSED, SessionState.FAILED}
+                and session_id not in self._closed_order
+            ):
                 self._retire_closed(session_id)
             return session.model_copy(deep=True)
 

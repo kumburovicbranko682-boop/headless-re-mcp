@@ -585,14 +585,30 @@ class WebBackend:
 
         def work() -> JsonObject:
             try:
-                html = handle.page.content()
+                clipped = handle.page.evaluate(
+                    """(cap) => {
+                        const html = document.documentElement
+                          ? document.documentElement.outerHTML
+                          : (document.body ? document.body.outerHTML : "");
+                        const text = typeof html === "string" ? html : "";
+                        return {
+                          html: text.length > cap ? text.slice(0, cap) : text,
+                          truncated: text.length > cap
+                        };
+                    }""",
+                    _MAX_INLINE_BODY,
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
+            if not isinstance(clipped, dict):
+                raise WebError("backend_error", "dom snapshot returned no document")
+            html = clipped.get("html")
+            text = html if isinstance(html, str) else ""
             return {
                 "url": handle.page.url,
                 "title": _safe_title(handle.page),
-                "html": html[:_MAX_INLINE_BODY],
-                "truncated": len(html) > _MAX_INLINE_BODY,
+                "html": text[:_MAX_INLINE_BODY],
+                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
             }
 
         return self._runner(handle).call(work)
@@ -638,8 +654,30 @@ class WebBackend:
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        text = json.dumps(har, ensure_ascii=False)
+        truncated = False
+        encoded = text.encode("utf-8")
+        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            drop = max(1, len(entries) // 8)
+            del entries[-drop:]
+            har["log"]["entries"] = entries
+            text = json.dumps(har, ensure_ascii=False)
+            encoded = text.encode("utf-8")
+            truncated = True
+        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise WebError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=len(encoded),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "truncated": truncated,
+            "size": len(encoded),
+        }
 
     def close_all(self) -> None:
         with self._lock:

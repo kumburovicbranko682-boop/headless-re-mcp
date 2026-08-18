@@ -17,12 +17,35 @@ from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
+
+
+def _refuse_oversized_tree(path: Path, *, kind: str, error_type: type) -> None:
+    if not path.exists():
+        return
+    try:
+        size = _dir_size(path) if path.is_dir() else int(path.stat().st_size)
+    except OSError:
+        return
+    if size <= UNREGISTERED_CAPTURE_MAX_BYTES:
+        return
+    with suppress(OSError):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    raise error_type(
+        "too_large",
+        f"{kind} tree exceeds capture cap",
+        size=size,
+        cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+    )
 
 
 def _as_rpc(exc: ApkError | JadxError | ApktoolError) -> XdbgRpcError:
@@ -150,6 +173,7 @@ class ApkAnalysisMixin:
             client = JadxClient(getattr(self.settings, "jadx", None))
             out_dir = self._jadx_out_dir(session_id)
             data = client.decompile(binary, out_dir, class_name, timeout=timeout)
+            _refuse_oversized_tree(out_dir, kind="jadx", error_type=JadxError)
             try:
                 session = self.registry.get(session_id)
                 if session.state in {
@@ -194,6 +218,7 @@ class ApkAnalysisMixin:
             client = JadxClient(getattr(self.settings, "jadx", None))
             out_dir = self._jadx_out_dir(session_id)
             data = client.export_sources(binary, out_dir, timeout=timeout, no_imports=no_imports)
+            _refuse_oversized_tree(out_dir, kind="jadx", error_type=JadxError)
             try:
                 session = self.registry.get(session_id)
                 if session.state in {
@@ -251,6 +276,7 @@ class ApkAnalysisMixin:
             data = self._apktool_client().decode(
                 binary, out_dir, timeout=timeout, no_resources=no_resources
             )
+            _refuse_oversized_tree(out_dir, kind="apktool", error_type=ApktoolError)
             try:
                 session = self.registry.get(session_id)
                 if session.state in {

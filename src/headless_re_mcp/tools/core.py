@@ -12,6 +12,8 @@ from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
 from headless_re_mcp.tools.binding import BoundTool
 
+StaticAddress = Annotated[int, Field(ge=0)]
+
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
     return result.model_dump(mode="json")
@@ -331,7 +333,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_disassemble(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         count: Annotated[int, Field(ge=1, le=512)] = 32,
         max_bytes: Annotated[int, Field(ge=1, le=65536)] = 4096,
     ) -> dict[str, Any]:
@@ -352,7 +354,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_xrefs_to(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
@@ -373,7 +375,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_xrefs_from(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
@@ -394,7 +396,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_callers(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
@@ -415,7 +417,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_callees(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
@@ -436,7 +438,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_basic_blocks(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
@@ -455,7 +457,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
             )
         )
 
-    def static_cfg(session_id: str, address: int) -> dict[str, Any]:
+    def static_cfg(session_id: str, address: StaticAddress) -> dict[str, Any]:
         """Return function-local CFG nodes and edges.
 
         Answers with nodes (id, start, end, type) and edges (src, dst), plus
@@ -530,7 +532,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_bytes_read(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         size: Annotated[int, Field(ge=1, le=4096)] = 64,
     ) -> dict[str, Any]:
         """Read a bounded byte range from the IDA database.
@@ -616,7 +618,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_name_set(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         name: str,
     ) -> dict[str, Any]:
         """Set a name at an address inside the current IDA database.
@@ -628,7 +630,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_comment_set(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         comment: str,
         repeatable: bool = False,
     ) -> dict[str, Any]:
@@ -648,7 +650,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_type_apply(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         type: str,
     ) -> dict[str, Any]:
         """Apply a type string at an address.
@@ -660,7 +662,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
             analysis.static_type_apply(session_id, address=address, type=type)
         )
 
-    def static_function_create(session_id: str, address: int) -> dict[str, Any]:
+    def static_function_create(session_id: str, address: StaticAddress) -> dict[str, Any]:
         """Create a function at an address.
 
         Answers with address, created, start, end and ok, plus note when
@@ -668,7 +670,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
         """
         return _dump(analysis.static_function_create(session_id, address=address))
 
-    def static_function_delete(session_id: str, address: int) -> dict[str, Any]:
+    def static_function_delete(session_id: str, address: StaticAddress) -> dict[str, Any]:
         """Delete the function containing an address.
 
         Answers with address, end, deleted and ok. There is no function
@@ -678,7 +680,7 @@ def build_static_extended_tools(analysis: AnalysisService) -> tuple[BoundTool, .
 
     def static_bytes_patch(
         session_id: str,
-        address: int,
+        address: StaticAddress,
         hex: str | None = None,
         base64: str | None = None,
     ) -> dict[str, Any]:

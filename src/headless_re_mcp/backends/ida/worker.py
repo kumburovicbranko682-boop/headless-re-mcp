@@ -1607,7 +1607,7 @@ def run(binary: Path) -> int:
                 if not isinstance(params, dict):
                     raise WorkerRequestError("invalid_request", "params must be a JSON object")
                 if command == "close":
-                    idapro.close_database(False)
+                    idapro.close_database(True)
                     opened = False
                     _emit({"id": request_id, "ok": True, "data": {"closed": True}})
                     return 0
@@ -1668,7 +1668,7 @@ def run(binary: Path) -> int:
             try:
                 import idapro
 
-                idapro.close_database(False)
+                idapro.close_database(True)
             except Exception:
                 pass
 

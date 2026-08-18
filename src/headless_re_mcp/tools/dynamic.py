@@ -224,13 +224,20 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.dynamic_memory_write(session_id, address, data))
 
     @tools.tool(name="dynamic.modules")
-    def dynamic_modules(session_id: str) -> dict[str, Any]:
+    def dynamic_modules(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+    ) -> dict[str, Any]:
         """List loaded image modules for a paused debuggee.
 
-        Answers with modules, each carrying base, size, name and path, plus a
-        count.
+        Answers with modules, each carrying base, size, name and path, plus
+        count, total, offset, limit and has_more so a page that filled the
+        limit is not read as the whole catalog.
         """
-        return _dump(analysis.dynamic_modules(session_id))
+        return _dump(
+            analysis.dynamic_modules(session_id, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="dynamic.breakpoints")
     def dynamic_breakpoints(session_id: str) -> dict[str, Any]:

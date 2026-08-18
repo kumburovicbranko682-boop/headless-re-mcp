@@ -27,7 +27,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut, run_bounded
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -356,6 +356,8 @@ def run_vmp_dumper(
     mtime_floor = _time.time() - 2.0
     try:
         capture = _capture_process(argv, timeout=timeout, max_output_size=max_output_size)
+    except BoundedCancelled:
+        raise
     except Exception as exc:
         code = getattr(exc, "code", VmpDumperErrorCode.PROCESS_FAILED)
         raise VmpDumperError(
