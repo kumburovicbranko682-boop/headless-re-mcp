@@ -5,7 +5,7 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；没有编好的 PE 夹具时单元测试也能收集完，而不是在 parametrize 阶段整场失败。
+托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
 
 分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。监控台改成对话居中的 Agent 工作台：左侧对话/会话、右侧按 target 换皮的检查器。
 

@@ -12,6 +12,15 @@ from headless_re_mcp.backends.common.bounded_run import run_bounded as real_run_
 from headless_re_mcp.native_app import bootstrap
 
 
+def test_importing_bootstrap_does_not_load_the_qt_gui() -> None:
+    """Package __init__ used to import gui.py, which imports PySide6.
+
+    Hosted quality installs .[test,dev,web] and has no Qt, so collection
+    died on ModuleNotFoundError before any test ran.
+    """
+    assert "headless_re_mcp.native_app.gui" not in sys.modules
+
+
 def test_pip_install_editable_kills_a_hung_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
