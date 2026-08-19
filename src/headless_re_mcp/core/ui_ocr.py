@@ -98,16 +98,20 @@ async def _ocr_bmp_windows_async(path: Path, *, language: str = "en-US") -> Json
     if not data:
         raise UiPidBoundaryError("invalid_params", "OCR input BMP is empty")
     stream = InMemoryRandomAccessStream()
-    # The winsdk stubs type these parameters as the IOutputStream and
-    # IRandomAccessStream interfaces without recording that
-    # InMemoryRandomAccessStream implements both.
-    writer = DataWriter(stream)  # type: ignore[call-overload]
+    # winsdk is skipped by mypy (optional Windows SDK). The ignores stay for
+    # local runs that do have the stubs: those type DataWriter/create_async
+    # against IOutputStream / IRandomAccessStream without recording that
+    # InMemoryRandomAccessStream implements both. unused-ignore keeps CI
+    # green when the package is absent.
+    writer = DataWriter(stream)  # type: ignore[call-overload, unused-ignore]
     writer.write_bytes(bytearray(data))
     await writer.store_async()
     await writer.flush_async()
     writer.detach_stream()
     stream.seek(0)
-    decoder = await BitmapDecoder.create_async(stream)  # type: ignore[call-overload]
+    decoder = await BitmapDecoder.create_async(  # type: ignore[call-overload, unused-ignore]
+        stream
+    )
     bitmap = await decoder.get_software_bitmap_async()
     engine = OcrEngine.try_create_from_language(Language(language))
     if engine is None:

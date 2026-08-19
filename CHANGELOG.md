@@ -5,6 +5,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；没有编好的 PE 夹具时单元测试也能收集完，而不是在 parametrize 阶段整场失败。
+
 分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。监控台改成对话居中的 Agent 工作台：左侧对话/会话、右侧按 target 换皮的检查器。
 
 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 / 打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧不再打 x64dbg。
