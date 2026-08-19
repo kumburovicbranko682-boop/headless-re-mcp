@@ -91,6 +91,7 @@ class UnpackCliMixin:
                 raise InvalidStateTransition(
                     f"unpack.upx.test cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             bounded_timeout = _detection_timeout(timeout)
             if self.settings.upx is None:
                 return Result[JsonObject](
@@ -156,6 +157,7 @@ class UnpackCliMixin:
                 raise InvalidStateTransition(
                     f"unpack.upx.unpack cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             bounded_timeout = _detection_timeout(timeout)
             if type(open_ida) is not bool:
                 raise ValueError("open_ida must be a boolean")
@@ -412,6 +414,7 @@ class UnpackCliMixin:
                 raise InvalidStateTransition(
                     f"unpack.xvlkc.unpack cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             if self.settings.xvlkc is None:
                 return Result[JsonObject](
                     ok=False,
@@ -511,6 +514,7 @@ class UnpackCliMixin:
                 raise InvalidStateTransition(
                     f"unpack.vmp.dump cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             if self.settings.vmp_dumper is None:
                 return Result[JsonObject](
                     ok=False,
@@ -656,6 +660,7 @@ class UnpackCliMixin:
                 raise InvalidStateTransition(
                     f"unpack.scylla.rebuild cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             if self.settings.scylla is None:
                 return Result[JsonObject](
                     ok=False,

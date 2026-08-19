@@ -105,6 +105,7 @@ class DotnetAnalysisMixin:
                 raise InvalidStateTransition(
                     f"dotnet.deobfuscate cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             if self.settings.de4dot is None:
                 return Result[JsonObject](
                     ok=False,
@@ -216,6 +217,7 @@ class DotnetAnalysisMixin:
                 raise InvalidStateTransition(
                     f"dotnet.reactor.unpack cannot run in {session.state.value} state"
                 )
+            session.require_pe()
             if self.settings.net_reactor_slayer is None:
                 return Result[JsonObject](
                     ok=False,

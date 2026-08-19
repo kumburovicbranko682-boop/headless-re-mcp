@@ -380,9 +380,15 @@ class TestApktoolBoundaries:
 
 class TestPeOnlyToolsRefuseApkSessions:
     def test_detect_dotnet_and_unpack_return_target_mismatch(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
         from headless_re_mcp.core.service import AnalysisService
 
-        service = AnalysisService()
+        # Hosted quality has no UPX; the target check must still win.
+        service = AnalysisService(
+            replace(Settings.load(), artifact_root=tmp_path / "artifacts", upx=None)
+        )
         try:
             created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
             assert created.ok, created.error

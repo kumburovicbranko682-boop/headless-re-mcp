@@ -173,7 +173,15 @@ def test_autonomy_can_be_granted_over_http(tmp_path: Path, monkeypatch) -> None:
         return tmp_path / "config.json"
 
     monkeypatch.setattr("headless_re_mcp.web.routes.agent.update_config_values", fake_update)
-    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        # Hosted quality has no config.json, so Settings.load() fills the packed
+        # PE-analysis preset. Pin an empty grant so this test measures add_tools
+        # instead of whatever the machine already auto-approves.
+        agent_auto_approve_tools=(),
+        agent_auto_approve_effects=(),
+    )
     service = AnalysisService(settings)
     app = create_app(service, token="web-secret", settings=settings)
     headers = {"Authorization": "Bearer web-secret"}
