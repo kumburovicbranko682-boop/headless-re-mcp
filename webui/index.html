@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>Headless RE-MCP</title>
+    <script>
+      (function () {
+        var theme = "dark";
+        try {
+          var saved = localStorage.getItem("headless_theme");
+          if (saved === "dark" || saved === "light") theme = saved;
+          else if (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) theme = "light";
+        } catch (error) { /* 回落为深色 */ }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

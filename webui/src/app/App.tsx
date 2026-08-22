@@ -8,16 +8,19 @@ import { OpenTarget } from "../components/OpenTarget";
 import { RunProgress } from "../components/RunProgress";
 import { SessionRail } from "../components/SessionRail";
 import { SettingsModal } from "../components/SettingsModal";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { ThreadList } from "../components/ThreadList";
 import { WorkspaceLanding } from "../components/WorkspaceLanding";
 import { SessionReconnect } from "../components/SessionReconnect";
 import { PROFILE_LABEL } from "../lib/inspectorSurface";
 import { sessionName, sessionStateLabel } from "../lib/sessionLabel";
 import { dormantHint } from "../lib/sessionGone";
+import { useTheme } from "../lib/theme";
 import { useWorkbench } from "./useWorkbench";
 
 export function App() {
   const wb = useWorkbench();
+  const { theme, toggle } = useTheme();
 
   if (wb.landingOpen) {
     return <WorkspaceLanding onChoose={wb.chooseProfile} />;
@@ -35,8 +38,16 @@ export function App() {
     <div className="agent">
       <aside className="navpane">
         <div className="navpane-brand">
-          <strong>Headless RE-MCP</strong>
-          <small>{wb.workspaceProfile ? PROFILE_LABEL[wb.workspaceProfile] : "未选方向"}</small>
+          <span className="brand-mark" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2.5 3.5 7 8l-4.5 4.5" />
+              <path d="M8.5 12.5h5" />
+            </svg>
+          </span>
+          <div className="navpane-brand-copy">
+            <strong>Headless RE-MCP</strong>
+            <small>{wb.workspaceProfile ? PROFILE_LABEL[wb.workspaceProfile] : "未选方向"}</small>
+          </div>
         </div>
         <ThreadList
           threads={Array.isArray(wb.state.threads) ? wb.state.threads : []}
@@ -94,6 +105,7 @@ export function App() {
             )}
             <button type="button" className="ghost-btn" onClick={() => wb.setSettingsOpen(true)}>设置</button>
             <button type="button" className="ghost-btn" onClick={() => wb.setMcpOpen(true)}>MCP</button>
+            <ThemeToggle theme={theme} onToggle={toggle} />
           </div>
         </header>
 
