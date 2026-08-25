@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import signal
 import subprocess
 from contextlib import suppress
 from ctypes import wintypes
@@ -178,6 +179,38 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
+def _kill_own_process_group(pid: int) -> list[int]:
+    """POSIX: kill ``pid``'s process group, but only when ``pid`` leads it.
+
+    The ppid walk cannot see a grandchild the kernel has reparented to init --
+    its parent link now points at pid 1, not the launcher -- so a tool that
+    orphans a worker survives a timeout. A process started with
+    ``start_new_session=True`` leads its own group, and every descendant keeps
+    that group id even after reparenting, so one ``killpg`` reaches them all.
+
+    Guarded to a group leader on purpose: signalling a group we do not lead
+    could take down the service's own process group. When ``pid`` is not a
+    leader this returns empty and the descendant walk still runs.
+    """
+    if os.name == "nt":
+        return []
+    # getattr, not os.killpg directly: these are POSIX-only and absent from the
+    # Windows type stubs the quality job checks against, so a plain reference
+    # fails mypy on the hosted runner even though this branch never runs there.
+    getpgid = getattr(os, "getpgid", None)
+    killpg = getattr(os, "killpg", None)
+    if getpgid is None or killpg is None:
+        return []
+    sigkill = getattr(signal, "SIGKILL", 9)
+    with suppress(OSError, ProcessLookupError):
+        if getpgid(pid) != pid:
+            return []
+    with suppress(OSError, ProcessLookupError):
+        killpg(pid, sigkill)
+        return [pid]
+    return []
+
+
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
@@ -187,8 +220,10 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     lock on the sample after the tool call has already returned a timeout.
 
     Descendants are enumerated *before* the parent dies, because that is while
-    the relationship is still recorded. Never raises: this runs on a failure
-    path that has somewhere better to be.
+    the relationship is still recorded. On POSIX the process group is signalled
+    too, which reaches descendants the ppid walk cannot -- an orphan reparented
+    to init keeps the group but loses the parent link. Never raises: this runs
+    on a failure path that has somewhere better to be.
     """
     killed: list[int] = []
     pid = getattr(process, "pid", None)
@@ -196,6 +231,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
+        killed.extend(_kill_own_process_group(pid))
 
     with suppress(OSError, AttributeError):
         if process.poll() is None:
@@ -228,6 +264,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             descendants = collect_descendants(pid)
     killed: list[int] = []
+    killed.extend(_kill_own_process_group(pid))
     with suppress(Exception):
         _kill_pid(pid)
         killed.append(pid)

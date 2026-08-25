@@ -15,9 +15,10 @@ hard cap and discard the rest so the child does not block on a full pipe.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import Event, Thread
@@ -99,6 +100,13 @@ def _read_capped(
                 truncated[0] = True
     except (ValueError, OSError):
         pass
+    finally:
+        # The reader owns the stream: it closes here, on its own thread, once
+        # read() has returned. The spawning thread must never close a pipe a
+        # reader might still be blocked on -- that deadlocks on the buffered
+        # stream's lock -- so closing from here is the only safe place.
+        with suppress(Exception):
+            stream.close()
 
 
 def _join_readers(threads: tuple[Thread, Thread], timeout: float) -> bool:
@@ -130,7 +138,18 @@ def run_bounded(
     stdout_trunc = [False]
     stderr_trunc = [False]
     stop = cancel if cancel is not None else active_bound_cancel()
-    with subprocess.Popen(
+    # Not `with subprocess.Popen(...)`: its __exit__ closes stdout/stderr from
+    # this thread, and closing a pipe while a reader is still blocked in read()
+    # deadlocks on the buffered stream's lock. That is not hypothetical -- a
+    # launcher whose grandchild inherited the pipe keeps the write end open long
+    # after the launcher is killed, so the reader never sees EOF. The readers
+    # own and close their own streams; this thread only reaps the process.
+    #
+    # start_new_session gives the tool its own POSIX process group so a timeout
+    # kill can signal the whole group. The ppid walk alone cannot reach a
+    # grandchild the kernel has reparented to init, which is exactly what leaks
+    # a JVM or a sleeper after the deadline.
+    process = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -138,7 +157,9 @@ def run_bounded(
         creationflags=creationflags,
         cwd=cwd,
         env=env,
-    ) as process:
+        start_new_session=os.name != "nt",
+    )
+    try:
         # Same net the debugger workers use: a force-kill of this process runs
         # no cleanup, and a JVM analysing a sample is not something to leave
         # behind because the service was stopped rather than closed.
@@ -201,3 +222,10 @@ def run_bounded(
             stdout_truncated=stdout_trunc[0],
             stderr_truncated=stderr_trunc[0],
         )
+    finally:
+        # Reap the child if an unexpected error left it running; never touch the
+        # pipes here, the readers close them. poll() is already set on every
+        # normal return and raise above, so this only fires on a surprise.
+        with suppress(Exception):
+            if process.poll() is None:
+                terminate_process_tree(process)
