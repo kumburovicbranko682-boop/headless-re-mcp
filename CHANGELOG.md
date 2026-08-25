@@ -5,28 +5,43 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
+本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
+Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+`tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
+`disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
-分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。监控台改成对话居中的 Agent 工作台：左侧对话/会话、右侧按 target 换皮的检查器。
+### 新增（监控台工作台）
 
-监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 / 打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧不再打 x64dbg。
+- 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
+- 分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。
+- 对话框右侧增加 Codex 风格两档审核：`请求批准` / `完全访问`（没有中间档）。
+  `PUT /api/agent/autonomy` 现接受 `{"mode":"request"|"full_access"}`，分别清空授权或放开
+  全部写效果；`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
+- 未配置 autonomy 键时，加壳 PE 分析所需的 `state_change` 加相关 `file_write` 默认自动批准
+  （patches / APK 改包除外）。
 
-监控台对话框右侧增加 Codex 风格两档审核：`请求批准` / `完全访问`（没有中间档）。
-`PUT /api/agent/autonomy` 现接受 `{"mode":"request"|"full_access"}`，分别清空授权或放开全部写效果；
-`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
+### 新增（x64dbg 用户态反检测）
 
-x64dbg 用户态 hide：ScyllaHide 装到**正在使用的** headless `plugins/`（不是只写 `external/`），
-AI 通过 `dynamic.stealth.status` / `dynamic.stealth.set` 和 `dynamic.launch(stealth_profile=)`
-选择白名单 profile。`packer.classify` / `unpack.recommend` 给出 `stealth_profile`
-（tmd/Themida/WinLicense → themida）；open/launch 省略参数时按映射自动写 ini。
-`tmd`/`winlicense`/`oreans` 是合法别名。工具面 263 → 265（149 只读 / 116 写）。
-未配置 autonomy 键时，加壳 PE 分析所需的 state_change + 相关 file_write 默认自动批准
-（patches / APK 改包除外）。`enabled=false` 会把 `CurrentProfile` 写成 `Disabled`。
-TitanHide / VT 启动器本阶段不做。
+- x64dbg 用户态 hide：ScyllaHide 装到**正在使用的** headless `plugins/`（不是只写 `external/`），
+  AI 通过 `dynamic.stealth.status` / `dynamic.stealth.set` 和 `dynamic.launch(stealth_profile=)`
+  选择白名单 profile。`packer.classify` / `unpack.recommend` 给出 `stealth_profile`
+  （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
+  `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
+  `Disabled`。TitanHide / VT 启动器本阶段不做。
 
-新增 Android 与 Web 两个目标域，工具面从 199 增至 263（148 只读 / 115 写）。
-`memory.protection` 与 `workflow.breakpoint.put` / `disable` 是写；`static.search.text`
-与 `patches.list` 是读。
+### 变更（监控台检查器）
+
+- 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
+  打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
+  不再打 x64dbg。
+
+### 修复（托管质量门）
+
+- 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
+  `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
+  监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
+- UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
+  本机没装 CLI 就说成 `capability_unavailable`。
 
 ### 新增（会话目标类型）
 
@@ -596,6 +611,7 @@ TitanHide / VT 启动器本阶段不做。
 
 首个公开快照：IDA 与 x64dbg 双后端、MCP 工具面、WebUI 工作台、会话与产物持久化。
 
+[Unreleased]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0
