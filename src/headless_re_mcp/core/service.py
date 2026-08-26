@@ -1062,11 +1062,17 @@ class AnalysisService(
                     )
             except WebError as exc:
                 close_errors.append(("web", exc))
-            except BaseException:
-                # Optional test doubles historically remain best-effort. A
-                # WebError or clean=false is the backend's explicit proof that
-                # browser-owned state survived.
-                pass
+            except BaseException as exc:
+                close_errors.append(
+                    (
+                        "web",
+                        WebError(
+                            "web_cleanup_failed",
+                            f"browser cleanup failed: {type(exc).__name__}: {exc}",
+                            cause_type=type(exc).__name__,
+                        ),
+                    )
+                )
         if proxy_backend is not None:
             try:
                 proxy_backend.stop(session_id)
