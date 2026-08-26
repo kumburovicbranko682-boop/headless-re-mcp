@@ -574,6 +574,49 @@ def test_close_sends_exit_before_disconnecting_and_cleans_runtime_directory() ->
     assert events.index("process.wait") < events.index("transport.close")
     assert not runtime_path.exists()
     assert client.exit_code == 0
+
+
+def test_close_uses_one_deadline_across_rpc_and_process_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sequential graceful-close steps must not each receive the full timeout."""
+    clock = [0.0]
+    request_timeouts: list[float] = []
+    wait_timeouts: list[float] = []
+
+    class _BudgetProcess(FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            budget = float(timeout or 0.0)
+            wait_timeouts.append(budget)
+            clock[0] += budget
+            self.returncode = 0
+            return 0
+
+    process = _BudgetProcess()
+    client = _client(ScriptedTransport(), process)
+    client._capabilities = frozenset({"trace.status", "trace.stop"})
+    client._monitor_stop = Event()
+
+    def request(method: str, params: JsonObject, *, timeout: float) -> JsonObject:
+        del params
+        request_timeouts.append(timeout)
+        clock[0] += timeout
+        if method == "trace.status":
+            return {"recording": True}
+        if method == "debug.state":
+            return {"debugging": True}
+        return {}
+
+    client._request = request  # type: ignore[method-assign]
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: clock[0])
+
+    client.close(timeout=10.0)
+
+    delegated = sum(request_timeouts) + sum(wait_timeouts)
+    assert delegated <= 10.0
+    assert clock[0] <= 10.0
+
+
 def test_memory_regions_and_modules_dump_helpers_dispatch_expected_rpc() -> None:
     client = object.__new__(XdbgClient)
     calls: list[tuple[str, JsonObject, float]] = []
