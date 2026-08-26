@@ -139,6 +139,33 @@ def test_session_close_reports_a_proxy_that_remains_alive(tmp_path: Path) -> Non
     assert service.registry.get(session_id).state.value == "closed"
 
 
+def test_session_close_reports_an_unexpected_proxy_cleanup_failure(tmp_path: Path) -> None:
+    """An untyped teardown exception must not become a clean session close."""
+
+    class _ExplodingProxy:
+        def stop(self, session_id: str) -> None:
+            del session_id
+            raise RuntimeError("proxy event loop corrupted")
+
+        def close_all(self) -> None:
+            return None
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    service._proxy_backend = _ExplodingProxy()  # type: ignore[assignment]
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+
+    closed = service.close_session(session_id)
+
+    assert closed.ok is False
+    assert closed.error is not None
+    assert closed.error.code == "proxy_cleanup_failed"
+    assert closed.error.details["backend"] == "proxy"
+    assert closed.error.details["state"] == "closed"
+
+
 def test_close_all_returns_a_failure_when_proxy_bulk_shutdown_times_out(
     tmp_path: Path,
 ) -> None:
