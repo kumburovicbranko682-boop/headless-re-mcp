@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -719,6 +720,7 @@ class ExtAnalysisMixin(UiDriveMixin):
         # 5 MB, because every page re-read the whole file. A 2 GB dump would
         # simply not fit.
         with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
             stream.seek(offset)
             data = stream.read(limit)
         return _success(
@@ -726,7 +728,7 @@ class ExtAnalysisMixin(UiDriveMixin):
                 "artifact_id": artifact_id,
                 "offset": offset,
                 "limit": limit,
-                "size": path.stat().st_size,
+                "size": size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
