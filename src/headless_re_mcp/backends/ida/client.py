@@ -30,6 +30,7 @@ JsonObject = dict[str, Any]
 # Bounded analysis plus PE load should finish well under this.
 _MAX_IDA_STARTUP_SECONDS = 240.0
 _MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
+_MAX_RPC_LINE_CHARS = 8 * 1024 * 1024
 
 
 def next_receive_deadline(
@@ -268,8 +269,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def _read_stdout(self, stream: TextIO) -> None:
         try:
-            for line in stream:
-                stripped = line.rstrip("\r\n")
+            while True:
+                stripped = read_bounded_text_line(
+                    stream,
+                    max_chars=_MAX_RPC_LINE_CHARS,
+                )
+                if stripped is None:
+                    break
                 try:
                     payload = json.loads(stripped)
                 except json.JSONDecodeError:
