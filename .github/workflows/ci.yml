@@ -99,6 +99,10 @@ jobs:
         working-directory: webui
         run: npm ci
 
+      - name: Dependency audit
+        working-directory: webui
+        run: npm audit --audit-level=high
+
       - name: Typecheck
         working-directory: webui
         run: npm run typecheck
