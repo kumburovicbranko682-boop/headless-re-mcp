@@ -437,6 +437,7 @@ class DynamicInspectMixin:
         try:
             if not session_id or Path(session_id).name != session_id:
                 raise ValueError("invalid session id for artifact path")
+            self.registry.get(session_id)
             directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
             directory.mkdir(parents=True, exist_ok=True)
             # Checked before writing, the way trace.start does. Nothing prunes
@@ -456,7 +457,7 @@ class DynamicInspectMixin:
                         "artifact_root": str(self.settings.artifact_root),
                     },
                 )
-            output_path = directory / f"dumped-module-{base:x}-{uuid4().hex}.bin"
+            output_path = (directory / f"dumped-module-{base:x}-{uuid4().hex}.bin").resolve()
             params: JsonObject = {
                 "base": base,
                 "output_path": str(output_path),
@@ -499,18 +500,42 @@ class DynamicInspectMixin:
                             retryable=True,
                         )
             data = dict(dumped)
-            resolved = Path(str(data.get("output_path", output_path)))
-            if not resolved.is_file():
+            returned_path = data.get("output_path", output_path)
+            try:
+                resolved = Path(str(returned_path)).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "modules.dump returned an invalid artifact path",
+                ) from exc
+            if resolved != output_path:
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "modules.dump returned an artifact outside its requested path",
+                    details={"expected": str(output_path), "actual": str(returned_path)},
+                )
+            if not output_path.is_file():
                 return Result[JsonObject](
                     ok=False,
                     error=RpcError(
                         code="artifact_missing",
                         message="modules.dump did not produce the expected artifact file",
-                        details={"output_path": str(resolved)},
+                        details={"output_path": str(output_path)},
                     ),
                 )
-            data["output_path"] = str(resolved)
-            data["sha256"] = file_sha256(resolved)
+            actual_size = output_path.stat().st_size
+            if actual_size > wanted:
+                raise XdbgRpcError(
+                    "dump_too_large",
+                    "modules.dump produced an artifact larger than requested",
+                    details={
+                        "actual_bytes": actual_size,
+                        "max_dump_bytes": wanted,
+                    },
+                )
+            data["output_path"] = str(output_path)
+            data["actual_size"] = actual_size
+            data["sha256"] = file_sha256(output_path)
             data["artifact_kind"] = "module_dump"
             data["stage_label"] = STAGE_DUMPED
             data["stage_note"] = (
@@ -567,6 +592,7 @@ class DynamicInspectMixin:
             if save_artifact:
                 if not session_id or Path(session_id).name != session_id:
                     raise ValueError("invalid session id for artifact path")
+                self.registry.get(session_id)
                 directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
                 directory.mkdir(parents=True, exist_ok=True)
                 header_path = directory / f"pe-headers-{base:x}-{uuid4().hex}.bin"
