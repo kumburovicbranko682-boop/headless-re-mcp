@@ -28,6 +28,9 @@ _REPLAY_WAIT_S = 15.0
 # request or response. Two thousand of those is the overnight OOM the count
 # cap was supposed to prevent.
 _MAX_STORED_BODY = 2 * 1024 * 1024
+_MAX_RETAINED_BYTES = 64 * 1024 * 1024
+_MAX_URL_BYTES = 16 * 1024
+_MAX_METADATA_BYTES = 1024
 _OMITTED_BODY = object()
 
 
@@ -126,10 +129,51 @@ def _content_len(part: Any) -> int:
         return 0
 
 
+def _encoded_len(value: object) -> int:
+    try:
+        return len(str(value).encode("utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001
+        return _MAX_STORED_BODY + 1
+
+
+def _headers_len(part: Any) -> int:
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return 0
+    try:
+        try:
+            items = headers.items(multi=True)
+        except TypeError:
+            items = headers.items()
+        total = 0
+        for key, value in items:
+            total += _encoded_len(key) + _encoded_len(value)
+            if total > _MAX_STORED_BODY:
+                break
+        return total
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _flow_stored_bytes(flow: Any) -> int:
-    return _content_len(getattr(flow, "request", None)) + _content_len(
-        getattr(flow, "response", None)
-    )
+    request = getattr(flow, "request", None)
+    response = getattr(flow, "response", None)
+    total = _content_len(request) + _content_len(response)
+    for value in (
+        getattr(request, "method", ""),
+        getattr(request, "pretty_url", ""),
+        getattr(request, "host", ""),
+    ):
+        total += _encoded_len(value)
+    return total + _headers_len(request) + _headers_len(response)
+
+
+def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    payload = text.encode("utf-8", errors="replace")
+    if len(payload) <= max_bytes:
+        return text, False
+    return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
 class _FlowRecorder:
@@ -147,31 +191,67 @@ class _FlowRecorder:
         self.flows: deque[JsonObject] = deque(maxlen=self._capacity)
         self._seq = 0
         self._raw: OrderedDict[str, Any] = OrderedDict()
+        self._raw_sizes: dict[str, int] = {}
+        self._retained_bytes = 0
         self._lock = threading.RLock()
+
+    def _omit_retained(self, flow_id: str) -> None:
+        retained = self._raw.get(flow_id)
+        if retained is None or retained is _OMITTED_BODY:
+            return
+        self._raw[flow_id] = _OMITTED_BODY
+        self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
+        for summary in reversed(self.flows):
+            if summary.get("id") == flow_id:
+                summary["body_omitted"] = True
+                break
 
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
         req = flow.request
         resp = flow.response
-        omitted = _flow_stored_bytes(flow) > _MAX_STORED_BODY
+        stored_bytes = _flow_stored_bytes(flow)
+        omitted = stored_bytes > _MAX_STORED_BODY
+        method, method_truncated = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
+        url, url_truncated = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
+        host, host_truncated = _bounded_metadata(req.host, _MAX_METADATA_BYTES)
+        content_type, type_truncated = _bounded_metadata(
+            resp.headers.get("content-type", "") if resp else "",
+            _MAX_METADATA_BYTES,
+        )
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
+            self._raw.pop(flow_id, None)
+            self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
+            if not omitted:
+                for retained_id, retained in list(self._raw.items()):
+                    if self._retained_bytes + stored_bytes <= _MAX_RETAINED_BYTES:
+                        break
+                    if retained is not _OMITTED_BODY:
+                        self._omit_retained(retained_id)
+                omitted = self._retained_bytes + stored_bytes > _MAX_RETAINED_BYTES
             self._raw[flow_id] = _OMITTED_BODY if omitted else flow
+            if not omitted:
+                self._raw_sizes[flow_id] = stored_bytes
+                self._retained_bytes += stored_bytes
             # Evict oldest raw flows in lockstep with the summary ring so the
             # two views can never disagree about which flows are retrievable.
             while len(self._raw) > self._capacity:
-                self._raw.popitem(last=False)
+                evicted_id, _ = self._raw.popitem(last=False)
+                self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
-                "method": req.method,
-                "url": req.pretty_url,
-                "host": req.host,
+                "method": method,
+                "url": url,
+                "host": host,
                 "status": getattr(resp, "status_code", None),
-                "content_type": resp.headers.get("content-type", "") if resp else "",
+                "content_type": content_type,
             }
             if omitted:
                 entry["body_omitted"] = True
+            if method_truncated or url_truncated or host_truncated or type_truncated:
+                entry["metadata_truncated"] = True
             self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:
@@ -185,6 +265,10 @@ class _FlowRecorder:
     def count(self) -> int:
         with self._lock:
             return len(self.flows)
+
+    def retained_bytes(self) -> int:
+        with self._lock:
+            return self._retained_bytes
 
 
 class _ProxyInstance:
@@ -370,6 +454,8 @@ class ProxyBackend:
             "port": inst.port,
             "flow_count": inst.recorder.count(),
             "retained_max": _MAX_FLOWS,
+            "retained_bytes": inst.recorder.retained_bytes(),
+            "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
 
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
