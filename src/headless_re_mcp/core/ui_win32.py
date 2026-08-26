@@ -95,7 +95,7 @@ _INVOKE_WHITELIST: dict[str, int] = {
 def _user32() -> Any:
     if os.name != "nt":
         raise UiPidBoundaryError(
-            "capability_unavailable",
+            "unsupported_on_platform",
             "Win32 UI automation requires Windows",
         )
     return ctypes.windll.user32

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 
@@ -302,9 +303,10 @@ def test_doctor_reports_xvlkc_and_vmp_missing(tmp_path: Path) -> None:
     report = service.doctor().data
     assert report is not None
     probes = {item["name"]: item for item in report["probes"]}
-    assert probes["xvlkc"]["status"] == "missing"
-    assert probes["vmp_dumper"]["status"] == "missing"
-    assert probes["scylla"]["status"] == "missing"
+    expected = "missing" if os.name == "nt" else "unsupported_on_platform"
+    assert probes["xvlkc"]["status"] == expected
+    assert probes["vmp_dumper"]["status"] == expected
+    assert probes["scylla"]["status"] == expected
 
 
 def test_unpack_scylla_unavailable_when_unset(tmp_path: Path) -> None:

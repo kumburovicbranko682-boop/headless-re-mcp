@@ -660,10 +660,11 @@ def test_discover_x64dbg_headless_external(tmp_path: Path, monkeypatch: pytest.M
 
 def test_web_setup_ida_writes_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from headless_re_mcp import config as cfgmod
+    from headless_re_mcp.config import ida_library_names
 
     fake_ida = tmp_path / "IDA Professional 9.9"
     fake_ida.mkdir()
-    (fake_ida / "idalib.dll").write_bytes(b"MZ")
+    (fake_ida / ida_library_names()[0]).write_bytes(b"MZ")
     act = fake_ida / "idalib" / "python"
     act.mkdir(parents=True)
     (act / "py-activate-idalib.py").write_text(
@@ -773,7 +774,7 @@ def test_web_pick_file_returns_a_local_path(
         "busy": False,
         "error": None,
     })
-    monkeypatch.setattr(legacy_mod.os, "name", "nt")
+    monkeypatch.setattr(legacy_mod, "is_windows_host", lambda: True)
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"

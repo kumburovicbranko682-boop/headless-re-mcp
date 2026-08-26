@@ -21,11 +21,12 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "status_probe": "x64dbg_headless_binaries",
         "tools": ["dynamic.open", "dynamic.launch", "memory.regions"],
         "summary": "Official x64dbg headless RPC",
+        "platform": "windows",
     },
     {
         "id": "ui.win32",
         "backend": "ui",
-        "status_probe": None,
+        "status_probe": "win32_ui",
         "tools": [
             "ui.windows.list",
             "ui.click",
@@ -38,7 +39,8 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
             "ui.drive_to_event",
         ],
         "summary": "PID-bounded Win32/UIA/OCR/SendInput UI automation (background PostMessage close/click)",
-        "platform": "win32",
+        "platform": "windows",
+        "optional": True,
     },
     {
         "id": "detect.die",
@@ -92,6 +94,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "tools": ["windbg.open_dump", "windbg.threads", "windbg.modules", "windbg.disasm", "windbg.attach", "windbg.live_threads", "windbg.live_modules", "windbg.live_disasm"],
         "summary": "cdb dump analysis + optional user-mode probe",
         "optional": True,
+        "platform": "windows",
     },
     {
         "id": "apk.androguard",

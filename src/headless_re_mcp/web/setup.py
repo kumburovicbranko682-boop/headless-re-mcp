@@ -17,6 +17,7 @@ from headless_re_mcp.config import (
     default_config_path,
     default_data_path,
     discover_x64dbg_headless,
+    find_idalib_library,
     list_ida_install_candidates,
     repo_root,
     update_config_values,
@@ -284,7 +285,11 @@ def _step_probe_runtimes(settings: Settings) -> JsonObject:
         },
         {
             "id": "ida_home",
-            "ok": bool(ida and Path(ida).is_dir() and (Path(ida) / "idalib.dll").is_file()),
+            "ok": bool(
+                ida
+                and Path(ida).is_dir()
+                and find_idalib_library(Path(ida)) is not None
+            ),
             "path": str(ida) if ida else None,
             "packable": False,
             "never_bundle": True,

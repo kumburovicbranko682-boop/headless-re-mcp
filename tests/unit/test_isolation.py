@@ -136,8 +136,8 @@ def test_policy_keeps_windows_paths_intact(tmp_path, monkeypatch) -> None:  # ty
     from headless_re_mcp.config import Settings
     from headless_re_mcp.core import isolation as isolation_mod
 
-    monkeypatch.setattr(isolation_mod.os, "name", "nt")
     base = replace(Settings.load(), artifact_root=tmp_path)
+    monkeypatch.setattr(isolation_mod, "is_windows_host", lambda: True)
     policy = IsolationPolicy.from_settings(
         replace(base, isolation_command=r'pwsh -File "C:\Program Files\vm\revert.ps1"')
     )

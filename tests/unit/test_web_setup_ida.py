@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.config import ida_library_names
 from headless_re_mcp.web import setup as setup_mod
 from headless_re_mcp.web.setup import activate_idalib, configure_ida
 
@@ -21,7 +22,7 @@ def test_failed_idalib_activation_is_not_reported_as_success(
     """
     fake_ida = tmp_path / "IDA Professional 9.9"
     fake_ida.mkdir()
-    (fake_ida / "idalib.dll").write_bytes(b"MZ")
+    (fake_ida / ida_library_names()[0]).write_bytes(b"MZ")
     config_path = tmp_path / "user-config.json"
 
     monkeypatch.setattr(
@@ -49,7 +50,7 @@ def test_skipping_activation_still_reports_the_saved_path(
     """Saving the path without activating is a real success."""
     fake_ida = tmp_path / "IDA Professional 9.9"
     fake_ida.mkdir()
-    (fake_ida / "idalib.dll").write_bytes(b"MZ")
+    (fake_ida / ida_library_names()[0]).write_bytes(b"MZ")
     config_path = tmp_path / "user-config.json"
     monkeypatch.setattr(
         setup_mod,
@@ -111,7 +112,7 @@ def test_activation_timeout_kills_the_process_the_script_started(
     fake_ida = tmp_path / "IDA Professional 9.9"
     script_dir = fake_ida / "idalib" / "python"
     script_dir.mkdir(parents=True)
-    (fake_ida / "idalib.dll").write_bytes(b"MZ")
+    (fake_ida / ida_library_names()[0]).write_bytes(b"MZ")
     (script_dir / "py-activate-idalib.py").write_text(_LAUNCHER, encoding="utf-8")
 
     started = time.monotonic()

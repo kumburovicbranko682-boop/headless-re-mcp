@@ -28,7 +28,7 @@ def uia_available() -> bool:
 def _require_uia() -> Any:
     if os.name != "nt":
         raise UiPidBoundaryError(
-            "capability_unavailable",
+            "unsupported_on_platform",
             "UI Automation requires Windows",
         )
     try:

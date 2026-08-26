@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -285,6 +286,7 @@ def test_a_clean_exit_still_leaves_nothing_to_terminate() -> None:
     assert child.terminated is False, "a child that exited is not terminated again"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object lifecycle")
 def test_a_real_child_is_tied_to_this_process_and_a_fake_one_is_not() -> None:
     """Force-killing the supervisor has to take the server with it.
 

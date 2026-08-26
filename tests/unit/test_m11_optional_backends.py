@@ -9,7 +9,12 @@ import pytest
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus
+from headless_re_mcp.doctor import (
+    WINDOWS_REQUIRED_PROBES,
+    DoctorReport,
+    Probe,
+    ProbeStatus,
+)
 
 
 def test_r2_rejects_non_whitelisted_command(tmp_path: Path) -> None:
@@ -70,6 +75,7 @@ def test_settings_exposes_cdb_and_kernel_flag(
 def test_doctor_ready_ignores_optional_backend_missing() -> None:
     report = DoctorReport(
         probes=(
+            Probe("platform", ProbeStatus.READY, "ok"),
             Probe("python", ProbeStatus.READY, "ok"),
             Probe("ida_idalib", ProbeStatus.READY, "ok"),
             Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ok"),
@@ -79,7 +85,8 @@ def test_doctor_ready_ignores_optional_backend_missing() -> None:
             Probe("ghidra", ProbeStatus.MISSING, "missing"),
             Probe("frida", ProbeStatus.MISSING, "missing"),
             Probe("windbg", ProbeStatus.MISSING, "missing"),
-        )
+        ),
+        required_probes=WINDOWS_REQUIRED_PROBES,
     )
     assert report.ready is True
 

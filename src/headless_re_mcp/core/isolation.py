@@ -14,7 +14,6 @@ one outcome that produces cross-contaminated results nobody can spot later.
 
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
 import time
@@ -24,6 +23,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.platform_support import is_windows_host
 from headless_re_mcp.telemetry import record_alert
 
 JsonObject = dict[str, Any]
@@ -40,7 +40,7 @@ def _split_command(raw: str) -> tuple[str, ...]:
     quote characters. Protect backslashes, split the POSIX way so quotes
     still group arguments, then put the slashes back.
     """
-    if os.name != "nt":
+    if not is_windows_host():
         return tuple(shlex.split(raw))
     if _NUL in raw:
         raise ValueError("isolation command must not contain NUL")

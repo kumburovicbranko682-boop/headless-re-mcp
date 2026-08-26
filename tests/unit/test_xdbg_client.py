@@ -304,7 +304,9 @@ def test_one_call_spends_its_timeout_once_not_once_per_io() -> None:
     assert client._request("debug.state", {}, timeout=2.0) == {"request_id": "1"}
 
     assert len(transport.grants) == 3, "write, length read and body read"
-    assert transport.grants[0] == pytest.approx(2.0)
+    # Starting the shared monotonic deadline necessarily spends a few
+    # microseconds before the first I/O receives its remaining budget.
+    assert 1.99 < transport.grants[0] <= 2.0
     assert transport.grants[1] < 1.95, "the read must inherit what the write left"
     assert transport.grants[2] <= transport.grants[1], "the budget only shrinks"
 
@@ -733,7 +735,12 @@ def test_named_pipe_timeout_does_not_wait_forever_after_cancel(
             del handle, overlapped
             return 0
 
-    monkeypatch.setattr(client_module.ctypes, "get_last_error", lambda: 997)
+    monkeypatch.setattr(
+        client_module.ctypes,
+        "get_last_error",
+        lambda: 997,
+        raising=False,
+    )
 
     transport = client_module._NamedPipeTransport.__new__(
         client_module._NamedPipeTransport

@@ -291,6 +291,7 @@ def run_one_click_setup(
 
     steps: list[JsonObject] = []
     settings = Settings.load()
+    on_windows = os.name == "nt"
     release_paths = (
         settings.x64dbg_headless_x64,
         settings.x64dbg_headless_x86,
@@ -301,7 +302,7 @@ def run_one_click_setup(
         settings.net_reactor_slayer,
     )
     release_incomplete = any(path is None or not path.is_file() for path in release_paths)
-    if download_release and release_incomplete:
+    if download_release and release_incomplete and on_windows:
         downloaded = download_dependency_release(dependencies_dir)
         steps.append({"step": "download_release", **downloaded})
         extracted = extract_dependency_release(
@@ -310,13 +311,25 @@ def run_one_click_setup(
         steps.append({"step": "extract_release", **extracted})
         configured = configure_dependency_bundle(Path(str(extracted["root"])))
         steps.append({"step": "configure_release", **configured})
+    elif download_release and not on_windows:
+        steps.append(
+            {
+                "step": "windows_dependency_release",
+                "ok": True,
+                "status": "unsupported_on_platform",
+                "message": (
+                    "Skipped the Windows x64dbg/cdb dependency bundle; "
+                    "Linux uses portable backends installed separately."
+                ),
+            }
+        )
 
     selected_ida = (
         ida_home.expanduser().resolve()
         if ida_home is not None
         else settings.ida_home or discover_ida_home()
     )
-    if selected_ida is None and not non_interactive:
+    if selected_ida is None and not non_interactive and on_windows:
         selected_ida = _prompt_ida_path()
     ida_result: JsonObject
     if selected_ida is not None:
@@ -330,9 +343,13 @@ def run_one_click_setup(
             raise InstallError(f"IDA configuration failed: {ida_result}")
     else:
         ida_result = {
-            "ok": False,
+            "ok": not on_windows,
             "code": "ida_not_configured",
-            "message": "Install licensed IDA 9.x and rerun python setup.py --ida-home PATH",
+            "status": "required" if on_windows else "optional",
+            "message": (
+                "IDA is not configured; install licensed IDA 9.x and rerun "
+                "python setup.py --ida-home PATH to enable static.idalib"
+            ),
             "never_bundled": True,
         }
     steps.append({"step": "configure_ida", **ida_result})
@@ -370,6 +387,7 @@ def run_one_click_setup(
     return {
         "ok": doctor.ready,
         "configured": True,
+        "platform": "windows" if on_windows else "linux",
         "config_path": str(default_config_path()),
         "ida_configured": selected_ida is not None,
         "doctor_ready": doctor.ready,
@@ -385,7 +403,12 @@ def print_setup_summary(result: JsonObject) -> None:
             print(f"  [{'OK' if step.get('ok') else 'WARN'}] {step.get('step')}", flush=True)
     print(f"doctor.ready = {result.get('doctor_ready')}", flush=True)
     if not result.get("ida_configured"):
-        print("IDA 尚未配置；安装授权 IDA 后重跑：python setup.py --ida-home <目录>", flush=True)
+        qualifier = "Windows 必需" if result.get("platform") == "windows" else "Linux 可选"
+        print(
+            f"IDA 尚未配置（{qualifier}）；安装授权 IDA 后重跑："
+            "python setup.py --ida-home <目录>",
+            flush=True,
+        )
     print("启动 Web：python start_web.py", flush=True)
     print("启动 MCP：python -m headless_re_mcp serve", flush=True)
     print("==============================", flush=True)

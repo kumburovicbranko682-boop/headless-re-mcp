@@ -288,7 +288,7 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     """
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=5.0)
+    terminate_process_tree(process, wait_s=5.0, kill_group=os.name != "nt")
 
 
 def _capture_process(

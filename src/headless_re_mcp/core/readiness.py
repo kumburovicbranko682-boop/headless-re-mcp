@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from headless_re_mcp import __version__
+from headless_re_mcp.platform_support import runtime_platform_report
 
 JsonObject = dict[str, Any]
 
@@ -48,10 +49,15 @@ def build_info() -> JsonObject:
     read from git: an installed package has no work tree, and a probe endpoint
     must not fork a process to answer.
     """
+    platform_info = runtime_platform_report()
     return {
         "version": __version__,
         "commit": os.environ.get("HEADLESS_RE_BUILD_COMMIT", "").strip() or UNKNOWN_COMMIT,
         "python": platform.python_version(),
+        "platform": platform_info["name"],
+        "system": platform_info["system"],
+        "machine": platform_info["machine"],
+        "support_level": platform_info["support_level"],
     }
 
 
@@ -137,6 +143,7 @@ def readiness_report(
     return {
         "ready": all(check.ok for check in checks),
         "build": build_info(),
+        "platform": runtime_platform_report(),
         "checks": [check.as_json() for check in checks],
         "sessions": {"open": open_sessions},
         "backends": {

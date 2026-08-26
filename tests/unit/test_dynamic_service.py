@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from collections import deque
 from pathlib import Path
+
+import pytest
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -1566,6 +1569,7 @@ def test_dynamic_state_exposes_debuggee_and_debugger_pids(tmp_path: Path) -> Non
     assert session.metadata.get("debugger_pid") == 7000
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Win32 UI automation requires Windows")
 def test_ui_windows_list_pid_boundary(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

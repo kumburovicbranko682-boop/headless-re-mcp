@@ -271,7 +271,7 @@ def _kill_own_process_group(pid: int) -> list[int]:
     return []
 
 
-def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: bool = False) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
     Killing only the process that was spawned is not enough here. Measured on
@@ -307,6 +307,9 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    if kill_group and os.name != "nt" and isinstance(pid, int):
+        with suppress(Exception):
+            os.killpg(pid, 9)
     return killed
 
 

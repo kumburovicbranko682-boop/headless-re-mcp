@@ -244,6 +244,7 @@ def test_windbg_open_dump_does_not_call_an_omitted_command_list_a_triage_set(
     """
     from dataclasses import replace
 
+    import headless_re_mcp.core.service_ext as service_ext_module
     from headless_re_mcp.config import Settings
     from headless_re_mcp.core.service import AnalysisService
 
@@ -269,6 +270,7 @@ def test_windbg_open_dump_does_not_call_an_omitted_command_list_a_triage_set(
         "headless_re_mcp.core.service_ext.WindbgClient",
         _Client,
     )
+    monkeypatch.setattr(service_ext_module, "is_windows_host", lambda: True)
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
     service = AnalysisService(settings)
     try:

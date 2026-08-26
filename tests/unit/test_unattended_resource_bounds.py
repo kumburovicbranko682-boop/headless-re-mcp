@@ -2122,6 +2122,7 @@ class TestATimeoutBindsWhatTheToolStarted:
 
     def test_capture_process_kills_leftover_children(self) -> None:
         import sys
+        import time
         from contextlib import suppress
 
         from headless_re_mcp.core.process_tree import terminate_pid_tree
@@ -2134,6 +2135,9 @@ class TestATimeoutBindsWhatTheToolStarted:
         )
         child = int(capture.stdout.strip().split()[0])
         try:
+            deadline = time.monotonic() + 5.0
+            while self._alive(child) and time.monotonic() < deadline:
+                time.sleep(0.05)
             assert self._alive(child) is False
         finally:
             with suppress(Exception):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-import os
 import secrets
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -21,6 +20,7 @@ from headless_re_mcp.core.readiness import build_info
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.metrics_exposition import CONTENT_TYPE as EXPOSITION_CONTENT_TYPE
 from headless_re_mcp.metrics_exposition import render as render_exposition
+from headless_re_mcp.platform_support import is_windows_host
 from headless_re_mcp.web.commands import WebCommandAdapter
 from headless_re_mcp.web.deps import build_deps_snapshot
 from headless_re_mcp.web.monitor import build_monitor_snapshot
@@ -502,7 +502,7 @@ def register_legacy_routes(
         _require_token(authorization, token_q)
         from headless_re_mcp.core.windows import pick_open_file_status
 
-        if os.name != "nt":
+        if not is_windows_host():
             return JSONResponse(
                 {
                     "ok": True,

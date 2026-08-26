@@ -10,6 +10,12 @@ readme = "README.md"
 license = "GPL-3.0-only"
 requires-python = ">=3.11"
 authors = [{ name = "Headless RE-MCP contributors" }]
+classifiers = [
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "mcp>=1.26.0,<2",
   "pydantic>=2.10",
@@ -27,7 +33,9 @@ android = ["adbutils>=2.12", "androguard>=4.1", "frida>=16.5"]
 browser = ["playwright>=1.40"]
 # HTTP(S) interception shared by Web and Android workflows.
 proxy = ["mitmproxy>=11"]
-test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0"]
+# Starlette's TestClient prefers the maintained httpx2 fork. Plain httpx is
+# retained by the web extra for production callers, but is deprecated here.
+test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0", "httpx2>=2.12"]
 dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14"]
 
 [project.scripts]
@@ -69,6 +77,7 @@ markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
   "visible_desktop: drives real windows, so it cannot run under HEADLESS_RE_HIDDEN_DESKTOP",
+  "windows_only: requires a Windows debugger, UI API, or fixture",
 ]
 
 [tool.coverage.run]
@@ -190,6 +199,27 @@ module = [
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
+
+# Typeshed intentionally omits Win32-only ctypes/msvcrt attributes when mypy
+# runs on Linux. These modules guard those calls with os.name checks; suppress
+# only that platform-stub mismatch so Linux CI can still type-check all other
+# first-party code strictly.
+[[tool.mypy.overrides]]
+module = [
+  "headless_re_mcp.backends.common.subprocess_rpc",
+  "headless_re_mcp.backends.x64dbg.client",
+  "headless_re_mcp.core.desktop_isolation",
+  "headless_re_mcp.core.hidden_desktop",
+  "headless_re_mcp.core.process_tree",
+  "headless_re_mcp.core.ui_sendinput",
+  "headless_re_mcp.core.ui_win32",
+  "headless_re_mcp.core.windows",
+  "headless_re_mcp.detection.exeinfope",
+  "headless_re_mcp.doctor",
+  "headless_re_mcp.process_group",
+  "headless_re_mcp.web.app",
+]
+disable_error_code = ["attr-defined"]
 
 # Ghidra executes this inside its own interpreter, which injects currentProgram,
 # ARGS and the ghidra.* packages. There is nothing here for mypy to resolve, and

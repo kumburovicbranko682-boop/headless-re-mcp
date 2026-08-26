@@ -120,6 +120,17 @@ def _join_readers(threads: tuple[Thread, Thread], timeout: float) -> bool:
     return alive
 
 
+def _terminate_bounded_process(process: subprocess.Popen[bytes]) -> list[int]:
+    """Stop a bounded process, including orphaned POSIX group members.
+
+    A launcher can exit before the deadline while one of its children keeps an
+    inherited stdout/stderr pipe open. Once re-parented, that child no longer
+    appears in the launcher's process tree. POSIX bounded runs therefore start
+    in a dedicated session and kill that process group as a final sweep.
+    """
+    return terminate_process_tree(process, kill_group=os.name != "nt")
+
+
 def run_bounded(
     cmd: list[str],
     *,
@@ -183,12 +194,12 @@ def run_bounded(
         deadline = started + timeout
         while True:
             if stop is not None and stop.is_set():
-                killed = terminate_process_tree(process)
+                killed = _terminate_bounded_process(process)
                 _join_readers(readers, drain_s)
                 raise BoundedCancelled(killed)
             remaining = deadline - monotonic()
             if remaining <= 0:
-                killed = terminate_process_tree(process)
+                killed = _terminate_bounded_process(process)
                 _join_readers(readers, drain_s)
                 raise TimedOut(timeout, killed)
             try:
@@ -212,7 +223,7 @@ def run_bounded(
             )
         if _join_readers(readers, max(0.1, remaining)):
             # Launcher gone with a failure, pipes still open: a child inherited them.
-            killed = terminate_process_tree(process)
+            killed = _terminate_bounded_process(process)
             _join_readers(readers, drain_s)
             raise TimedOut(timeout, killed)
         return Completed(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -224,7 +225,7 @@ class Settings:
             ),
             hidden_desktop=_as_bool(
                 os.environ.get("HEADLESS_RE_HIDDEN_DESKTOP"),
-                data.get("hidden_desktop", True),
+                data.get("hidden_desktop", os.name == "nt"),
             ),
             health_check_interval_s=_as_float(
                 os.environ.get("HEADLESS_RE_HEALTH_CHECK_INTERVAL_S"),
@@ -314,15 +315,43 @@ def default_data_path() -> Path:
     return user_data_path("headless-re-mcp", appauthor=False)
 
 
+def ida_library_names() -> tuple[str, ...]:
+    """Return native idalib filenames for the current host."""
+    if os.name == "nt":
+        return ("idalib.dll",)
+    if sys.platform == "darwin":
+        return ("libidalib.dylib", "idalib.dylib")
+    return ("libidalib.so", "idalib.so")
+
+
+def find_idalib_library(home: Path) -> Path | None:
+    """Find the platform-native idalib runtime directly under an IDA home."""
+    for name in ida_library_names():
+        candidate = home / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_ida_executable(home: Path) -> Path | None:
+    """Find the GUI executable for diagnostics only; workers use idalib."""
+    names = ("ida.exe",) if os.name == "nt" else ("ida", "ida64")
+    for name in names:
+        candidate = home / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def list_ida_install_candidates() -> list[Path]:
-    """Return local IDA 9.x installs that contain ``idalib.dll`` (never from external/)."""
+    """Return local IDA 9.x installs with the host's native idalib runtime."""
     found: list[Path] = []
     seen: set[str] = set()
 
     def _add(path: Path | None) -> None:
         if path is None or not path.is_dir():
             return
-        if not (path / "idalib.dll").is_file():
+        if find_idalib_library(path) is None:
             return
         key = str(path.resolve()).lower()
         if key in seen:
@@ -331,15 +360,26 @@ def list_ida_install_candidates() -> list[Path]:
         found.append(path.resolve())
 
     _add(_ida_config_home())
-    roots = [
-        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),
-        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")),
-    ]
-    for root in roots:
-        for match in root.glob("IDA Professional 9.*"):
-            _add(match)
-        for match in (root / "Hex-Rays").glob("IDA Pro 9.*"):
-            _add(match)
+    if os.name == "nt":
+        roots = [
+            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),
+            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")),
+        ]
+        for root in roots:
+            for match in root.glob("IDA Professional 9.*"):
+                _add(match)
+            for match in (root / "Hex-Rays").glob("IDA Pro 9.*"):
+                _add(match)
+    else:
+        # Linux installs are not registered. Keep discovery bounded to the
+        # conventional system and per-user roots; HEADLESS_RE_IDA_HOME remains
+        # the authoritative path for custom layouts.
+        for root in (Path("/opt"), Path.home()):
+            if not root.is_dir():
+                continue
+            for pattern in ("idapro-*", "ida-*", "IDA-Pro-*"):
+                for match in root.glob(pattern):
+                    _add(match)
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
@@ -360,19 +400,21 @@ def validate_ida_home(path: Path | str) -> dict[str, Any]:
             "message": f"not a directory: {home}",
             "path": str(home),
         }
-    idalib = home / "idalib.dll"
+    idalib = find_idalib_library(home)
+    ida_executable = find_ida_executable(home)
     activation = home / "idalib" / "python" / "py-activate-idalib.py"
     details = {
         "path": str(home),
-        "idalib": str(idalib) if idalib.is_file() else None,
-        "ida_exe": str(home / "ida.exe") if (home / "ida.exe").is_file() else None,
+        "idalib": str(idalib) if idalib is not None else None,
+        "ida_exe": str(ida_executable) if ida_executable is not None else None,
         "activation_script": str(activation) if activation.is_file() else None,
+        "expected_idalib_names": list(ida_library_names()),
     }
-    if not idalib.is_file():
+    if idalib is None:
         return {
             "ok": False,
             "code": "idalib_missing",
-            "message": "idalib.dll not found under this path",
+            "message": "platform-native idalib library not found under this path",
             **details,
         }
     return {"ok": True, "code": "ok", "message": "IDA install looks usable", **details}
@@ -451,6 +493,8 @@ def discover_x64dbg_headless(architecture: str) -> Path | None:
 
 
 def _ida_config_home() -> Path | None:
+    if os.name != "nt":
+        return None
     appdata = os.environ.get("APPDATA")
     if not appdata:
         return None
@@ -459,7 +503,7 @@ def _ida_config_home() -> Path | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
         value = raw.get("Paths", {}).get("ida-install-dir")
         result = _optional_path(value)
-        if result is not None and (result / "idalib.dll").is_file():
+        if result is not None and find_idalib_library(result) is not None:
             return result
     except (OSError, ValueError, TypeError):
         pass
