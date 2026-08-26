@@ -208,6 +208,44 @@ def test_process_capture_timeout_kills_child(monkeypatch: pytest.MonkeyPatch) ->
     assert caught.value.code == UpxErrorCode.TIMEOUT
 
 
+def test_process_capture_reader_joins_share_one_drain_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two stuck pipe readers must not add four seconds after timeout."""
+    process = _FakeProcess(b"", hangs=True)
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _StuckReader:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    monkeypatch.setattr(upx_adapter.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(upx_adapter, "Thread", _StuckReader)
+    monkeypatch.setattr(upx_adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        upx_adapter,
+        "sleep",
+        lambda delay: clock.__setitem__(0, clock[0] + delay),
+    )
+    monkeypatch.setattr(upx_adapter, "_terminate_process", lambda child: child.kill())
+
+    with pytest.raises(UpxTimeoutError):
+        upx_adapter._capture_process(["fake-upx"], timeout=0.1, max_output_size=32)
+
+    assert len(join_timeouts) == 2
+    assert sum(join_timeouts) <= 2.0
+    assert clock[0] <= 2.1
+
+
 def test_process_capture_enforces_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _FakeProcess(b"x" * 64)
     monkeypatch.setattr(upx_adapter.subprocess, "Popen", lambda *args, **kwargs: process)
