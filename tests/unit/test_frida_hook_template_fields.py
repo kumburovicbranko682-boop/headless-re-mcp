@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import time
 from pathlib import Path
 
 import pytest
@@ -125,3 +126,39 @@ def test_frida_device_hook_template_does_not_hide_a_failed_detach() -> None:
 
     assert caught.value.code == "frida_detach_failed"
     assert caught.value.details["pid"] == 23
+
+
+def test_frida_device_hook_timeout_does_not_hide_a_failed_detach() -> None:
+    """A timed-out device hook must disclose its one retained session."""
+    detach_attempts: list[int] = []
+
+    class _Script:
+        def load(self) -> None:
+            time.sleep(1)
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            detach_attempts.append(1)
+            raise RuntimeError("detach refused")
+
+    class _Device:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device(None, 31, "noop", allowed_pids={31}, timeout=0.1)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 31
+    assert caught.value.details["detach_error"] == "RuntimeError: detach refused"
+    assert detach_attempts == [1]
