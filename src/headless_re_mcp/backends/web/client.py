@@ -500,9 +500,9 @@ class WebBackend:
                 # what still holds Chromium; killing it is the only close that
                 # works from here.
                 _reap_web_session(handle)
-            runner.shutdown()
             if cleanup_error is not None:
                 raise cleanup_error
+            runner.shutdown()
             return {"closed": True, "clean": clean}
         except BaseException:
             # Cleanup did not finish. Keep the sole handle available for a later
