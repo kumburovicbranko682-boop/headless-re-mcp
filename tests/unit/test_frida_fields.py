@@ -79,6 +79,26 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
 
+
+def test_frida_modules_does_not_hide_a_failed_detach() -> None:
+    """A returned module page must not conceal its still-attached session."""
+
+    class _LeakedSession(_Session):
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid: _LeakedSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(9, allowed_pid=9)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 9
+
+
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:
         return {
