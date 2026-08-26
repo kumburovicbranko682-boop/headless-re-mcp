@@ -133,6 +133,22 @@ def test_a_wrong_token_is_rejected_like_a_missing_one(tmp_path: Path) -> None:
     assert client.get("/api/sessions").status_code == 401
 
 
+def test_a_forged_bootstrap_cookie_does_not_authenticate(tmp_path: Path) -> None:
+    """The cookie shortcut only accepts values the server actually issued.
+
+    A valid ?token= mints an HttpOnly bootstrap cookie that later /api calls
+    ride, so a client-supplied cookie value that was never issued must be
+    ignored rather than promoted to an Authorization header.
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+
+    client.cookies.set("headless_re_bootstrap", "forged-cookie-value-0123456789")
+    assert client.get("/api/sessions").status_code == 401
+
+
 def _get_off_loopback(
     app: object, client_addr: tuple[str, int], path: str, headers: dict[str, str] | None = None
 ) -> httpx.Response:
