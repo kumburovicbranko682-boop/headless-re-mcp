@@ -46,6 +46,9 @@ _MAX_DISPATCH_TIMEOUT_MS = 30_000
 _RECONNECT_TIMEOUT_SECONDS = 30.0
 _TERMINATE_LOCK_TIMEOUT_SECONDS = 2.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
+# A progress-bearing window title can change every monitor tick. Keep enough
+# distinct sightings for gate diagnostics without retaining a session-long log.
+_MAX_OBSERVED_WINDOWS = 128
 
 
 class XdbgRpcError(RuntimeError):
@@ -369,6 +372,7 @@ class XdbgClient:
         self._window_lock = Lock()
         self._monitor_stop = Event()
         self._observed_windows: set[str] = set()
+        self._observed_windows_dropped = 0
         self._stdout_log: deque[str] = deque(maxlen=200)
         self._stderr_log: deque[str] = deque(maxlen=200)
         self._request_id = 0
@@ -1246,10 +1250,21 @@ class XdbgClient:
         while not self._monitor_stop.wait(0.05):
             windows = self._describe_analyzer_windows()
             if windows:
-                with self._window_lock:
-                    self._observed_windows.update(windows)
+                self._record_observed_windows(windows)
             if self._desktop is not None:
                 self._suppress_input_desktop_leaks()
+
+    def _record_observed_windows(self, windows: list[str]) -> None:
+        with self._window_lock:
+            for window in windows:
+                if window in self._observed_windows:
+                    continue
+                if len(self._observed_windows) < _MAX_OBSERVED_WINDOWS:
+                    self._observed_windows.add(window)
+                    continue
+                self._observed_windows_dropped = (
+                    getattr(self, "_observed_windows_dropped", 0) + 1
+                )
 
     def _note_debuggee_pid(self, payload: JsonObject) -> None:
         if "process_id" not in payload and "debuggee_pid" not in payload:
@@ -1289,8 +1304,7 @@ class XdbgClient:
         windows = self._describe_analyzer_windows()
         if not windows:
             return
-        with self._window_lock:
-            self._observed_windows.update(windows)
+        self._record_observed_windows(windows)
         raise XdbgRpcError(
             "analyzer_window_detected",
             "x64dbg has a top-level analyzer window open",
@@ -1366,4 +1380,6 @@ class XdbgClient:
             "stdout": list(self._stdout_log),
             "stderr": list(self._stderr_log),
             "analyzer_windows": list(self.analyzer_windows),
+            "analyzer_window_capacity": _MAX_OBSERVED_WINDOWS,
+            "analyzer_windows_dropped": getattr(self, "_observed_windows_dropped", 0),
         }
