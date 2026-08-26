@@ -118,3 +118,36 @@ def test_close_all_returns_a_failure_when_proxy_bulk_shutdown_times_out(
             },
         }
     ]
+
+
+def test_proxy_close_all_continues_after_an_unexpected_stop_error() -> None:
+    """One broken instance must not prevent later listeners from stopping.
+
+    Measured with two tracked instances: the first raised ``RuntimeError`` and
+    the second received zero stop attempts, leaving both entries tracked.
+    """
+
+    class _Broken:
+        def stop(self) -> None:
+            raise RuntimeError("unexpected teardown failure")
+
+    class _Healthy:
+        def __init__(self) -> None:
+            self.stops = 0
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    broken = _Broken()
+    healthy = _Healthy()
+    backend = ProxyBackend()
+    backend._instances = {  # type: ignore[assignment]
+        "broken": broken,
+        "healthy": healthy,
+    }
+
+    with pytest.raises(RuntimeError, match="unexpected teardown failure"):
+        backend.close_all()
+
+    assert healthy.stops == 1
+    assert backend._instances == {"broken": broken}
