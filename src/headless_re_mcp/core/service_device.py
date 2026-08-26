@@ -8,7 +8,7 @@ operations; there is no raw-shell passthrough by design.
 from __future__ import annotations
 
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -31,6 +31,20 @@ JsonObject = dict[str, Any]
 # session_id. Retention therefore never sees them. Measured: 80 screenshots of
 # 256 KiB left 20.0 MiB that nothing could reclaim.
 _MAX_DEVICE_ARTIFACTS = 32
+
+
+def _safe_pull_suffix(remote_path: str) -> str:
+    """Keep a short portable extension, never a local path or NTFS stream."""
+    suffix = PurePosixPath(remote_path).suffix
+    extension = suffix[1:]
+    if (
+        suffix.startswith(".")
+        and 1 <= len(extension) <= 16
+        and extension.isascii()
+        and extension.isalnum()
+    ):
+        return suffix
+    return ".bin"
 
 
 def prune_device_artifacts(directory: Path, *, keep: int = _MAX_DEVICE_ARTIFACTS) -> None:
@@ -197,7 +211,7 @@ class DeviceAnalysisMixin:
         return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
-        out = self._device_artifact_path("pull", Path(remote_path).suffix or ".bin")
+        out = self._device_artifact_path("pull", _safe_pull_suffix(remote_path))
         result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
         if result.ok:
             oversized = refuse_oversized_device_file(out)
