@@ -203,21 +203,26 @@ class GhidraClient:
                 stderr=stderr[:2000],
             )
         try:
-            size = int(out_path.stat().st_size)
+            with out_path.open("rb") as stream:
+                encoded = stream.read(_MAX_EXPORT_BYTES + 1)
         except OSError as exc:
             raise GhidraError("backend_error", f"export JSON unreadable: {exc}") from exc
-        if size > _MAX_EXPORT_BYTES:
+        if len(encoded) > _MAX_EXPORT_BYTES:
             raise GhidraError(
                 "too_large",
                 "export JSON exceeds cap",
                 path=str(out_path),
-                size=size,
+                size_at_least=len(encoded),
                 cap=_MAX_EXPORT_BYTES,
             )
         try:
-            payload = json.loads(out_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
+            payload = json.loads(encoded.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise GhidraError(
+                "backend_error",
+                "export JSON invalid",
+                error=f"{type(exc).__name__}: {exc}",
+            ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
