@@ -698,9 +698,21 @@ class WebBackend:
     def close_all(self) -> None:
         with self._lock:
             session_ids = list(self._sessions)
+        first_error: WebError | None = None
         for session_id in session_ids:
-            with contextlib.suppress(WebError):
-                self.close(session_id)
+            try:
+                cleanup = self.close(session_id)
+                if cleanup.get("clean") is False and first_error is None:
+                    first_error = WebError(
+                        "web_cleanup_incomplete",
+                        "browser driver stopped but its runner thread remains wedged",
+                        session_id=session_id,
+                    )
+            except WebError as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
 
 def _safe_title(page: Any) -> str:
