@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from headless_re_mcp.config import (
     Settings,
@@ -151,8 +152,7 @@ def download_dependency_release(
     attempts: list[JsonObject] = []
     candidates = urls or [str(item) for item in release["download_urls"]]
     for index, url in enumerate(candidates, start=1):
-        partial = archive.with_suffix(f".zip.part-{os.getpid()}")
-        partial.unlink(missing_ok=True)
+        partial = archive.with_name(f".{archive.name}.part-{os.getpid()}-{uuid4().hex}")
         print(f"  下载依赖包（源 {index}/{len(candidates)}）：{url}", flush=True)
         try:
             _download_one(url, partial, expected_size=expected_size)

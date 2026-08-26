@@ -57,9 +57,11 @@ def test_download_uses_mirror_then_sha_verifies(
     source, release = _bundle_zip(tmp_path / "source.zip")
     monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
     calls: list[str] = []
+    partials: list[Path] = []
 
     def fake_download(url: str, destination: Path, *, expected_size: int) -> None:
         calls.append(url)
+        partials.append(destination)
         assert expected_size == source.stat().st_size
         if len(calls) == 1:
             raise OSError("primary unavailable")
@@ -72,6 +74,9 @@ def test_download_uses_mirror_then_sha_verifies(
     assert result["source"] == release["download_urls"][1]
     assert len(result["attempts"]) == 1
     assert Path(result["archive"]).read_bytes() == source.read_bytes()
+    assert len(set(partials)) == 2
+    assert all(path.parent == target.resolve() for path in partials)
+    assert not list(target.glob(f".{source.name}.part-*"))
 
 
 def test_extract_and_configure_validated_bundle(
