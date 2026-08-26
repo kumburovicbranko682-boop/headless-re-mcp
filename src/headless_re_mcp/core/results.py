@@ -80,7 +80,7 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             code=exc.code,
             message=exc.message,
             details={**details, **exc.details},
-            retryable=exc.code == "timeout",
+            retryable=exc.code in {"timeout", "web_cleanup_failed"},
         )
     elif isinstance(exc, AdbError):
         error = RpcError(
