@@ -17,7 +17,11 @@ from typing import Any, cast
 import pytest
 
 import headless_re_mcp.core.store.timeline as timeline_module
-from headless_re_mcp.core.store.timeline import append_session_timeline, list_session_timeline
+from headless_re_mcp.core.store.timeline import (
+    append_session_timeline,
+    list_session_timeline,
+    session_timeline_path,
+)
 
 
 def test_a_timeline_that_cannot_be_written_does_not_fail_the_call(
@@ -44,6 +48,22 @@ def test_a_timeline_that_cannot_be_written_does_not_fail_the_call(
     assert "No space left" in str(entry["write_failed"]), "and is told it was not stored"
 
 
+@pytest.mark.parametrize("session_id", ["", ".", "..", "../outside", "nested/session"])
+def test_session_timeline_path_rejects_non_child_session_ids(
+    tmp_path: Path,
+    session_id: str,
+) -> None:
+    root = tmp_path / "artifacts"
+    outside = root / "timeline.jsonl"
+    outside.parent.mkdir()
+    outside.write_text('{"event": "private"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="session id"):
+        session_timeline_path(root, session_id)
+
+    assert outside.read_text(encoding="utf-8") == '{"event": "private"}\n'
+
+
 def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> None:
     """Reading counts separators and decodes only the page asked for.
 
@@ -68,6 +88,7 @@ def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> 
     torn = list_session_timeline(path, offset=250, limit=10)
     assert torn["total"] == len(whole) + 1, "an unterminated last line still counts"
     assert torn["events"] == [], "and is skipped rather than breaking the page"
+    assert torn["has_more"] is False, "a malformed last line was still consumed"
 
 
 def test_a_session_that_never_existed_is_not_reported_as_a_quiet_one(
@@ -205,9 +226,7 @@ def test_reading_the_timeline_does_not_collide_with_trimming_it(
 
     def writer(worker: int) -> None:
         while not stop.is_set():
-            entry = append_session_timeline(
-                path, event="probe", message=f"{worker}:" + "x" * 200
-            )
+            entry = append_session_timeline(path, event="probe", message=f"{worker}:" + "x" * 200)
             if "write_failed" in entry:
                 write_failures.append(str(entry["write_failed"]))
 
