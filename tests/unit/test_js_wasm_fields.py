@@ -116,6 +116,30 @@ def test_js_deobfuscate_names_bytes_not_size(tmp_path: Path) -> None:
     assert "Answers with code" in doc
 
 
+def test_js_deobfuscate_applies_inline_limit_to_encoded_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "ééé"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 5)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src)
+
+    assert payload["code"] == "éé"
+    assert payload["bytes"] == 6
+    assert payload["truncated"] is True
+    assert len(str(payload["code"]).encode("utf-8")) <= 5
+
+
 def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog repeated code/truncated and never named bytes.
 

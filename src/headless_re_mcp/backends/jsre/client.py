@@ -95,6 +95,17 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     return stdout, stderr, int(completed.returncode)
 
 
+def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+    payload = text.encode("utf-8", errors="replace")
+    result: JsonObject = {
+        key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
+        "truncated": len(payload) > _MAX_INLINE,
+    }
+    if include_bytes:
+        result["bytes"] = len(payload)
+    return result
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -119,11 +130,7 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return {
-            "code": stdout[:_MAX_INLINE],
-            "truncated": len(stdout) > _MAX_INLINE,
-            "bytes": len(stdout),
-        }
+        return _bounded_output(stdout, "code", include_bytes=True)
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -143,9 +150,7 @@ class JsClient:
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )
-        files, file_count, listed_more = _capped_file_listing(
-            out_dir, cap=_MAX_COUNTED_FILES
-        )
+        files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
             raise JsReError(
                 "backend_error",
@@ -192,11 +197,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return {
-            "wat": stdout[:_MAX_INLINE],
-            "truncated": len(stdout) > _MAX_INLINE,
-            "bytes": len(stdout),
-        }
+        return _bounded_output(stdout, "wat", include_bytes=True)
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -208,7 +209,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return {"objdump": stdout[:_MAX_INLINE], "truncated": len(stdout) > _MAX_INLINE}
+        return _bounded_output(stdout, "objdump", include_bytes=False)
 
 
 def _discover_webcrack() -> Path | None:
