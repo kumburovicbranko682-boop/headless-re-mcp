@@ -89,3 +89,22 @@ def test_web_bulk_close_continues_after_an_unexpected_error() -> None:
         backend.close_all()
 
     assert attempted == ["broken", "healthy"]
+
+
+def test_web_close_keeps_handle_when_cleanup_throws() -> None:
+    """A failed close must retain the only handle available for a retry."""
+
+    class _BrokenHandle:
+        runner = None
+
+        def close(self) -> None:
+            raise RuntimeError("playwright cleanup failed")
+
+    backend = WebBackend()
+    handle = _BrokenHandle()
+    backend._sessions["session"] = handle  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="playwright cleanup failed"):
+        backend.close("session")
+
+    assert backend._sessions == {"session": handle}
