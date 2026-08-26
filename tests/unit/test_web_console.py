@@ -18,6 +18,7 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web import auth as web_auth
 from headless_re_mcp.web.app import create_app
 from headless_re_mcp.web.auth import load_or_create_web_token
+from headless_re_mcp.web.body_limit import RequestBodyLimitMiddleware
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -109,6 +110,10 @@ def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     app = create_app(service, token="test-token-value-0123456789abcdef", settings=settings)
+    assert any(
+        middleware.cls is RequestBodyLimitMiddleware
+        for middleware in app.user_middleware
+    )
     client = TestClient(app)
 
     denied = client.get("/api/sessions")
@@ -858,10 +863,14 @@ def test_web_pick_file_returns_a_local_path(
     # pathlib try to construct WindowsPath on Linux. Give only this route a
     # Windows-shaped module view instead.
     monkeypatch.setattr(legacy_mod, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setenv(
+        "HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json")
+    )
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"
     client = TestClient(create_app(service, token=token, settings=settings))
+    monkeypatch.setattr(legacy_mod.os, "name", "nt")
     headers = {"Authorization": f"Bearer {token}"}
     picked = client.post("/api/ui/pick-file", headers=headers)
     assert picked.status_code == 200

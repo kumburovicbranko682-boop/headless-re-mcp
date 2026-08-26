@@ -15,6 +15,7 @@ from headless_re_mcp.error_boundary import (
 )
 from headless_re_mcp.telemetry import configure_telemetry_logging
 from headless_re_mcp.web.auth import ensure_web_token
+from headless_re_mcp.web.body_limit import RequestBodyLimitMiddleware
 from headless_re_mcp.web.routes.agent import register_agent_routes
 from headless_re_mcp.web.routes.legacy import register_legacy_routes
 from headless_re_mcp.web.routes.spa import register_spa_fallback
@@ -44,6 +45,7 @@ def create_app(
     COMMAND_CATALOG.write_allowed = bool(cfg.local_full_access)
     install_global_exception_hooks("web")
     app = FastAPI(title="Headless RE-MCP Monitor", docs_url=None, redoc_url=None)
+    app.add_middleware(RequestBodyLimitMiddleware)
     register_fastapi_exception_boundary(app)
     app.state.service = service
     app.state.token = token
