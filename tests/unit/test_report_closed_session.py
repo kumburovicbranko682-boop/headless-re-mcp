@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import struct
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core import service_ext
 from headless_re_mcp.core.service import AnalysisService
 
 
@@ -60,5 +65,39 @@ def test_report_generate_on_a_closed_session_does_not_write(tmp_path: Path) -> N
         assert "closed" in result.error.message
         reports = settings.artifact_root.expanduser().resolve() / "reports" / session_id
         assert not reports.exists()
+    finally:
+        service.close_all()
+
+
+def test_reports_generated_in_the_same_second_use_distinct_artifact_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    fixed = datetime(2026, 8, 26, 4, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        service_ext,
+        "datetime",
+        SimpleNamespace(now=lambda timezone: fixed),
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        first = service.report_generate(session_id, title="first")
+        second = service.report_generate(session_id, title="second")
+
+        assert first.ok and first.data is not None, first.error
+        assert second.ok and second.data is not None, second.error
+        first_path = Path(str(first.data["path"]))
+        second_path = Path(str(second.data["path"]))
+        assert first_path != second_path
+        assert first_path.is_file()
+        assert second_path.is_file()
+        assert service.repository.list_artifacts(session_id)["total"] == 2
     finally:
         service.close_all()

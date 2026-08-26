@@ -9,6 +9,7 @@ from math import isfinite
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
+from uuid import uuid4
 
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
@@ -1014,7 +1015,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             directory.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-            path = directory / f"report-{stamp}.md"
+            path = directory / f"report-{stamp}-{uuid4().hex}.md"
             path.write_text(markdown, encoding="utf-8")
             payload = _register_capture(
                 self,
