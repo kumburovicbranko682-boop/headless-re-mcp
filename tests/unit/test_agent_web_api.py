@@ -243,3 +243,60 @@ def test_autonomy_mode_can_be_switched_over_http(tmp_path: Path, monkeypatch) ->
 
     assert written["agent_auto_approve_effects"] == []
     assert written["agent_auto_approve_tools"] == []
+
+
+def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """The writer and the reader of the grant keys must not drift apart.
+
+    PUT /api/agent/autonomy persists through update_config_values, and the next
+    process reads the keys back via Settings.load -> AutonomyPolicy.from_settings.
+    Both sides name the agent_* keys independently; if either renamed, grants
+    would silently vanish on restart with nothing failing. Round-trip through a
+    real file, only redirecting the config path away from the user's home.
+    """
+    from functools import partial
+
+    import headless_re_mcp.web.routes.agent as agent_routes
+    from headless_re_mcp.agent.autonomy import AutonomyPolicy
+    from headless_re_mcp.config import update_config_values
+
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    for var in (
+        "HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS",
+        "HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS",
+        "HEADLESS_RE_AGENT_NEVER_AUTO_APPROVE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(
+        agent_routes,
+        "update_config_values",
+        partial(update_config_values, config_path=config_path),
+    )
+
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_tools=(),
+        agent_auto_approve_effects=(),
+    )
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        granted = client.put(
+            "/api/agent/autonomy", headers=headers, json={"add_tools": ["dynamic.open"]}
+        )
+        assert granted.status_code == 200
+        reported = granted.json()["policy"]
+
+    # "The restart": a fresh Settings from that file, a fresh policy from it.
+    reloaded = AutonomyPolicy.from_settings(Settings.load(config_path))
+    assert "dynamic.open" in reloaded.auto_approve_tools
+    assert sorted(reloaded.auto_approve_tools) == reported["auto_approve_tools"]
+    # The explicit empty effects list persisted by the grant stays fail-closed
+    # on reload, rather than being repopulated by the packed-analysis preset.
+    assert reloaded.auto_approve_effects == frozenset()
