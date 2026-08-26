@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +42,40 @@ def test_linux_non_x86_64_is_not_claimed_supported() -> None:
 
     assert report["core_supported"] is False
     assert report["support_level"] == "unsupported"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
+def test_linux_installer_resolves_repo_independently_of_working_directory(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    captured_requirement = tmp_path / "requirement.txt"
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == "-c" ]]; then
+  exit 0
+fi
+if [[ "${1-}" == "-m" && "${2-}" == "pip" ]]; then
+  printf '%s' "${5-}" > "${CAPTURE_REQUIREMENT}"
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PYTHON"] = str(fake_python)
+    env["CAPTURE_REQUIREMENT"] = str(captured_requirement)
+    subprocess.run(
+        [str(repo_root / "scripts" / "install-linux.sh")],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+    )
+
+    assert captured_requirement.read_text(encoding="utf-8") == f"{repo_root}[pe,web]"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux platform defaults")
