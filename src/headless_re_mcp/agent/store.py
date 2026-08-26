@@ -39,6 +39,35 @@ def canonical_args_sha256(arguments: JsonObject) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _bounded_event_summary(
+    encoded: str, *, original_bytes: int, limit: int
+) -> tuple[JsonObject, str]:
+    """Wrap an event preview without exceeding its serialized byte budget."""
+    low = 0
+    high = min(len(encoded), 4096)
+    best: JsonObject = {
+        "truncated": True,
+        "summary": "",
+        "original_bytes": original_bytes,
+    }
+    best_encoded = json.dumps(best, ensure_ascii=False)
+    while low <= high:
+        midpoint = (low + high) // 2
+        candidate: JsonObject = {
+            "truncated": True,
+            "summary": encoded[:midpoint],
+            "original_bytes": original_bytes,
+        }
+        candidate_encoded = json.dumps(candidate, ensure_ascii=False)
+        if len(candidate_encoded.encode("utf-8")) <= limit:
+            best = candidate
+            best_encoded = candidate_encoded
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    return best, best_encoded
+
+
 # Finished work has no natural end: every completed mission leaves a thread,
 # its runs, events and messages behind. Measured at 250 tiny missions: 459 KB
 # and still climbing, about 1.8 KB each with almost no tool output. A real
@@ -459,14 +488,13 @@ class AgentStore:
         safe = redact(data)
         encoded = json.dumps(safe, ensure_ascii=False, default=str)
         limit = max(1024, int(self.event_data_max_bytes))
-        if len(encoded.encode("utf-8")) > limit:
-            original = len(encoded.encode("utf-8"))
-            safe = {
-                "truncated": True,
-                "summary": encoded[:4096],
-                "original_bytes": original,
-            }
-            encoded = json.dumps(safe, ensure_ascii=False)
+        payload_bytes = len(encoded.encode("utf-8"))
+        if payload_bytes > limit:
+            safe, encoded = _bounded_event_summary(
+                encoded,
+                original_bytes=payload_bytes,
+                limit=limit,
+            )
         con.execute("INSERT INTO run_events VALUES(?,?,?,?,?)", (run_id, seq, event_type, encoded, created))
         keep = max(1, int(self.retained_events_per_run))
         con.execute(
