@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -401,7 +402,26 @@ def update_config_values(
             data[key] = str(value)
         else:
             data[key] = value
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}-",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
     with suppress(OSError):
         path.chmod(0o600)
     return path
