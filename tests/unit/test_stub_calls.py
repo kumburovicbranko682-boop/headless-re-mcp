@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from headless_re_mcp.unpack.iat_rank import analyze_import_entries, gate_iat_rebuild
+from headless_re_mcp.unpack import stub_calls
 from headless_re_mcp.unpack.stub_calls import (
+    analyze_dump_stub_coupling,
     code_section_ranges,
     count_stub_vs_api_calls,
     vmp_like_section_ranges,
@@ -60,3 +66,44 @@ def test_gate_blocks_when_stub_dominates() -> None:
     gate = gate_iat_rebuild(analysis, still_vm_stub_count=40)
     assert gate["rebuild_allowed"] is False
     assert gate["recoverability"] == "vm_coupled_dump_only"
+
+
+def test_dump_coupling_memory_and_secondary_scan_obey_the_byte_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dump = tmp_path / "large-memory-dump.bin"
+    dump.write_bytes(b"x" * (1024 * 1024))
+    monkeypatch.setattr(
+        stub_calls,
+        "parse_runtime_headers",
+        lambda _data: {
+            "image_base": 0x400000,
+            "architecture": "x86",
+            "sections": [
+                {
+                    "name": ".text",
+                    "virtual_address": 0,
+                    "virtual_size": dump.stat().st_size,
+                    "characteristics": 0x60000020,
+                }
+            ],
+        },
+    )
+
+    result = analyze_dump_stub_coupling(dump, max_scan_bytes=64)
+
+    assert result["scanned_bytes"] == 64
+    assert result["code_bytes"] == 64
+
+
+@pytest.mark.parametrize("invalid", (None, True, 0, -1, 1.5))
+def test_dump_coupling_rejects_invalid_scan_budgets(
+    tmp_path: Path, invalid: object
+) -> None:
+    dump = tmp_path / "dump.bin"
+    dump.write_bytes(b"MZ")
+    with pytest.raises(ValueError, match="positive integer"):
+        analyze_dump_stub_coupling(
+            dump,
+            max_scan_bytes=invalid,  # type: ignore[arg-type]
+        )
