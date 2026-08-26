@@ -45,7 +45,7 @@ class Probe:
     remediation: str | None = None
 
     def to_dict(self, *, required: bool | None = None) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "name": self.name,
             "status": self.status.value,
             "summary": self.summary,

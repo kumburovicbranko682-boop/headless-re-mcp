@@ -35,9 +35,13 @@ class ModuleIdentity:
 
     @classmethod
     def from_session(cls, session: Session) -> ModuleIdentity:
+        binary = session.require_pe()
+        path = str(binary)
         return cls(
-            name=session.require_pe().name,
-            path=str(session.require_pe()),
+            # Runtime module data can contain Windows paths even when a Linux
+            # host is inspecting persisted session metadata.
+            name=ntpath.basename(path) or binary.name,
+            path=path,
             sha256=session.sha256 or "",
             architecture=session.require_architecture(),
         )

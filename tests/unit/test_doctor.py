@@ -12,10 +12,10 @@ from headless_re_mcp.backends.x64dbg.gate import XdbgHeadlessGateResult
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.doctor import (
+    WINDOWS_REQUIRED_PROBES,
     DoctorReport,
     Probe,
     ProbeStatus,
-    WINDOWS_REQUIRED_PROBES,
     format_report,
     probe_die,
     probe_exeinfope,

@@ -262,6 +262,8 @@ def _creation_options() -> dict[str, Any]:
             startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
             startupinfo.wShowWindow = 0
             options["startupinfo"] = startupinfo
+    else:
+        options["start_new_session"] = True
     return options
 
 
@@ -274,7 +276,7 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     """
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=5.0)
+    terminate_process_tree(process, wait_s=5.0, kill_group=os.name != "nt")
 
 
 def _capture_process(
@@ -357,9 +359,22 @@ def _capture_process(
     if not timed_out:
         leftover_children = stdout_thread.is_alive() or stderr_thread.is_alive()
         if not leftover_children and process.pid:
-            from headless_re_mcp.core.process_tree import collect_descendants
+            if os.name != "nt":
+                # The launcher may already be reaped, so its child is no longer
+                # discoverable by PPID. It still inherits the dedicated process
+                # group created in _creation_options().
+                try:
+                    os.killpg(int(process.pid), 0)
+                except ProcessLookupError:
+                    leftover_children = False
+                except OSError:
+                    leftover_children = True
+                else:
+                    leftover_children = True
+            else:
+                from headless_re_mcp.core.process_tree import collect_descendants
 
-            leftover_children = bool(collect_descendants(int(process.pid)))
+                leftover_children = bool(collect_descendants(int(process.pid)))
     if leftover_children:
         _terminate_process(process)
         stdout_thread.join(timeout=2.0)

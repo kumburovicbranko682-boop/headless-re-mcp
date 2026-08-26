@@ -149,6 +149,7 @@ def _run_xdbg_gates(
     *,
     timeout: float,
 ) -> int:
+    results: list[dict[str, object]] = []
     if not is_windows_host():
         details = unsupported_on_platform_details("x64dbg")
         results = [
@@ -169,7 +170,6 @@ def _run_xdbg_gates(
         Architecture.X86: settings.x64dbg_headless_x86,
         Architecture.X64: settings.x64dbg_headless_x64,
     }
-    results: list[dict[str, object]] = []
     overall = True
     for architecture in architectures:
         executable = paths[architecture]

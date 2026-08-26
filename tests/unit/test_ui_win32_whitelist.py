@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ def test_invoke_whitelist_is_indexable_dict() -> None:
     assert "bogus" not in _INVOKE_WHITELIST
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Win32 UI automation requires Windows")
 def test_close_hwnd_rejects_disallowed_pid() -> None:
     with pytest.raises(UiPidBoundaryError) as exc:
         close_hwnd(1, frozenset({999999}))
@@ -38,12 +40,14 @@ def test_ui_pid_boundary_error_rejects_message_kw_collision() -> None:
     assert err.details["win32_message"] == 0xF5
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Win32 capture requires Windows")
 def test_screenshot_rejects_disallowed_hwnd(tmp_path: Path) -> None:
     with pytest.raises(UiPidBoundaryError) as exc:
         capture_hwnd_screenshot(0, frozenset({1}), tmp_path / "x.bmp")
     assert exc.value.code in {"invalid_params", "not_found", "permission_denied"}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Win32 capture requires Windows")
 def test_screenshot_rejects_non_bmp_extension(tmp_path: Path) -> None:
     with pytest.raises(UiPidBoundaryError) as exc:
         capture_hwnd_screenshot(1, frozenset({1}), tmp_path / "x.png")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -36,7 +35,10 @@ from headless_re_mcp.core.windows import (
     list_windows_for_pids,
     resolve_allowed_ui_pids,
 )
-from headless_re_mcp.platform_support import unsupported_on_platform_details
+from headless_re_mcp.platform_support import (
+    is_windows_host,
+    unsupported_on_platform_details,
+)
 from headless_re_mcp.reporting import render_markdown_report
 from headless_re_mcp.workflows.navigation import EventPattern
 
@@ -1057,7 +1059,7 @@ def _require_debuggee_pid(service: Any, session_id: str) -> int:
 
 
 def _windbg_client(service: Any) -> WindbgClient:
-    if os.name != "nt":
+    if not is_windows_host():
         raise WindbgError(
             "unsupported_on_platform",
             "WinDbg/cdb is available only on Windows",

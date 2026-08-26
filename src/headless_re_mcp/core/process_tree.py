@@ -178,7 +178,12 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
-def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+def terminate_process_tree(
+    process: Any,
+    *,
+    wait_s: float = 5.0,
+    kill_group: bool = False,
+) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
     Killing only the process that was spawned is not enough here. Measured on
@@ -187,8 +192,10 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     lock on the sample after the tool call has already returned a timeout.
 
     Descendants are enumerated *before* the parent dies, because that is while
-    the relationship is still recorded. Never raises: this runs on a failure
-    path that has somewhere better to be.
+    the relationship is still recorded. ``kill_group`` is for POSIX children
+    deliberately launched in a dedicated session; it catches descendants that
+    were already re-parented after a launcher exited. Never raises: this runs on
+    a failure path that has somewhere better to be.
     """
     killed: list[int] = []
     pid = getattr(process, "pid", None)
@@ -211,6 +218,9 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    if kill_group and os.name != "nt" and isinstance(pid, int):
+        with suppress(Exception):
+            os.killpg(pid, 9)
     return killed
 
 

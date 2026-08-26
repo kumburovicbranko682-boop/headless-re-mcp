@@ -1813,8 +1813,16 @@ _EXIT0_LAUNCHER = (
 def _pid_is_alive(pid: int) -> bool:
     import ctypes
     import os
+    from pathlib import Path
 
     if os.name != "nt":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+            close = stat.rfind(")")
+            if close >= 0 and stat[close + 2 :].split(maxsplit=1)[0] == "Z":
+                return False
+        except (OSError, IndexError):
+            pass
         try:
             os.kill(pid, 0)
         except OSError:
@@ -1932,24 +1940,7 @@ class TestATimeoutBindsWhatTheToolStarted:
         return process, int(process.stdout.readline().strip())
 
     def _alive(self, pid: int) -> bool:
-        import ctypes
-        import os
-
-        if os.name != "nt":
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                return False
-            return True
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-            return code.value == 259
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+        return _pid_is_alive(pid)
 
     def test_the_process_the_launcher_started_is_killed_too(self) -> None:
         import time
@@ -2121,6 +2112,7 @@ class TestATimeoutBindsWhatTheToolStarted:
 
     def test_capture_process_kills_leftover_children(self) -> None:
         import sys
+        import time
         from contextlib import suppress
 
         from headless_re_mcp.core.process_tree import terminate_pid_tree
@@ -2133,6 +2125,9 @@ class TestATimeoutBindsWhatTheToolStarted:
         )
         child = int(capture.stdout.strip().split()[0])
         try:
+            deadline = time.monotonic() + 5.0
+            while self._alive(child) and time.monotonic() < deadline:
+                time.sleep(0.05)
             assert self._alive(child) is False
         finally:
             with suppress(Exception):

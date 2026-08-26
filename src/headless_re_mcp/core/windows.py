@@ -47,7 +47,8 @@ def wnd_enum_callback_type() -> Any:
     EnumWindows / EnumDesktopWindows callback restype can abort enumeration
     after the first HWND, which looks like a process with no windows.
     """
-    return ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    callback_factory = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+    return callback_factory(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 class UiPidBoundaryError(ValueError):

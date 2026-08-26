@@ -342,7 +342,7 @@ def test_web_pick_file_returns_a_local_path(
         "busy": False,
         "error": None,
     })
-    monkeypatch.setattr(legacy_mod.os, "name", "nt")
+    monkeypatch.setattr(legacy_mod, "is_windows_host", lambda: True)
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"

@@ -62,6 +62,7 @@ def test_public_root_and_script_entries_are_deliberately_small() -> None:
         "build_native_portable.ps1",
         "build_portable.ps1",
         "install_die_portable.ps1",
+        "install-linux.sh",
         "install_scyllahide.ps1",
         "install_service.ps1",
         "sync_external_x64dbg.ps1",

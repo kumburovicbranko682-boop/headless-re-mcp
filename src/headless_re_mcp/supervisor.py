@@ -28,6 +28,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.core.process_tree import terminate_process_tree
+from headless_re_mcp.platform_support import is_windows_host
 from headless_re_mcp.process_group import assign_to_process_group
 
 JsonObject = dict[str, Any]
@@ -259,7 +260,11 @@ class Supervisor:
             return None
         # Only a real process, so an injected fake cannot name a pid that
         # belongs to something else and have it killed when this exits.
-        if isinstance(child, subprocess.Popen) and not assign_to_process_group(child.pid):
+        if (
+            isinstance(child, subprocess.Popen)
+            and is_windows_host()
+            and not assign_to_process_group(child.pid)
+        ):
             self._log("child.not_grouped", pid=child.pid)
         return child
 
