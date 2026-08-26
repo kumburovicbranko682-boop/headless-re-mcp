@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from headless_re_mcp.web.app import _claim_artifact_root
 
@@ -52,3 +53,14 @@ def test_two_different_roots_do_not_block_each_other(tmp_path: Path) -> None:
         for handle in (left, right):
             if handle is not None and handle >= 0:
                 os.close(handle)
+
+
+def test_console_refuses_to_run_when_the_root_lock_cannot_be_created(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    def unavailable(*_args: object, **_kwargs: object) -> int:
+        raise PermissionError("read-only artifact root")
+
+    monkeypatch.setattr(os, "open", unavailable)
+
+    assert _claim_artifact_root(tmp_path) is None

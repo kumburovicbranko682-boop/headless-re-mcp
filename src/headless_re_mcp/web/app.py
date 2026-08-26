@@ -74,13 +74,14 @@ def _claim_artifact_root(root: Path) -> int | None:
         (root / "meta").mkdir(parents=True, exist_ok=True)
         handle = os.open(root / "meta" / "console.lock", os.O_CREAT | os.O_RDWR)
     except OSError:
-        # Cannot make the lock. That is not a reason to refuse to serve.
-        return -1
+        # Without a lock there is no way to preserve the single-writer
+        # invariant. Serving anyway can corrupt the shared scheduler database.
+        return None
     try:
         if os.name == "nt":
             import msvcrt
 
-            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined,unused-ignore]
         else:
             import fcntl  # type: ignore[import-not-found,unused-ignore]
 
@@ -147,29 +148,30 @@ def run_web(
         # stops, rather than restarting a child that will refuse again.
         return 78
 
-    configure_telemetry_logging()
-    token, token_path = ensure_web_token(settings)
-    service = AnalysisService(settings)
-    app = create_app(service, token=token, settings=settings)
-    # Expose the effective bind for callers / tests.
-    app.state.bind_host = bind_host
-    app.state.bind_port = bind_port
-
+    service: AnalysisService | None = None
     try:
-        import uvicorn
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "需要 web 额外依赖：pip install 'headless-re-mcp[web]'"
-        ) from exc
+        configure_telemetry_logging()
+        token, token_path = ensure_web_token(settings)
+        service = AnalysisService(settings)
+        app = create_app(service, token=token, settings=settings)
+        # Expose the effective bind for callers / tests.
+        app.state.bind_host = bind_host
+        app.state.bind_port = bind_port
 
-    if not quiet_banner:
-        if reason == "fallback":
-            print(f"端口 {preferred} 已被占用，自动改用 {bind_port}")
-        print(f"监控台已启动：http://{bind_host}:{bind_port}/?token=…")
-        print(f"Token 文件：{token_path}")
-        print("仅本机回环可访问；非本机连接将返回 403。")
+        try:
+            import uvicorn
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "需要 web 额外依赖：pip install 'headless-re-mcp[web]'"
+            ) from exc
 
-    try:
+        if not quiet_banner:
+            if reason == "fallback":
+                print(f"端口 {preferred} 已被占用，自动改用 {bind_port}")
+            print(f"监控台已启动：http://{bind_host}:{bind_port}/?token=…")
+            print(f"Token 文件：{token_path}")
+            print("仅本机回环可访问；非本机连接将返回 403。")
+
         uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     finally:
         # The stdio transport has always done this on the way out; this one
@@ -178,5 +180,9 @@ def run_web(
         # every shutdown left them running -- and the supervised deployment
         # restarts this process on purpose. An IDA instance is measured in
         # gigabytes, so a few restarts is a machine that has to be rebooted.
-        service.close_all()
+        try:
+            if service is not None:
+                service.close_all()
+        finally:
+            os.close(claim)
     return 0
