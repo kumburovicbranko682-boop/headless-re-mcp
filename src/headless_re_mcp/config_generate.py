@@ -62,15 +62,22 @@ def _python_executable(explicit: Path | None) -> str:
     return sys.executable
 
 
+def _strip_secret_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _strip_secrets(value)
+    if isinstance(value, list):
+        # Doctor probes (and env inventories) are lists of dicts, so a secret
+        # nested one list deep was previously never reached.
+        return [_strip_secret_value(item) for item in value]
+    return value
+
+
 def _strip_secrets(data: JsonObject) -> JsonObject:
     cleaned: JsonObject = {}
     for key, value in data.items():
         if key.casefold() in _SECRET_KEYS:
             continue
-        if isinstance(value, dict):
-            cleaned[key] = _strip_secrets(value)
-        else:
-            cleaned[key] = value
+        cleaned[key] = _strip_secret_value(value)
     return cleaned
 
 
@@ -224,14 +231,18 @@ def generate_config_bundle(
         report = run_doctor(settings)
         doctor_report = json.loads(report.to_json())
         if not report.ready:
-            return {
-                "ok": False,
-                "error": {
-                    "code": "doctor_not_ready",
-                    "message": "doctor --strict would fail; fix required backends first",
-                },
-                "doctor": doctor_report,
-            }
+            # Every other exit strips secrets before returning; this early one
+            # must too, or a secret-named probe detail leaks in the failure body.
+            return _strip_secrets(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "doctor_not_ready",
+                        "message": "doctor --strict would fail; fix required backends first",
+                    },
+                    "doctor": doctor_report,
+                }
+            )
 
     cfg_path = config_path or default_config_path()
     server = build_stdio_server_config(

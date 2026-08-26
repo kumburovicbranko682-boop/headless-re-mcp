@@ -84,6 +84,121 @@ def test_embed_discovered_env_uses_real_paths(tmp_path: Path) -> None:
     assert "rpc_token" not in json.dumps(export["stdio"]).casefold()
 
 
+def test_settings_env_map_only_names_real_settings_fields() -> None:
+    """A rename in Settings would silently drop a path from generated configs.
+
+    build_discovered_env reads each mapped field with getattr(..., None); if the
+    field were renamed, discovery would return None and the HEADLESS_RE_* entry
+    would just vanish from the emitted MCP config, with no error. Pin the map to
+    the dataclass so a rename fails here instead.
+    """
+    from headless_re_mcp.config_generate import _SETTINGS_ENV_MAP
+
+    fields = set(Settings.__dataclass_fields__)
+    unknown = {name for name, _env in _SETTINGS_ENV_MAP if name not in fields}
+    assert not unknown, f"_SETTINGS_ENV_MAP names non-existent Settings fields: {unknown}"
+
+    # And every mapped env var is a distinct HEADLESS_RE_* key.
+    env_keys = [env for _name, env in _SETTINGS_ENV_MAP]
+    assert all(key.startswith("HEADLESS_RE_") for key in env_keys)
+    assert len(env_keys) == len(set(env_keys)), "duplicate env key in _SETTINGS_ENV_MAP"
+
+
+def test_strip_secrets_drops_secret_keys_recursively_and_case_insensitively() -> None:
+    """MCP config bundles are copy-pasted, so no secret-named key may survive."""
+    from headless_re_mcp.config_generate import _SECRET_KEYS, _strip_secrets
+
+    payload = {
+        "token": "abc",
+        "Api_Key": "shhh",
+        "APIKEY": "shhh",
+        "keep": "ok",
+        "token_count": 3,  # not an exact secret key -- must survive
+        "nested": {
+            "password": "p",
+            "IDA_License": "lic",
+            "still_here": 1,
+            "deeper": {"secret": "s", "fine": True},
+        },
+    }
+    cleaned = _strip_secrets(payload)
+
+    # Every exact secret key is gone at every depth.
+    assert "token" not in cleaned
+    assert "Api_Key" not in cleaned and "APIKEY" not in cleaned
+    assert "password" not in cleaned["nested"]
+    assert "IDA_License" not in cleaned["nested"]
+    assert "secret" not in cleaned["nested"]["deeper"]
+    # Non-secret keys (including a near-miss) are untouched.
+    assert cleaned["keep"] == "ok"
+    assert cleaned["token_count"] == 3
+    assert cleaned["nested"]["still_here"] == 1
+    assert cleaned["nested"]["deeper"]["fine"] is True
+    # The guard matches on casefold against the frozen key set.
+    assert {"token", "password", "secret", "api_key", "apikey"} <= _SECRET_KEYS
+
+
+def _poisoned_report(*, ready: bool):
+    from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus
+
+    leaky = Probe(
+        "ida_idalib",
+        ProbeStatus.READY,
+        "ready",
+        details={"api_key": "leaked-secret-value", "path": "/opt/ida"},
+    )
+    if not ready:
+        return DoctorReport(probes=(leaky,))
+    # Ready needs every required probe present and READY.
+    return DoctorReport(
+        probes=(
+            leaky,
+            Probe("python", ProbeStatus.READY, "ready"),
+            Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
+        )
+    )
+
+
+def test_generated_bundle_scrubs_a_secret_from_the_doctor_report_when_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import headless_re_mcp.config_generate as cg
+
+    monkeypatch.setattr(cg, "run_doctor", lambda settings=None: _poisoned_report(ready=True))
+    bundle = generate_config_bundle(
+        _settings(tmp_path),
+        python_path=Path("python"),
+        config_path=tmp_path / "config.json",
+        run_doctor_check=True,
+        include_examples=False,
+    )
+    assert bundle["ok"] is True
+    blob = json.dumps(bundle)
+    assert "leaked-secret-value" not in blob
+    assert "api_key" not in blob.casefold()
+
+
+def test_doctor_not_ready_failure_body_also_scrubs_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The early not-ready return used to send the doctor report back unstripped."""
+    import headless_re_mcp.config_generate as cg
+
+    monkeypatch.setattr(cg, "run_doctor", lambda settings=None: _poisoned_report(ready=False))
+    bundle = generate_config_bundle(
+        _settings(tmp_path),
+        python_path=Path("python"),
+        config_path=tmp_path / "config.json",
+        run_doctor_check=True,
+        include_examples=False,
+    )
+    assert bundle["ok"] is False
+    assert bundle["error"]["code"] == "doctor_not_ready"
+    blob = json.dumps(bundle)
+    assert "leaked-secret-value" not in blob
+    assert "api_key" not in blob.casefold()
+
+
 def test_cli_config_generate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
