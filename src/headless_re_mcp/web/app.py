@@ -74,7 +74,7 @@ def _claim_artifact_root(root: Path) -> int | None:
         if os.name == "nt":
             import msvcrt
 
-            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined,unused-ignore]
         else:
             import fcntl  # type: ignore[import-not-found,unused-ignore]
 

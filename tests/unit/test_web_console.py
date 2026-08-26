@@ -347,6 +347,9 @@ def test_web_pick_file_returns_a_local_path(
         "error": None,
     })
     monkeypatch.setattr(legacy_mod.os, "name", "nt")
+    monkeypatch.setenv(
+        "HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json")
+    )
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"
