@@ -407,6 +407,39 @@ def test_exposition_is_scrapeable_and_escapes_labels() -> None:
     assert text.endswith("\n")
 
 
+def test_a_newline_in_a_label_cannot_forge_an_exposition_line() -> None:
+    """A raw newline or backslash in a label value would break the scrape.
+
+    Prometheus requires backslash, double-quote and newline escaped inside a
+    label value. An unescaped newline does not merely mangle one value -- it
+    ends the metric line early and the remainder parses as a new sample, so a
+    tool name is a place an adversary-controlled string could forge a series.
+    Pin all three escapes.
+    """
+    metrics = {
+        "tools": [
+            {
+                "tool": 'a\nb\\c"d',
+                "calls_total": 1,
+                "failures_total": 0,
+                "p50_ms": 0.0,
+                "p95_ms": 0.0,
+                "max_ms": 0.0,
+            }
+        ]
+    }
+
+    text = render(metrics, {"version": "v", "commit": "c", "python": "p"}, None)
+
+    assert 'tool="a\\nb\\\\c\\"d"' in text
+    # No physical newline survived inside the value: every non-header line that
+    # mentions the tool is one complete sample, not a fragment split by \n.
+    for line in text.splitlines():
+        if line.startswith("#") or not line:
+            continue
+        assert line.count("{") <= 1, f"a label value leaked a line break: {line!r}"
+
+
 def test_exposition_includes_readiness_when_supplied() -> None:
     text = render(
         {"tools": []},
