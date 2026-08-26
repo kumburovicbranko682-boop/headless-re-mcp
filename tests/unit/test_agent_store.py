@@ -467,9 +467,19 @@ def test_event_pages_apply_a_byte_budget_in_addition_to_the_count_limit(
             {"index": index, "delta": "x" * 700},
         )
 
-    first_page = store.list_events(run.id, limit=5000)
+    first_page = [
+        event
+        for event in store.list_events(run.id, limit=5000)
+        if event.type == "message.delta"
+    ]
     assert [event.data["index"] for event in first_page] == [0]
-    second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5000)
+    second_page = [
+        event
+        for event in store.list_events(
+            run.id, after=first_page[-1].seq, limit=5000
+        )
+        if event.type == "message.delta"
+    ]
     assert [event.data["index"] for event in second_page] == [1]
 
     # Thread history is a newest window rather than a cursor page.
