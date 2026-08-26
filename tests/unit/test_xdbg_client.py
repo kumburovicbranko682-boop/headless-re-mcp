@@ -576,13 +576,14 @@ def test_close_sends_exit_before_disconnecting_and_cleans_runtime_directory() ->
     assert client.exit_code == 0
 
 
-def test_close_uses_one_deadline_across_rpc_and_process_wait(
+def test_close_uses_one_deadline_across_rpc_process_wait_and_thread_joins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sequential graceful-close steps must not each receive the full timeout."""
+    """Reader joins must not add six seconds after close exhausts its budget."""
     clock = [0.0]
     request_timeouts: list[float] = []
     wait_timeouts: list[float] = []
+    join_timeouts: list[float] = []
 
     class _BudgetProcess(FakeProcess):
         def wait(self, timeout: float | None = None) -> int:
@@ -592,10 +593,19 @@ def test_close_uses_one_deadline_across_rpc_and_process_wait(
             self.returncode = 0
             return 0
 
+    class _BudgetThread:
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
     process = _BudgetProcess()
     client = _client(ScriptedTransport(), process)
     client._capabilities = frozenset({"trace.status", "trace.stop"})
     client._monitor_stop = Event()
+    client._window_thread = _BudgetThread()  # type: ignore[assignment]
+    client._stdout_thread = _BudgetThread()  # type: ignore[assignment]
+    client._stderr_thread = _BudgetThread()  # type: ignore[assignment]
 
     def request(method: str, params: JsonObject, *, timeout: float) -> JsonObject:
         del params
@@ -612,7 +622,7 @@ def test_close_uses_one_deadline_across_rpc_and_process_wait(
 
     client.close(timeout=10.0)
 
-    delegated = sum(request_timeouts) + sum(wait_timeouts)
+    delegated = sum(request_timeouts) + sum(wait_timeouts) + sum(join_timeouts)
     assert delegated <= 10.0
     assert clock[0] <= 10.0
 
