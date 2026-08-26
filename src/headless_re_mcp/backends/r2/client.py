@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,6 +29,8 @@ _ALLOWED = frozenset(
         "aa",
     }
 )
+_PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -36,6 +39,17 @@ class R2Error(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_allowed_command(command: str) -> None:
+    if command in _ALLOWED:
+        return
+    pdj = _PDJ_COMMAND.fullmatch(command)
+    if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
 
 class R2Client:
@@ -98,9 +112,7 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         for cmd in commands:
-            head = cmd.split(" ", 1)[0]
-            if head not in _ALLOWED:
-                raise R2Error("invalid_params", "r2 command not whitelisted", command=cmd)
+            _require_allowed_command(cmd)
         script = "\n".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
