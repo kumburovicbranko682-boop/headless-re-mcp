@@ -1135,7 +1135,7 @@ class XdbgClient:
                 if self._transport is not None:
                     self._transport.close()
                     self._transport = None
-                self._finish_threads()
+                self._finish_threads(deadline=deadline)
         finally:
             self._request_lock.release()
 
@@ -1319,14 +1319,21 @@ class XdbgClient:
         # while the sleeper it started was still alive.
         terminate_process_tree(self._process, wait_s=5.0)
 
-    def _finish_threads(self) -> None:
+    def _finish_threads(self, *, deadline: float | None = None) -> None:
+        join_deadline = deadline if deadline is not None else time.monotonic() + 2.0
         self._monitor_stop.set()
         if hasattr(self, "_window_thread"):
-            self._window_thread.join(timeout=2)
+            self._window_thread.join(
+                timeout=min(2.0, max(0.0, join_deadline - time.monotonic()))
+            )
         if hasattr(self, "_stdout_thread"):
-            self._stdout_thread.join(timeout=2)
+            self._stdout_thread.join(
+                timeout=min(2.0, max(0.0, join_deadline - time.monotonic()))
+            )
         if hasattr(self, "_stderr_thread"):
-            self._stderr_thread.join(timeout=2)
+            self._stderr_thread.join(
+                timeout=min(2.0, max(0.0, join_deadline - time.monotonic()))
+            )
         desktop: HiddenDesktop | None = getattr(self, "_desktop", None)
         self._desktop = None
         if desktop is not None:
