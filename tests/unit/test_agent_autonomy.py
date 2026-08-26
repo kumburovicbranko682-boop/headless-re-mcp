@@ -256,3 +256,77 @@ def test_full_access_still_honors_never_auto_approve() -> None:
     assert policy.decide(STATE).approved is True
     assert policy.decide(BOTH).approved is False
     assert policy.decide(BOTH).reason == "never_auto_approve"
+
+
+def test_the_packed_analysis_denylist_stays_pinned_to_the_real_catalog() -> None:
+    """The packed-analysis preset auto-approves file writes except a denylist.
+
+    That denylist is string literals; nothing otherwise ties them to real tools.
+    A rename turns an entry into a dead string and quietly lets a sensitive file
+    write (a patch, an APK re-sign, an artifact GC) auto-run unattended, and any
+    new file-write tool rides the preset by default unless it is added here. So
+    the denylist and the computed preset are pinned against the shipped catalog.
+    """
+    from headless_re_mcp.agent.autonomy import (
+        _EXCLUDED_AUTO_FILE_WRITES,
+        PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
+    )
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+    agent_specs = {
+        spec.name: spec for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
+    }
+
+    # Every denylisted name is a real file-write tool, or the exclusion is dead.
+    for name in _EXCLUDED_AUTO_FILE_WRITES:
+        spec = agent_specs.get(name)
+        assert spec is not None, f"denylisted tool no longer exists: {name}"
+        assert ToolEffect.FILE_WRITE in spec.effects, (
+            f"{name} is denylisted as a file write but is no longer one"
+        )
+
+    # The computed preset never includes a denylisted tool.
+    assert not (set(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS) & _EXCLUDED_AUTO_FILE_WRITES)
+
+    # The preset is exactly the agent file-write tools minus the denylist, so a
+    # newly added file writer is caught here rather than silently auto-approved.
+    file_writes = {
+        name for name, spec in agent_specs.items() if ToolEffect.FILE_WRITE in spec.effects
+    }
+    assert set(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS) == file_writes - _EXCLUDED_AUTO_FILE_WRITES
+
+
+def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> None:
+    """Applied to the real specs: no denylisted write auto-runs, stealth does."""
+    from headless_re_mcp.agent.autonomy import (
+        PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS,
+        PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
+    )
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+    # Built exactly as Settings.load() wires the preset with no operator keys.
+    policy = AutonomyPolicy(
+        auto_approve_effects=frozenset(
+            ToolEffect(value) for value in PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS
+        ),
+        auto_approve_tools=frozenset(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS),
+    )
+    agent_specs = {
+        spec.name: spec for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
+    }
+
+    for name in (
+        "patches.apply",
+        "patches.restore",
+        "static.bytes.patch",
+        "apk.sign",
+        "apk.repack",
+        "artifacts.gc",
+        "web.screenshot",
+    ):
+        assert policy.decide(agent_specs[name]).approved is False, (
+            f"{name} must stay behind human approval under the packed preset"
+        )
+
+    # A representative packed-analysis write still runs unattended.
+    assert policy.decide(agent_specs["dynamic.stealth.set"]).approved is True
