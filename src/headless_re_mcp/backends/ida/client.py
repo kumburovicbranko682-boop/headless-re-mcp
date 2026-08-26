@@ -32,6 +32,7 @@ _MAX_IDA_STARTUP_SECONDS = 240.0
 # unsolicited JSON used to accumulate without limit whenever no request was
 # receiving; retain enough headroom for progress while bounding malformed output.
 _MAX_PENDING_WORKER_MESSAGES = 1_024
+_MAX_WORKER_LINE_CHARS = 1_048_576
 
 
 def next_receive_deadline(
@@ -291,8 +292,22 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def _read_stdout(self, stream: TextIO) -> None:
         try:
-            for line in stream:
+            while True:
+                line = stream.readline(_MAX_WORKER_LINE_CHARS + 1)
+                if not line:
+                    break
                 stripped = line.rstrip("\r\n")
+                oversized = len(stripped) > _MAX_WORKER_LINE_CHARS or (
+                    len(line) > _MAX_WORKER_LINE_CHARS and not line.endswith("\n")
+                )
+                if oversized:
+                    self._note_dropped_message()
+                    self._stdout_log.append(
+                        f"worker protocol line exceeded {_MAX_WORKER_LINE_CHARS} characters"
+                    )
+                    while line and not line.endswith("\n"):
+                        line = stream.readline(_MAX_WORKER_LINE_CHARS + 1)
+                    continue
                 try:
                     payload = json.loads(stripped)
                 except json.JSONDecodeError:
@@ -309,8 +324,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         try:
             self._messages.put_nowait(message)
         except queue.Full:
-            self._messages_dropped += 1
-            self._message_overflow.set()
+            self._note_dropped_message()
+
+    def _note_dropped_message(self) -> None:
+        self._messages_dropped += 1
+        self._message_overflow.set()
 
     def _read_stderr(self, stream: TextIO) -> None:
         for line in stream:
@@ -333,7 +351,7 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             if self._message_overflow.is_set():
                 raise IdaWorkerError(
                     "worker_output_overflow",
-                    "IDA worker exceeded the unread message queue capacity",
+                    "IDA worker exceeded protocol output safety limits",
                     details=self._diagnostics(),
                     retryable=True,
                 )
@@ -407,5 +425,6 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             "analyzer_windows": sorted(self._observed_windows),
             "pending_messages": self._messages.qsize(),
             "message_capacity": _MAX_PENDING_WORKER_MESSAGES,
+            "message_line_character_limit": _MAX_WORKER_LINE_CHARS,
             "messages_dropped": self._messages_dropped,
         }
