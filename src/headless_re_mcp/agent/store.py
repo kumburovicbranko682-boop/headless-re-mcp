@@ -59,6 +59,11 @@ _RETAINED_MESSAGES_PER_THREAD = 2_000
 # so retaining that much prefix is unbounded storage with no analysis value.
 _RETAINED_MESSAGE_BYTES_PER_THREAD = 64 * 1024 * 1024
 
+# list_messages feeds both provider context building and the full-thread web
+# response. A count-only page can otherwise materialize the whole 64 MiB
+# retention window, then duplicate it during JSON serialization.
+_MESSAGE_PAGE_MAX_BYTES = 8 * 1024 * 1024
+
 # Each streamed token is a run_events row. 2000 deltas of 20 bytes were 414 KB
 # and still climbing. A live mission keeps every run until it finishes, and
 # list_events already only pages 5000 at a time, so the prefix nobody can
@@ -131,6 +136,7 @@ class AgentStore:
         self.finished_trim_interval = _FINISHED_TRIM_INTERVAL
         self.retained_messages_per_thread = _RETAINED_MESSAGES_PER_THREAD
         self.retained_message_bytes_per_thread = _RETAINED_MESSAGE_BYTES_PER_THREAD
+        self.message_page_max_bytes = _MESSAGE_PAGE_MAX_BYTES
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
@@ -363,13 +369,25 @@ class AgentStore:
         "not met within N runs". Both are silent on a thread that only grows.
         """
         capped = max(1, min(limit, 2000))
+        byte_limit = max(1024, int(self.message_page_max_bytes))
         with self._reading() as con:
             rows = con.execute(
-                "SELECT * FROM ("
-                "  SELECT * FROM messages WHERE thread_id=?"
-                "  ORDER BY created_at DESC, id DESC LIMIT ?"
-                ") ORDER BY created_at, id",
-                (thread_id, capped),
+                "SELECT id, thread_id, role, content, run_id, tool_call_id,"
+                "  created_at FROM ("
+                "  SELECT id, thread_id, role, content, run_id, tool_call_id,"
+                "    created_at,"
+                "    ROW_NUMBER() OVER ("
+                "      ORDER BY created_at DESC, id DESC"
+                "    ) AS row_number,"
+                "    SUM(length(CAST(content AS BLOB))) OVER ("
+                "      ORDER BY created_at DESC, id DESC"
+                "      ROWS UNBOUNDED PRECEDING"
+                "    ) AS bytes_so_far"
+                "  FROM messages WHERE thread_id=?"
+                ") WHERE row_number<=?"
+                "  AND (bytes_so_far<=? OR row_number=1)"
+                " ORDER BY created_at, id",
+                (thread_id, capped, byte_limit),
             ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 
