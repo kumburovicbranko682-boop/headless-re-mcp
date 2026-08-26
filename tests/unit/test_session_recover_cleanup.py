@@ -10,6 +10,7 @@ import pytest
 from headless_re_mcp.backends.proxy import ProxyError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import SessionState
+from headless_re_mcp.core.repository import InMemoryAnalysisRepository
 from headless_re_mcp.core.service import AnalysisService
 
 
@@ -80,3 +81,30 @@ def test_recovery_reports_knowledge_that_cannot_be_rebound(
     assert recovered.error.details["failed_count"] == 1
     assert recovered.error.details["failures"][0]["kind"] == "finding"
     assert recovered.error.details["failures"][0]["key"] == "entry"
+
+
+def test_recovery_rebinds_knowledge_beyond_the_first_page(tmp_path: Path) -> None:
+    """All retained facts, not only the first 500, must reach the replacement."""
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    repository = InMemoryAnalysisRepository(settings.artifact_root)
+    service = AnalysisService(settings, repository=repository)
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    for index in range(501):
+        repository.record_knowledge(
+            session_id=session_id,
+            kind="finding",
+            key=f"{index:04d}",
+            value={"index": index},
+        )
+    service.registry.transition(session_id, SessionState.FAILED)
+
+    recovered = service.session_recover(session_id)
+
+    assert recovered.ok is True
+    assert recovered.data is not None
+    replacement_id = str(recovered.data["session_id"])
+    rebound = repository.list_knowledge(replacement_id, limit=1000)
+    assert rebound["total"] == 501
+    assert rebound["count"] == 501
