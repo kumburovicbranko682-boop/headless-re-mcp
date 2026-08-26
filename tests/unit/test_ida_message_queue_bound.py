@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import json
 import queue
+from collections import deque
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -66,3 +68,23 @@ def test_ida_stdout_messages_are_bounded_when_no_request_is_receiving(
     assert client._messages.maxsize == 1_024
     assert client._messages.qsize() <= 1_024
     assert client._message_overflow.is_set()
+
+
+def test_ida_stdout_rejects_one_oversized_protocol_line() -> None:
+    """The queue count bound still admitted an arbitrarily large JSON object.
+
+    A single 2,000,000-character field remained live in one queue slot, so a
+    small message count did not provide a byte bound.
+    """
+    client = object.__new__(IdaWorkerClient)
+    client._messages = queue.Queue(maxsize=1_024)
+    client._message_overflow = Event()
+    client._messages_dropped = 0
+    client._stdout_log = deque(maxlen=100)
+    stream = io.StringIO(json.dumps({"event": "noise", "blob": "x" * 2_000_000}) + "\n")
+
+    client._read_stdout(stream)
+
+    assert client._message_overflow.is_set()
+    assert client._messages_dropped == 1
+    assert client._messages.qsize() == 1  # EOF sentinel only; the oversized object was dropped.
