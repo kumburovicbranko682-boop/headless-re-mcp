@@ -82,3 +82,39 @@ def test_session_close_reports_a_proxy_that_remains_alive(tmp_path: Path) -> Non
     assert closed.error.details["state"] == "closed"
     assert closed.error.details["close_error_count"] == 1
     assert service.registry.get(session_id).state.value == "closed"
+
+
+def test_close_all_returns_a_failure_when_proxy_bulk_shutdown_times_out(
+    tmp_path: Path,
+) -> None:
+    """Process shutdown must return its envelope even when proxy cleanup fails.
+
+    Measured: one ``ProxyError(timeout)`` escaped ``close_all`` as an exception,
+    so the caller received no count and no machine-readable shutdown result.
+    """
+
+    class _WedgedProxy:
+        def close_all(self) -> None:
+            raise ProxyError("timeout", "one proxy listener is still alive", active=1)
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    service._proxy_backend = _WedgedProxy()  # type: ignore[assignment]
+
+    result = service.close_all()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "close_all_failed"
+    assert result.error.details["closed"] == 0
+    assert result.error.details["errors"] == [
+        {
+            "backend": "proxy",
+            "error": {
+                "code": "timeout",
+                "message": "one proxy listener is still alive",
+                "details": {"backend": "proxy", "active": 1},
+                "retryable": True,
+            },
+        }
+    ]
