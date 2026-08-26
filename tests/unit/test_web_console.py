@@ -88,6 +88,34 @@ def test_percent_encoded_token_equals_still_opens_the_console(tmp_path: Path) ->
     assert '<div id="root"></div>' in page.text
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (b"", b""),
+        (b"foo=bar", b"foo=bar"),
+        (b"token=already-plain", b"token=already-plain"),
+        (b"token%3Dsecret", b"token=secret"),
+        (b"TOKEN%3Dsecret", b"token=secret"),
+        (b"token%3dsecret", b"token=secret"),
+        (b"token%3Dsecret&next=/x", b"token=secret&next=/x"),
+        (b"foo=bar&token%3Dsecret", b"foo=bar&token=secret"),
+    ],
+)
+def test_repair_encoded_token_query_covers_position_case_and_passthrough(
+    query: bytes, expected: bytes
+) -> None:
+    """The console falls over if ?token%3D... is not repaired before routing.
+
+    Chat clients percent-encode the ``=`` and Starlette then reads the whole
+    thing as a parameter name, so the bearer never arrives and every open 401s.
+    Cover the shapes that actually occur -- no marker (untouched), the marker
+    mid-query, a trailing parameter that must survive, and upper/lower case.
+    """
+    from headless_re_mcp.web.routes.legacy import repair_encoded_token_query
+
+    assert repair_encoded_token_query(query) == expected
+
+
 def test_a_wrong_token_is_rejected_like_a_missing_one(tmp_path: Path) -> None:
     """Presenting the wrong secret must not fare better than presenting none."""
     settings = _settings(tmp_path)
