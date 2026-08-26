@@ -149,6 +149,29 @@ def test_scan_fails_when_log_missing(
     assert caught.value.code == ExeinfopeErrorCode.LOG_MISSING
 
 
+def test_log_read_is_bounded_even_when_file_metadata_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_path = tmp_path / "growing.log"
+    log_path.write_bytes(b"0123456789")
+    real_stat = Path.stat
+
+    def stale_stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        result = real_stat(path, *args, **kwargs)
+        if path == log_path:
+            fields = list(result)
+            fields[6] = 1
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(Path, "stat", stale_stat)
+
+    with pytest.raises(ExeinfopeOutputLimitError) as caught:
+        adapter._read_log(log_path, 4)
+
+    assert caught.value.details["size_at_least"] == 5
+
+
 def test_scan_fails_on_bad_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

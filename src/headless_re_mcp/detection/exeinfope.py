@@ -350,7 +350,7 @@ def _visible_blocked_windows(
     if os.name == "nt" and visible_check is None:
         import ctypes
 
-        visible_check = ctypes.windll.user32.IsWindowVisible
+        visible_check = ctypes.windll.user32.IsWindowVisible  # type: ignore[attr-defined,unused-ignore]
     elif visible_check is None:
         return []
 
@@ -754,26 +754,20 @@ def _read_log(log_path: Path, max_log_size: int) -> str:
             details={"log_path": str(log_path)},
         )
     try:
-        size = log_path.stat().st_size
-    except OSError as exc:
-        raise ExeinfopeProtocolError(
-            ExeinfopeErrorCode.LOG_MISSING,
-            f"could not stat Exeinfo PE log: {exc}",
-            details={"log_path": str(log_path)},
-        ) from exc
-    if size > max_log_size:
-        error = ExeinfopeOutputLimitError(max_log_size, stream="log")
-        error.details["log_path"] = str(log_path)
-        error.details["size"] = size
-        raise error
-    try:
-        return log_path.read_text(encoding="utf-8", errors="replace")
+        with log_path.open("rb") as stream:
+            payload = stream.read(max_log_size + 1)
     except OSError as exc:
         raise ExeinfopeProtocolError(
             ExeinfopeErrorCode.PROTOCOL_ERROR,
             f"could not read Exeinfo PE log: {exc}",
             details={"log_path": str(log_path)},
         ) from exc
+    if len(payload) > max_log_size:
+        error = ExeinfopeOutputLimitError(max_log_size, stream="log")
+        error.details["log_path"] = str(log_path)
+        error.details["size_at_least"] = len(payload)
+        raise error
+    return payload.decode("utf-8", errors="replace")
 
 
 def scan_with_exeinfope(
