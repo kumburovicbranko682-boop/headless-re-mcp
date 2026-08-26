@@ -351,8 +351,9 @@ def _capture_process(
             break
         sleep(min(0.05, remaining))
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+    drain_deadline = monotonic() + 2.0
+    stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+    stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     leftover_children = False
     if not timed_out:
         leftover_children = stdout_thread.is_alive() or stderr_thread.is_alive()
@@ -362,8 +363,9 @@ def _capture_process(
             leftover_children = bool(collect_descendants(int(process.pid)))
     if leftover_children:
         _terminate_process(process)
-        stdout_thread.join(timeout=2.0)
-        stderr_thread.join(timeout=2.0)
+        cleanup_deadline = monotonic() + 2.0
+        stdout_thread.join(timeout=max(0.0, cleanup_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, cleanup_deadline - monotonic()))
     with suppress(OSError):
         stdout_pipe.close()
     with suppress(OSError):
