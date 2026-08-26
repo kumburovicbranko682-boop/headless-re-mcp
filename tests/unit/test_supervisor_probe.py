@@ -72,7 +72,12 @@ def test_probe_ready_returns_within_timeout_when_headers_trickle() -> None:
     assert ok is False
     assert detail.startswith("unreachable:")
     assert elapsed < 1.5, f"readiness probe ran {elapsed:.3f}s against a 0.5s timeout"
-    thread.join(timeout=2.0)
+    thread.join(timeout=5.0)
+    # The outer deadline intentionally returned while urlopen was still
+    # receiving. Do not leak that deliberately slow probe into the next test.
+    assert not thread.is_alive()
+    assert supervisor._ready_probe_slots.acquire(timeout=1.0)
+    supervisor._ready_probe_slots.release()
 
 
 def test_repeated_probe_timeouts_do_not_leak_more_probe_threads(
