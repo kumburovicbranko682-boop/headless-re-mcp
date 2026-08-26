@@ -43,6 +43,7 @@ class ProxyAnalysisMixin:
     def _proxy_artifact_dir(self, session_id: str) -> Path:
         if not session_id or Path(session_id).name != session_id:
             raise ProxyError("invalid_params", "invalid session id")
+        self.registry.get(session_id)
         root = self.settings.artifact_root.expanduser().resolve() / "proxy" / session_id
         root.mkdir(parents=True, exist_ok=True)
         return root
