@@ -122,6 +122,14 @@ def test_agent_message_limits_are_client_errors_not_incidents(
         assert run.status_code == 413
         assert run.json()["detail"] == "message exceeds 1 MiB"
 
+        invalid_model = client.post(
+            "/api/agent/runs",
+            headers=headers,
+            json={"thread_id": thread_id, "model": "x" * 2048},
+        )
+        assert invalid_model.status_code == 400
+        assert "run model" in invalid_model.json()["detail"]
+
 
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
