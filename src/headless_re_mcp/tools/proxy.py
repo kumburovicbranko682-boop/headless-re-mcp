@@ -44,16 +44,16 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Report whether the proxy is running and how many flows it captured.
 
         Answers with running, and when running also host, port, flow_count
-        and retained_max. There is no count or flows field. A session with
-        no proxy answers running false and nothing else, which is not an
-        empty capture.
+        retained_max, retained_bytes and retained_bytes_max. There is no
+        count or flows field. A session with no proxy answers running false
+        and nothing else, which is not an empty capture.
         """
         return _dump(analysis.proxy_status(session_id))
 
     @tools.tool(name="proxy.flows")
     def proxy_flows(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
@@ -63,7 +63,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         row whose request/response body was over the retain cap. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
-        a page that filled the limit is not the whole log.
+        a page that filled the limit is not the whole log. metadata_truncated
+        marks bounded oversized summary fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 

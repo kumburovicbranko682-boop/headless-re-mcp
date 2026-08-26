@@ -96,6 +96,46 @@ class TestProxyCaptureIsBounded:
         assert row["body_omitted"] is True
         assert recorder.count() == 1
 
+    def test_total_raw_flow_bytes_evict_old_bodies_before_memory_grows(
+        self, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.proxy import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_STORED_BODY", 2000)
+        monkeypatch.setattr(mod, "_MAX_RETAINED_BYTES", 1000)
+        recorder = mod._FlowRecorder(capacity=10)
+        first = _FakeFlow(1)
+        second = _FakeFlow(2)
+        first.response.raw_content = b"x" * 600
+        second.response.raw_content = b"y" * 600
+
+        recorder.response(first)
+        recorder.response(second)
+
+        assert recorder.raw("flow-1") is mod._OMITTED_BODY
+        assert recorder.raw("flow-2") is second
+        assert recorder.retained_bytes() <= 1000
+        assert recorder.snapshot()[0]["body_omitted"] is True
+
+    def test_proxy_summary_metadata_is_byte_bounded(self) -> None:
+        from headless_re_mcp.backends.proxy import client as mod
+
+        flow = _FakeFlow(1)
+        flow.request.pretty_url = "é" * mod._MAX_URL_BYTES
+        flow.request.method = "é" * mod._MAX_METADATA_BYTES
+        flow.request.host = "é" * mod._MAX_METADATA_BYTES
+        flow.response.headers["content-type"] = "é" * mod._MAX_METADATA_BYTES
+        recorder = mod._FlowRecorder(capacity=2)
+
+        recorder.response(flow)
+
+        row = recorder.snapshot()[0]
+        assert len(str(row["url"]).encode()) <= mod._MAX_URL_BYTES
+        assert len(str(row["method"]).encode()) <= mod._MAX_METADATA_BYTES
+        assert len(str(row["host"]).encode()) <= mod._MAX_METADATA_BYTES
+        assert len(str(row["content_type"]).encode()) <= mod._MAX_METADATA_BYTES
+        assert row["metadata_truncated"] is True
+
     def test_sequence_numbers_keep_counting_past_the_window(self) -> None:
         recorder = _FlowRecorder(capacity=5)
         for index in range(20):

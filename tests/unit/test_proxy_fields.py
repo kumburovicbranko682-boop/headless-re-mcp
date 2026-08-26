@@ -69,11 +69,16 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     row = payload["flows"][0]
     assert "content type" not in row
     assert row["content_type"] == "text/plain"
+    normalized = backend.flows("s", offset=-10, limit=0)
+    assert normalized["offset"] == 0
+    assert normalized["count"] == 1
+    assert normalized["has_more"] is True
     doc = _tool_docstring("proxy.flows")
     assert "Answers with flows" in doc
     assert "content_type" in doc
     assert "total" in doc
     assert "body_omitted" in doc
+    assert "metadata_truncated" in doc
 
 
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
@@ -136,11 +141,21 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
         backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
     )
     payload = backend.flow_get("s", "f1", tmp_path)
+    repeated = backend.flow_get("s", "f1", tmp_path)
+    hostile = backend.flow_get("s", "../../escaped", tmp_path)
     assert "body" not in payload
     assert "headers" not in payload
     assert "body" not in payload["response"]
     assert payload["response"]["size"] == 200_001
-    assert payload["response"]["body_path"].endswith("flow-f1.bin")
+    paths = [
+        Path(str(item["response"]["body_path"]))
+        for item in (payload, repeated, hostile)
+    ]
+    assert len(set(paths)) == 3
+    assert all(path.parent == tmp_path for path in paths)
+    assert all(path.name.startswith("flow-") and path.suffix == ".bin" for path in paths)
+    assert all(path.is_file() for path in paths)
+    assert not (tmp_path.parent / "escaped.bin").exists()
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
@@ -174,11 +189,15 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert payload["running"] is True
     assert payload["flow_count"] == 3
     assert payload["retained_max"] == _MAX_FLOWS
+    assert payload["retained_bytes"] >= 0
+    assert payload["retained_bytes_max"] > payload["retained_bytes"]
     idle = backend.status("missing")
     assert idle == {"running": False}
     doc = _tool_docstring("proxy.status")
     assert "flow_count" in doc
     assert "retained_max" in doc
+    assert "retained_bytes" in doc
+    assert "retained_bytes_max" in doc
 
 
 def test_proxy_export_har_names_path_and_entry_count(
