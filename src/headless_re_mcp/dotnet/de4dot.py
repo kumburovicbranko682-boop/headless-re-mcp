@@ -224,16 +224,25 @@ class _CapturedStream:
 
     def read_from(self, pipe: Any, limit_event: Event) -> None:
         total = 0
-        while True:
-            chunk = pipe.read(_READ_CHUNK_SIZE)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > self.max_size:
-                self.exceeded = True
-                limit_event.set()
-                break
-            self.chunks.append(chunk)
+        try:
+            while True:
+                chunk = pipe.read(_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > self.max_size:
+                    self.exceeded = True
+                    limit_event.set()
+                    break
+                self.chunks.append(chunk)
+        except (OSError, ValueError):
+            return
+        finally:
+            # The reader owns its pipe and closes it here once read() returns.
+            # The capture thread must never close a pipe this thread might still
+            # be blocked on -- that deadlocks on the stream's lock.
+            with suppress(OSError, ValueError):
+                pipe.close()
 
     def text(self) -> str:
         return b"".join(self.chunks).decode("utf-8", errors="replace")
@@ -262,6 +271,11 @@ def _creation_options() -> dict[str, Any]:
             startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
             startupinfo.wShowWindow = 0
             options["startupinfo"] = startupinfo
+    else:
+        # Its own session so a timeout kill can signal the whole group, and so
+        # the runner's JVM/dotnet child can be found by group even after the
+        # runner exits and the kernel reparents that child to init.
+        options["start_new_session"] = True
     return options
 
 
@@ -312,6 +326,11 @@ def _capture_process(
             "de4dot process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes the runner its own group leader, so the
+    # group id is the runner's pid. Used to find and kill a reparented child by
+    # group after the runner exits, when the parent/child walk sees nothing.
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -333,6 +352,7 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
+    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -348,26 +368,47 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
+            exited = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
-    leftover_children = False
-    if not timed_out:
-        leftover_children = stdout_thread.is_alive() or stderr_thread.is_alive()
-        if not leftover_children and process.pid:
+    if exited:
+        # The runner ended on its own; make sure it left nothing behind. On
+        # Windows the job object and the Toolhelp walk cover this. On POSIX the
+        # parent/child walk is blind to a child the runner orphaned to init, so
+        # enumerate the session group the runner led instead.
+        readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
+        if os.name == "nt":
             from headless_re_mcp.core.process_tree import collect_descendants
 
-            leftover_children = bool(collect_descendants(int(process.pid)))
-    if leftover_children:
-        _terminate_process(process)
-        stdout_thread.join(timeout=2.0)
-        stderr_thread.join(timeout=2.0)
-    with suppress(OSError):
-        stdout_pipe.close()
-    with suppress(OSError):
-        stderr_pipe.close()
+            leftover_children = readers_blocked or bool(
+                process.pid and collect_descendants(int(process.pid))
+            )
+        else:
+            from headless_re_mcp.core.process_tree import collect_process_group
+
+            leftover_children = readers_blocked or bool(
+                group_id and collect_process_group(group_id)
+            )
+        if leftover_children:
+            _terminate_process(process)
+            if os.name != "nt" and group_id:
+                from headless_re_mcp.core.process_tree import terminate_process_group
+
+                terminate_process_group(group_id)
+            stdout_thread.join(timeout=2.0)
+            stderr_thread.join(timeout=2.0)
+    # The readers close their own pipes; only close here when the reader has
+    # finished, so a reader still blocked on a survivor's pipe never wedges this
+    # thread on close().
+    if not stdout_thread.is_alive():
+        with suppress(OSError):
+            stdout_pipe.close()
+    if not stderr_thread.is_alive():
+        with suppress(OSError):
+            stderr_pipe.close()
 
     returncode = process.poll()
     if returncode is None:

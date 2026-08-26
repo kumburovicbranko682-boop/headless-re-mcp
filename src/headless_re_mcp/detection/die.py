@@ -213,6 +213,12 @@ class _CapturedStream:
             # error envelope.
             return
         finally:
+            # The reader owns its pipe and closes it here, on its own thread,
+            # once read() has returned. The capture thread must never close a
+            # pipe this thread might still be blocked on -- that deadlocks on
+            # the buffered stream's lock -- so this is the only safe place.
+            with suppress(OSError, ValueError):
+                pipe.close()
             self.finished.set()
 
     def text(self) -> str:
@@ -249,6 +255,9 @@ def _creation_options() -> dict[str, Any]:
             options["startupinfo"] = startupinfo
     else:
         options["creationflags"] = 0
+        # Its own session so a timeout kill can signal the whole group and reach
+        # a wrapper's child the parent/child walk would miss.
+        options["start_new_session"] = True
     return options
 
 
@@ -351,8 +360,13 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
-        _close_pipe(stdout_pipe)
-        _close_pipe(stderr_pipe)
+        # The readers close their own pipes; only close here when the reader has
+        # already finished, so a reader still blocked on a survivor's pipe never
+        # wedges this thread on close().
+        if not stdout_thread.is_alive():
+            _close_pipe(stdout_pipe)
+        if not stderr_thread.is_alive():
+            _close_pipe(stderr_pipe)
         stdout_thread.join(timeout=0.1)
         stderr_thread.join(timeout=0.1)
 

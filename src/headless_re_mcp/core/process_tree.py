@@ -179,6 +179,66 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
+def collect_process_group(pgid: int) -> list[int]:
+    """POSIX: live PIDs whose process group is ``pgid`` (bounded). [] on Windows.
+
+    A tool started with ``start_new_session`` leads its own group, so its
+    descendants carry that group id even after the kernel reparents an orphan to
+    init. Enumerating by the recorded group finds those survivors when the
+    parent/child walk no longer can, and it never trusts a reaped leader's pid:
+    a member is matched on its own ``pgrp`` field, not on who its parent is.
+    """
+    if os.name == "nt" or not isinstance(pgid, int) or pgid <= 0:
+        return []
+    members: list[int] = []
+    try:
+        entries = Path("/proc").iterdir()
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == pgid:
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        # After "pid (comm)" the fields are state, ppid, pgrp, ... so pgrp is
+        # index 2 -- the same parse _scan_proc_ppid uses for ppid at index 1.
+        fields = stat[close + 2 :].split()
+        try:
+            member_pgrp = int(fields[2])
+        except (IndexError, ValueError):
+            continue
+        if member_pgrp == pgid:
+            members.append(pid)
+            if len(members) >= _MAX_KILL_DESCENDANTS:
+                break
+    members.sort()
+    return members
+
+
+def terminate_process_group(pgid: int) -> list[int]:
+    """POSIX: kill every live member of process group ``pgid``. [] on Windows.
+
+    Members are enumerated by their recorded group and killed one by one, rather
+    than with ``killpg(pgid)``: once the leader is reaped its pid can be reused,
+    and a bare group signal on a recycled pid could hit an unrelated group. A
+    per-member kill keyed on the group cannot.
+    """
+    killed: list[int] = []
+    for pid in collect_process_group(pgid):
+        with suppress(Exception):
+            _kill_pid(pid)
+            killed.append(pid)
+    return killed
+
+
 def _kill_own_process_group(pid: int) -> list[int]:
     """POSIX: kill ``pid``'s process group, but only when ``pid`` leads it.
 

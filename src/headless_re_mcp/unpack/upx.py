@@ -173,6 +173,11 @@ class _CapturedStream:
         except (OSError, ValueError):
             return
         finally:
+            # The reader owns its pipe and closes it here once read() returns.
+            # The capture thread must never close a pipe this thread might still
+            # be blocked on -- that deadlocks on the stream's lock.
+            with suppress(OSError, ValueError):
+                pipe.close()
             self.finished.set()
 
     def text(self) -> str:
@@ -207,6 +212,9 @@ def _creation_options() -> dict[str, Any]:
             options["startupinfo"] = startupinfo
     else:
         options["creationflags"] = 0
+        # Its own session so a timeout kill can signal the whole group and reach
+        # a wrapper's child the parent/child walk would miss.
+        options["start_new_session"] = True
     return options
 
 
@@ -289,10 +297,15 @@ def _capture_process(
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
-    with suppress(OSError):
-        stdout_pipe.close()
-    with suppress(OSError):
-        stderr_pipe.close()
+    # The readers close their own pipes; only close here when the reader has
+    # finished, so a reader still blocked on a survivor's pipe never wedges this
+    # thread on close().
+    if not stdout_thread.is_alive():
+        with suppress(OSError):
+            stdout_pipe.close()
+    if not stderr_thread.is_alive():
+        with suppress(OSError):
+            stderr_pipe.close()
 
     returncode = process.poll()
     if returncode is None:
