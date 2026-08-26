@@ -609,6 +609,8 @@ class InMemoryAnalysisRepository:
         return bool(relative.parts) and relative.parts[0] != "meta"
 
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:
+        if type(max_total_bytes) is not int or max_total_bytes < 1:
+            raise ValueError("max_total_bytes must be a positive integer")
         with self.transaction():
             ordered = sorted(self._artifacts.values(), key=lambda item: str(item["created_at"]))
             total = sum(int(item["size"]) for item in ordered)
