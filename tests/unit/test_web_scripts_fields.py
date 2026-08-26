@@ -65,6 +65,7 @@ def test_web_scripts_says_when_older_scripts_were_dropped(monkeypatch: Any) -> N
     assert "Answers with scripts" in doc
     assert "has_more" in doc
     assert "dropped" in doc
+    assert "metadata_truncated" in doc
 
 
 def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) -> None:
@@ -86,3 +87,4 @@ def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) ->
     doc = _tool_docstring("web.wasm.list")
     assert "has_more" in doc
     assert "dropped" in doc
+    assert "metadata_truncated" in doc
