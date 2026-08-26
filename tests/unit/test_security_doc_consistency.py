@@ -44,3 +44,39 @@ def test_every_test_file_the_docs_cite_exists(doc: str) -> None:
         assert cited, "SECURITY.md should cite its enforcing contract tests"
     for rel in sorted(cited):
         assert (ROOT / rel).is_file(), f"{doc} cites {rel}, which does not exist"
+
+
+def _contributing_gate_commands() -> list[str]:
+    """The first fenced bash block under CONTRIBUTING's 质量门 header."""
+    text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    after = text.split("## 质量门", 1)[1]
+    block = re.search(r"```bash\n(.*?)```", after, re.S)
+    assert block is not None, "CONTRIBUTING's 质量门 lost its command block"
+    commands = []
+    for line in block.group(1).splitlines():
+        command = line.split("#", 1)[0].strip()
+        if command:
+            commands.append(command)
+    return commands
+
+
+def test_the_documented_quality_gate_matches_the_ci_workflow() -> None:
+    """CONTRIBUTING tells a contributor to run the CI gate locally.
+
+    If CI renamed a step's command, the documented local gate would drift from
+    what actually blocks the PR -- someone runs the doc's command, it passes,
+    and CI still rejects them. Pin every documented gate command (comments
+    stripped) to a literal occurrence in ci.yml, plus the install extra.
+    """
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    commands = _contributing_gate_commands()
+    assert commands, "no gate commands parsed from CONTRIBUTING"
+    missing = [command for command in commands if command not in ci]
+    assert not missing, f"CONTRIBUTING documents gate commands CI does not run: {missing}"
+
+    # The install extra CONTRIBUTING hands new contributors must be the one CI
+    # installs, or a fresh clone is set up differently from the gate.
+    assert 'pip install -e ".[test,dev,web]"' in ci
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert 'pip install -e ".[test,dev,web]"' in contributing
