@@ -410,7 +410,7 @@ class FridaClient:
                         "type": str(item.get("type", "")),
                     }
                 )
-            return {
+            result = {
                 "found": bool(raw.get("found")),
                 "module": str(raw.get("module") or module_name),
                 "base": str(raw.get("base") or ""),
@@ -418,9 +418,19 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
+        except BaseException:
             with contextlib.suppress(Exception):
                 session.detach()
+            raise
+        try:
+            session.detach()
+        except Exception as exc:
+            raise FridaError(
+                "frida_detach_failed",
+                f"export probe detach failed: {type(exc).__name__}: {exc}",
+                pid=pid,
+            ) from exc
+        return result
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
