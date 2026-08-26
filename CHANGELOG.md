@@ -41,6 +41,20 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
+### 修复（`..` 绕过产物归属守卫）
+
+- 全仓沿用 `not session_id or Path(session_id).name != session_id` 作「单路径段」判据,但
+  `Path("..").name == ".."`,故 `..` 能溜过。用在 `_session_artifact_roots` 时后果最重:每个
+  归属根 `<category>/<id>` 会坍缩成 `<category>/..`,即 artifact 根本身,于是 `session_id=".."`
+  的调用者被判定「拥有」**所有**其它会话的产物——而 `unpack.*`/`apk.*`/`dotnet.*` 正是靠
+  `_session_owns_artifact_path` 判定客户端传入的磁盘 `path` 是否属于本会话才放行读写。
+  (`_session_work_dir` 因另有 `relative_to` 二次围栏而幸免,`..` 在那里已 fail-closed。)
+  新增 `_is_safe_session_segment` 显式拒绝 `.`/`..`/空/含分隔符,并让 `_session_artifact_roots`
+  与三个 detection 产物写入函数统一走它。新增契约测试直测归属守卫:自有子树/归属根为真、
+  他会话子树与根外路径为假、非单段 id(含 `..`)一律不拥有、符号链接无法把路径偷带出树,
+  并对 `..` 越权单列回归。
+- 产物归属守卫此前零直接测试,本次补齐。
+
 ### 修复（时间线 session_id 路径穿越）
 
 - `session.timeline` 把客户端传入的 `session_id` 原样交给 `session_timeline_path`,后者只是

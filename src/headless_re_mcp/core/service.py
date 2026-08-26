@@ -3075,9 +3075,24 @@ def _session_json(session: Session) -> JsonObject:
     return value
 
 
+def _is_safe_session_segment(session_id: str) -> bool:
+    """True only when ``session_id`` is one ordinary path component.
+
+    ``Path(session_id).name != session_id`` alone is not enough: ``..`` passes
+    it because ``Path("..").name == ".."``. Left unchecked in
+    ``_session_artifact_roots`` that turned every owned root ``<cat>/<id>`` into
+    ``<cat>/..`` -- i.e. the artifact root itself -- so a caller passing
+    ``session_id=".."`` was judged to own every other session's artifacts.
+    Reject the dot segments (and empties/separators) explicitly.
+    """
+    if not session_id or session_id in {".", ".."}:
+        return False
+    return Path(session_id).name == session_id
+
+
 def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path, ...]:
     """Return owned artifact subtrees for one session (fail-closed ownership)."""
-    if not session_id or Path(session_id).name != session_id:
+    if not _is_safe_session_segment(session_id):
         return ()
     root = artifact_root.expanduser().resolve()
     return (
@@ -3120,7 +3135,7 @@ def _write_die_artifact(
     result: DieScanResult,
 ) -> str:
     """Persist bounded raw DIE JSON with an atomic rename under the artifact root."""
-    if not session_id or Path(session_id).name != session_id:
+    if not _is_safe_session_segment(session_id):
         raise OSError("invalid session id for artifact path")
     directory = artifact_root.expanduser().resolve() / "detection" / session_id
     directory.mkdir(parents=True, exist_ok=True)
@@ -3161,7 +3176,7 @@ def _write_die_artifact(
 
 
 def _exeinfope_log_path(artifact_root: Path, session_id: str) -> Path:
-    if not session_id or Path(session_id).name != session_id:
+    if not _is_safe_session_segment(session_id):
         raise OSError("invalid session id for artifact path")
     directory = artifact_root.expanduser().resolve() / "detection" / session_id
     directory.mkdir(parents=True, exist_ok=True)
@@ -3174,7 +3189,7 @@ def _write_exeinfope_artifact(
     result: ExeinfopeScanResult,
 ) -> str:
     """Persist bounded raw Exeinfo PE log metadata under the artifact root."""
-    if not session_id or Path(session_id).name != session_id:
+    if not _is_safe_session_segment(session_id):
         raise OSError("invalid session id for artifact path")
     directory = artifact_root.expanduser().resolve() / "detection" / session_id
     directory.mkdir(parents=True, exist_ok=True)
