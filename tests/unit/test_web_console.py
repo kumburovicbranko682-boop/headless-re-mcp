@@ -71,6 +71,34 @@ def test_token_query_cookie_authorizes_later_api_calls(tmp_path: Path) -> None:
     assert ok.json()["ok"] is True
 
 
+def test_the_spa_fallback_serves_deep_links_but_never_api_paths(tmp_path: Path) -> None:
+    """The catch-all route must behave like a router, not a wildcard.
+
+    Refreshing a client-side deep link (/threads/x) must return the SPA shell,
+    or every bookmark 404s. But the same catch-all sits behind the API routers,
+    so an *unknown* /api/... path falls through to it -- if it answered with
+    HTML, an API client with a typo would try to parse the console page as
+    JSON. Pin both halves, plus 401 for an unauthenticated deep link and 404
+    for a missing asset (a stale asset hash must fail, not load HTML as JS).
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert client.get("/threads/some-thread-id").status_code == 401
+
+    deep_link = client.get("/threads/some-thread-id", headers=headers)
+    assert deep_link.status_code == 200
+    assert '<div id="root"></div>' in deep_link.text
+
+    for path in ("/api/no/such/route", "/assets/stale-build-hash.js"):
+        fell_through = client.get(path, headers=headers)
+        assert fell_through.status_code == 404, path
+        assert "root" not in fell_through.text, path
+
+
 def test_percent_encoded_token_equals_still_opens_the_console(tmp_path: Path) -> None:
     from headless_re_mcp.web.routes.legacy import repair_encoded_token_query
 
