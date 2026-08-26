@@ -517,7 +517,26 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 - **监控台认证边界成套固定**：错 token 与缺 token 同样 401 且不发放 bootstrap cookie；
   公网源地址即使带对 token 也被 403(含 `/readyz`);`/healthz` 是唯一的非回环例外且不含
   任何秘密;IPv6 回环(`::1`)照常通过主机守卫;被截短/篡改的 token 文件会被强 token 顶替
-  并保持 0600 权限。正是这批测试暴露了上面「回环护栏 500」的缺陷。
+  并保持 0600 权限。正是这批测试暴露了上面「回环护栏 500」的缺陷。`?token%3D…` 的编码
+  修复也补齐了边界:无标记原样透传、标记在中段、尾随参数保留、大小写不敏感。
+- **产物下载路径逃逸守卫**：`/api/artifacts/{id}/file` 无论 DB 行指向哪里,凡解析后越出
+  产物根(含 `根/../外部` 这类回爬)一律 `403 artifact_outside_root`;未知 id → 404、
+  根内真实文件 → 200、文件已被删 → 404。
+- **`run_cli_safely` CLI 边界**：成功透传退出码、Ctrl-C 归 130、崩溃归 1 并在 stderr 打
+  一行脱敏的机器可读信封(不吐 traceback、不漏口令)。
+- **apksigner 口令抹除双路径固定**：签名与校验两条失败路径都把 `--ks-pass pass:…` 里的
+  口令从 stderr 抹成 `***` 再进错误信封(`SECURITY.md` 明文承诺,此前无测试)。
+- **会话目标守卫直测**：`Session.require_pe/require_target/require_binary/require_architecture/
+  require_locator` 各自要求哪种 `target`、错目标抛携带 `target_mismatch` 码与 expected/actual
+  详情的 `TargetMismatch`(此前只在 service 层间接验过两个工具)。
+- **只读开关解析固定**：`local_full_access` 的 env/JSON 解析——未配置=完全访问、falsy
+  (`0/false/no/off`,大小写与空格不敏感)=只读、truthy=完全访问、JSON 可选只读且 env 覆盖
+  JSON——写守卫读的 `catalog.write_allowed` 正来自它,解析错就会悄悄重开写面。
+
+### 变更（Android 后端清理）
+
+- 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
+  死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 
 ## [0.2.1] - 2026-08-12
 
