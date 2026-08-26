@@ -85,6 +85,7 @@ from headless_re_mcp.core.runtime_state import (
     BackendRuntimePhase,
     DebuggeeSnapshot,
     DebuggeeStateOwner,
+    RuntimeCloseTimeout,
     TraceStateOwner,
     UnpackStateOwner,
     WorkflowStateOwner,
@@ -311,6 +312,7 @@ _FATAL_WORKER_ERRORS = frozenset(
 _CONSUMER_CURSOR_ERROR = "event_cursor_inconsistent"
 _MAX_WORKFLOW_EVENT_BUDGET = 100_000
 _OEP_REGION_SNAPSHOT_LIMIT = 512
+_RUNTIME_CLOSE_LOCK_TIMEOUT_S = 2.0
 _RUN_CONTROL_TRANSITION_EVENTS: dict[str, frozenset[str]] = {
     "debug.resume": frozenset({"debug.resumed"}),
     "debug.step_into": frozenset({"debug.resumed", "debug.stepped"}),
@@ -1087,20 +1089,37 @@ class AnalysisService(
             runtime_close_failed = False
             if kind == BackendKind.X64DBG:
                 self._stop_event_drain(runtime)
-            with runtime.lock:
+            lock_acquired = runtime.lock.acquire(timeout=_RUNTIME_CLOSE_LOCK_TIMEOUT_S)
+            if lock_acquired:
                 try:
-                    runtime.worker.close()
-                except BaseException as exc:
-                    runtime_close_failed = True
-                    close_errors.append((kind.value, exc))
-                    # Terminate is already the fallback for a failed close, and
-                    # it can throw in its own right: on Windows the worker's
-                    # temporary userdir is often still held when it runs. Letting
-                    # that escape stranded the session in CLOSING, which accepts
-                    # only CLOSED or FAILED, after the runtime had already been
-                    # popped and nothing held the worker any more.
-                    with suppress(BaseException):
-                        runtime.worker.terminate()
+                    try:
+                        runtime.worker.close()
+                    except BaseException as exc:
+                        runtime_close_failed = True
+                        close_errors.append((kind.value, exc))
+                        # Terminate is already the fallback for a failed close, and
+                        # it can throw in its own right: on Windows the worker's
+                        # temporary userdir is often still held when it runs. Letting
+                        # that escape stranded the session in CLOSING, which accepts
+                        # only CLOSED or FAILED, after the runtime had already been
+                        # popped and nothing held the worker any more.
+                        with suppress(BaseException):
+                            runtime.worker.terminate()
+                finally:
+                    runtime.lock.release()
+            else:
+                runtime_close_failed = True
+                close_errors.append(
+                    (
+                        kind.value,
+                        RuntimeCloseTimeout(kind, _RUNTIME_CLOSE_LOCK_TIMEOUT_S),
+                    )
+                )
+                # The in-flight request owns the lock, so a graceful close would
+                # only queue behind the same hung call. Worker termination is the
+                # recovery path and must not depend on acquiring the service lock.
+                with suppress(BaseException):
+                    runtime.worker.terminate()
             if kind == BackendKind.X64DBG:
                 self._finalize_trace_after_worker_loss(
                     session_id,

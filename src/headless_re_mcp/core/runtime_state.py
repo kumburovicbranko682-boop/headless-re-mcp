@@ -25,6 +25,17 @@ class BackendRuntimePhase(StrEnum):
     CLOSED = "closed"
 
 
+class RuntimeCloseTimeout(TimeoutError):
+    """A backend request lock did not become available for teardown."""
+
+    def __init__(self, kind: BackendKind, timeout: float) -> None:
+        self.kind = kind
+        self.timeout = timeout
+        super().__init__(
+            f"{kind.value} backend remained busy for {timeout:g}s; forced termination was requested"
+        )
+
+
 @dataclass(slots=True)
 class BackendRuntimeOwner(Generic[RuntimeT]):
     """Own backend workers independently from session lifecycle state."""

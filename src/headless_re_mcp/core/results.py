@@ -18,6 +18,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
 from headless_re_mcp.core.addressing import AddressSyncError
 from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
+from headless_re_mcp.core.runtime_state import RuntimeCloseTimeout
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionLimitExceeded,
@@ -109,6 +110,16 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=str(exc),
             details={**details, "limit": exc.limit},
             retryable=True,
+        )
+    elif isinstance(exc, RuntimeCloseTimeout):
+        error = RpcError(
+            code="backend_close_timeout",
+            message=str(exc),
+            details={
+                **details,
+                "backend": exc.kind.value,
+                "timeout_seconds": exc.timeout,
+            },
         )
     elif isinstance(exc, FileNotFoundError):
         error = RpcError(code="file_not_found", message=str(exc), details=dict(details))
