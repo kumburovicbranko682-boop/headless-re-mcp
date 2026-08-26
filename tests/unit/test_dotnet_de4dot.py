@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import io
+import subprocess
 import struct
 from pathlib import Path
+
+import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
-from headless_re_mcp.dotnet.de4dot import De4dotResult
+from headless_re_mcp.dotnet import de4dot as de4dot_adapter
+from headless_re_mcp.dotnet.de4dot import De4dotError, De4dotErrorCode, De4dotResult
 
 
 def _write_verified_clr_pe(path: Path) -> None:
@@ -50,6 +55,60 @@ def _write_verified_clr_pe(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)
     path.write_bytes(image)
+
+
+def test_de4dot_timeout_reader_joins_share_one_drain_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two stuck pipe readers must not add four seconds after timeout."""
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _Process:
+        stdout = io.BytesIO(b"")
+        stderr = io.BytesIO(b"")
+        killed = False
+
+        def poll(self) -> int | None:
+            return -9 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class _StuckReader:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _Process()
+    monkeypatch.setattr(
+        de4dot_adapter.subprocess,
+        "Popen",
+        lambda *args, **kwargs: process,
+    )
+    monkeypatch.setattr(de4dot_adapter, "Thread", _StuckReader)
+    monkeypatch.setattr(de4dot_adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        de4dot_adapter,
+        "sleep",
+        lambda delay: clock.__setitem__(0, clock[0] + delay),
+    )
+    monkeypatch.setattr(de4dot_adapter, "_terminate_process", lambda child: child.kill())
+
+    with pytest.raises(De4dotError) as caught:
+        de4dot_adapter._capture_process(["fake-de4dot"], timeout=0.1, max_output_size=32)
+
+    assert caught.value.code == De4dotErrorCode.TIMEOUT
+    assert len(join_timeouts) == 2
+    assert sum(join_timeouts) <= 2.0
+    assert clock[0] <= 2.1
 
 
 def test_dotnet_deobfuscate_mocked(tmp_path: Path) -> None:
