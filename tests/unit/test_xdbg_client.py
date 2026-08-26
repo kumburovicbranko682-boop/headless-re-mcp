@@ -6,7 +6,7 @@ import time
 from collections import deque
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, RLock
+from threading import Event, Lock, RLock, Thread
 from typing import Any
 
 import pytest
@@ -652,6 +652,43 @@ class HandshakeTransport:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_terminate_does_not_wait_forever_for_the_request_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck RPC must not turn forced worker termination into another hang."""
+    client = object.__new__(XdbgClient)
+    client._request_lock = RLock()
+    client._closed = False
+    transport = ScriptedTransport()
+    client._transport = transport
+    finished = Event()
+    client._terminate_process = lambda: None  # type: ignore[method-assign]
+    client._finish_threads = finished.set  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        client_module,
+        "_TERMINATE_LOCK_TIMEOUT_SECONDS",
+        0.05,
+        raising=False,
+    )
+
+    client._request_lock.acquire()
+    thread = Thread(target=client.terminate, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(timeout=0.25)
+    elapsed = time.monotonic() - started
+    returned_within_bound = not thread.is_alive()
+    client._request_lock.release()
+    thread.join(timeout=2.0)
+
+    assert returned_within_bound, "forced termination remained blocked on the request lock"
+    assert elapsed < 0.25
+    assert client._closed is True
+    assert client._transport is None
+    assert transport.closed is True
+    assert finished.is_set()
 
 
 def _prepare_reconnect(client: XdbgClient) -> None:
