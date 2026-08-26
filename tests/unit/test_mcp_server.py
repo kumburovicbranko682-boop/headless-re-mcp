@@ -1,9 +1,46 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
+from headless_re_mcp.config import Settings
+from headless_re_mcp.core.commands import COMMAND_CATALOG
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.mcp.server import create_server
+
+
+@pytest.mark.parametrize("full_access", [True, False])
+def test_create_server_wires_write_allowed_from_local_full_access(
+    tmp_path: Path, full_access: bool
+) -> None:
+    """A read-only MCP deployment must not silently keep the full write surface.
+
+    local_full_access is written by setup and read by create_server into the
+    shared catalog's write_allowed flag; the standing comment there records that
+    it once went unread and a read-only deployment got every write anyway.
+    Nothing pinned the wiring, so a refactor could drop it and reopen exactly
+    that hole. Assert both directions, restoring the global flag afterwards.
+    """
+    settings = replace(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        ),
+        local_full_access=full_access,
+    )
+    previous = COMMAND_CATALOG.write_allowed
+    service = AnalysisService(settings)
+    try:
+        create_server(service)
+        assert COMMAND_CATALOG.write_allowed is full_access
+    finally:
+        COMMAND_CATALOG.write_allowed = previous
+        service.close_all()
 
 
 @pytest.mark.asyncio
