@@ -131,6 +131,35 @@ def test_web_exception_returns_json_instead_of_crashing(incident_log: Path) -> N
     assert incident_log.is_file()
 
 
+def test_a_web_handler_secret_is_scrubbed_from_the_500_body_and_log(
+    incident_log: Path,
+) -> None:
+    """A raise carrying a runtime credential must not leak it over HTTP.
+
+    The tool-level envelope is tested for this; the FastAPI boundary walks the
+    same exception_envelope path, but nothing asserted the HTTP 500 body itself
+    is scrubbed. Model the realistic case -- a secret interpolated into the
+    message at runtime -- and require it absent from both the response and the
+    incident log.
+    """
+    app = FastAPI()
+    boundary.register_fastapi_exception_boundary(app)
+    secret = "sk-live-" + "abcdef0123456789"
+
+    @app.get("/leak")
+    def leak() -> None:
+        raise RuntimeError(f"upstream rejected Authorization: Bearer {secret}")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/leak")
+
+    assert response.status_code == 500
+    body = response.text
+    assert secret not in body
+    assert "REDACTED" in response.json()["error"]["message"]
+    assert secret not in incident_log.read_text(encoding="utf-8")
+
+
 def test_the_boundary_still_answers_when_its_own_log_cannot_be_opened(
     incident_log: Path,
     monkeypatch: pytest.MonkeyPatch,

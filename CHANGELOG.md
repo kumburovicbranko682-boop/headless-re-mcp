@@ -584,6 +584,10 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **Web 异常边界的 500 响应脱敏端到端**：工具级信封已验过运行期口令被抹,但 FastAPI 边界虽然
+  走同一条 `exception_envelope` 路径,此前无测试断言 HTTP 500 响应体本身被脱敏。新增测试:一个
+  处理器抛出把 `Authorization: Bearer <运行期 secret>` 插进消息的异常,断言该 secret 既不出现在
+  500 响应体、消息里出现 `REDACTED`,也不落进事故日志。
 - **`capped_file_size` 直测**：`prune_capped_dir` 会保留最新一项(即使它单个就超预算),
   `capped_file_size` 是写入方用来当场删掉「刚写下却单个爆表」的那一项的配套原语——越界磁盘
   兜底。前者有直测,后者此前只经一个 monkeypatch 上限的截图测试间接触到。补三态直测:
