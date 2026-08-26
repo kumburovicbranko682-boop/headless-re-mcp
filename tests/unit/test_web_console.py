@@ -287,6 +287,88 @@ def test_artifact_download_serves_only_real_files_under_the_root(
     assert missing.json()["detail"] == "artifact_missing"
 
 
+def test_web_preview_refuses_a_path_outside_the_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preview PNG route serves a file off disk, so it guards the root too."""
+    from headless_re_mcp.core.models import Result, RpcError
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    outside = tmp_path / "outside" / "leak.png"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setattr(
+        AnalysisService,
+        "web_preview",
+        lambda self, sid: Result(ok=True, data={"path": str(outside)}),
+    )
+    refused = client.get("/api/sessions/s1/web/preview", headers=headers)
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == "preview_not_found"
+
+    inside = settings.artifact_root / "web" / "s1" / "preview.png"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_bytes(b"\x89PNG\r\n\x1a\nreal")
+    monkeypatch.setattr(
+        AnalysisService,
+        "web_preview",
+        lambda self, sid: Result(ok=True, data={"path": str(inside)}),
+    )
+    served = client.get("/api/sessions/s1/web/preview", headers=headers)
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "image/png"
+    assert served.content == b"\x89PNG\r\n\x1a\nreal"
+
+    monkeypatch.setattr(
+        AnalysisService,
+        "web_preview",
+        lambda self, sid: Result(ok=False, error=RpcError(code="no_preview", message="none")),
+    )
+    failed = client.get("/api/sessions/s1/web/preview", headers=headers)
+    assert failed.status_code == 409
+
+
+def test_virtual_desktop_frame_refuses_a_path_outside_the_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    outside = tmp_path / "outside" / "frame.bmp"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"BMx")
+    monkeypatch.setattr(
+        AnalysisService,
+        "virtual_desktop_capture",
+        lambda self, sid, hwnd=None: Result(ok=True, data={"path": str(outside)}),
+    )
+    refused = client.get("/api/sessions/s1/virtual-desktop/frame", headers=headers)
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == "capture_not_found"
+
+    inside = settings.artifact_root / "ui" / "s1" / "frame.bmp"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_bytes(b"BMreal")
+    monkeypatch.setattr(
+        AnalysisService,
+        "virtual_desktop_capture",
+        lambda self, sid, hwnd=None: Result(ok=True, data={"artifact": str(inside)}),
+    )
+    served = client.get("/api/sessions/s1/virtual-desktop/frame", headers=headers)
+    assert served.status_code == 200
+    assert served.content == b"BMreal"
+
+
 def test_a_weak_token_file_is_replaced_with_a_strong_private_one(tmp_path: Path) -> None:
     """A truncated or tampered token file must not become the accepted secret."""
     path = tmp_path / "web_token.json"
