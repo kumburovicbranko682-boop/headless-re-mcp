@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +162,7 @@ def test_ghidra_refuses_an_oversized_export_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ghidra_client, "_MAX_EXPORT_BYTES", 64)
+    real_stat = Path.stat
 
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
         del kwargs
@@ -169,7 +171,16 @@ def test_ghidra_refuses_an_oversized_export_json(
                 Path(arg).write_text('{"items": ["' + ("x" * 80) + '"]}', encoding="utf-8")
         return Completed(0, b"ok", b"")
 
+    def stale_stat(path: Path, *args: Any, **kwargs: Any) -> Any:
+        result = real_stat(path, *args, **kwargs)
+        if path.suffix == ".json":
+            fields = list(result)
+            fields[6] = 1
+            return os.stat_result(fields)
+        return result
+
     monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    monkeypatch.setattr(Path, "stat", stale_stat)
     client = _client(tmp_path)
     with pytest.raises(ghidra_client.GhidraError) as caught:
         client.functions(_binary(tmp_path), tmp_path / "project")
