@@ -170,3 +170,16 @@ def test_audit_json_cap_stays_valid_json() -> None:
     assert len(clipped) <= 4000
     parsed = json.loads(clipped)
     assert parsed["truncated"] is True
+
+
+@pytest.mark.parametrize("limit", (1, 2, 32, 64, 100))
+def test_audit_json_cap_never_slices_invalid_json(limit: int) -> None:
+    from headless_re_mcp.core.store.sqlite_store import encode_audit_json
+
+    clipped = encode_audit_json(
+        {"note": ('quote:" slash:\\ nul:\x00 界' * 1000)},
+        limit=limit,
+    )
+
+    assert len(clipped) <= limit
+    json.loads(clipped)
