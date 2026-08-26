@@ -555,12 +555,19 @@ class InMemoryAnalysisRepository:
 
     def register_artifact(self, **fields: Any) -> JsonObject:
         path = Path(fields["path"])
+        if path.is_file():
+            size = path.stat().st_size
+        else:
+            provided_size = fields.get("size")
+            size = int(provided_size) if provided_size is not None else 0
+        if size < 0:
+            raise ValueError("artifact size cannot be negative")
         item: JsonObject = {
             "id": uuid4().hex,
             "session_id": str(fields["session_id"]),
             "kind": str(fields["kind"]),
             "path": str(path),
-            "size": int(fields.get("size", path.stat().st_size if path.is_file() else 0)),
+            "size": size,
             "sha256": str(fields["sha256"]),
             "source": str(fields["source"]),
             "created_at": datetime.now(UTC).isoformat(),
