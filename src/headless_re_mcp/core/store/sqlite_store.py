@@ -186,6 +186,15 @@ class SessionStore:
         with suppress(OSError):
             parent.rmdir()
 
+    def _collectable_artifact_path(self, path: Path) -> bool:
+        """Only artifact payloads may be unlinked; metadata is never collectible."""
+        root = self.db_path.parent.parent.resolve()
+        try:
+            relative = path.expanduser().resolve().relative_to(root)
+        except (OSError, ValueError):
+            return False
+        return bool(relative.parts) and relative.parts[0] != "meta"
+
     def check_writable(self) -> None:
         """Raise unless the database would accept a write right now.
 
@@ -632,6 +641,8 @@ class SessionStore:
         Skipping keeps the row, so the artifact stays readable if the handle was
         the only problem and is collected on a later pass.
         """
+        if type(max_total_bytes) is not int or max_total_bytes < 1:
+            raise ValueError("max_total_bytes must be a positive integer")
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, path, size FROM artifacts ORDER BY created_at ASC"
@@ -639,6 +650,7 @@ class SessionStore:
             total = sum(int(row["size"]) for row in rows)
             removed: list[str] = []
             skipped: list[JsonObject] = []
+            invalid_paths: list[str] = []
             # The newest artifact is never collected. Collection now also runs
             # right after registration, and a single dump larger than the whole
             # budget would otherwise delete the file its caller is about to
@@ -648,6 +660,14 @@ class SessionStore:
                     break
                 path = Path(row["path"])
                 size = int(row["size"])
+                if not self._collectable_artifact_path(path):
+                    # A corrupted or manually edited row must never turn GC
+                    # into an arbitrary-file unlink primitive. Drop only the
+                    # untrusted metadata and leave the referenced path alone.
+                    conn.execute("DELETE FROM artifacts WHERE id=?", (row["id"],))
+                    invalid_paths.append(row["id"])
+                    total -= size
+                    continue
                 if path.is_file():
                     try:
                         path.unlink()
@@ -664,5 +684,7 @@ class SessionStore:
             "count": len(removed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "invalid_paths": invalid_paths,
+            "invalid_path_count": len(invalid_paths),
             "bytes_remaining_estimate": max(0, total),
         }

@@ -154,11 +154,13 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Delete registered artifacts, oldest first, until the tree fits the budget.
 
-        Answers with removed, count, skipped, skipped_count and
-        bytes_remaining_estimate. This destroys files. Collection also runs on
-        its own after registration and session close, so calling it by hand is
-        for reclaiming space now, not for routine upkeep. The newest artifact
-        and any file another handle still holds are kept.
+        Answers with removed, count, skipped, skipped_count, invalid_paths,
+        invalid_path_count and bytes_remaining_estimate. This destroys files.
+        Collection also runs on its own after registration and session close,
+        so calling it by hand is for reclaiming space now, not for routine
+        upkeep. The newest artifact and any file another handle still holds are
+        kept. Untrusted rows outside artifact_root are dropped without unlinking
+        the referenced path and reported in invalid_paths.
         """
         return _dump(analysis.artifacts_gc(max_total_bytes=max_total_bytes))
 

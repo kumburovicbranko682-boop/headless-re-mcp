@@ -1069,7 +1069,8 @@ class TestArtifactBudgetAppliesToAnOpenSession:
         service = self._service(tmp_path, budget=4096)
         try:
             blobs = [
-                self._write(tmp_path, f"dump-{index}.bin", 1024) for index in range(12)
+                self._write(tmp_path / "artifacts", f"dump-{index}.bin", 1024)
+                for index in range(12)
             ]
             for index, blob in enumerate(blobs):
                 service.record_artifact(
@@ -1096,7 +1097,7 @@ class TestArtifactBudgetAppliesToAnOpenSession:
         being over budget for a while."""
         service = self._service(tmp_path, budget=1024)
         try:
-            huge = self._write(tmp_path, "huge.bin", 8192)
+            huge = self._write(tmp_path / "artifacts", "huge.bin", 8192)
             artifact = service.record_artifact(
                 session_id="open-session",
                 kind="module_dump",
@@ -1150,7 +1151,7 @@ class TestArtifactBudgetAppliesToAnOpenSession:
         try:
             written = 0
             for index in range(20):
-                blob = self._write(tmp_path, f"capture-{index}.bin", 256 * 1024)
+                blob = self._write(root, f"capture-{index}.bin", 256 * 1024)
                 written += 256 * 1024
                 service.record_artifact(
                     session_id="fast",

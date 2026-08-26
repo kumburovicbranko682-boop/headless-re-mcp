@@ -382,7 +382,7 @@ def test_a_spilled_artifact_is_tracked_so_gc_can_reclaim_it(tmp_path: Path) -> N
     kinds = [str(item["kind"]) for item in listed.data["artifacts"]]
     assert kinds.count("static_decompile") == 2, "spills must be registered, or gc never sees them"
 
-    reclaimed = service.artifacts_gc(max_total_bytes=0)
+    reclaimed = service.artifacts_gc(max_total_bytes=1)
     assert reclaimed.ok
     # gc deliberately keeps the newest artifact, so only the first is reclaimed.
     assert not Path(str(first.data["artifact"])).exists(), "gc must be able to delete a spill"
