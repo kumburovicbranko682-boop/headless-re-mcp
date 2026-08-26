@@ -314,11 +314,11 @@ python -m pytest tests/integration -q -rs   # 需本机后端；-rs 会列出每
 python -m headless_re_mcp doctor --json --strict
 ```
 
-前端（改动 `webui/` 时）：
+前端（改动 `webui/` 时；使用 Node.js 24 LTS，最低版本见 `webui/package.json`）：
 
 ```powershell
 cd webui
-npm install            # 国内网络可加 --registry=https://registry.npmmirror.com
+npm ci                 # 国内网络可加 --registry=https://registry.npmmirror.com
 npm run typecheck
 npx vitest run
 npm run build          # 产物直接写入 src/headless_re_mcp/web/spa

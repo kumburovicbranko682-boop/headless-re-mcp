@@ -6,6 +6,10 @@ on:
     branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     runs-on: windows-latest
@@ -22,9 +26,9 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -45,14 +49,19 @@ jobs:
       - name: Pip check
         run: python -m pip check
 
+      - name: Python dependency audit
+        run: python -m pip_audit --skip-editable --progress-spinner=off
+
       - name: Unit tests
         # -rs prints every skip reason: a suite that quietly skips half of
         # itself reads exactly like a suite that passed.
-        run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term --cov-report=xml
+        # A single stuck process-backed test must name itself and fail before
+        # the 30-minute job deadline erases the useful per-test context.
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
@@ -142,17 +151,21 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: webui/package-lock.json
 
       - name: Install
         working-directory: webui
         run: npm ci
+
+      - name: Dependency audit
+        working-directory: webui
+        run: npm audit --audit-level=high
 
       - name: Typecheck
         working-directory: webui
