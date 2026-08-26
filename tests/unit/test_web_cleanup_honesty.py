@@ -68,3 +68,24 @@ def test_web_bulk_close_reports_one_wedged_runner_and_continues() -> None:
     assert caught.value.code == "web_cleanup_incomplete"
     assert caught.value.details["session_id"] == "wedged"
     assert attempted == ["wedged", "healthy"]
+
+
+def test_web_bulk_close_continues_after_an_unexpected_error() -> None:
+    """One broken browser cleanup must not skip every later browser."""
+    backend = WebBackend()
+    backend._sessions = {"broken": object(), "healthy": object()}  # type: ignore[dict-item]
+    attempted: list[str] = []
+
+    def close(self: WebBackend, session_id: str) -> dict[str, bool]:
+        del self
+        attempted.append(session_id)
+        if session_id == "broken":
+            raise RuntimeError("unexpected browser teardown failure")
+        return {"closed": True, "clean": True}
+
+    backend.close = MethodType(close, backend)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="unexpected browser teardown failure"):
+        backend.close_all()
+
+    assert attempted == ["broken", "healthy"]
