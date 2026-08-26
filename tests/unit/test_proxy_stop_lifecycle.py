@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import headless_re_mcp.backends.proxy.client as proxy_module
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _ProxyInstance
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -44,6 +45,38 @@ def test_proxy_stop_reports_a_wedged_thread_and_keeps_it_tracked() -> None:
     assert raised.value.details["host"] == "127.0.0.1"
     assert raised.value.details["port"] == 18080
     assert thread.join_timeout == 10.0
+    assert backend._instances == {"session": instance}
+
+
+def test_failed_proxy_start_keeps_a_listener_that_cannot_stop_tracked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup rollback must retain the only handle to a surviving listener."""
+
+    class _FailedStart:
+        host = "127.0.0.1"
+        port = 18080
+
+        def __init__(self) -> None:
+            self.stops = 0
+
+        def start(self) -> None:
+            raise ProxyError("backend_error", "proxy failed during startup")
+
+        def stop(self) -> None:
+            self.stops += 1
+            raise ProxyError("timeout", "startup listener thread remains alive")
+
+    instance = _FailedStart()
+    monkeypatch.setattr(proxy_module, "_ProxyInstance", lambda host, port: instance)
+    backend = ProxyBackend()
+    backend._available = True
+
+    with pytest.raises(ProxyError) as caught:
+        backend.start("session", port=18080)
+
+    assert caught.value.code == "timeout"
+    assert instance.stops == 1
     assert backend._instances == {"session": instance}
 
 
