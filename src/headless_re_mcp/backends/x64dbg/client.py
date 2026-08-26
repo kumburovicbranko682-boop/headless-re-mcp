@@ -1086,6 +1086,18 @@ class XdbgClient:
             time.sleep(min(0.05, remaining))
 
     def close(self, *, timeout: float = 15.0) -> None:
+        deadline = time.monotonic() + timeout
+
+        def rpc_budget(cap: float) -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise XdbgRpcError(
+                    "timeout",
+                    f"x64dbg close exceeded {timeout:g}s",
+                    retryable=True,
+                )
+            return min(cap, remaining)
+
         with self._request_lock:
             if self._closed:
                 return
@@ -1093,22 +1105,22 @@ class XdbgClient:
                 if self._process.poll() is None and self._transport is not None:
                     try:
                         if "trace.status" in self._capabilities:
-                            trace = self._request("trace.status", {}, timeout=min(timeout, 5.0))
+                            trace = self._request("trace.status", {}, timeout=rpc_budget(5.0))
                             if (
                                 trace.get("recording") is True
                                 and "trace.stop" in self._capabilities
                             ):
-                                self._request("trace.stop", {}, timeout=min(timeout, 10.0))
-                        state = self._request("debug.state", {}, timeout=min(timeout, 5.0))
+                                self._request("trace.stop", {}, timeout=rpc_budget(10.0))
+                        state = self._request("debug.state", {}, timeout=rpc_budget(5.0))
                         if state.get("debugging") is True:
-                            self._request("debug.stop", {}, timeout=min(timeout, 10.0))
+                            self._request("debug.stop", {}, timeout=rpc_budget(10.0))
                     except XdbgRpcError:
                         pass
             finally:
                 self._closed = True
                 self._request_exit()
                 try:
-                    self._process.wait(timeout=timeout)
+                    self._process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     self._terminate_process()
                 if self._transport is not None:
