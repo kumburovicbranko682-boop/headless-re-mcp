@@ -20,6 +20,10 @@ from __future__ import annotations
 
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.core.results import _failure
+from headless_re_mcp.detection.exeinfope import (
+    ExeinfopeProcessError,
+    ExeinfopeScanError,
+)
 
 
 def test_bounded_cancelled_is_a_clean_cancel_not_an_internal_error() -> None:
@@ -59,6 +63,43 @@ def test_timed_out_is_a_timeout_not_an_internal_error() -> None:
     assert result.error.retryable is True
     assert result.error.details["timeout_s"] == 30.0
     assert result.error.details["killed_pids"] == [999]
+    assert "incident_id" not in result.error.details
+
+
+def test_exeinfope_scan_error_keeps_its_code_like_its_die_sibling() -> None:
+    """Exeinfo PE is the sibling of DIE; both reach this envelope from detect_scan.
+
+    Only DieScanError was named here, so an ExeinfopeScanError fell through to
+    internal_error -- minting an incident and hiding a structured code
+    (invalid_argument, executable_not_found, timeout, process_failed) the caller
+    could have acted on.
+    """
+    result = _failure(
+        ExeinfopeScanError("invalid_argument", "bad mode", details={"mode": "weird"}),
+        session_id="s",
+        backend="detection",
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_argument"
+    assert result.error.code != "internal_error"
+    assert result.error.details["session_id"] == "s"
+    assert result.error.details["mode"] == "weird"
+    # A structured tool error is not a server defect, so no incident is filed.
+    assert "incident_id" not in result.error.details
+
+
+def test_exeinfope_process_error_is_process_failed_not_internal_error() -> None:
+    result = _failure(
+        ExeinfopeProcessError("process_failed", "could not start Exeinfo PE: denied"),
+        session_id="s",
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "process_failed"
+    assert result.error.code != "internal_error"
     assert "incident_id" not in result.error.details
 
 

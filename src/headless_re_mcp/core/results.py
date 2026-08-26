@@ -19,6 +19,7 @@ from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
 from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
 from headless_re_mcp.detection import PeFormatError
 from headless_re_mcp.detection.die import DieScanError
+from headless_re_mcp.detection.exeinfope import ExeinfopeScanError
 from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
@@ -64,6 +65,19 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             retryable=exc.code in {"timeout", "process_failed"},
         )
     elif isinstance(exc, UpxScanError):
+        error = RpcError(
+            code=exc.code,
+            message=str(exc),
+            details={**details, **exc.details},
+            retryable=exc.retryable,
+        )
+    elif isinstance(exc, ExeinfopeScanError):
+        # The sibling of DieScanError: detect_scan's outer handler routes both
+        # into this envelope, but only DIE was named here. An Exeinfo PE error
+        # (invalid_argument, executable_not_found, timeout, process_failed, ...)
+        # then fell through to internal_error, minting an incident and hiding a
+        # structured code the caller could have acted on -- the same miscasting
+        # the bounded cancel/timeout cases carried until each was named.
         error = RpcError(
             code=exc.code,
             message=str(exc),
