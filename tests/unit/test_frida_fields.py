@@ -447,6 +447,37 @@ def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     assert killed == [4242]
 
 
+def test_frida_spawn_timeout_reports_a_probe_process_that_cannot_be_killed() -> None:
+    """A timed-out resume must disclose its one failed kill attempt."""
+    killed: list[int] = []
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            time.sleep(1)
+
+        def kill(self, pid: int) -> None:
+            killed.append(pid)
+            raise RuntimeError("kill refused")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=0.1)
+
+    assert caught.value.code == "frida_spawn_cleanup_failed"
+    assert caught.value.details["pid"] == 4242
+    assert caught.value.details["kill_error"] == "RuntimeError: kill refused"
+    assert killed == [4242]
+
+
 def test_frida_spawn_reports_a_process_that_cannot_be_killed_after_resume_failure() -> None:
     """One failed rollback must not claim its spawned pid was killed."""
 
