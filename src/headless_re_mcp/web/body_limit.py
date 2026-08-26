@@ -51,7 +51,11 @@ class RequestBodyLimitMiddleware:
         receive: AsgiReceive,
         send: AsgiSend,
     ) -> None:
-        if scope.get("type") != "http":
+        if scope.get("type") != "http" or scope.get("method") in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
             await self.app(scope, receive, send)
             return
 
