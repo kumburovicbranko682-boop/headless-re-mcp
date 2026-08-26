@@ -84,6 +84,17 @@ def test_web_token_is_private_on_posix(tmp_path: Path) -> None:
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_web_token_repairs_existing_permissions_on_posix(tmp_path: Path) -> None:
+    path = tmp_path / "web_token.json"
+    token = "existing-token-value-0123456789abcdef"
+    path.write_text(json.dumps({"token": token}), encoding="utf-8")
+    path.chmod(0o644)
+
+    assert load_or_create_web_token(path=path) == token
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)

@@ -30,6 +30,8 @@ def load_or_create_web_token(*, path: Path | None = None) -> str:
         if isinstance(raw, dict):
             candidate = raw.get("token")
             if isinstance(candidate, str) and len(candidate) >= 24:
+                with suppress(OSError):
+                    token_path.chmod(0o600)
                 return candidate
     token: str = str(secrets.token_urlsafe(32))
     payload = {
