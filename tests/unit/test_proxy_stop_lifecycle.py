@@ -24,6 +24,11 @@ class _StillAliveThread:
         return True
 
 
+class _ExitedThread:
+    def is_alive(self) -> bool:
+        return False
+
+
 def test_proxy_stop_reports_a_wedged_thread_and_keeps_it_tracked() -> None:
     """A ten-second join used to become success even when the thread survived.
 
@@ -45,6 +50,23 @@ def test_proxy_stop_reports_a_wedged_thread_and_keeps_it_tracked() -> None:
     assert raised.value.details["host"] == "127.0.0.1"
     assert raised.value.details["port"] == 18080
     assert thread.join_timeout == 10.0
+    assert backend._instances == {"session": instance}
+
+
+def test_proxy_status_reports_a_tracked_worker_that_exited() -> None:
+    """A retained dictionary entry is not proof that capture is still running."""
+    backend = ProxyBackend()
+    instance = _ProxyInstance("127.0.0.1", 18080)
+    instance._thread = _ExitedThread()  # type: ignore[assignment]
+    instance._error = RuntimeError("event loop crashed")
+    backend._instances["session"] = instance
+
+    status = backend.status("session")
+
+    assert status["running"] is False
+    assert status["host"] == "127.0.0.1"
+    assert status["port"] == 18080
+    assert status["error"] == "RuntimeError: event loop crashed"
     assert backend._instances == {"session": instance}
 
 
