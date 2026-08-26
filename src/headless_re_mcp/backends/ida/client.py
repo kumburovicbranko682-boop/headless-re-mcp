@@ -241,18 +241,22 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             return data
 
     def close(self, *, timeout: float = 15.0) -> None:
+        deadline = time.monotonic() + timeout
         with self._request_lock:
             if self._closed:
                 return
             try:
                 if self._process.poll() is None:
-                    self.request("close", timeout=timeout)
+                    self.request(
+                        "close",
+                        timeout=max(0.0, deadline - time.monotonic()),
+                    )
             finally:
                 self._closed = True
                 if self._process.stdin is not None:
                     self._process.stdin.close()
                 try:
-                    self._process.wait(timeout=timeout)
+                    self._process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     self.terminate()
 
