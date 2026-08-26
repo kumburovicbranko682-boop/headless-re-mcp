@@ -41,6 +41,16 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
+### 修复（监控台只读部署绕过）
+
+- **只读部署（`local_full_access=false`）下监控台仍可写**。`/api/write` 的 Web 适配器直接调
+  service 方法、绕过按处理器的 `write_disabled` 守卫,只靠共享 catalog 的 `write_allowed` 标志
+  兜底;而该标志只有 MCP server 与 `bind_all_tools` 会从 `local_full_access` 设值,纯 web 进程
+  从不设,于是 `write_allowed` 恒为默认的 `True`——只读部署经监控台被完全写穿,违背 SECURITY.md
+  「置 false 即拒绝一切写」的承诺。`create_app` 现在像 MCP server 一样从设置写入 `write_allowed`;
+  且 `/api/write` 路由现在捕获适配器抛出的 `PermissionError`,返回承诺的 `403 write_disabled`
+  而非把它漏成 `500`。补只读拒绝、完全访问仍放行、白名单/confirm 门仍先答的回归测试。
+
 ### 修复（生成 MCP 配置的秘密清洗）
 
 - **`config generate` 会把嵌入的 doctor 快照里的秘密原样带进用户复制粘贴的 MCP 配置**。
