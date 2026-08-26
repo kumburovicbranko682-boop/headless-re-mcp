@@ -17,6 +17,7 @@ from headless_re_mcp.backends.common.subprocess_rpc import (
     ManagedSubprocessMixin,
     no_window_popen_kwargs,
 )
+from headless_re_mcp.backends.common.text_stream import read_bounded_text_line
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.windows import describe_process_windows
@@ -28,6 +29,8 @@ JsonObject = dict[str, Any]
 # events slide that window; this cap still bounds a worker that never becomes ready.
 # Bounded analysis plus PE load should finish well under this.
 _MAX_IDA_STARTUP_SECONDS = 240.0
+_MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
+_MAX_RPC_LINE_CHARS = 8 * 1024 * 1024
 
 
 def next_receive_deadline(
@@ -266,8 +269,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def _read_stdout(self, stream: TextIO) -> None:
         try:
-            for line in stream:
-                stripped = line.rstrip("\r\n")
+            while True:
+                stripped = read_bounded_text_line(
+                    stream,
+                    max_chars=_MAX_RPC_LINE_CHARS,
+                )
+                if stripped is None:
+                    break
                 try:
                     payload = json.loads(stripped)
                 except json.JSONDecodeError:
@@ -281,8 +289,14 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             self._messages.put(None)
 
     def _read_stderr(self, stream: TextIO) -> None:
-        for line in stream:
-            self._stderr_log.append(line.rstrip("\r\n"))
+        while True:
+            line = read_bounded_text_line(
+                stream,
+                max_chars=_MAX_DIAGNOSTIC_LINE_CHARS,
+            )
+            if line is None:
+                return
+            self._stderr_log.append(line)
 
     def _receive(
         self,

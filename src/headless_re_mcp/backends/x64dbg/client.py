@@ -15,6 +15,7 @@ from typing import Any, TextIO
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.backends.common.text_stream import read_bounded_text_line
 from headless_re_mcp.backends.x64dbg.limits import MAX_FRAME_BYTES
 from headless_re_mcp.core.desktop_isolation import (
     DesktopIsolationJob,
@@ -45,6 +46,7 @@ _MAX_DISPATCH_TIMEOUT_MS = 30_000
 # worker block the caller indefinitely.
 _RECONNECT_TIMEOUT_SECONDS = 30.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
+_MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
 
 
 class XdbgRpcError(RuntimeError):
@@ -105,13 +107,15 @@ class _NamedPipeTransport:
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
     def __init__(self, handle: int, pipe_name: str) -> None:
-        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined,unused-ignore]
+            "kernel32", use_last_error=True
+        )
         self._configure_api()
         self._handle = handle
         self._pipe_name = pipe_name
         self._event = self._kernel32.CreateEventW(None, True, False, None)
         if not self._event:
-            error = ctypes.get_last_error()
+            error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
             self._kernel32.CloseHandle(self._handle)
             raise OSError(error, "CreateEventW failed")
         self._closed = False
@@ -129,7 +133,9 @@ class _NamedPipeTransport:
                 "unsupported_on_platform",
                 "x64dbg RPC requires Windows",
             )
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined,unused-ignore]
+            "kernel32", use_last_error=True
+        )
         kernel32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
         kernel32.WaitNamedPipeW.restype = ctypes.c_int
         kernel32.CreateFileW.argtypes = [
@@ -159,7 +165,7 @@ class _NamedPipeTransport:
                 )
             wait_ms = max(1, min(50, int(remaining * 1000)))
             if not kernel32.WaitNamedPipeW(pipe_name, wait_ms):
-                error = ctypes.get_last_error()
+                error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
                 if error in {cls._ERROR_FILE_NOT_FOUND, cls._ERROR_PIPE_BUSY}:
                     time.sleep(min(0.05, remaining))
                     continue
@@ -181,7 +187,7 @@ class _NamedPipeTransport:
             )
             if handle != cls._INVALID_HANDLE_VALUE:
                 return cls(int(handle), pipe_name)
-            error = ctypes.get_last_error()
+            error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
             if error in {cls._ERROR_FILE_NOT_FOUND, cls._ERROR_PIPE_BUSY}:
                 continue
             raise OSError(error, f"CreateFileW failed for {pipe_name}")
@@ -190,7 +196,7 @@ class _NamedPipeTransport:
     def server_pid(self) -> int:
         pid = ctypes.c_ulong()
         if not self._kernel32.GetNamedPipeServerProcessId(self._handle, ctypes.byref(pid)):
-            error = ctypes.get_last_error()
+            error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
             raise OSError(error, "GetNamedPipeServerProcessId failed")
         return int(pid.value)
 
@@ -270,7 +276,7 @@ class _NamedPipeTransport:
         ):
             return int(transferred.value)
 
-        error = ctypes.get_last_error()
+        error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
         if error != self._ERROR_IO_PENDING:
             raise OSError(error, "named-pipe I/O failed")
         wait_ms = max(1, min(0xFFFFFFFE, int(timeout * 1000)))
@@ -281,11 +287,12 @@ class _NamedPipeTransport:
             self._kernel32.WaitForSingleObject(self._event, cancel_ms)
             raise TimeoutError("named-pipe I/O timed out")
         if wait_result != self._WAIT_OBJECT_0:
-            raise OSError(ctypes.get_last_error(), "WaitForSingleObject failed")
+            error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+            raise OSError(error, "WaitForSingleObject failed")
         if not self._kernel32.GetOverlappedResult(
             self._handle, ctypes.byref(overlapped), ctypes.byref(transferred), False
         ):
-            error = ctypes.get_last_error()
+            error = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
             if error == self._ERROR_OPERATION_ABORTED:
                 raise TimeoutError("named-pipe I/O was cancelled")
             raise OSError(error, "GetOverlappedResult failed")
@@ -1213,8 +1220,14 @@ class XdbgClient:
         return result
 
     def _read_log(self, stream: TextIO, target: deque[str]) -> None:
-        for line in stream:
-            target.append(line.rstrip("\r\n"))
+        while True:
+            line = read_bounded_text_line(
+                stream,
+                max_chars=_MAX_DIAGNOSTIC_LINE_CHARS,
+            )
+            if line is None:
+                return
+            target.append(line)
 
     def _monitor_windows(self) -> None:
         while not self._monitor_stop.wait(0.05):
