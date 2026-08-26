@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
+from time import monotonic
 from typing import Any
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
@@ -91,6 +92,7 @@ def run_idalib_gate(
     timed_out = False
     killed: list[int] = []
     stdout, stderr = "", ""
+    cleanup_deadline: float | None = None
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -99,13 +101,22 @@ def run_idalib_gate(
         # timeout while the child was still running, holding CPU for the rest
         # of the process life.
         timed_out = True
+        cleanup_deadline = monotonic() + 5.0
         killed = terminate_process_tree(process)
         with suppress(subprocess.TimeoutExpired, ValueError, OSError):
-            drained = process.communicate(timeout=5)
+            drained = process.communicate(
+                timeout=max(0.0, cleanup_deadline - monotonic())
+            )
             stdout, stderr = drained
     finally:
         monitor_stop.set()
-        monitor.join(timeout=2)
+        monitor_timeout = 2.0
+        if cleanup_deadline is not None:
+            monitor_timeout = min(
+                monitor_timeout,
+                max(0.0, cleanup_deadline - monotonic()),
+            )
+        monitor.join(timeout=monitor_timeout)
         observed.update(describe_process_windows(process.pid))
 
     if timed_out:
