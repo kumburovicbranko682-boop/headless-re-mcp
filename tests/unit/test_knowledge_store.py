@@ -10,6 +10,35 @@ from headless_re_mcp.core.repository import (
     InMemoryAnalysisRepository,
     SqliteAnalysisRepository,
 )
+from headless_re_mcp.core.store.sqlite_store import (
+    KNOWLEDGE_VALUE_MAX_CHARS,
+    encode_knowledge_value,
+)
+
+
+def test_encode_knowledge_value_round_trips_and_keeps_unicode() -> None:
+    value = {"name": "内核函数", "addr": "0x401000", "tags": ["oep", "iat"]}
+    encoded = encode_knowledge_value(value)
+    assert json.loads(encoded) == value
+    assert "内核函数" in encoded, "ensure_ascii=False keeps the finding readable"
+
+
+def test_encode_knowledge_value_refuses_an_oversized_finding() -> None:
+    """A finding over the cap must be refused whole, not cut into invalid JSON.
+
+    The store column holds a serialized finding; truncating to fit would write a
+    string that no longer parses as JSON, so the reader would raise on every
+    later query. Refuse at the boundary and tell the caller to keep the bulk as
+    an artifact and store only the reference.
+    """
+    at_cap = {"blob": "x" * (KNOWLEDGE_VALUE_MAX_CHARS - len('{"blob": ""}'))}
+    encoded = encode_knowledge_value(at_cap)
+    assert len(encoded) == KNOWLEDGE_VALUE_MAX_CHARS
+    assert json.loads(encoded) == at_cap
+
+    over_cap = {"blob": "x" * KNOWLEDGE_VALUE_MAX_CHARS}
+    with pytest.raises(ValueError, match="record the bulk as an artifact"):
+        encode_knowledge_value(over_cap)
 
 
 @pytest.fixture(params=["sqlite", "memory"])
