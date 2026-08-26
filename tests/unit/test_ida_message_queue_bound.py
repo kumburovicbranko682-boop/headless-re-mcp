@@ -88,3 +88,21 @@ def test_ida_stdout_rejects_one_oversized_protocol_line() -> None:
     assert client._message_overflow.is_set()
     assert client._messages_dropped == 1
     assert client._messages.qsize() == 1  # EOF sentinel only; the oversized object was dropped.
+
+
+def test_ida_stderr_bounds_each_retained_diagnostic_line() -> None:
+    """The 100-entry stderr deque retained 10,000,000 characters.
+
+    Line count alone does not bound memory when a worker writes very long
+    diagnostics or writes forever without a newline.
+    """
+    client = object.__new__(IdaWorkerClient)
+    client._stderr_log = deque(maxlen=100)
+    stream = io.StringIO(("x" * 100_000 + "\n") * 150)
+
+    client._read_stderr(stream)
+
+    assert len(client._stderr_log) == 100
+    assert max(map(len, client._stderr_log)) <= 8_192
+    assert sum(map(len, client._stderr_log)) <= 100 * 8_192
+    assert all(line.endswith("[truncated]") for line in client._stderr_log)
