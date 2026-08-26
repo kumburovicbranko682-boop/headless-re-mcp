@@ -100,6 +100,14 @@ def test_agent_message_limits_are_client_errors_not_incidents(
     headers = {"Authorization": "Bearer web-secret"}
 
     with TestClient(app) as client:
+        invalid_thread = client.post(
+            "/api/agent/threads",
+            headers=headers,
+            json={"title": "bounded", "session_id": "x" * 1024},
+        )
+        assert invalid_thread.status_code == 400
+        assert "thread session_id" in invalid_thread.json()["detail"]
+
         created = client.post(
             "/api/agent/threads", headers=headers, json={"title": "bounded"}
         )

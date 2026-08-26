@@ -137,7 +137,10 @@ def register_agent_routes(
         session_id = body.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             raise HTTPException(status_code=400, detail="invalid_session_id")
-        item = store.create_thread(title=title, session_id=session_id)
+        try:
+            item = store.create_thread(title=title, session_id=session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "thread": item.dump()}, status_code=201)
 
     @app.get("/api/agent/threads/{thread_id}")
