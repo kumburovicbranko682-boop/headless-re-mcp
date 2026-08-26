@@ -13,6 +13,7 @@ result. Behaviour is unchanged by the move.
 
 from __future__ import annotations
 
+import os
 from contextlib import suppress
 from pathlib import Path
 from threading import Event
@@ -91,7 +92,9 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
-def _refuse_rebuild_that_will_not_fit(path: Path) -> Result[JsonObject] | None:
+def _refuse_rebuild_that_will_not_fit(
+    path: Path, *, observed_size: int | None = None
+) -> Result[JsonObject] | None:
     """Refuse a rebuild whose peak would not fit in memory, before allocating.
 
     Rebuilding holds the dump, the rebuilt image and working copies at once:
@@ -101,10 +104,13 @@ def _refuse_rebuild_that_will_not_fit(path: Path) -> Result[JsonObject] | None:
     against memory actually free, so a large machine is not refused work it can
     do; when free memory cannot be determined the rebuild goes ahead.
     """
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
+    if observed_size is None:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+    else:
+        size = observed_size
     too_big, estimate, available = rebuild_would_exhaust_memory(size)
     if not too_big:
         return None
@@ -124,6 +130,23 @@ def _refuse_rebuild_that_will_not_fit(path: Path) -> Result[JsonObject] | None:
             },
         ),
     )
+
+
+def _read_dump_for_rebuild(
+    path: Path,
+) -> tuple[bytes | None, Result[JsonObject] | None]:
+    """Bind the memory check and bounded read to the same open file handle."""
+    with path.open("rb") as stream:
+        observed_size = os.fstat(stream.fileno()).st_size
+        refusal = _refuse_rebuild_that_will_not_fit(
+            path, observed_size=observed_size
+        )
+        if refusal is not None:
+            return None, refusal
+        payload = stream.read(observed_size + 1)
+    if len(payload) != observed_size:
+        raise PeRebuildError("dump changed size while it was being read")
+    return payload, None
 
 
 class UnpackMixin:
@@ -662,10 +685,10 @@ class UnpackMixin:
                         },
                     ),
                 )
-            refusal = _refuse_rebuild_that_will_not_fit(path)
+            raw, refusal = _read_dump_for_rebuild(path)
             if refusal is not None:
                 return refusal
-            raw = path.read_bytes()
+            assert raw is not None
             # If dump looks like a pure memory image, remap first.
             try:
                 pe_bytes, remap_report = remap_dump_to_file(raw, entry_point_rva=oep_rva)
@@ -775,10 +798,10 @@ class UnpackMixin:
                         message="dump_path must be inside the session artifact root",
                     ),
                 )
-            refusal = _refuse_rebuild_that_will_not_fit(path)
+            raw, refusal = _read_dump_for_rebuild(path)
             if refusal is not None:
                 return refusal
-            raw = path.read_bytes()
+            assert raw is not None
             rebuilt, report = remap_dump_to_file(raw, entry_point_rva=entry_point_rva)
             import_report = None
             if iat_va is not None and iat_size is not None:
