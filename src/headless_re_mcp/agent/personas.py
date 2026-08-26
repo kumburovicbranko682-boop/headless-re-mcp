@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -16,7 +15,9 @@ DEFAULT_PERSONA_ID = "default"
 SEAGULL_PERSONA_ID = "seagull"
 _MAX_IMPORT_BYTES = 256 * 1024
 _PROMPT_MAX_CHARS = 48_000
+_MAX_PERSONA_INDEX_BYTES = 1024 * 1024
 _INDEX_NAME = "index.json"
+_PERSONA_ID_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\Z")
 
 DEFAULT_PERSONA_TITLE = "默认工作台"
 SEAGULL_PERSONA_TITLE = "海鸥 3.0"
@@ -48,6 +49,13 @@ def _slug(title: str, body: str) -> str:
     return f"{stem or 'persona'}-{digest}"
 
 
+def _read_bounded_text(path: Path, max_bytes: int) -> tuple[str, bool]:
+    with path.open("rb") as stream:
+        payload = stream.read(max_bytes + 1)
+    truncated = len(payload) > max_bytes
+    return payload[:max_bytes].decode("utf-8", errors="replace"), truncated
+
+
 class PersonaStore:
     def __init__(self, root: Path, *, seed_paths: tuple[Path, ...] | None = None) -> None:
         self.root = Path(root)
@@ -64,7 +72,10 @@ class PersonaStore:
         if not path.is_file():
             return {"current": DEFAULT_PERSONA_ID, "items": {}}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            text, truncated = _read_bounded_text(path, _MAX_PERSONA_INDEX_BYTES)
+            if truncated:
+                return {"current": DEFAULT_PERSONA_ID, "items": {}}
+            data = json.loads(text)
         except (OSError, json.JSONDecodeError):
             return {"current": DEFAULT_PERSONA_ID, "items": {}}
         return data if isinstance(data, dict) else {"current": DEFAULT_PERSONA_ID, "items": {}}
@@ -75,6 +86,8 @@ class PersonaStore:
         tmp.replace(self._index_path())
 
     def _body_path(self, persona_id: str) -> Path:
+        if _PERSONA_ID_RE.fullmatch(persona_id) is None:
+            raise ValueError("persona_id_invalid")
         return self.root / f"{persona_id}.md"
 
     def _seed(self) -> None:
@@ -85,10 +98,13 @@ class PersonaStore:
                 default_path.write_text(DEFAULT_PERSONA_BODY, encoding="utf-8")
             else:
                 try:
-                    existing = default_path.read_text(encoding="utf-8")
+                    existing, truncated = _read_bounded_text(
+                        default_path, _MAX_IMPORT_BYTES
+                    )
                 except OSError:
                     existing = ""
-                if _OLD_APPROVAL_SENTENCE in existing:
+                    truncated = False
+                if not truncated and _OLD_APPROVAL_SENTENCE in existing:
                     default_path.write_text(
                         existing.replace(_OLD_APPROVAL_SENTENCE, _NEW_APPROVAL_SENTENCE),
                         encoding="utf-8",
@@ -106,7 +122,14 @@ class PersonaStore:
             if not seagull_path.is_file():
                 for source in self.seed_paths:
                     if source.is_file():
-                        shutil.copy2(source, seagull_path)
+                        try:
+                            with source.open("rb") as stream:
+                                payload = stream.read(_MAX_IMPORT_BYTES + 1)
+                        except OSError:
+                            continue
+                        if len(payload) > _MAX_IMPORT_BYTES:
+                            continue
+                        seagull_path.write_bytes(payload)
                         items[SEAGULL_PERSONA_ID] = {
                             "id": SEAGULL_PERSONA_ID,
                             "title": SEAGULL_PERSONA_TITLE,
@@ -120,7 +143,14 @@ class PersonaStore:
                     "title": SEAGULL_PERSONA_TITLE,
                     "builtin": True,
                 }
-            if (not index_existed) or not self._body_path(str(data.get("current") or "")).is_file():
+            current = str(data.get("current") or "")
+            if _PERSONA_ID_RE.fullmatch(current) is None:
+                current_exists = False
+            else:
+                current_exists = (
+                    isinstance(items.get(current), dict) and self._body_path(current).is_file()
+                )
+            if (not index_existed) or not current_exists:
                 data["current"] = (
                     SEAGULL_PERSONA_ID if seagull_path.is_file() else DEFAULT_PERSONA_ID
                 )
@@ -135,46 +165,75 @@ class PersonaStore:
             for persona_id, meta in items.items():
                 if not isinstance(meta, dict):
                     continue
-                path = self._body_path(str(persona_id))
+                normalized_id = str(persona_id)
+                if _PERSONA_ID_RE.fullmatch(normalized_id) is None:
+                    continue
+                path = self._body_path(normalized_id)
                 personas.append(
                     {
-                        "id": str(persona_id),
+                        "id": normalized_id,
                         "title": str(meta.get("title") or persona_id),
                         "builtin": bool(meta.get("builtin")),
                         "source": meta.get("source"),
                         "bytes": path.stat().st_size if path.is_file() else 0,
-                        "current": str(data.get("current")) == str(persona_id),
+                        "current": str(data.get("current")) == normalized_id,
                     }
                 )
-            personas.sort(key=lambda item: (not item["current"], item["id"] != SEAGULL_PERSONA_ID, item["title"]))
+            personas.sort(
+                key=lambda item: (
+                    not item["current"],
+                    item["id"] != SEAGULL_PERSONA_ID,
+                    item["title"],
+                )
+            )
             return {"current": data.get("current") or DEFAULT_PERSONA_ID, "personas": personas}
 
     def current_id(self) -> str:
         with self._lock:
-            current = str(self._read_index().get("current") or DEFAULT_PERSONA_ID)
-        return current if self._body_path(current).is_file() else DEFAULT_PERSONA_ID
+            data = self._read_index()
+            current = str(data.get("current") or DEFAULT_PERSONA_ID)
+            items = data.get("items")
+            known = isinstance(items, dict) and isinstance(items.get(current), dict)
+            valid = _PERSONA_ID_RE.fullmatch(current) is not None
+            exists = valid and self._body_path(current).is_file()
+        return current if known and exists else DEFAULT_PERSONA_ID
 
     def current_prompt(self) -> str:
         return self.prompt_for(self.current_id())
 
     def prompt_for(self, persona_id: str) -> str:
-        path = self._body_path(persona_id)
-        if not path.is_file():
-            path = self._body_path(DEFAULT_PERSONA_ID)
+        with self._lock:
+            data = self._read_index()
+            items = data.get("items")
+            known = isinstance(items, dict) and isinstance(items.get(persona_id), dict)
+            valid = _PERSONA_ID_RE.fullmatch(persona_id) is not None
+            path = self._body_path(persona_id) if valid else self._body_path(DEFAULT_PERSONA_ID)
+            if not known or not path.is_file():
+                path = self._body_path(DEFAULT_PERSONA_ID)
         try:
-            text = path.read_text(encoding="utf-8")
+            text, byte_truncated = _read_bounded_text(
+                path, _PROMPT_MAX_CHARS * 4 + 4
+            )
         except OSError:
             text = DEFAULT_PERSONA_BODY
+            byte_truncated = False
         text = text.strip()
-        if len(text) > _PROMPT_MAX_CHARS:
+        if byte_truncated or len(text) > _PROMPT_MAX_CHARS:
             text = text[:_PROMPT_MAX_CHARS] + "\n\n[persona truncated]"
         return text
 
     def select(self, persona_id: str) -> JsonObject:
         with self._lock:
-            if not self._body_path(persona_id).is_file():
+            if _PERSONA_ID_RE.fullmatch(persona_id) is None:
                 raise KeyError(persona_id)
             data = self._read_index()
+            items = data.get("items")
+            if (
+                not isinstance(items, dict)
+                or not isinstance(items.get(persona_id), dict)
+                or not self._body_path(persona_id).is_file()
+            ):
+                raise KeyError(persona_id)
             data["current"] = persona_id
             self._write_index(data)
         return self.list_public()
@@ -216,8 +275,15 @@ class PersonaStore:
         if not resolved.is_file():
             raise ValueError("persona_path_missing")
         try:
-            body = resolved.read_text(encoding="utf-8")
+            with resolved.open("rb") as stream:
+                payload = stream.read(_MAX_IMPORT_BYTES + 1)
         except OSError as exc:
+            raise ValueError("persona_path_unreadable") from exc
+        if len(payload) > _MAX_IMPORT_BYTES:
+            raise ValueError("persona_too_large")
+        try:
+            body = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
             raise ValueError("persona_path_unreadable") from exc
         return self.import_markdown(title=resolved.stem, body=body, source=str(resolved))
 
@@ -225,18 +291,19 @@ class PersonaStore:
         if persona_id in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}:
             raise ValueError("persona_builtin")
         with self._lock:
+            if _PERSONA_ID_RE.fullmatch(persona_id) is None:
+                raise KeyError(persona_id)
             data = self._read_index()
             raw_items = data.get("items")
             items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
             meta = items.get(persona_id)
+            if not isinstance(meta, dict):
+                raise KeyError(persona_id)
             if isinstance(meta, dict) and meta.get("builtin"):
                 raise ValueError("persona_builtin")
             path = self._body_path(persona_id)
-            if not path.is_file() and persona_id not in items:
-                raise KeyError(persona_id)
             path.unlink(missing_ok=True)
-            if isinstance(items, dict):
-                items.pop(persona_id, None)
+            items.pop(persona_id, None)
             if data.get("current") == persona_id:
                 data["current"] = (
                     SEAGULL_PERSONA_ID

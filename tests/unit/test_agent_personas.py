@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from headless_re_mcp.agent import personas as personas_module
 from headless_re_mcp.agent.personas import (
     DEFAULT_PERSONA_ID,
     SEAGULL_PERSONA_ID,
@@ -30,6 +32,81 @@ def test_persona_store_seeds_default_and_optional_seagull(tmp_path: Path) -> Non
     assert imported["current"].startswith("lab-notes-")
     store.delete(imported["current"])
     assert store.current_id() in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}
+
+
+def test_oversized_optional_seed_is_not_copied_into_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(personas_module, "_MAX_IMPORT_BYTES", 64)
+    seed = tmp_path / "oversized.md"
+    seed.write_bytes(b"x" * 1024)
+
+    store = PersonaStore(tmp_path / "personas", seed_paths=(seed,))
+
+    assert store.current_id() == DEFAULT_PERSONA_ID
+    assert not (store.root / f"{SEAGULL_PERSONA_ID}.md").exists()
+    assert {item["id"] for item in store.list_public()["personas"]} == {
+        DEFAULT_PERSONA_ID
+    }
+
+
+def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Path) -> None:
+    root = tmp_path / "personas"
+    store = PersonaStore(root, seed_paths=())
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside prompt must stay private", encoding="utf-8")
+    orphan = root / "orphan.md"
+    orphan.write_text("unindexed prompt", encoding="utf-8")
+
+    for persona_id in ("../outside", "orphan"):
+        with pytest.raises(KeyError):
+            store.select(persona_id)
+        with pytest.raises(KeyError):
+            store.delete(persona_id)
+        assert "outside prompt" not in store.prompt_for(persona_id)
+        assert "unindexed prompt" not in store.prompt_for(persona_id)
+
+    assert outside.is_file()
+    assert orphan.is_file()
+    assert store.current_id() == DEFAULT_PERSONA_ID
+
+
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (b"x" * (256 * 1024 + 1), "persona_too_large"),
+        (b"\xff", "persona_path_unreadable"),
+    ],
+    ids=("too-large", "invalid-utf8"),
+)
+def test_persona_path_import_rejects_invalid_content(
+    tmp_path: Path,
+    content: bytes,
+    error: str,
+) -> None:
+    source = tmp_path / "persona.md"
+    source.write_bytes(content)
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+
+    with pytest.raises(ValueError, match=error):
+        store.import_path(source)
+
+
+def test_persona_index_and_prompt_reads_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "personas"
+    store = PersonaStore(root, seed_paths=())
+    monkeypatch.setattr(personas_module, "_MAX_PERSONA_INDEX_BYTES", 64)
+    (root / "index.json").write_bytes(b"{" + b" " * 128 + b"}")
+    assert store.list_public()["personas"] == []
+
+    # Restore a valid catalog, then make its selected body much larger than the
+    # prompt window. The loader must stop reading before it truncates text.
+    store = PersonaStore(root, seed_paths=())
+    monkeypatch.setattr(personas_module, "_PROMPT_MAX_CHARS", 8)
+    (root / "default.md").write_bytes(b"x" * 1024)
+    assert store.prompt_for(DEFAULT_PERSONA_ID) == "xxxxxxxx\n\n[persona truncated]"
 
 
 def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
