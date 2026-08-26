@@ -201,7 +201,7 @@ class StaticAnalysisMixin:
             rendered = "\n".join(
                 str(item.get("text", "")) for item in instructions if isinstance(item, dict)
             )
-            if len(rendered) > MAX_STATIC_INLINE_TEXT:
+            if len(rendered.encode("utf-8", errors="replace")) > MAX_STATIC_INLINE_TEXT:
                 spilled = self._maybe_spill_static_text(
                     session_id,
                     {
@@ -671,10 +671,12 @@ class StaticAnalysisMixin:
         text_key: str,
     ) -> JsonObject:
         text = data.get(text_key)
-        if not isinstance(text, str) or len(text) <= MAX_STATIC_INLINE_TEXT:
+        if not isinstance(text, str):
             return data
-        preview = text[:1024]
-        payload = text.encode("utf-8")
+        payload = text.encode("utf-8", errors="replace")
+        if len(payload) <= MAX_STATIC_INLINE_TEXT:
+            return data
+        preview = payload[:1024].decode("utf-8", errors="ignore")
         spilled = dict(data)
         spilled[text_key] = preview
         spilled["truncated"] = True
