@@ -91,6 +91,54 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_agent_message_limits_are_client_errors_not_incidents(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        invalid_thread = client.post(
+            "/api/agent/threads",
+            headers=headers,
+            json={"title": "bounded", "session_id": "x" * 1024},
+        )
+        assert invalid_thread.status_code == 400
+        assert "thread session_id" in invalid_thread.json()["detail"]
+
+        created = client.post(
+            "/api/agent/threads", headers=headers, json={"title": "bounded"}
+        )
+        thread_id = created.json()["thread"]["id"]
+        oversized = "x" * (1024 * 1024 + 1)
+
+        message = client.post(
+            f"/api/agent/threads/{thread_id}/messages",
+            headers=headers,
+            json={"content": oversized},
+        )
+        assert message.status_code == 413
+        assert message.json()["detail"] == "message exceeds 1 MiB"
+
+        run = client.post(
+            "/api/agent/runs",
+            headers=headers,
+            json={"thread_id": thread_id, "message": oversized},
+        )
+        assert run.status_code == 413
+        assert run.json()["detail"] == "message exceeds 1 MiB"
+
+        invalid_model = client.post(
+            "/api/agent/runs",
+            headers=headers,
+            json={"thread_id": thread_id, "model": "x" * 2048},
+        )
+        assert invalid_model.status_code == 400
+        assert "run model" in invalid_model.json()["detail"]
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 
