@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.web.launch_util import choose_bind_port, port_is_free, probe_our_healthz
+from headless_re_mcp.web.launch_util import (
+    _parse_healthz_http,
+    choose_bind_port,
+    port_is_free,
+    probe_our_healthz,
+)
 
 
 def _serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[int]:
@@ -60,6 +65,24 @@ def test_probe_our_healthz_none_on_closed_port() -> None:
     port = sock.getsockname()[1]
     sock.close()
     assert probe_our_healthz("127.0.0.1", port, timeout=0.2) is None
+
+
+def test_health_probe_rejects_invalid_http_envelopes() -> None:
+    body = b'{"ok":true,"service":"headless-re-mcp-web"}'
+    length = str(len(body)).encode("ascii")
+    responses = [
+        b"HTTP/1.1 503 Unavailable\r\nContent-Length: " + length + b"\r\n\r\n" + body,
+        b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n" + body + b"x",
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + length
+            + b"\r\nContent-Length: 999\r\n\r\n"
+            + body
+        ),
+        b"HTTP/1.1 200 OK\r\n\r\n" + body,
+    ]
+
+    assert all(_parse_healthz_http(response) is None for response in responses)
 
 
 def test_probe_our_healthz_short_body_is_not_our_console() -> None:
@@ -134,7 +157,9 @@ def test_probe_our_healthz_still_recognises_this_console() -> None:
         assert data["service"] == "headless-re-mcp-web"
 
 
-def test_run_web_chinese_refuse_non_loopback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_web_chinese_refuse_non_loopback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from headless_re_mcp.config import Settings
     from headless_re_mcp.web.app import run_web
 
