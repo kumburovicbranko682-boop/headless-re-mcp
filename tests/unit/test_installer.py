@@ -57,9 +57,11 @@ def test_download_uses_mirror_then_sha_verifies(
     source, release = _bundle_zip(tmp_path / "source.zip")
     monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
     calls: list[str] = []
+    partials: list[Path] = []
 
     def fake_download(url: str, destination: Path, *, expected_size: int) -> None:
         calls.append(url)
+        partials.append(destination)
         assert expected_size == source.stat().st_size
         if len(calls) == 1:
             raise OSError("primary unavailable")
@@ -72,6 +74,9 @@ def test_download_uses_mirror_then_sha_verifies(
     assert result["source"] == release["download_urls"][1]
     assert len(result["attempts"]) == 1
     assert Path(result["archive"]).read_bytes() == source.read_bytes()
+    assert len(set(partials)) == 2
+    assert all(path.parent == target.resolve() for path in partials)
+    assert not list(target.glob(f".{source.name}.part-*"))
 
 
 def test_extract_and_configure_validated_bundle(
@@ -101,4 +106,115 @@ def test_extract_rejects_zip_slip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     with pytest.raises(installer.InstallError, match="escapes root"):
         installer.extract_dependency_release(archive, tmp_path / "installed")
     assert not (tmp_path / "escaped.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("update", "error"),
+    [
+        ({"tag": "../escape"}, "invalid tag"),
+        ({"asset": r"..\escape.zip"}, "invalid asset"),
+        ({"size": 0}, "invalid size"),
+        ({"size": True}, "invalid size"),
+        ({"download_urls": ["http://mirror.invalid/deps.zip"]}, "invalid download URL"),
+        (
+            {"download_urls": ["https://token@mirror.invalid/deps.zip"]},
+            "invalid download URL",
+        ),
+    ],
+)
+def test_release_manifest_rejects_unsafe_paths_sizes_and_urls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    update: dict[str, object],
+    error: str,
+) -> None:
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "tag": "release",
+        "asset": "deps.zip",
+        "size": 1,
+        "sha256": "0" * 64,
+        "never_bundles_ida": True,
+        "download_urls": ["https://mirror.invalid/deps.zip"],
+    }
+    manifest.update(update)
+    path = tmp_path / "dependency_release.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match=error):
+        installer.load_dependency_release()
+
+
+def test_release_manifest_requires_an_object_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "dependency_release.json"
+    path.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match="root must be an object"):
+        installer.load_dependency_release()
+
+
+def test_release_manifest_is_rejected_before_an_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(installer, "_MAX_MANIFEST_BYTES", 64)
+    path = tmp_path / "dependency_release.json"
+    path.write_bytes(b"{" + b" " * 64 + b"}")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match="manifest exceeds 64 bytes"):
+        installer.load_dependency_release()
+
+
+def test_download_rejects_an_insecure_override_before_network_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(installer.urllib.request, "urlopen", fail_network)
+
+    with pytest.raises(installer.InstallError, match="credential-free HTTPS"):
+        installer._download_one(
+            "http://mirror.invalid/deps.zip",
+            tmp_path / "deps.zip",
+            expected_size=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"[]", "root must be an object"),
+        (b"\xff", "manifest is unreadable"),
+    ],
+)
+def test_configure_normalizes_corrupt_bundle_manifest_errors(
+    tmp_path: Path,
+    payload: bytes,
+    error: str,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "MANIFEST.json").write_bytes(payload)
+
+    with pytest.raises(installer.InstallError, match=error):
+        installer.configure_dependency_bundle(bundle)
+
+
+def test_bundle_manifest_is_rejected_before_an_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(installer, "_MAX_MANIFEST_BYTES", 64)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "MANIFEST.json").write_bytes(b"{" + b" " * 64 + b"}")
+
+    with pytest.raises(installer.InstallError, match="manifest exceeds 64 bytes"):
+        installer.configure_dependency_bundle(bundle)
 

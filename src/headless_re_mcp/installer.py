@@ -14,6 +14,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from headless_re_mcp.config import (
     Settings,
@@ -29,16 +31,50 @@ _RELEASE_MANIFEST = Path(__file__).with_name("dependency_release.json")
 _DOWNLOAD_CHUNK = 1024 * 1024
 _MAX_ARCHIVE_FILES = 20_000
 _MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class InstallError(RuntimeError):
     """Installation failed without leaving a partially activated dependency tree."""
 
 
+def _read_manifest(path: Path, *, label: str) -> bytes:
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(_MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        raise InstallError(f"{label} is unreadable: {exc}") from exc
+    if len(payload) > _MAX_MANIFEST_BYTES:
+        raise InstallError(f"{label} exceeds {_MAX_MANIFEST_BYTES} bytes")
+    return payload
+
+
 def load_dependency_release() -> JsonObject:
-    payload = cast(JsonObject, json.loads(_RELEASE_MANIFEST.read_text(encoding="utf-8")))
+    encoded = _read_manifest(
+        _RELEASE_MANIFEST, label="dependency release manifest"
+    )
+    try:
+        raw = json.loads(encoded.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"dependency release manifest is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise InstallError("dependency release manifest root must be an object")
+    payload = cast(JsonObject, raw)
     if payload.get("schema_version") != 1:
         raise InstallError("unsupported dependency release manifest")
+    for field in ("tag", "asset"):
+        value = payload.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value in {".", ".."}
+            or "/" in value
+            or "\\" in value
+        ):
+            raise InstallError(f"dependency release manifest has an invalid {field}")
+    size = payload.get("size")
+    if type(size) is not int or size <= 0:
+        raise InstallError("dependency release manifest has an invalid size")
     digest = str(payload.get("sha256") or "").lower()
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise InstallError("dependency release manifest has an invalid SHA-256")
@@ -47,7 +83,22 @@ def load_dependency_release() -> JsonObject:
     urls = payload.get("download_urls")
     if not isinstance(urls, list) or not urls:
         raise InstallError("dependency release has no download URLs")
+    if any(not isinstance(url, str) or not _is_safe_download_url(url) for url in urls):
+        raise InstallError("dependency release has an invalid download URL")
     return payload
+
+
+def _is_safe_download_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -59,6 +110,8 @@ def _sha256(path: Path) -> str:
 
 
 def _download_one(url: str, destination: Path, *, expected_size: int) -> None:
+    if not _is_safe_download_url(url):
+        raise InstallError("dependency download URL must be credential-free HTTPS")
     request = urllib.request.Request(
         url,
         headers={
@@ -114,8 +167,7 @@ def download_dependency_release(
     attempts: list[JsonObject] = []
     candidates = urls or [str(item) for item in release["download_urls"]]
     for index, url in enumerate(candidates, start=1):
-        partial = archive.with_suffix(f".zip.part-{os.getpid()}")
-        partial.unlink(missing_ok=True)
+        partial = archive.with_name(f".{archive.name}.part-{os.getpid()}-{uuid4().hex}")
         print(f"  下载依赖包（源 {index}/{len(candidates)}）：{url}", flush=True)
         try:
             _download_one(url, partial, expected_size=expected_size)
@@ -190,7 +242,7 @@ def extract_dependency_release(
         bundle_root = _find_bundle_root(staging)
         if bundle_root is None:
             raise InstallError("MANIFEST.json missing from dependency release")
-        manifest = json.loads((bundle_root / "MANIFEST.json").read_text(encoding="utf-8-sig"))
+        manifest = _load_bundle_manifest(bundle_root / "MANIFEST.json")
         if manifest.get("never_bundles_ida") is not True:
             raise InstallError("dependency bundle does not prove that IDA is excluded")
         if final.exists():
@@ -215,6 +267,17 @@ def _find_bundle_root(root: Path) -> Path | None:
     return matches[0].parent.resolve() if len(matches) == 1 else None
 
 
+def _load_bundle_manifest(path: Path) -> JsonObject:
+    encoded = _read_manifest(path, label="dependency bundle manifest")
+    try:
+        raw = json.loads(encoded.decode("utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"dependency bundle manifest is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise InstallError("dependency bundle manifest root must be an object")
+    return cast(JsonObject, raw)
+
+
 def configure_dependency_bundle(bundle_root: Path) -> JsonObject:
     """Validate the bundle manifest and persist only executable paths it declares."""
 
@@ -222,7 +285,7 @@ def configure_dependency_bundle(bundle_root: Path) -> JsonObject:
     manifest_path = root / "MANIFEST.json"
     if not manifest_path.is_file():
         raise InstallError(f"dependency MANIFEST.json not found under {root}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    manifest = _load_bundle_manifest(manifest_path)
     if manifest.get("never_bundles_ida") is not True:
         raise InstallError("refusing a dependency bundle that may contain IDA")
     included = manifest.get("included")
