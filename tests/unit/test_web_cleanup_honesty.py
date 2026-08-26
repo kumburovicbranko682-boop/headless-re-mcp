@@ -155,5 +155,57 @@ def test_web_close_reports_all_failed_playwright_closers() -> None:
     assert caught.value.code == "web_cleanup_failed"
     assert caught.value.details["failed_count"] == 3
     assert [context.calls, browser.calls, playwright.calls] == [1, 1, 1]
-    assert runner.shutdown_called is True
+    assert runner.shutdown_called is False
     assert backend._sessions == {"session": handle}
+
+
+def test_web_close_can_retry_a_transient_playwright_cleanup_failure() -> None:
+    """Retained state must keep a live runner so the next close can succeed."""
+
+    class _TransientContext:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def close(self) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("context was temporarily busy")
+
+    class _Closer:
+        def close(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _Runner:
+        wedged = False
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def call(self, work: Callable[[], object], *, timeout: float) -> None:
+            del timeout
+            if self.closed:
+                raise WebError("invalid_state", "runner is already closed")
+            work()
+
+        def shutdown(self) -> None:
+            self.closed = True
+
+    context = _TransientContext()
+    handle = _WebSession(_Closer(), _Closer(), context, object(), object())
+    runner = _Runner()
+    handle.runner = runner  # type: ignore[assignment]
+    backend = WebBackend()
+    backend._sessions["session"] = handle
+
+    with pytest.raises(WebError) as first:
+        backend.close("session")
+
+    assert first.value.code == "web_cleanup_failed"
+    assert runner.closed is False
+    assert backend._sessions == {"session": handle}
+    assert backend.close("session") == {"closed": True, "clean": True}
+    assert runner.closed is True
+    assert backend._sessions == {}
