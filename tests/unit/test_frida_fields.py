@@ -447,6 +447,36 @@ def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     assert killed == [4242]
 
 
+def test_frida_spawn_reports_a_process_that_cannot_be_killed_after_resume_failure() -> None:
+    """One failed rollback must not claim its spawned pid was killed."""
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("resume refused")
+
+        def kill(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("kill refused")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app")
+
+    assert caught.value.code == "frida_spawn_cleanup_failed"
+    assert caught.value.details["pid"] == 4242
+    assert caught.value.details["resume_error"] == "RuntimeError: resume refused"
+    assert caught.value.details["kill_error"] == "RuntimeError: kill refused"
+
+
 def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
     """Java.perform on a non-JIT process used to occupy the worker forever.
 
