@@ -18,6 +18,7 @@ from headless_re_mcp.core.store.sqlite_store import (
     CLOSED_SESSION_RETAINED,
     KNOWLEDGE_RETAINED_PER_SESSION,
     encode_knowledge_value,
+    redact_audit_payload,
 )
 from headless_re_mcp.core.store.timeline import (
     append_session_timeline,
@@ -680,10 +681,8 @@ class InMemoryAnalysisRepository:
         ok: bool,
         result_summary: JsonObject,
     ) -> None:
-        redacted = {
-            key: ("***" if "token" in key.casefold() or "password" in key.casefold() else value)
-            for key, value in params_summary.items()
-        }
+        redacted_params = redact_audit_payload(params_summary)
+        redacted_result = redact_audit_payload(result_summary)
         with self.transaction():
             self._audit.append(
                 {
@@ -691,9 +690,9 @@ class InMemoryAnalysisRepository:
                     "session_id": session_id,
                     "at": datetime.now(UTC).isoformat(),
                     "action": action,
-                    "params_summary": redacted,
+                    "params_summary": redacted_params,
                     "ok": 1 if ok else 0,
-                    "result_summary": dict(result_summary),
+                    "result_summary": redacted_result,
                 }
             )
             keep = max(1, int(AUDIT_RETAINED_ROWS))

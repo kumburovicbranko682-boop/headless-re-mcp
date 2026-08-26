@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from headless_re_mcp.core.store.timeline import session_timeline_path
+from headless_re_mcp.redaction import redact
 
 JsonObject = dict[str, Any]
 
@@ -119,6 +120,12 @@ def encode_knowledge_value(value: JsonObject) -> str:
             "artifact and keep the reference here"
         )
     return payload
+
+
+def redact_audit_payload(value: JsonObject) -> JsonObject:
+    """Return an audit-safe copy while preserving the historical mask."""
+    redacted = redact(value, mask="***")
+    return redacted if isinstance(redacted, dict) else {}
 
 
 class SessionStore:
@@ -437,11 +444,9 @@ class SessionStore:
         ok: bool,
         result_summary: JsonObject,
     ) -> None:
-        # Never persist secrets
-        redacted = {
-            key: ("***" if "token" in key.casefold() or "password" in key.casefold() else value)
-            for key, value in params_summary.items()
-        }
+        # Never persist secrets, including nested provider payloads and results.
+        redacted_params = redact_audit_payload(params_summary)
+        redacted_result = redact_audit_payload(result_summary)
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO audit(id,session_id,at,action,params_summary,ok,result_summary)"
@@ -451,9 +456,9 @@ class SessionStore:
                     session_id,
                     datetime.now(UTC).isoformat(),
                     action,
-                    encode_audit_json(redacted),
+                    encode_audit_json(redacted_params),
                     1 if ok else 0,
-                    encode_audit_json(result_summary),
+                    encode_audit_json(redacted_result),
                 ),
             )
             self._audit_writes += 1
