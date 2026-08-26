@@ -69,6 +69,10 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     row = payload["flows"][0]
     assert "content type" not in row
     assert row["content_type"] == "text/plain"
+    normalized = backend.flows("s", offset=-10, limit=0)
+    assert normalized["offset"] == 0
+    assert normalized["count"] == 1
+    assert normalized["has_more"] is True
     doc = _tool_docstring("proxy.flows")
     assert "Answers with flows" in doc
     assert "content_type" in doc

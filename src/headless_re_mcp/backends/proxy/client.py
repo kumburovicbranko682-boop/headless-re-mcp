@@ -375,7 +375,9 @@ class ProxyBackend:
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        window = items[offset : offset + limit]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
@@ -383,8 +385,8 @@ class ProxyBackend:
             "flows": window,
             "count": len(window),
             "total": len(items),
-            "offset": offset,
-            "has_more": offset + len(window) < len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
 
