@@ -124,6 +124,15 @@ def test_web_write_requires_confirm(tmp_path: Path) -> None:
     assert missing.status_code == 400
     assert missing.json()["detail"] == "confirm_required"
 
+    for invalid in (None, True, "1024", 1.5, 0, -1):
+        rejected = client.post(
+            "/api/write/artifacts.gc",
+            headers=headers,
+            json={"confirm": True, "max_total_bytes": invalid},
+        )
+        assert rejected.status_code == 400
+        assert rejected.json()["detail"] == "max_total_bytes_must_be_positive_integer"
+
     confirmed = client.post(
         "/api/write/artifacts.gc",
         headers=headers,

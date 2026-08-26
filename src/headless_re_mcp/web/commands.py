@@ -43,7 +43,9 @@ class WebCommandAdapter:
         session_id = body.get("session_id")
         method = getattr(self._service, spec.service_method)
         if action == "artifacts.gc":
-            max_bytes = int(body.get("max_total_bytes") or (512 * 1024 * 1024))
+            max_bytes = body.get("max_total_bytes", 512 * 1024 * 1024)
+            if type(max_bytes) is not int or max_bytes < 1:
+                raise ValueError("max_total_bytes_must_be_positive_integer")
             return cast(Result[JsonObject], method(max_total_bytes=max_bytes))
         if not isinstance(session_id, str):
             raise ValueError("session_id_required")
