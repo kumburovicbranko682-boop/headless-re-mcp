@@ -70,7 +70,7 @@ def process_image_path(pid: int) -> str | None:
     """Return the full image path for ``pid``, or None on failure."""
     if os.name != "nt" or type(pid) is not int or pid <= 0:
         return None
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined,unused-ignore]
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:
         return None
@@ -95,7 +95,7 @@ def enumerate_direct_children(parent_pid: int, *, max_pids: int = _MAX_CHILD_PID
     limit = _child_enum_limit(max_pids)
     if os.name != "nt":
         return _enumerate_direct_children_proc(parent_pid, limit)
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined,unused-ignore]
     snap = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1, 0xFFFFFFFF):
         return []
@@ -247,7 +247,7 @@ def _reap_terminated(pids: list[int], wait_s: float) -> None:
     while pending:
         for pid in tuple(pending):
             try:
-                waited, _ = os.waitpid(pid, os.WNOHANG)
+                waited, _ = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined,unused-ignore]
             except (ChildProcessError, OSError):
                 # The root may not have finished exiting yet, so its killed
                 # child has not been reparented to this subreaper. Retry until
@@ -337,7 +337,7 @@ def _kill_pid(pid: int) -> None:
     if os.name != "nt":
         os.kill(pid, 9)
         return
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined,unused-ignore]
     handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, int(pid))
     if not handle:
         return
