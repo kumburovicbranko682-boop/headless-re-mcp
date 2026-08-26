@@ -715,23 +715,38 @@ class FridaClient:
                     values, has_more = _page(
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
-                    return {"classes": values, "count": len(values), "has_more": has_more}
-                if mode == "methods":
+                    result: JsonObject = {
+                        "classes": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                elif mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
                     values, has_more = _page(
                         script.exports_sync.methods(class_name, capped + 1), capped
                     )
-                    return {
+                    result = {
                         "class_name": class_name,
                         "methods": values,
                         "count": len(values),
                         "has_more": has_more,
                     }
-                raise FridaError("invalid_params", "mode must be classes or methods")
-            finally:
+                else:
+                    raise FridaError("invalid_params", "mode must be classes or methods")
+            except BaseException:
                 with contextlib.suppress(Exception):
                     session.detach()
+                raise
+            try:
+                session.detach()
+            except Exception as exc:
+                raise FridaError(
+                    "frida_detach_failed",
+                    f"Java probe detach failed: {type(exc).__name__}: {exc}",
+                    pid=pid,
+                ) from exc
+            return result
 
         try:
             return _run_deadline(
