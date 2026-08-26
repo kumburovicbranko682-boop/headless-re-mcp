@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any
 
 import pytest
@@ -77,6 +79,56 @@ def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     assert "deleted" in analyzed["note"]
     assert "import" in analyzed["note"]
     assert listed["export_path"]
+
+
+def test_ghidra_serializes_clients_using_the_same_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _fake_home(tmp_path)
+    java = tmp_path / "java.exe"
+    java.write_bytes(b"")
+    clients = [ghidra_client.GhidraClient(home=home, java=java) for _ in range(2)]
+    project = tmp_path / "project"
+    binary = _binary(tmp_path)
+    state_lock = Lock()
+    first_entered = Event()
+    release_first = Event()
+    calls = 0
+    active = 0
+    max_active = 0
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        nonlocal calls, active, max_active
+        del kwargs
+        with state_lock:
+            calls += 1
+            call_number = calls
+            active += 1
+            max_active = max(max_active, active)
+        if call_number == 1:
+            first_entered.set()
+            release_first.wait(timeout=0.5)
+        else:
+            release_first.set()
+        try:
+            for arg in cmd:
+                if str(arg).endswith(".json"):
+                    Path(arg).write_text('{"items": []}', encoding="utf-8")
+            return Completed(0, b"ok", b"")
+        finally:
+            with state_lock:
+                active -= 1
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(clients[0].functions, binary, project)
+        assert first_entered.wait(timeout=1.0)
+        second = pool.submit(clients[1].functions, binary, project)
+        assert first.result(timeout=2.0)["items"] == []
+        assert second.result(timeout=2.0)["items"] == []
+
+    assert calls == 2
+    assert max_active == 1
 
 
 def test_ghidra_analyze_description_does_not_tell_the_model_to_run_it_first() -> None:

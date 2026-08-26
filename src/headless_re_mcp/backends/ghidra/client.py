@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
@@ -14,6 +15,12 @@ _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+_PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+
+
+def _project_lock(project_dir: Path) -> Any:
+    key = os.path.normcase(str(project_dir.expanduser().resolve()))
+    return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
 
 
 class GhidraError(RuntimeError):
@@ -158,6 +165,28 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
     ) -> JsonObject:
+        with _project_lock(project_dir):
+            return self._export_unlocked(
+                binary,
+                project_dir,
+                mode=mode,
+                limit=limit,
+                address=address,
+                timeout=timeout,
+                max_heap=max_heap,
+            )
+
+    def _export_unlocked(
+        self,
+        binary: Path,
+        project_dir: Path,
+        *,
+        mode: str,
+        limit: int,
+        address: str | int | None = None,
+        timeout: float,
+        max_heap: str,
+    ) -> JsonObject:
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
         if not binary.is_file():
@@ -255,9 +284,10 @@ class GhidraClient:
         if delete_project:
             cmd.append("-deleteProject")
         try:
-            completed = run_bounded(
-                cmd, timeout=timeout, creationflags=creationflags, env=env
-            )
+            with _project_lock(project_dir):
+                completed = run_bounded(
+                    cmd, timeout=timeout, creationflags=creationflags, env=env
+                )
         except TimedOut as exc:
             # analyzeHeadless is a script that starts a JVM. Killing the script
             # alone left that JVM analysing a large binary with nobody waiting
