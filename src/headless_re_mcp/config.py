@@ -391,10 +391,13 @@ def update_config_values(
     if path.is_file():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, ValueError, TypeError):
-            data = {}
+        except OSError as exc:
+            raise OSError(f"could not read existing config: {path}") from exc
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"existing config is not valid JSON: {path}") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError(f"existing config root must be an object: {path}")
+        data = loaded
     for key, value in updates.items():
         if value is None:
             data.pop(key, None)

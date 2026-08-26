@@ -50,6 +50,21 @@ def test_config_update_preserves_original_if_atomic_replace_fails(
     assert list(tmp_path.glob(".config.json-*.tmp")) == []
 
 
+@pytest.mark.parametrize("damaged", [b"{", b"[]", b"\xff"])
+def test_config_update_refuses_to_overwrite_invalid_existing_config(
+    tmp_path: Path,
+    damaged: bytes,
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_bytes(damaged)
+
+    with pytest.raises(ValueError, match="existing config"):
+        update_config_values({"local_full_access": True}, config_path=path)
+
+    assert path.read_bytes() == damaged
+    assert list(tmp_path.glob(".config.json-*.tmp")) == []
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_config_update_restricts_permissions_on_posix(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
