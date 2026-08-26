@@ -7,10 +7,14 @@ write surface. These pin the enforcement so the setting cannot go inert again.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
+import pytest
 from mcp.server.fastmcp import FastMCP
 
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.commands import CommandCatalog, CommandSpec, CommandTransport
 from headless_re_mcp.mcp.adapter import register_tool
 from headless_re_mcp.tools.catalog import ToolEffect
@@ -132,3 +136,59 @@ def test_the_policy_is_read_per_call_not_frozen_at_registration() -> None:
     # with whatever the config said at startup.
     assert spec.handler(value="second")["ok"] is False
     assert calls == ["first"]
+
+
+def _loaded_full_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    env: str | None,
+    config_value: object = "unset",
+) -> bool:
+    monkeypatch.setenv("HEADLESS_RE_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    if env is None:
+        monkeypatch.delenv("HEADLESS_RE_LOCAL_FULL_ACCESS", raising=False)
+    else:
+        monkeypatch.setenv("HEADLESS_RE_LOCAL_FULL_ACCESS", env)
+    if config_value == "unset":
+        return Settings.load(tmp_path / "missing-config.json").local_full_access
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"local_full_access": config_value}), encoding="utf-8")
+    return Settings.load(config).local_full_access
+
+
+def test_read_only_is_the_opt_in_and_full_access_is_the_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The switch that flips a deployment read-only is the env/JSON parse itself.
+
+    The guard above reads catalog.write_allowed, which bind_all_tools copies
+    from Settings.local_full_access. If a falsy env string failed to parse to
+    False the whole write surface would quietly reopen, so pin the parse: no
+    configuration is full access, and only the falsy tokens turn writes off.
+    """
+    assert _loaded_full_access(monkeypatch, tmp_path, env=None) is True
+
+
+@pytest.mark.parametrize("falsy", ["0", "false", "False", "no", "off", "  OFF  "])
+def test_a_falsy_switch_makes_the_deployment_read_only(
+    falsy: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert _loaded_full_access(monkeypatch, tmp_path, env=falsy) is False
+
+
+@pytest.mark.parametrize("truthy", ["1", "true", "yes", "on", "enabled"])
+def test_a_truthy_switch_keeps_full_access(
+    truthy: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert _loaded_full_access(monkeypatch, tmp_path, env=truthy) is True
+
+
+def test_a_json_key_can_request_read_only_and_env_overrides_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A JSON config alone can select read-only.
+    assert _loaded_full_access(monkeypatch, tmp_path, env=None, config_value=False) is False
+    # Env wins over JSON in both directions.
+    assert _loaded_full_access(monkeypatch, tmp_path, env="1", config_value=False) is True
+    assert _loaded_full_access(monkeypatch, tmp_path, env="off", config_value=True) is False
