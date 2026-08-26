@@ -493,6 +493,21 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_sessions() -> None:
+            cleanup_failures.extend(_detach_all(sessions))
+
+        def cleanup_error() -> FridaError:
+            first = cleanup_failures[0]
+            return FridaError(
+                "frida_detach_failed",
+                f"{len(cleanup_failures)} local hook detach attempt(s) failed",
+                pid=pid,
+                detach_error=first["detach_error"],
+                failed_count=len(cleanup_failures),
+                failures=cleanup_failures,
+            )
 
         def work() -> JsonObject:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
@@ -521,12 +536,16 @@ class FridaClient:
             }
 
         try:
-            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
-        except FridaError:
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
+        except FridaError as exc:
+            if cleanup_failures:
+                raise cleanup_error() from exc
             raise
         except Exception as exc:  # noqa: BLE001
             if _is_timeout(exc):
-                _detach_all(sessions)
+                cleanup_sessions()
+                if cleanup_failures:
+                    raise cleanup_error() from exc
                 raise _timeout_error(deadline) from exc
             raise
 
