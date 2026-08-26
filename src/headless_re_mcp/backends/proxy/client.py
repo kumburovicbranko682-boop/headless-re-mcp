@@ -275,12 +275,25 @@ class _ProxyInstance:
         if master is not None and loop is not None:
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
-        if self._thread is not None:
-            self._thread.join(timeout=10.0)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=10.0)
         # Also here, not only in the thread's own unwind: a thread that is wedged
         # never runs its finally, and a stale handler is the one piece of a dead
         # proxy that keeps costing the whole process something.
         _uninstall_master_logging(master)
+        if thread is not None and thread.is_alive():
+            # The listener may still own its port. Clearing the loop/master and
+            # reporting success lost the only handle that could retry shutdown:
+            # one wedged thread became zero tracked instances while remaining
+            # alive. Keep every handle intact and fail honestly.
+            raise ProxyError(
+                "timeout",
+                "proxy thread did not stop within 10 seconds",
+                host=self.host,
+                port=self.port,
+                timeout_s=10.0,
+            )
         self._master = None
         self._loop = None
 
@@ -352,10 +365,13 @@ class ProxyBackend:
 
     def stop(self, session_id: str) -> JsonObject:
         with self._lock:
-            inst = self._instances.pop(session_id, None)
+            inst = self._instances.get(session_id)
         if inst is None:
             return {"stopped": False, "note": "no proxy was running"}
         inst.stop()
+        with self._lock:
+            if self._instances.get(session_id) is inst:
+                self._instances.pop(session_id, None)
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:
@@ -501,7 +517,12 @@ class ProxyBackend:
 
     def close_all(self) -> None:
         with self._lock:
-            instances = list(self._instances.values())
-            self._instances.clear()
-        for inst in instances:
-            inst.stop()
+            session_ids = list(self._instances)
+        errors: list[ProxyError] = []
+        for session_id in session_ids:
+            try:
+                self.stop(session_id)
+            except ProxyError as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
