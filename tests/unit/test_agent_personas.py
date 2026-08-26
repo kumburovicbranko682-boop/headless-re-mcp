@@ -60,6 +60,7 @@ def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Pat
         (b"x" * (256 * 1024 + 1), "persona_too_large"),
         (b"\xff", "persona_path_unreadable"),
     ],
+    ids=("too-large", "invalid-utf8"),
 )
 def test_persona_path_import_rejects_invalid_content(
     tmp_path: Path,
