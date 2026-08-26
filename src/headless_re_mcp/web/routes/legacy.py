@@ -146,7 +146,14 @@ def register_legacy_routes(
     async def loopback_guard(request: Request, call_next: Callable[..., Any]) -> Any:
         if request.url.path == "/healthz":
             return await call_next(request)
-        _require_loopback(request)
+        try:
+            _require_loopback(request)
+        except HTTPException as exc:
+            # An HTTPException raised in middleware never reaches FastAPI's
+            # handler (that wraps only the router), so without this conversion
+            # an off-loopback client got a 500 internal_error and every probe
+            # wrote an incident to the log, instead of the promised plain 403.
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         return await call_next(request)
 
     @app.middleware("http")

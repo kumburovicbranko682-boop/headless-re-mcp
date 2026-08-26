@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import stat
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -82,6 +86,101 @@ def test_percent_encoded_token_equals_still_opens_the_console(tmp_path: Path) ->
     page = client.get(f"/?token%3D{token}")
     assert page.status_code == 200
     assert '<div id="root"></div>' in page.text
+
+
+def test_a_wrong_token_is_rejected_like_a_missing_one(tmp_path: Path) -> None:
+    """Presenting the wrong secret must not fare better than presenting none."""
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+
+    wrong_bearer = client.get(
+        "/api/sessions", headers={"Authorization": "Bearer " + token[:-1] + "X"}
+    )
+    assert wrong_bearer.status_code == 401
+    wrong_query = client.get("/?token=" + token[:-1] + "X")
+    assert wrong_query.status_code == 401
+    # And the failed attempts must not have minted a bootstrap cookie.
+    assert client.get("/api/sessions").status_code == 401
+
+
+def _get_off_loopback(
+    app: object, client_addr: tuple[str, int], path: str, headers: dict[str, str] | None = None
+) -> httpx.Response:
+    """GET as a specific client address; TestClient cannot spoof one."""
+
+    async def call() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app, client=client_addr)  # type: ignore[arg-type]
+        async with httpx.AsyncClient(transport=transport, base_url="http://console") as client:
+            return await client.get(path, headers=headers)
+
+    return asyncio.run(call())
+
+
+def test_non_loopback_clients_are_refused_even_with_the_right_token(tmp_path: Path) -> None:
+    """The console promises loopback-only; a stolen token must not undo that.
+
+    SECURITY.md counts "listening beyond loopback" as a vulnerability. The bind
+    address enforces most of it, but the middleware is the guard that holds when
+    the port gets forwarded -- so it must refuse a public source address even
+    when the request carries the correct bearer token.
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+    public = ("203.0.113.9", 40000)
+    bearer = {"Authorization": f"Bearer {token}"}
+
+    for path in ("/api/sessions", "/", "/readyz"):
+        refused = _get_off_loopback(app, public, path, headers=bearer)
+        assert refused.status_code == 403, f"{path} answered off-loopback"
+        assert refused.json()["detail"] == "loopback_only"
+
+
+def test_healthz_is_the_only_route_reachable_off_loopback(tmp_path: Path) -> None:
+    """Liveness stays probeable, and it must not hand out anything secret."""
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+
+    alive = _get_off_loopback(app, ("203.0.113.9", 40000), "/healthz")
+
+    assert alive.status_code == 200
+    assert alive.json()["ok"] is True
+    assert token not in alive.text
+
+
+def test_ipv6_loopback_passes_the_host_guard(tmp_path: Path) -> None:
+    """::1 is loopback too; it must hit the token check (401), not the host 403."""
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+
+    refused = _get_off_loopback(app, ("::1", 40000), "/api/sessions")
+    assert refused.status_code == 401
+
+    ok = _get_off_loopback(
+        app, ("::1", 40000), "/api/sessions", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert ok.status_code == 200
+
+
+def test_a_weak_token_file_is_replaced_with_a_strong_private_one(tmp_path: Path) -> None:
+    """A truncated or tampered token file must not become the accepted secret."""
+    path = tmp_path / "web_token.json"
+    path.write_text(json.dumps({"token": "short"}), encoding="utf-8")
+
+    token = load_or_create_web_token(path=path)
+
+    assert token != "short"
+    assert len(token) >= 24
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
