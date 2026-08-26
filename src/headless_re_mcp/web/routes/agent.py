@@ -242,6 +242,8 @@ def register_agent_routes(
             message = store.add_message(thread_id, "user", content.strip())
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="thread_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "message": message.dump()}, status_code=201)
 
     @app.post("/api/agent/runs", status_code=202)
@@ -260,10 +262,14 @@ def register_agent_routes(
                 await asyncio.to_thread(store.add_message, thread_id, "user", message.strip())
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="thread_not_found") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
         try:
             run = await orchestrator.start_run(thread_id, profile_id=body.get("profile_id") if isinstance(body.get("profile_id"), str) else None, model=body.get("model") if isinstance(body.get("model"), str) else None)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="thread_or_profile_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "run_id": run["id"], "run": run}, status_code=202)
 
     @app.get("/api/agent/runs/{run_id}")

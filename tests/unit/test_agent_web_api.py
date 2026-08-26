@@ -91,6 +91,38 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_agent_message_limits_are_client_errors_not_incidents(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/agent/threads", headers=headers, json={"title": "bounded"}
+        )
+        thread_id = created.json()["thread"]["id"]
+        oversized = "x" * (1024 * 1024 + 1)
+
+        message = client.post(
+            f"/api/agent/threads/{thread_id}/messages",
+            headers=headers,
+            json={"content": oversized},
+        )
+        assert message.status_code == 413
+        assert message.json()["detail"] == "message exceeds 1 MiB"
+
+        run = client.post(
+            "/api/agent/runs",
+            headers=headers,
+            json={"thread_id": thread_id, "message": oversized},
+        )
+        assert run.status_code == 413
+        assert run.json()["detail"] == "message exceeds 1 MiB"
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 
