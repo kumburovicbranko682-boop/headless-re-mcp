@@ -396,6 +396,31 @@ def test_garbage_without_an_id_stays_silent() -> None:
     assert error_message_for_unreadable_line("{not-json") is None
 
 
+@pytest.mark.asyncio
+async def test_stdio_reader_drains_oversized_records_without_buffering_them() -> None:
+    from io import BytesIO
+
+    from headless_re_mcp.mcp.stdio_errors import _read_bounded_line
+
+    class AsyncBytes:
+        def __init__(self, payload: bytes) -> None:
+            self.stream = BytesIO(payload)
+
+        async def readline(self, size: int = -1) -> bytes:
+            return self.stream.readline(size)
+
+    valid = b'{"jsonrpc":"2.0","id":2,"method":"ping"}\n'
+    stream = AsyncBytes(b'{"padding":"' + b"x" * 256 + b'"}\n' + valid)
+
+    oversized, was_oversized = await _read_bounded_line(stream, limit=64)
+    following, following_oversized = await _read_bounded_line(stream, limit=64)
+
+    assert was_oversized is True
+    assert len(oversized) == 65
+    assert following == valid
+    assert following_oversized is False
+
+
 def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
     """The initialize payload told the model it could only open a PE.
 

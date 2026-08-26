@@ -18,6 +18,26 @@ from mcp.types import (
 # "Internal Server Error" and never replies with the request id. Measured:
 # a tools/call nested 200 deep produced no JSON-RPC response at all.
 _RECURSION_MARKERS = ("recursion limit exceeded", "recursion")
+_MAX_STDIO_MESSAGE_BYTES = 8 * 1024 * 1024
+
+
+async def _read_bounded_line(
+    stream: Any,
+    *,
+    limit: int = _MAX_STDIO_MESSAGE_BYTES,
+) -> tuple[bytes, bool]:
+    """Read one binary NDJSON record and drain any oversized remainder."""
+    cap = max(1, int(limit))
+    line = await stream.readline(cap + 1)
+    if not line:
+        return b"", False
+    if len(line) <= cap:
+        return line, False
+
+    prefix = line
+    while line and not line.endswith(b"\n"):
+        line = await stream.readline(cap + 1)
+    return prefix, True
 
 
 def error_message_for_unreadable_line(line: str) -> JSONRPCMessage | None:
@@ -64,7 +84,7 @@ async def stdio_server_with_parse_replies() -> Any:
     from mcp.shared.message import SessionMessage
     from mcp.types import JSONRPCMessage as RpcMessage
 
-    stdin = anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace"))
+    stdin = anyio.wrap_file(sys.stdin.buffer)
     stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
     read_stream_writer: MemoryObjectSendStream[SessionMessage]
     read_stream: MemoryObjectReceiveStream[SessionMessage]
@@ -77,7 +97,19 @@ async def stdio_server_with_parse_replies() -> Any:
     async def stdin_reader() -> None:
         try:
             async with read_stream_writer, error_writer:
-                async for line in stdin:
+                while True:
+                    encoded, oversized = await _read_bounded_line(stdin)
+                    if not encoded:
+                        break
+                    line = encoded.decode("utf-8", errors="replace")
+                    if oversized:
+                        exc = ValueError(
+                            f"request exceeds {_MAX_STDIO_MESSAGE_BYTES} bytes"
+                        )
+                        reply = _error_for_parse_failure(line, exc)
+                        if reply is not None:
+                            await error_writer.send(SessionMessage(reply))
+                        continue
                     try:
                         message = RpcMessage.model_validate_json(line)
                     except Exception as exc:
