@@ -193,6 +193,6 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
         "total": total,
         "offset": offset,
         "limit": limit,
-        "has_more": offset + len(events) < total,
+        "has_more": offset + len(chunk) < total,
         "path": str(path),
     }

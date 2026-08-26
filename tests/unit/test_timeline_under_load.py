@@ -88,6 +88,7 @@ def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> 
     torn = list_session_timeline(path, offset=250, limit=10)
     assert torn["total"] == len(whole) + 1, "an unterminated last line still counts"
     assert torn["events"] == [], "and is skipped rather than breaking the page"
+    assert torn["has_more"] is False, "a malformed last line was still consumed"
 
 
 def test_a_session_that_never_existed_is_not_reported_as_a_quiet_one(
