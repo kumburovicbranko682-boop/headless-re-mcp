@@ -15,6 +15,7 @@ from typing import Any, TextIO
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
+from headless_re_mcp.backends.common.text_stream import read_bounded_text_line
 from headless_re_mcp.backends.x64dbg.limits import MAX_FRAME_BYTES
 from headless_re_mcp.core.desktop_isolation import (
     DesktopIsolationJob,
@@ -45,6 +46,7 @@ _MAX_DISPATCH_TIMEOUT_MS = 30_000
 # worker block the caller indefinitely.
 _RECONNECT_TIMEOUT_SECONDS = 30.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
+_MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
 
 
 class XdbgRpcError(RuntimeError):
@@ -1210,8 +1212,14 @@ class XdbgClient:
         return result
 
     def _read_log(self, stream: TextIO, target: deque[str]) -> None:
-        for line in stream:
-            target.append(line.rstrip("\r\n"))
+        while True:
+            line = read_bounded_text_line(
+                stream,
+                max_chars=_MAX_DIAGNOSTIC_LINE_CHARS,
+            )
+            if line is None:
+                return
+            target.append(line)
 
     def _monitor_windows(self) -> None:
         while not self._monitor_stop.wait(0.05):
