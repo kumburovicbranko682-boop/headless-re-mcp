@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from headless_re_mcp.agent import personas as personas_module
 from headless_re_mcp.agent.personas import (
     DEFAULT_PERSONA_ID,
     SEAGULL_PERSONA_ID,
@@ -73,6 +74,23 @@ def test_persona_path_import_rejects_invalid_content(
 
     with pytest.raises(ValueError, match=error):
         store.import_path(source)
+
+
+def test_persona_index_and_prompt_reads_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "personas"
+    store = PersonaStore(root, seed_paths=())
+    monkeypatch.setattr(personas_module, "_MAX_PERSONA_INDEX_BYTES", 64)
+    (root / "index.json").write_bytes(b"{" + b" " * 128 + b"}")
+    assert store.list_public()["personas"] == []
+
+    # Restore a valid catalog, then make its selected body much larger than the
+    # prompt window. The loader must stop reading before it truncates text.
+    store = PersonaStore(root, seed_paths=())
+    monkeypatch.setattr(personas_module, "_PROMPT_MAX_CHARS", 8)
+    (root / "default.md").write_bytes(b"x" * 1024)
+    assert store.prompt_for(DEFAULT_PERSONA_ID) == "xxxxxxxx\n\n[persona truncated]"
 
 
 def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

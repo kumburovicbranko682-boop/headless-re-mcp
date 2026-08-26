@@ -16,6 +16,7 @@ DEFAULT_PERSONA_ID = "default"
 SEAGULL_PERSONA_ID = "seagull"
 _MAX_IMPORT_BYTES = 256 * 1024
 _PROMPT_MAX_CHARS = 48_000
+_MAX_PERSONA_INDEX_BYTES = 1024 * 1024
 _INDEX_NAME = "index.json"
 _PERSONA_ID_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\Z")
 
@@ -49,6 +50,13 @@ def _slug(title: str, body: str) -> str:
     return f"{stem or 'persona'}-{digest}"
 
 
+def _read_bounded_text(path: Path, max_bytes: int) -> tuple[str, bool]:
+    with path.open("rb") as stream:
+        payload = stream.read(max_bytes + 1)
+    truncated = len(payload) > max_bytes
+    return payload[:max_bytes].decode("utf-8", errors="replace"), truncated
+
+
 class PersonaStore:
     def __init__(self, root: Path, *, seed_paths: tuple[Path, ...] | None = None) -> None:
         self.root = Path(root)
@@ -65,7 +73,10 @@ class PersonaStore:
         if not path.is_file():
             return {"current": DEFAULT_PERSONA_ID, "items": {}}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            text, truncated = _read_bounded_text(path, _MAX_PERSONA_INDEX_BYTES)
+            if truncated:
+                return {"current": DEFAULT_PERSONA_ID, "items": {}}
+            data = json.loads(text)
         except (OSError, json.JSONDecodeError):
             return {"current": DEFAULT_PERSONA_ID, "items": {}}
         return data if isinstance(data, dict) else {"current": DEFAULT_PERSONA_ID, "items": {}}
@@ -88,10 +99,13 @@ class PersonaStore:
                 default_path.write_text(DEFAULT_PERSONA_BODY, encoding="utf-8")
             else:
                 try:
-                    existing = default_path.read_text(encoding="utf-8")
+                    existing, truncated = _read_bounded_text(
+                        default_path, _MAX_IMPORT_BYTES
+                    )
                 except OSError:
                     existing = ""
-                if _OLD_APPROVAL_SENTENCE in existing:
+                    truncated = False
+                if not truncated and _OLD_APPROVAL_SENTENCE in existing:
                     default_path.write_text(
                         existing.replace(_OLD_APPROVAL_SENTENCE, _NEW_APPROVAL_SENTENCE),
                         encoding="utf-8",
@@ -191,11 +205,14 @@ class PersonaStore:
             if not known or not path.is_file():
                 path = self._body_path(DEFAULT_PERSONA_ID)
         try:
-            text = path.read_text(encoding="utf-8")
+            text, byte_truncated = _read_bounded_text(
+                path, _PROMPT_MAX_CHARS * 4 + 4
+            )
         except OSError:
             text = DEFAULT_PERSONA_BODY
+            byte_truncated = False
         text = text.strip()
-        if len(text) > _PROMPT_MAX_CHARS:
+        if byte_truncated or len(text) > _PROMPT_MAX_CHARS:
             text = text[:_PROMPT_MAX_CHARS] + "\n\n[persona truncated]"
         return text
 
