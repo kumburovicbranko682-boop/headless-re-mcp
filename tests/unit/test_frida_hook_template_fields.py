@@ -89,7 +89,7 @@ def test_frida_hook_template_does_not_hide_a_failed_detach() -> None:
     client._frida = _Frida()
 
     with pytest.raises(FridaError) as caught:
-        client.hook_template(17, "log_file", allowed_pid=17, timeout=0.5)
+        client.hook_template(17, "noop", allowed_pid=17, timeout=0.5)
 
     assert caught.value.code == "frida_detach_failed"
     assert caught.value.details["pid"] == 17
