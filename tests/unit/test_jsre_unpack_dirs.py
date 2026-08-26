@@ -111,3 +111,39 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert tail["count"] == 10
     assert tail["has_more"] is False
     assert set(page["files"]) & set(tail["files"]) == set()
+
+
+@pytest.mark.parametrize(
+    ("files_written", "listing_truncated"),
+    [(5, False), (6, True)],
+)
+def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files_written: int,
+    listing_truncated: bool,
+) -> None:
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    monkeypatch.setattr(jsre_client, "_MAX_COUNTED_FILES", 5)
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        if not any(out_dir.iterdir()):
+            for index in range(files_written):
+                (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+
+    tail = client.unpack_bundle(bundle, tmp_path / "out", offset=5, limit=10)
+
+    assert tail["total"] == 5
+    assert tail["count"] == 0
+    assert tail["has_more"] is False
+    assert tail["listing_truncated"] is listing_truncated

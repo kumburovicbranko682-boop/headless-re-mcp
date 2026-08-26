@@ -37,14 +37,14 @@ def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]
     for path in root.rglob("*"):
         if not path.is_file():
             continue
+        if total >= _MAX_COUNTED_FILES:
+            has_more = True
+            break
         total += 1
         if len(names) < cap:
             names.append(str(path.relative_to(root)))
         else:
             has_more = True
-        if total >= _MAX_COUNTED_FILES:
-            has_more = True
-            break
     names.sort()
     return names, total, has_more
 
@@ -163,7 +163,8 @@ class JsClient:
             "count": len(window),
             "total": file_count,
             "offset": start,
-            "has_more": start + len(window) < file_count or listed_more,
+            "has_more": start + len(window) < file_count,
+            "listing_truncated": listed_more,
         }
 
 
