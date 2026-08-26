@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -13,6 +14,19 @@ from typing import Any
 from platformdirs import user_config_path, user_data_path
 
 from headless_re_mcp.core.retention import DEFAULT_MAX_TOTAL_BYTES
+
+_MAX_CONFIG_FILE_BYTES = 1024 * 1024
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        payload = stream.read(_MAX_CONFIG_FILE_BYTES + 1)
+    if len(payload) > _MAX_CONFIG_FILE_BYTES:
+        raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("configuration root must be an object")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +100,7 @@ class Settings:
         data: dict[str, Any] = {}
         path = config_path or default_config_path()
         if path.is_file():
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _read_json_object(path)
 
         ida_home = _optional_path(
             os.environ.get("HEADLESS_RE_IDA_HOME")
@@ -431,11 +445,12 @@ def update_config_values(
     data: dict[str, Any] = {}
     if path.is_file():
         try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, ValueError, TypeError):
-            data = {}
+            loaded = _read_json_object(path)
+        except OSError as exc:
+            raise OSError(f"could not read existing config: {path}") from exc
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"existing config is not valid JSON: {path}") from exc
+        data = loaded
     for key, value in updates.items():
         if value is None:
             data.pop(key, None)
@@ -443,7 +458,28 @@ def update_config_values(
             data[key] = str(value)
         else:
             data[key] = value
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    encoded = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(encoded) > _MAX_CONFIG_FILE_BYTES:
+        raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}-",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
     with suppress(OSError):
         path.chmod(0o600)
     return path
@@ -500,7 +536,7 @@ def _ida_config_home() -> Path | None:
         return None
     path = Path(appdata) / "Hex-Rays" / "IDA Pro" / "ida-config.json"
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = _read_json_object(path)
         value = raw.get("Paths", {}).get("ida-install-dir")
         result = _optional_path(value)
         if result is not None and find_idalib_library(result) is not None:

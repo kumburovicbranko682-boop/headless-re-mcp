@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -116,10 +118,27 @@ class ProviderConfigStore:
         return raw
 
     def _write(self, data: dict[str, Any]) -> None:
-        temp = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._best_effort_protect(temp)
-        temp.replace(self.path)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}-",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(json.dumps(data, ensure_ascii=False, indent=2))
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._best_effort_protect(temporary)
+            os.replace(temporary, self.path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink()
         self._best_effort_protect(self.path)
 
     def list_public(self) -> dict[str, Any]:
