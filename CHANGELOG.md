@@ -586,6 +586,13 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **Provider 秘密面成套固定**：`providers.json` 是部署里唯一合法明文存 API key 的文件,
+  此前无测试钉住它的两条命脉——文件本身在 POSIX 上必须 0600(目录 0700)且 key 确实写进去了
+  (否则「私有文件」保护的是空气);而一切对外形态(`public()` / `list_public()` /
+  Zerofall 导入预览)只许出现掩码(`sk…89`),原始 key 与 `providerApiKeys` 里的每个值都不得
+  出现。另钉 `masked_secret` 短 key(≤8)只回 `********` 不泄长度、未配置档案报
+  `configured=false` 且不编造掩码、`HEADLESS_RE_PROVIDER_API_KEY` 环境覆盖生效时 key 既不进
+  文件也不进公开列表。
 - **全路由未认证扫描**：认证是逐路由手写的(`_require_token`/`authorize` 50+ 处调用点),
   没有任何结构性机制阻止新路由漏掉这一行。新增契约测试遍历注册在 app 上的全部 85 个路由,
   未带 token(回环源)逐一请求并要求 401——必填 query 参数导致的 422 会被自动补参重试,
