@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from inspect import signature
-from threading import BoundedSemaphore, Thread
+from threading import BoundedSemaphore, Event, Thread
 from typing import Any, TypeVar
 
 from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
@@ -552,15 +552,24 @@ class FridaClient:
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        expired = Event()
+
+        def cleanup_sessions() -> None:
+            expired.set()
+            _detach_all(sessions)
 
         def work() -> Any:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
             sessions.append(session)
+            # The deadline callback may have run before attach returned, when
+            # there was no session to detach. Close that race in the worker.
+            if expired.is_set():
+                _detach_all(sessions)
             return session
 
         try:
             return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+                work, timeout=deadline, on_timeout=cleanup_sessions
             )
         except FridaError:
             raise
