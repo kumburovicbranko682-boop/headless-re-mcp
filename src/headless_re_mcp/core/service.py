@@ -1054,16 +1054,36 @@ class AnalysisService(
                 shutil.rmtree(path)
 
     def _unpack_cancel_event(self, session_id: str) -> Event:
-        event = self._unpack_cancel_events.get(session_id)
-        if event is None:
-            event = Event()
-            self._unpack_cancel_events[session_id] = event
-        return event
+        with self._lock:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack operation cannot run in {session.state.value} state"
+                )
+            event = self._unpack_cancel_events.get(session_id)
+            if event is None:
+                event = Event()
+                self._unpack_cancel_events[session_id] = event
+            return event
 
     def _reset_unpack_cancel(self, session_id: str) -> Event:
-        event = Event()
-        self._unpack_cancel_events[session_id] = event
-        return event
+        with self._lock:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"unpack.start cannot run in {session.state.value} state"
+                )
+            event = Event()
+            self._unpack_cancel_events[session_id] = event
+            return event
 
     def _signal_unpack_cancel(self, session_id: str) -> None:
         self._unpack_cancel_event(session_id).set()
