@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import pytest
 
@@ -32,7 +32,7 @@ def test_artifact_read_uses_the_open_handle_for_its_size(
     real_open = Path.open
 
     def disappearing_open(path: Path, *args: Any, **kwargs: Any) -> IO[Any]:
-        stream = real_open(path, *args, **kwargs)
+        stream = cast(IO[Any], real_open(path, *args, **kwargs))
         if path == artifact_path:
             artifact_path.unlink()
         return stream
