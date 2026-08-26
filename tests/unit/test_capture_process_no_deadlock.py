@@ -61,11 +61,26 @@ _EXIT0_ORPHAN = (
 
 
 def _pid_alive(pid: int) -> bool:
+    """True only for a live process, never for a killed-but-unreaped zombie.
+
+    ``os.kill(pid, 0)`` succeeds on a zombie, so it would call the orphan the
+    group kill already dispatched "alive" during the window before init reaps
+    it -- and in a container whose pid 1 does not reap orphans that window is
+    unbounded. The point of the assertion is that the orphan was *killed*; a
+    zombie satisfies that. Read the state from ``/proc/<pid>/stat`` and treat
+    'Z'/'X' as dead, the same probe the other process-kill suites use.
+    """
     try:
-        os.kill(pid, 0)
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
     except OSError:
         return False
-    return True
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    if not fields:
+        return False
+    return fields[0] not in {"Z", "X", "x"}
 
 
 def _read_pids(pidfile: Path, *, deadline_s: float = 3.0) -> list[int]:
