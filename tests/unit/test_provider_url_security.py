@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from headless_re_mcp.agent.config import ProviderProfile, normalize_base_url
+from headless_re_mcp.agent import config as provider_config
+from headless_re_mcp.agent.config import (
+    ProviderConfigStore,
+    ProviderProfile,
+    normalize_base_url,
+)
 
 
 @pytest.mark.parametrize(
@@ -55,3 +62,14 @@ def test_provider_api_keys_may_use_local_plaintext(url: str) -> None:
 def test_remote_plaintext_without_a_secret_remains_supported() -> None:
     profile = ProviderProfile("public", "http://provider.example", "model")
     assert profile.base_url == "http://provider.example/v1"
+
+
+def test_provider_config_is_rejected_before_an_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_config, "_MAX_PROVIDER_CONFIG_BYTES", 64)
+    path = tmp_path / "providers.json"
+    path.write_bytes(b"{" + b" " * 64 + b"}")
+
+    with pytest.raises(ValueError, match="provider config exceeds 64 bytes"):
+        ProviderConfigStore(path).list_public()

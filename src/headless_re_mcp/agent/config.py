@@ -27,6 +27,7 @@ ZEROFALL_IMPORT_FIELDS = frozenset(
         "contextCompressionThresholdPercent",
     }
 )
+_MAX_PROVIDER_CONFIG_BYTES = 4 * 1024 * 1024
 
 
 def normalize_base_url(value: str) -> str:
@@ -124,7 +125,13 @@ class ProviderConfigStore:
     def _read(self) -> dict[str, Any]:
         if not self.path.is_file():
             return {"profiles": {}, "current": None}
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        with self.path.open("rb") as stream:
+            payload = stream.read(_MAX_PROVIDER_CONFIG_BYTES + 1)
+        if len(payload) > _MAX_PROVIDER_CONFIG_BYTES:
+            raise ValueError(
+                f"provider config exceeds {_MAX_PROVIDER_CONFIG_BYTES} bytes"
+            )
+        raw = json.loads(payload.decode("utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("provider config root must be an object")
         return raw
