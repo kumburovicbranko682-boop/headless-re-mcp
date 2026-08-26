@@ -2483,9 +2483,16 @@ class AnalysisService(
     ) -> Result[JsonObject]:
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with runtime.lock:
+            runtime.lock.acquire()
+            try:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 data = action(runtime)
+            finally:
+                # Navigation deliberately drops this lock while waiting for
+                # events. If its bounded reacquisition fails, another thread
+                # owns the RLock and this thread has nothing to release.
+                with suppress(RuntimeError):
+                    runtime.lock.release()
             return _success(
                 data,
                 session_id=session_id,
@@ -2731,7 +2738,15 @@ class AnalysisService(
                 if not batch.events and not batch.has_more:
                     sleep(min(0.05, max(0.0, deadline - monotonic())))
             finally:
-                runtime.lock.acquire()
+                reacquire_timeout = max(0.0, deadline - monotonic())
+                if not runtime.lock.acquire(timeout=reacquire_timeout):
+                    runtime.navigation_cancel.set()
+                    raise XdbgRpcError(
+                        "workflow_lock_timeout",
+                        "workflow navigation timed out reacquiring the runtime lock",
+                        details={"timeout_seconds": timeout},
+                        retryable=True,
+                    )
             workflow = self._require_workflow(session_id)
             # Cancel (or a terminal status) may have landed while the lock
             # was down. Consuming into a finished navigation raises.
