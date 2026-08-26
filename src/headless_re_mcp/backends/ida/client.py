@@ -242,7 +242,17 @@ class IdaWorkerClient(ManagedSubprocessMixin):
 
     def close(self, *, timeout: float = 15.0) -> None:
         deadline = time.monotonic() + timeout
-        with self._request_lock:
+        lock_acquired = self._request_lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic())
+        )
+        if not lock_acquired:
+            self.terminate()
+            raise IdaWorkerError(
+                "worker_timeout",
+                f"IDA close exceeded {timeout:g}s waiting for the active request",
+                retryable=True,
+            )
+        try:
             if self._closed:
                 return
             try:
@@ -259,6 +269,8 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     self._process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     self.terminate()
+        finally:
+            self._request_lock.release()
 
     def terminate(self) -> None:
         self._closed = True
