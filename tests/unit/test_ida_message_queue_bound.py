@@ -42,7 +42,13 @@ def test_ida_stdout_messages_are_bounded_when_no_request_is_receiving(
     monkeypatch.setattr(client_module, "describe_process_windows", lambda pid: [])
     client = IdaWorkerClient(
         binary,
-        Settings(ida_home=tmp_path, artifact_root=tmp_path / "artifacts"),
+        Settings(
+            ida_home=tmp_path,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        ),
         startup_timeout=1.0,
     )
     client._stdout_thread.join(timeout=1.0)
