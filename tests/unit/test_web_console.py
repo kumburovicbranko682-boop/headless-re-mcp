@@ -466,6 +466,26 @@ def test_a_read_only_deployment_refuses_web_writes(tmp_path: Path) -> None:
     assert unknown.json()["detail"] == "unknown_or_disallowed_write"
 
 
+def test_the_web_write_surface_is_self_consistent() -> None:
+    """/api/write depends on confirm_required == spec.write on the WEB transport.
+
+    The route whitelists actions by write_names() (confirm_required WEB tools),
+    while invoke_write independently requires spec.write and WEB transport. If a
+    WEB tool were confirm_required but not a write, the route would accept it and
+    invoke_write would 400 it; if it were a write but not confirm_required, the
+    write would never be reachable through the console. Pin them equal.
+    """
+    from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandTransport
+
+    web = list(COMMAND_CATALOG.for_transport(CommandTransport.WEB))
+    confirm = {spec.name for spec in web if spec.confirm_required}
+    write = {spec.name for spec in web if spec.write}
+    assert confirm == write, {
+        "confirm_but_not_write": sorted(confirm - write),
+        "write_but_not_confirm": sorted(write - confirm),
+    }
+
+
 def test_full_access_deployment_still_allows_web_writes(tmp_path: Path) -> None:
     """The default (local_full_access=true) path must be unchanged by the guard."""
     from dataclasses import replace
