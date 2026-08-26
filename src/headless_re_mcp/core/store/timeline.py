@@ -32,7 +32,13 @@ def _timeline_lock(path: Path) -> Lock:
 
 
 def session_timeline_path(artifact_root: Path, session_id: str) -> Path:
-    return artifact_root.expanduser().resolve() / "sessions" / session_id / "timeline.jsonl"
+    if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
+        raise ValueError("invalid session id for timeline path")
+    sessions_root = artifact_root.expanduser().resolve() / "sessions"
+    path = (sessions_root / session_id / "timeline.jsonl").resolve()
+    if path.parent.parent != sessions_root:
+        raise ValueError("timeline path escaped the sessions directory")
+    return path
 
 
 def append_session_timeline(
