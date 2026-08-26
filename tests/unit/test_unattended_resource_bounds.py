@@ -1517,6 +1517,7 @@ class TestPerSessionStateDiesWithTheSession:
             assert closed.ok is False
             assert closed.error is not None
             assert closed.error.code == "web_cleanup_failed"
+            assert closed.error.retryable is True
             assert closed.error.details["backend"] == "web"
             assert worker.closed is True
         finally:
