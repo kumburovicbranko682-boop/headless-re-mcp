@@ -49,6 +49,8 @@ _MAX_JSON_INTEGER = (1 << 63) - 1
 # A progress-bearing window title can change every monitor tick. Keep enough
 # distinct sightings for gate diagnostics without retaining a session-long log.
 _MAX_OBSERVED_WINDOWS = 128
+_MAX_DIAGNOSTIC_LINE_CHARS = 8_192
+_TRUNCATED_LINE_MARKER = "...[truncated]"
 
 
 class XdbgRpcError(RuntimeError):
@@ -1243,8 +1245,21 @@ class XdbgClient:
         return result
 
     def _read_log(self, stream: TextIO, target: deque[str]) -> None:
-        for line in stream:
-            target.append(line.rstrip("\r\n"))
+        while True:
+            line = stream.readline(_MAX_DIAGNOSTIC_LINE_CHARS + 1)
+            if not line:
+                return
+            stripped = line.rstrip("\r\n")
+            oversized = len(stripped) > _MAX_DIAGNOSTIC_LINE_CHARS or (
+                len(line) > _MAX_DIAGNOSTIC_LINE_CHARS and not line.endswith("\n")
+            )
+            if not oversized:
+                target.append(stripped)
+                continue
+            prefix_chars = _MAX_DIAGNOSTIC_LINE_CHARS - len(_TRUNCATED_LINE_MARKER)
+            target.append(line[:prefix_chars] + _TRUNCATED_LINE_MARKER)
+            while line and not line.endswith("\n"):
+                line = stream.readline(_MAX_DIAGNOSTIC_LINE_CHARS + 1)
 
     def _monitor_windows(self) -> None:
         while not self._monitor_stop.wait(0.05):
