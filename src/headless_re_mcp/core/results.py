@@ -17,7 +17,11 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
 from headless_re_mcp.core.addressing import AddressSyncError
 from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
-from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
+from headless_re_mcp.core.session import (
+    InvalidStateTransition,
+    SessionLimitExceeded,
+    SessionNotFound,
+)
 from headless_re_mcp.detection import PeFormatError
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.upx import UpxScanError
@@ -91,6 +95,13 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
         # internal fault.
         message = str(exc.args[0]) if exc.args else "session not found"
         error = RpcError(code="session_not_found", message=message, details=dict(details))
+    elif isinstance(exc, SessionLimitExceeded):
+        error = RpcError(
+            code="session_limit_reached",
+            message=str(exc),
+            details={**details, "limit": exc.limit},
+            retryable=True,
+        )
     elif isinstance(exc, FileNotFoundError):
         error = RpcError(code="file_not_found", message=str(exc), details=dict(details))
     elif isinstance(exc, TimeoutError):

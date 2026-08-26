@@ -54,6 +54,7 @@ class InvalidStateTransition(RuntimeError):
 # called remove_closed outside tests, so every session ever opened stayed
 # resident and session.list returned the entire history.
 _RETAINED_CLOSED_SESSIONS = 64
+_MAX_OPEN_SESSIONS = 256
 
 
 class SessionNotFound(KeyError):
@@ -83,11 +84,23 @@ class SessionNotFound(KeyError):
         return SessionNotFound(f"session not found: {shown}")
 
 
+class SessionLimitExceeded(RuntimeError):
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"open session limit reached ({limit})")
+        self.limit = limit
+
+
 class SessionRegistry:
-    def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
+    def __init__(
+        self,
+        *,
+        retained_closed: int = _RETAINED_CLOSED_SESSIONS,
+        max_open: int = _MAX_OPEN_SESSIONS,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
         self._closed_order: deque[str] = deque()
         self._retained_closed = max(0, retained_closed)
+        self._max_open = max(0, max_open)
         self._lock = RLock()
 
     def create(
@@ -131,6 +144,7 @@ class SessionRegistry:
                 metadata=metadata,
             )
         with self._lock:
+            self._require_open_capacity()
             self._sessions[session.id] = session
         return session.model_copy(deep=True)
 
@@ -147,9 +161,11 @@ class SessionRegistry:
             if existing is not None:
                 return existing.model_copy(deep=True)
             stored = session.model_copy(deep=True)
+            if stored.state not in {SessionState.CLOSED, SessionState.FAILED}:
+                self._require_open_capacity()
             self._sessions[session.id] = stored
-            if stored.state is SessionState.CLOSED:
-                self._closed_order.append(session.id)
+            if stored.state in {SessionState.CLOSED, SessionState.FAILED}:
+                self._retire_closed(session.id)
             return stored.model_copy(deep=True)
 
     def get(self, session_id: str) -> Session:
@@ -231,6 +247,14 @@ class SessionRegistry:
         if session is None:
             raise SessionNotFound.for_id(session_id)
         return session
+
+    def _require_open_capacity(self) -> None:
+        open_count = sum(
+            session.state not in {SessionState.CLOSED, SessionState.FAILED}
+            for session in self._sessions.values()
+        )
+        if open_count >= self._max_open:
+            raise SessionLimitExceeded(self._max_open)
 
 
 _HYDRATE_LIMIT = 64
