@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.config import update_config_values
+from headless_re_mcp import config as config_module
+from headless_re_mcp.config import Settings, update_config_values
 
 
 def test_config_update_atomically_merges_values(tmp_path: Path) -> None:
@@ -63,6 +64,22 @@ def test_config_update_refuses_to_overwrite_invalid_existing_config(
 
     assert path.read_bytes() == damaged
     assert list(tmp_path.glob(".config.json-*.tmp")) == []
+
+
+def test_config_reads_are_bounded_and_oversized_files_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config_module, "_MAX_CONFIG_FILE_BYTES", 64)
+    path = tmp_path / "config.json"
+    payload = b'{"padding":"' + b"x" * 64 + b'"}'
+    path.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="existing config"):
+        update_config_values({"local_full_access": True}, config_path=path)
+    assert path.read_bytes() == payload
+
+    with pytest.raises(ValueError, match="configuration file exceeds 64 bytes"):
+        Settings.load(path)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
