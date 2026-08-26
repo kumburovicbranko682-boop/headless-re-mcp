@@ -345,11 +345,13 @@ class ProxyBackend:
         try:
             inst.start()
         except BaseException:
+            # Roll back before dropping the reservation. If stop itself fails,
+            # the listener may still own its thread and port; preserving this
+            # entry is the only way a later stop/close_all can retry cleanup.
+            inst.stop()
             with self._lock:
                 if self._instances.get(session_id) is inst:
                     self._instances.pop(session_id, None)
-            with contextlib.suppress(Exception):
-                inst.stop()
             raise
         with self._lock:
             if self._instances.get(session_id) is inst:
