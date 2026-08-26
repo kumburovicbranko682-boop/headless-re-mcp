@@ -443,15 +443,25 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            result = {
                 "address": address,
                 "size": size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
+        except BaseException:
             with contextlib.suppress(Exception):
                 session.detach()
+            raise
+        try:
+            session.detach()
+        except Exception as exc:
+            raise FridaError(
+                "frida_detach_failed",
+                f"memory probe detach failed: {type(exc).__name__}: {exc}",
+                pid=pid,
+            ) from exc
+        return result
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
