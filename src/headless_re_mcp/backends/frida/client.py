@@ -494,8 +494,10 @@ class FridaClient:
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
         cleanup_failures: list[JsonObject] = []
+        expired = Event()
 
         def cleanup_sessions() -> None:
+            expired.set()
             cleanup_failures.extend(_detach_all(sessions))
 
         def cleanup_error() -> FridaError:
@@ -512,6 +514,11 @@ class FridaClient:
         def work() -> JsonObject:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
             sessions.append(session)
+            if expired.is_set():
+                cleanup_sessions()
+                if cleanup_failures:
+                    raise cleanup_error()
+                raise _timeout_error(deadline)
             try:
                 script = session.create_script(source)
                 script.load()
@@ -781,8 +788,10 @@ class FridaClient:
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
         cleanup_failures: list[JsonObject] = []
+        expired = Event()
 
         def cleanup_sessions() -> None:
+            expired.set()
             cleanup_failures.extend(_detach_all(sessions))
 
         def cleanup_error() -> FridaError:
@@ -804,6 +813,13 @@ class FridaClient:
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
             sessions.append(session)
+            # The deadline can fire while native attach has not returned yet.
+            # Do not begin Java work with a session the caller no longer owns.
+            if expired.is_set():
+                cleanup_sessions()
+                if cleanup_failures:
+                    raise cleanup_error()
+                raise _timeout_error(deadline)
             try:
                 script = session.create_script(_JAVA_SCRIPT)
                 script.load()
