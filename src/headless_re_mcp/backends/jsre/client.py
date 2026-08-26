@@ -150,9 +150,7 @@ class JsClient:
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )
-        files, file_count, listed_more = _capped_file_listing(
-            out_dir, cap=_MAX_COUNTED_FILES
-        )
+        files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
             raise JsReError(
                 "backend_error",
