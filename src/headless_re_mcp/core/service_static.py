@@ -743,4 +743,3 @@ class StaticAnalysisMixin:
             return _failure(exc, session_id=session_id, backend=BackendKind.IDA.value)
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend=BackendKind.IDA.value)
-

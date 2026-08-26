@@ -200,6 +200,7 @@ def test_static_batch_is_bounded(tmp_path: Path) -> None:
     assert ok.ok and ok.data is not None
     assert int(ok.data["count"]) == 1
 
+
 def test_static_disassemble_spills_oversized_artifact(tmp_path: Path) -> None:
     class _HugeDisasmWorker(_WriteCapableStaticWorker):
         @property
