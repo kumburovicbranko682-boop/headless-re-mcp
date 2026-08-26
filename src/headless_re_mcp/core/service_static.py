@@ -32,6 +32,14 @@ _FATAL_WORKER_ERRORS = frozenset(
         "worker_protocol_error",
     }
 )
+_BATCH_WRITE_OPERATIONS = {
+    "name_set": "name.set",
+    "comment_set": "comment.set",
+    "type_apply": "type.apply",
+    "function_create": "function.create",
+    "function_delete": "function.delete",
+    "bytes_patch": "bytes.patch",
+}
 
 
 class StaticAnalysisMixin:
@@ -585,12 +593,48 @@ class StaticAnalysisMixin:
                     },
                 ),
             )
-        return self._static_request(
+        result = self._static_request(
             session_id,
             "static.batch",
             "batch",
             {"commands": commands},
         )
+        return self._record_static_batch_writes(session_id, result)
+
+    def _record_static_batch_writes(
+        self,
+        session_id: str,
+        result: Result[JsonObject],
+    ) -> Result[JsonObject]:
+        if not result.ok or result.data is None:
+            return result
+        items = result.data.get("results")
+        if not isinstance(items, list):
+            return result
+        recorded_items: list[Any] = []
+        for item in items:
+            if not isinstance(item, dict):
+                recorded_items.append(item)
+                continue
+            recorded_item = dict(item)
+            operation = _BATCH_WRITE_OPERATIONS.get(str(item.get("command") or ""))
+            item_data = item.get("data")
+            if operation is not None and item.get("ok") is True and isinstance(item_data, dict):
+                recorded = self._record_static_patch(
+                    session_id,
+                    operation,
+                    Result[JsonObject](
+                        ok=True,
+                        data=dict(item_data),
+                        meta=dict(result.meta),
+                    ),
+                )
+                if recorded.data is not None:
+                    recorded_item["data"] = recorded.data
+            recorded_items.append(recorded_item)
+        payload = dict(result.data)
+        payload["results"] = recorded_items
+        return Result[JsonObject](ok=True, data=payload, meta=dict(result.meta))
 
     def _static_patch_dir(self, session_id: str) -> Path:
         directory = (

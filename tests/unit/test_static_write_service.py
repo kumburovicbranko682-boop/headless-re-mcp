@@ -96,11 +96,18 @@ class _WriteCapableStaticWorker(FakeStaticWorker):
             }
         if command == "batch":
             results = []
-            for item in values.get("commands") or []:
+            for index, item in enumerate(values.get("commands") or []):
                 assert isinstance(item, dict)
                 cmd = str(item.get("command"))
                 item_params = item.get("params") if isinstance(item.get("params"), dict) else {}
-                results.append({"command": cmd, "ok": True, "data": {"echo": item_params}})
+                results.append(
+                    {
+                        "index": index,
+                        "command": cmd,
+                        "ok": True,
+                        "data": self.request(cmd, item_params),
+                    }
+                )
             return {"results": results, "count": len(results)}
         return super().request(command, params)
 
@@ -199,6 +206,36 @@ def test_static_batch_is_bounded(tmp_path: Path) -> None:
     )
     assert ok.ok and ok.data is not None
     assert int(ok.data["count"]) == 1
+
+
+def test_static_batch_writes_emit_patch_artifacts_and_timeline(tmp_path: Path) -> None:
+    service, session_id = _write_service(tmp_path)
+
+    result = service.static_batch(
+        session_id,
+        commands=[
+            {
+                "command": "name_set",
+                "params": {"address": 0x140001000, "name": "batch_name"},
+            },
+            {"command": "names", "params": {"offset": 0, "limit": 1}},
+        ],
+    )
+
+    assert result.ok and result.data is not None
+    write_data = result.data["results"][0]["data"]
+    patch = Path(str(write_data["patch_artifact"]))
+    assert patch.is_file()
+    assert result.data["results"][1]["data"].get("patch_artifact") is None
+    assert service.repository.list_artifacts(session_id)["total"] == 1
+    timeline = (
+        service.settings.artifact_root.expanduser().resolve()
+        / "sessions"
+        / session_id
+        / "timeline.jsonl"
+    )
+    assert '"event": "static.name.set"' in timeline.read_text(encoding="utf-8")
+
 
 def test_static_disassemble_spills_oversized_artifact(tmp_path: Path) -> None:
     class _HugeDisasmWorker(_WriteCapableStaticWorker):
