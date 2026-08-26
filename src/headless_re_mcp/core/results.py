@@ -80,7 +80,7 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             code=exc.code,
             message=exc.message,
             details={**details, **exc.details},
-            retryable=exc.code in {"timeout", "web_cleanup_failed"},
+            retryable=exc.code in {"timeout", "proxy_cleanup_failed"},
         )
     elif isinstance(exc, AdbError):
         error = RpcError(
@@ -94,7 +94,7 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             code=exc.code,
             message=exc.message,
             details={**details, **exc.details},
-            retryable=exc.code == "timeout",
+            retryable=exc.code in {"timeout", "web_cleanup_failed"},
         )
     elif isinstance(exc, SessionNotFound):
         # Only this type. Any KeyError used to become session_not_found, so a
