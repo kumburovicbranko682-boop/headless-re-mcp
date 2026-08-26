@@ -150,6 +150,25 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+def test_frida_exports_does_not_hide_a_failed_detach() -> None:
+    """A returned export page must not conceal its still-attached session."""
+
+    class _LeakedSession(_ExportSession):
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid: _LeakedSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.exports(11, "ntdll.dll", allowed_pid=11)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 11
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
