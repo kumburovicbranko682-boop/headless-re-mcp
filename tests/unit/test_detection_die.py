@@ -261,6 +261,45 @@ def test_process_capture_timeout_kills_child(monkeypatch: pytest.MonkeyPatch) ->
     assert caught.value.code == DieErrorCode.TIMEOUT
 
 
+def test_process_capture_reader_joins_share_each_drain_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two stuck readers must share the one-second and 100ms drain stages."""
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _TimedOutProcess(_FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            budget = float(timeout or 0.0)
+            clock[0] += budget
+            raise subprocess.TimeoutExpired("fake-diec", budget)
+
+    class _StuckReader:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _TimedOutProcess(b"", hangs=True)
+    monkeypatch.setattr(die_adapter.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(die_adapter, "Thread", _StuckReader)
+    monkeypatch.setattr(die_adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(die_adapter, "_terminate_process", lambda child: child.kill())
+
+    with pytest.raises(DieTimeoutError):
+        die_adapter._capture_process(["fake-diec"], timeout=0.1, max_output_size=32)
+
+    assert len(join_timeouts) == 4
+    assert sum(join_timeouts) <= 1.1
+    assert clock[0] <= 1.2
+
+
 def test_process_failure_is_structured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
