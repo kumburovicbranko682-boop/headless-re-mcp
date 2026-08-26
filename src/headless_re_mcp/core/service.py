@@ -18,7 +18,7 @@ from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
-from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import (
     DEFAULT_PROFILE_ID,
@@ -1046,8 +1046,25 @@ class AnalysisService(
         # cannot skip the worker-close loop below.
         close_errors: list[tuple[str, BaseException]] = []
         if web_backend is not None:
-            with suppress(BaseException):
-                web_backend.close(session_id)
+            try:
+                web_cleanup = web_backend.close(session_id)
+                if isinstance(web_cleanup, dict) and web_cleanup.get("clean") is False:
+                    close_errors.append(
+                        (
+                            "web",
+                            WebError(
+                                "web_cleanup_incomplete",
+                                "browser driver stopped but its runner thread remains wedged",
+                            ),
+                        )
+                    )
+            except WebError as exc:
+                close_errors.append(("web", exc))
+            except BaseException:
+                # Optional test doubles historically remain best-effort. A
+                # WebError or clean=false is the backend's explicit proof that
+                # browser-owned state survived.
+                pass
         if proxy_backend is not None:
             try:
                 proxy_backend.stop(session_id)
