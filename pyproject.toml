@@ -85,6 +85,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
