@@ -479,13 +479,15 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
-        window = items[offset : offset + limit]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
         return {
             "requests": window,
             "count": len(window),
             "total": len(items),
-            "offset": offset,
-            "has_more": offset + len(window) < len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
 

@@ -64,7 +64,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="web.network.list")
     def web_network_list(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List captured network requests.
@@ -104,7 +104,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_scripts(
         session_id: str,
         wasm_only: bool = False,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List parsed scripts seen by the debugger, one page at a time.
@@ -134,7 +134,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List WebAssembly modules loaded by the page, one page at a time.
