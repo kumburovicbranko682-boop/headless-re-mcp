@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import MethodType
@@ -9,6 +10,7 @@ from types import MethodType
 import pytest
 
 from headless_re_mcp.backends.web import WebBackend, WebError
+from headless_re_mcp.backends.web.client import _WebSession
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -107,4 +109,51 @@ def test_web_close_keeps_handle_when_cleanup_throws() -> None:
     with pytest.raises(RuntimeError, match="playwright cleanup failed"):
         backend.close("session")
 
+    assert backend._sessions == {"session": handle}
+
+
+def test_web_close_reports_all_failed_playwright_closers() -> None:
+    """Context, browser, and driver failures must not become clean=true."""
+
+    class _Closer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.calls = 0
+
+        def close(self) -> None:
+            self.calls += 1
+            raise RuntimeError(f"{self.name} close failed")
+
+        def stop(self) -> None:
+            self.close()
+
+    class _Runner:
+        wedged = False
+
+        def __init__(self) -> None:
+            self.shutdown_called = False
+
+        def call(self, work: Callable[[], object], *, timeout: float) -> None:
+            del timeout
+            work()
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    context = _Closer("context")
+    browser = _Closer("browser")
+    playwright = _Closer("playwright")
+    handle = _WebSession(playwright, browser, context, object(), object())
+    runner = _Runner()
+    handle.runner = runner  # type: ignore[assignment]
+    backend = WebBackend()
+    backend._sessions["session"] = handle
+
+    with pytest.raises(WebError) as caught:
+        backend.close("session")
+
+    assert caught.value.code == "web_cleanup_failed"
+    assert caught.value.details["failed_count"] == 3
+    assert [context.calls, browser.calls, playwright.calls] == [1, 1, 1]
+    assert runner.shutdown_called is True
     assert backend._sessions == {"session": handle}
