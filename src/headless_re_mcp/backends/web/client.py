@@ -698,7 +698,7 @@ class WebBackend:
     def close_all(self) -> None:
         with self._lock:
             session_ids = list(self._sessions)
-        first_error: WebError | None = None
+        first_error: BaseException | None = None
         for session_id in session_ids:
             try:
                 cleanup = self.close(session_id)
@@ -708,7 +708,7 @@ class WebBackend:
                         "browser driver stopped but its runner thread remains wedged",
                         session_id=session_id,
                     )
-            except WebError as exc:
+            except BaseException as exc:
                 if first_error is None:
                     first_error = exc
         if first_error is not None:
