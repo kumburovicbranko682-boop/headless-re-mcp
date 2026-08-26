@@ -23,6 +23,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
@@ -509,7 +510,7 @@ class WebBackend:
         inline, spill, cut = _spill_text(
             body,
             artifact_dir=artifact_dir,
-            filename=f"body-{request_id.replace('.', '_')}.bin",
+            filename=f"body-{uuid4().hex}.bin",
             kind="response body",
         )
         result = dict(entry)
@@ -577,7 +578,7 @@ class WebBackend:
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
-            filename=f"script-{script_id}.js",
+            filename=f"script-{uuid4().hex}.js",
             kind="script source",
         )
         result: JsonObject = {

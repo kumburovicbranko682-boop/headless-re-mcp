@@ -54,12 +54,16 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=_Cdp()))
     monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
     payload = backend.script_source("s", "42", tmp_path)
+    repeated = backend.script_source("s", "42", tmp_path)
     assert "code" not in payload
     assert "text" not in payload
     assert payload["truncated"] is True
     assert payload["bytes"] == _MAX_INLINE_BODY + 40
     assert len(payload["source"]) == _MAX_INLINE_BODY
     assert "source_path" in payload
+    assert payload["source_path"] != repeated["source_path"]
+    assert Path(str(payload["source_path"])).is_file()
+    assert Path(str(repeated["source_path"])).is_file()
     doc = _tool_docstring("web.script.source")
     assert "source" in doc
     assert "truncated" in doc
