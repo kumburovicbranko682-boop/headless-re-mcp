@@ -14,7 +14,7 @@ from time import monotonic, sleep
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from headless_re_mcp.backends.adb import AdbBackend
+from headless_re_mcp.backends.adb import AdbBackend, AdbError
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
@@ -1098,7 +1098,9 @@ class AnalysisService(
         # without this the sweep thread outlives every backend it existed for.
         if not self._runtime_owner.snapshot():
             self._health.stop()
-        self._release_adb_forwards_if_idle()
+        adb_close_error = self._release_adb_forwards_if_idle()
+        if adb_close_error is not None:
+            close_errors.append(("adb", adb_close_error))
 
         assert session is not None
         try:
@@ -1128,7 +1130,6 @@ class AnalysisService(
         # an analysis stops producing artifacts, and it is infrequent enough that
         # a throttled collection never lands on a hot path.
         self._retention.maybe_collect(self.repository)
-        self._release_adb_forwards_if_idle()
         return result
 
     def record_artifact(self, **fields: Any) -> JsonObject:
@@ -1294,7 +1295,7 @@ class AnalysisService(
             )
         return _success({"closed": closed})
 
-    def _release_adb_forwards_if_idle(self) -> None:
+    def _release_adb_forwards_if_idle(self) -> BaseException | None:
         """Drop process-owned adb forwards once no Android session remains."""
         live = [
             session
@@ -1304,12 +1305,23 @@ class AnalysisService(
             not in {SessionState.CLOSED, SessionState.FAILED, SessionState.CLOSING}
         ]
         if live:
-            return
+            return None
         adb_backend = getattr(self, "_adb_backend", None)
         if adb_backend is None:
-            return
-        with suppress(BaseException):
-            adb_backend.release_forwards()
+            return None
+        try:
+            cleanup = adb_backend.release_forwards()
+        except BaseException as exc:
+            return exc
+        failed = cleanup.get("failed") if isinstance(cleanup, dict) else None
+        if isinstance(failed, list) and failed:
+            return AdbError(
+                "adb_cleanup_failed",
+                "one or more ADB forwards remain active",
+                failed_count=len(failed),
+                failed=failed[:32],
+            )
+        return None
 
     def dynamic_state(self, session_id: str) -> Result[JsonObject]:
         return self.services.dynamic.state(session_id)

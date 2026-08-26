@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from headless_re_mcp.backends.adb.client import AdbError
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.proxy.client import ProxyError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
@@ -74,6 +75,13 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=exc.message,
             details={**details, **exc.details},
             retryable=exc.code == "timeout",
+        )
+    elif isinstance(exc, AdbError):
+        error = RpcError(
+            code=exc.code,
+            message=exc.message,
+            details={**details, **exc.details},
+            retryable=exc.code in {"timeout", "adb_cleanup_failed"},
         )
     elif isinstance(exc, SessionNotFound):
         # Only this type. Any KeyError used to become session_not_found, so a
