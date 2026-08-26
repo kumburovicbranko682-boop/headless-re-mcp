@@ -23,9 +23,13 @@ def web_token_path(settings: Settings | None = None) -> Path:
 
 def _read_web_token(path: Path) -> str | None:
     try:
-        if path.is_symlink() or path.stat().st_size > _MAX_TOKEN_FILE_BYTES:
+        if path.is_symlink():
             return None
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            payload = stream.read(_MAX_TOKEN_FILE_BYTES + 1)
+        if len(payload) > _MAX_TOKEN_FILE_BYTES:
+            return None
+        raw = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(raw, dict):

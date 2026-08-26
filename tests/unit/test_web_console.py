@@ -4,6 +4,7 @@ import json
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from pathlib import Path
 from threading import Barrier, Lock
 
@@ -35,6 +36,29 @@ def test_web_token_persists(tmp_path: Path) -> None:
     second = load_or_create_web_token(path=path)
     assert first == second
     assert len(first) >= 24
+
+
+def test_web_token_read_is_bounded_even_if_file_metadata_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "web_token.json"
+    path.write_bytes(b"{}")
+    monkeypatch.setattr(web_auth, "_MAX_TOKEN_FILE_BYTES", 64)
+    requested: list[int] = []
+
+    class GrowingReader(BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            requested.append(size)
+            return super().read(size)
+
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda *_args, **_kwargs: GrowingReader(b"{" + b" " * 64 + b"}"),
+    )
+
+    assert web_auth._read_web_token(path) is None
+    assert requested == [65]
 
 
 def test_concurrent_web_token_creation_returns_one_persisted_credential(
