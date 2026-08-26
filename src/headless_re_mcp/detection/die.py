@@ -249,6 +249,7 @@ def _creation_options() -> dict[str, Any]:
             options["startupinfo"] = startupinfo
     else:
         options["creationflags"] = 0
+        options["start_new_session"] = True
     return options
 
 

@@ -15,6 +15,7 @@ hard cap and discard the rest so the child does not block on a full pipe.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -136,6 +137,7 @@ def run_bounded(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=creationflags,
+        start_new_session=os.name != "nt",
         cwd=cwd,
         env=env,
     ) as process:

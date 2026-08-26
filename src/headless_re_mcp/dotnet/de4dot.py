@@ -262,6 +262,8 @@ def _creation_options() -> dict[str, Any]:
             startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
             startupinfo.wShowWindow = 0
             options["startupinfo"] = startupinfo
+    else:
+        options["start_new_session"] = True
     return options
 
 

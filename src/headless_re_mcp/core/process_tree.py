@@ -5,6 +5,8 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -18,6 +20,22 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+
+
+def _enable_linux_child_subreaper() -> bool:
+    """Adopt orphaned tool grandchildren so this process can reap them."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    except (AttributeError, OSError):
+        return False
+
+
+_LINUX_CHILD_SUBREAPER = _enable_linux_child_subreaper()
+
+
 def _child_enum_limit(max_pids: int) -> int:
     """UI discovery defaults to 16; kill walks may ask for more.
 
@@ -178,6 +196,60 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
+def _collect_linux_process_group(group_id: int) -> list[int]:
+    """Members of an isolated CLI process group, including an orphaned child."""
+    if not sys.platform.startswith("linux") or group_id <= 0:
+        return []
+    members: list[int] = []
+    try:
+        entries = Path("/proc").iterdir()
+    except OSError:
+        return members
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        fields = stat[close + 2 :].split()
+        try:
+            process_group = int(fields[2])
+        except (IndexError, ValueError):
+            continue
+        if process_group == group_id:
+            members.append(pid)
+            if len(members) >= _MAX_KILL_DESCENDANTS:
+                break
+    return members
+
+
+def _reap_terminated(pids: list[int], wait_s: float) -> None:
+    """Best-effort reap of descendants adopted by the Linux subreaper."""
+    if not _LINUX_CHILD_SUBREAPER:
+        return
+    pending = {pid for pid in pids if pid > 0}
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if not pending or time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
+
+
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
@@ -196,6 +268,9 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
+        with suppress(Exception):
+            descendants.extend(_collect_linux_process_group(pid))
+        descendants = list(dict.fromkeys(child for child in descendants if child != pid))
 
     with suppress(OSError, AttributeError):
         if process.poll() is None:
@@ -211,6 +286,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    _reap_terminated(descendants, min(wait_s, 1.0))
     return killed
 
 
@@ -227,6 +303,9 @@ def terminate_pid_tree(pid: int) -> list[int]:
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
+        with suppress(Exception):
+            descendants.extend(_collect_linux_process_group(pid))
+        descendants = list(dict.fromkeys(child for child in descendants if child != pid))
     killed: list[int] = []
     with suppress(Exception):
         _kill_pid(pid)
@@ -235,6 +314,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    _reap_terminated([pid, *descendants], 1.0)
     return killed
 
 
