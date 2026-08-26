@@ -167,3 +167,54 @@ def test_kill_own_process_group_kills_the_whole_group_it_leads(
         assert _wait_gone(grandchild), "the reparented-style member survived the group kill"
     finally:
         _kill(grandchild, leader_pid)
+
+
+def test_kill_own_process_group_still_reaches_survivors_of_a_reaped_leader(
+    tmp_path: Path,
+) -> None:
+    """A reaped leader must not disarm the group signal its orphans depend on.
+
+    This is the state ``run_bounded`` is in on its failed-exit branch: the
+    launcher exited and ``process.wait()`` reaped it, so ``getpgid(leader)``
+    raises -- there is no process to ask. The group itself is still alive in the
+    kernel because the grandchild kept its pgid, and that signal is the only
+    thing that can reach it (the ppid walk sees a child of init). Tightening
+    the lookup failure into an early return -- a plausible literal reading of
+    "only when pid leads it" -- would silently orphan every worker a failed
+    launcher leaves behind; this pins the fall-through.
+    """
+    pidfile = tmp_path / "gc.pid"
+    leader = subprocess.Popen(
+        [sys.executable, "-c", _leader_code(pidfile), str(pidfile)],
+        start_new_session=True,
+    )
+    grandchild: int | None = None
+    try:
+        deadline = time.monotonic() + 5.0
+        while grandchild is None and time.monotonic() < deadline:
+            with suppress(OSError, ValueError):
+                text = pidfile.read_text().strip()
+                if text:
+                    grandchild = int(text)
+            time.sleep(0.02)
+        assert grandchild is not None, "leader never recorded its grandchild pid"
+
+        # Reap the leader ourselves, exactly as run_bounded's wait() has by the
+        # time its kill runs. The pid is gone; the group id lives on in the
+        # grandchild.
+        leader.kill()
+        leader.wait(timeout=5.0)
+        assert _pid_alive(grandchild), "premise: the orphan must survive the leader"
+
+        process_tree._kill_own_process_group(leader.pid)
+
+        assert _wait_gone(grandchild), (
+            "the surviving group member outlived the kill: a reaped leader "
+            "disarmed the group signal"
+        )
+    finally:
+        if grandchild is not None:
+            _kill(grandchild)
+        with suppress(Exception):
+            leader.kill()
+            leader.wait(timeout=2.0)
