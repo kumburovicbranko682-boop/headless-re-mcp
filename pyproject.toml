@@ -27,7 +27,7 @@ android = ["adbutils>=2.12", "androguard>=4.1", "frida>=16.5"]
 browser = ["playwright>=1.40"]
 # HTTP(S) interception shared by Web and Android workflows.
 proxy = ["mitmproxy>=11"]
-test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0"]
+test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0", "httpx2>=2.12"]
 dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14"]
 
 [project.scripts]
@@ -65,6 +65,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
