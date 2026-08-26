@@ -74,6 +74,8 @@ class UnpackCliMixin:
 
         def _unpack_cancel_event(self, session_id: str) -> Any: ...
 
+        def _reset_unpack_cancel(self, session_id: str) -> Any: ...
+
     def unpack_upx_test(
         self,
         session_id: str,
@@ -441,6 +443,10 @@ class UnpackCliMixin:
             out_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"xvlkc-{uuid4().hex}.exe"
+            # A prior unpack.cancel (or an earlier cancelled dump) leaves this
+            # session's cancel latch set. unpack.auto resets it before running;
+            # without the same reset here every later dump cancels itself at once.
+            self._reset_unpack_cancel(session_id)
             with bound_cancel_scope(self._unpack_cancel_event(session_id)):
                 result = self._xvlkc_runner(
                     self.settings.xvlkc,
@@ -586,6 +592,9 @@ class UnpackCliMixin:
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"vmp-dump-{uuid4().hex}.exe"
             search_roots = [Path(session.require_pe()).resolve().parent, out_dir]
+            # Reset the cancel latch so a prior cancel does not abort this dump
+            # before it starts; see the xvlkc path for the full rationale.
+            self._reset_unpack_cancel(session_id)
             with bound_cancel_scope(self._unpack_cancel_event(session_id)):
                 result = self._vmp_dumper_runner(
                     self.settings.vmp_dumper,
@@ -687,6 +696,9 @@ class UnpackCliMixin:
             out_dir = self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"scylla-iat-rebuilt-{uuid4().hex}.exe"
+            # Reset the cancel latch so a prior cancel does not abort this dump
+            # before it starts; see the xvlkc path for the full rationale.
+            self._reset_unpack_cancel(session_id)
             with bound_cancel_scope(self._unpack_cancel_event(session_id)):
                 result = self._scylla_runner(
                     self.settings.scylla,
