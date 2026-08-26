@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
 
@@ -29,26 +29,21 @@ def test_artifact_read_uses_the_open_handle_for_its_size(
         source="test",
     )
 
-    real_stat = Path.stat
-    path_stats = 0
+    real_open = Path.open
 
-    def disappearing_stat(
-        path: Path, *, follow_symlinks: bool = True
-    ) -> os.stat_result:
-        nonlocal path_stats
+    def disappearing_open(path: Path, *args: Any, **kwargs: Any) -> IO[Any]:
+        stream = real_open(path, *args, **kwargs)
         if path == artifact_path:
-            path_stats += 1
-            if path_stats > 1:
-                raise FileNotFoundError(path)
-        return real_stat(path, follow_symlinks=follow_symlinks)
+            artifact_path.unlink()
+        return stream
 
-    monkeypatch.setattr(Path, "stat", disappearing_stat)
+    monkeypatch.setattr(Path, "open", disappearing_open)
     try:
         result = service.artifacts_read(str(artifact["id"]))
 
         assert result.ok and result.data is not None, result.error
         assert bytes.fromhex(str(result.data["data"])) == payload
         assert result.data["size"] == len(payload)
-        assert path_stats == 1
+        assert not artifact_path.exists()
     finally:
         service.close_all()
