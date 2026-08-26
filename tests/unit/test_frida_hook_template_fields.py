@@ -96,6 +96,41 @@ def test_frida_hook_template_does_not_hide_a_failed_detach() -> None:
     assert caught.value.details["pid"] == 17
 
 
+def test_frida_local_hook_timeout_does_not_hide_a_failed_detach() -> None:
+    """A timed-out local hook must disclose its one retained session."""
+    detach_attempts: list[int] = []
+
+    class _Script:
+        def load(self) -> None:
+            time.sleep(1)
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            detach_attempts.append(1)
+            raise RuntimeError("detach refused")
+
+    class _Frida:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(21, "noop", allowed_pid=21, timeout=0.1)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 21
+    assert caught.value.details["detach_error"] == "RuntimeError: detach refused"
+    assert detach_attempts == [1]
+
+
 def test_frida_device_hook_template_does_not_hide_a_failed_detach() -> None:
     """Each loaded device hook must disclose its still-attached session."""
 
