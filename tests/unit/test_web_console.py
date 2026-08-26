@@ -133,6 +133,43 @@ def test_web_write_requires_confirm(tmp_path: Path) -> None:
     assert confirmed.json()["ok"] is True
 
 
+def test_web_write_refusal_in_read_only_deployment_is_403_not_500(
+    tmp_path: Path,
+) -> None:
+    """local_full_access=false must refuse writes with the policy envelope.
+
+    invoke_write raises PermissionError for a read-only deployment; the route
+    only caught KeyError/ValueError, so the refusal fell through to the generic
+    exception boundary and surfaced as a 500 internal_error with an incident
+    logged -- a deliberate policy answer dressed up as a server defect.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+    settings = replace(_settings(tmp_path), local_full_access=False)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    try:
+        client = TestClient(create_app(service, token=token, settings=settings))
+        headers = {"Authorization": f"Bearer {token}"}
+        refused = client.post(
+            "/api/write/artifacts.gc",
+            headers=headers,
+            json={"confirm": True, "max_total_bytes": 1024},
+        )
+        assert refused.status_code == 403
+        body = refused.json()
+        assert body["ok"] is False
+        assert body["error"]["code"] == "write_disabled"
+        assert body["error"]["details"]["setting"] == "local_full_access"
+    finally:
+        # create_app syncs the module-level catalog from settings; put the
+        # default back so later tests in this process stay writable.
+        COMMAND_CATALOG.write_allowed = True
+        service.close_all()
+
+
 def test_web_monitor_endpoint(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
