@@ -1098,7 +1098,16 @@ class XdbgClient:
                 )
             return min(cap, remaining)
 
-        with self._request_lock:
+        lock_acquired = self._request_lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic())
+        )
+        if not lock_acquired:
+            self.terminate()
+            raise XdbgRpcError(
+                "timeout",
+                f"x64dbg close could not acquire its request lock within {timeout:g}s",
+            )
+        try:
             if self._closed:
                 return
             try:
@@ -1127,6 +1136,8 @@ class XdbgClient:
                     self._transport.close()
                     self._transport = None
                 self._finish_threads()
+        finally:
+            self._request_lock.release()
 
     def terminate(self) -> None:
         # Kill the process first so a reconnect already in flight cannot outlive
