@@ -188,15 +188,17 @@ class WorkflowAnalysisMixin:
                         terminal=True,
                     )
                 raise XdbgRpcError("backend_unavailable", "x64dbg worker is not open")
-            with runtime.lock:
-                self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
-                workflow = self._require_workflow(session_id)
-                return _success(
-                    {"workflow": workflow.to_dict()},
-                    session_id=session_id,
-                    backend=BackendKind.X64DBG.value,
-                    terminal=False,
-                )
+            # WorkflowStateOwner synchronizes its own immutable snapshots. Status
+            # does not touch the worker, so waiting behind a long RPC only turns
+            # an in-memory read into an avoidable hang.
+            self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
+            workflow = self._require_workflow(session_id)
+            return _success(
+                {"workflow": workflow.to_dict()},
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+                terminal=False,
+            )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
 
