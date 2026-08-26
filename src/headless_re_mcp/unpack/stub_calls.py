@@ -6,6 +6,8 @@ VMP-like sections means the dump remains VM-coupled even if some IAT slots resol
 
 from __future__ import annotations
 
+import mmap
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -224,8 +226,40 @@ def analyze_dump_stub_coupling(
     max_scan_bytes: int = 8 * 1024 * 1024,
 ) -> JsonObject:
     """Parse a runtime dump and count stub-coupled E8 calls vs API-ish FF15/25."""
+    if type(max_scan_bytes) is not int or max_scan_bytes < 1:
+        raise ValueError("max_scan_bytes must be a positive integer")
     path = Path(dump_path)
-    data = path.read_bytes()
+    with path.open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        if size == 0:
+            return _analyze_dump_data(
+                b"",
+                path=path,
+                iat_va=iat_va,
+                iat_size=iat_size,
+                image_base=image_base,
+                max_scan_bytes=max_scan_bytes,
+            )
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return _analyze_dump_data(
+                data,
+                path=path,
+                iat_va=iat_va,
+                iat_size=iat_size,
+                image_base=image_base,
+                max_scan_bytes=max_scan_bytes,
+            )
+
+
+def _analyze_dump_data(
+    data: Any,
+    *,
+    path: Path,
+    iat_va: int | None,
+    iat_size: int | None,
+    image_base: int | None,
+    max_scan_bytes: int,
+) -> JsonObject:
     try:
         headers = parse_runtime_headers(data)
     except PeRebuildError as exc:
@@ -277,9 +311,13 @@ def analyze_dump_stub_coupling(
     code_nonzero = 0
     code_total = 0
     for rva, size, _name in code:
-        take = min(size, max(0, len(data) - rva))
+        take = min(
+            size,
+            max(0, len(data) - rva),
+            max(0, max_scan_bytes - code_total),
+        )
         if take <= 0:
-            continue
+            break
         blob = data[rva : rva + take]
         code_total += len(blob)
         code_nonzero += sum(1 for b in blob if b)
