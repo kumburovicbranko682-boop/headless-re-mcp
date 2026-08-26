@@ -1551,6 +1551,52 @@ def test_workflow_status_does_not_wait_for_a_busy_runtime_lock(tmp_path: Path) -
     assert result.ok is True
 
 
+def test_dynamic_request_times_out_acquiring_a_busy_runtime_lock(tmp_path: Path) -> None:
+    """A 100ms run-control timeout did not apply while waiting for the lock."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("running")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcome: dict[str, object] = {}
+    request = Thread(
+        target=lambda: outcome.setdefault(
+            "result",
+            service.dynamic_pause(session_id, timeout=0.1),
+        ),
+        daemon=True,
+    )
+    request.start()
+    request.join(timeout=0.4)
+    returned_within_bound = not request.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    request.join(timeout=2)
+
+    assert returned_within_bound, "dynamic request remained blocked acquiring the runtime lock"
+    result = outcome["result"]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "timeout"
+    assert result.error.retryable is True
+
+
 def test_workflow_acknowledges_breakpoint_already_removed_by_debugger(
     tmp_path: Path,
 ) -> None:
