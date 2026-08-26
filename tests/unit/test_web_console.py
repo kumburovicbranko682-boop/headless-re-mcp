@@ -169,6 +169,80 @@ def test_ipv6_loopback_passes_the_host_guard(tmp_path: Path) -> None:
     assert ok.status_code == 200
 
 
+def test_artifact_download_never_serves_a_file_outside_the_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SECURITY.md counts path escape as a vulnerability; this route is the guard.
+
+    ``artifacts_describe`` answers straight from the store, so a tampered or
+    migrated DB row can point anywhere on disk. Whatever the row says, the
+    download route must refuse anything that resolves outside the configured
+    artifact root -- including a root-prefixed path that climbs back out.
+    """
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    loot = tmp_path / "outside" / "loot.txt"
+    loot.parent.mkdir(parents=True)
+    loot.write_text("keep out", encoding="utf-8")
+    escapes = [
+        str(loot),
+        str(settings.artifact_root / ".." / "outside" / "loot.txt"),
+    ]
+
+    for escape in escapes:
+        monkeypatch.setattr(
+            AnalysisService,
+            "artifacts_describe",
+            lambda self, artifact_id, _path=escape: Result(
+                ok=True, data={"artifact": {"id": artifact_id, "path": _path}}
+            ),
+        )
+        refused = client.get("/api/artifacts/any/file", headers=headers)
+        assert refused.status_code == 403, f"served {escape}"
+        assert refused.json()["detail"] == "artifact_outside_root"
+
+
+def test_artifact_download_serves_only_real_files_under_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # An unknown id is a 404 through the real service, not an error page.
+    unknown = client.get("/api/artifacts/does-not-exist/file", headers=headers)
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "artifact_not_found"
+
+    inside = settings.artifact_root / "dump.bin"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_bytes(b"artifact bytes")
+
+    def describe(self: AnalysisService, artifact_id: str) -> Result:
+        return Result(ok=True, data={"artifact": {"id": artifact_id, "path": str(inside)}})
+
+    monkeypatch.setattr(AnalysisService, "artifacts_describe", describe)
+    served = client.get("/api/artifacts/dump/file", headers=headers)
+    assert served.status_code == 200
+    assert served.content == b"artifact bytes"
+
+    # A row whose file is gone is a clean 404, not a traceback.
+    inside.unlink()
+    missing = client.get("/api/artifacts/dump/file", headers=headers)
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "artifact_missing"
+
+
 def test_a_weak_token_file_is_replaced_with_a_strong_private_one(tmp_path: Path) -> None:
     """A truncated or tampered token file must not become the accepted secret."""
     path = tmp_path / "web_token.json"

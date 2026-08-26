@@ -190,6 +190,38 @@ def test_startup_survives_a_log_file_it_cannot_open(
     assert incident["incident_id"], "the boundary must keep answering"
 
 
+def test_run_cli_safely_turns_failures_into_exit_codes_not_tracebacks(
+    incident_log: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI boundary: 0 passes through, Ctrl-C is 130, a crash is 1 + envelope.
+
+    An AI caller drives these CLIs and parses stderr, so a crash must come out
+    as one machine-readable envelope line (with secrets scrubbed), never a raw
+    traceback, and the exit codes are the contract scripts branch on.
+    """
+    assert boundary.run_cli_safely(lambda: 0, context="cli-test") == 0
+
+    def interrupted() -> int:
+        raise KeyboardInterrupt
+
+    assert boundary.run_cli_safely(interrupted, context="cli-test") == 130
+
+    def explodes() -> int:
+        credential = "hunter2"
+        raise RuntimeError(f"backend rejected password={credential}")
+
+    code = boundary.run_cli_safely(explodes, context="cli-test")
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "Traceback" not in captured.err
+    assert "hunter2" not in captured.err
+    envelope = json.loads(captured.err.strip().splitlines()[-1])
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "internal_error"
+    assert "[REDACTED]" in envelope["error"]["message"]
+
+
 def test_background_thread_exception_is_logged(incident_log: Path) -> None:
     boundary.install_global_exception_hooks("test-process")
 
