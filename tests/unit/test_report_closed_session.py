@@ -73,12 +73,12 @@ def test_large_report_returns_bounded_preview_and_keeps_full_artifact(tmp_path: 
         created = service.create_session(str(binary))
         assert created.ok and created.data is not None, created.error
         session_id = str(created.data["session"]["id"])
-        for index in range(10):
+        for index in range(250):
             recorded = service.knowledge_record(
                 session_id,
                 "note",
-                f"finding-{index}",
-                {"text": "é" * 3500},
+                f"{index:03d}-" + "é" * 200,
+                {"text": "é" * 200},
             )
             assert recorded.ok, recorded.error
 
