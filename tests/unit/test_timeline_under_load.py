@@ -56,8 +56,10 @@ def test_unserializable_timeline_details_do_not_fail_the_completed_operation(
         details={"not_json": object()},
     )
 
-    assert entry["event"] == "completed"
+    assert entry["event"] == "timeline.entry.write_failed"
+    assert entry["details"] == {"error_type": "TypeError"}
     assert "TypeError" in str(entry["write_failed"])
+    json.dumps(entry)
     assert not path.exists()
 
 

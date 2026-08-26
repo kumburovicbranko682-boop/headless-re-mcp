@@ -60,8 +60,14 @@ def append_session_timeline(
     try:
         line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
     except (TypeError, ValueError, UnicodeError) as exc:
-        entry["write_failed"] = f"{type(exc).__name__}: {exc}"
-        return entry
+        failure = f"{type(exc).__name__}: {exc}"
+        return {
+            "at": entry["at"],
+            "event": "timeline.entry.write_failed",
+            "message": "timeline entry could not be serialized",
+            "details": {"error_type": type(exc).__name__},
+            "write_failed": failure,
+        }
     if len(line) > _MAX_BYTES:
         original_bytes = len(line)
         entry = {
