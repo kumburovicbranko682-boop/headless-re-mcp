@@ -346,7 +346,6 @@ def test_web_pick_file_returns_a_local_path(
         "busy": False,
         "error": None,
     })
-    monkeypatch.setattr(legacy_mod.os, "name", "nt")
     monkeypatch.setenv(
         "HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json")
     )
@@ -354,6 +353,7 @@ def test_web_pick_file_returns_a_local_path(
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"
     client = TestClient(create_app(service, token=token, settings=settings))
+    monkeypatch.setattr(legacy_mod.os, "name", "nt")
     headers = {"Authorization": f"Bearer {token}"}
     picked = client.post("/api/ui/pick-file", headers=headers)
     assert picked.status_code == 200
