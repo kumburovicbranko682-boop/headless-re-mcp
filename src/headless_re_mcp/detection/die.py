@@ -352,6 +352,9 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
         _close_pipe(stdout_pipe)
         _close_pipe(stderr_pipe)
         stdout_thread.join(timeout=0.1)

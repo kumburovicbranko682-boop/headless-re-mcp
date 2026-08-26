@@ -2138,6 +2138,35 @@ class TestATimeoutBindsWhatTheToolStarted:
             with suppress(Exception):
                 terminate_pid_tree(child)
 
+    @pytest.mark.parametrize(
+        "module_name",
+        (
+            "headless_re_mcp.detection.die",
+            "headless_re_mcp.detection.exeinfope",
+            "headless_re_mcp.unpack.upx",
+        ),
+        ids=("die", "exeinfope", "upx"),
+    )
+    def test_successful_cli_adapters_reap_detached_helpers(self, module_name: str) -> None:
+        import importlib
+        import sys
+        from contextlib import suppress
+
+        from headless_re_mcp.core.process_tree import terminate_pid_tree
+
+        module = importlib.import_module(module_name)
+        capture = module._capture_process(  # type: ignore[attr-defined]
+            [sys.executable, "-c", _EXIT0_LAUNCHER],
+            timeout=3.0,
+            max_output_size=4096,
+        )
+        child = int(capture.stdout.strip().split()[0])
+        try:
+            assert self._alive(child) is False
+        finally:
+            with suppress(Exception):
+                terminate_pid_tree(child)
+
 
 def test_kill_walk_is_not_clamped_to_the_ui_page_size() -> None:
     from headless_re_mcp.core.process_tree import (

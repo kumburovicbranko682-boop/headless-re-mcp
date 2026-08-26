@@ -231,6 +231,13 @@ def collect_process_group(group_id: int) -> list[int]:
     return members
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Known descendants plus isolated-group members whose launcher exited."""
+    found = collect_descendants(parent_pid)
+    found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
 def _reap_terminated(pids: list[int], wait_s: float) -> None:
     """Best-effort reap of descendants adopted by the Linux subreaper."""
     if not _LINUX_CHILD_SUBREAPER:
@@ -270,10 +277,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     descendants: list[int] = []
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
-            descendants = collect_descendants(pid)
-        with suppress(Exception):
-            descendants.extend(collect_process_group(pid))
-        descendants = list(dict.fromkeys(child for child in descendants if child != pid))
+            descendants = collect_process_tree(pid)
 
     with suppress(OSError, AttributeError):
         if process.poll() is None:
@@ -293,6 +297,17 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
     return killed
 
 
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Terminate children left behind after a launcher reported completion."""
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    with suppress(Exception):
+        if collect_process_tree(pid):
+            return terminate_process_tree(process, wait_s=wait_s)
+    return []
+
+
 def terminate_pid_tree(pid: int) -> list[int]:
     """Kill ``pid`` and its descendants when there is no Popen handle left.
 
@@ -305,10 +320,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
     descendants: list[int] = []
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
-            descendants = collect_descendants(pid)
-        with suppress(Exception):
-            descendants.extend(collect_process_group(pid))
-        descendants = list(dict.fromkeys(child for child in descendants if child != pid))
+            descendants = collect_process_tree(pid)
     killed: list[int] = []
     with suppress(Exception):
         _kill_pid(pid)

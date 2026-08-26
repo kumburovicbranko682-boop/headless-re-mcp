@@ -290,6 +290,9 @@ def _capture_process(
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+    terminate_leftover_process_tree(process, wait_s=1.0)
     with suppress(OSError):
         stdout_pipe.close()
     with suppress(OSError):

@@ -359,15 +359,10 @@ def _capture_process(
     if not timed_out:
         leftover_children = stdout_thread.is_alive() or stderr_thread.is_alive()
         if not leftover_children and process.pid:
-            from headless_re_mcp.core.process_tree import (
-                collect_descendants,
-                collect_process_group,
-            )
+            from headless_re_mcp.core.process_tree import collect_process_tree
 
             pid = int(process.pid)
-            leftover_children = bool(
-                collect_descendants(pid) or collect_process_group(pid)
-            )
+            leftover_children = bool(collect_process_tree(pid))
     if leftover_children:
         _terminate_process(process)
         stdout_thread.join(timeout=2.0)
