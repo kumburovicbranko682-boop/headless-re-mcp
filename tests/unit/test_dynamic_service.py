@@ -1542,6 +1542,76 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
     assert too_large.error.code == "dump_too_large"
 
 
+def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"keep")
+
+    class RedirectingWorker(FakeDynamicWorker):
+        def request(
+            self,
+            command: str,
+            params: JsonObject | None = None,
+            *,
+            timeout: float = 120.0,
+        ) -> JsonObject:
+            if command == "modules.dump":
+                values = params or {}
+                self.requests.append((command, values))
+                requested = Path(str(values["output_path"]))
+                requested.write_bytes(b"requested")
+                return {"output_path": str(outside)}
+            return super().request(command, params, timeout=timeout)
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = RedirectingWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    dumped = service.modules_dump(session_id, worker.module_base, size=0x100)
+
+    assert not dumped.ok and dumped.error is not None
+    assert dumped.error.code == "rpc_protocol_error"
+    assert outside.read_bytes() == b"keep"
+    assert list((tmp_path / "artifacts" / "dump" / session_id).glob("*.bin")) == []
+    assert service.repository.list_artifacts(session_id)["total"] == 0
+
+
+def test_modules_dump_deletes_an_artifact_larger_than_requested(tmp_path: Path) -> None:
+    class OversizedWorker(FakeDynamicWorker):
+        def request(
+            self,
+            command: str,
+            params: JsonObject | None = None,
+            *,
+            timeout: float = 120.0,
+        ) -> JsonObject:
+            if command == "modules.dump":
+                values = params or {}
+                self.requests.append((command, values))
+                requested = Path(str(values["output_path"]))
+                requested.write_bytes(b"x" * 0x101)
+                return {"output_path": str(requested)}
+            return super().request(command, params, timeout=timeout)
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = OversizedWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    dumped = service.modules_dump(session_id, worker.module_base, size=0x100)
+
+    assert not dumped.ok and dumped.error is not None
+    assert dumped.error.code == "dump_too_large"
+    assert list((tmp_path / "artifacts" / "dump" / session_id).glob("*.bin")) == []
+    assert service.repository.list_artifacts(session_id)["total"] == 0
+
+
 def test_dynamic_state_exposes_debuggee_and_debugger_pids(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
