@@ -64,7 +64,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="web.network.list")
     def web_network_list(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List captured network requests.
@@ -72,7 +72,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with requests (url, method, status, resourceType), count,
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. There is no type field.
+        visible. metadata_truncated marks bounded oversized request fields.
+        There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -104,7 +105,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_scripts(
         session_id: str,
         wasm_only: bool = False,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List parsed scripts seen by the debugger, one page at a time.
@@ -113,6 +114,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         has_more and dropped. The session keeps at most 2000 scripts. A page
         of 100 typical URLs is ~22 KiB; the full list was 441 KiB. Read
         total and has_more rather than assuming the page is complete.
+        metadata_truncated marks bounded oversized script fields.
         """
         return _dump(
             analysis.web_scripts(
@@ -134,14 +136,15 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(
         session_id: str,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List WebAssembly modules loaded by the page, one page at a time.
 
         Answers with scripts (scriptId, url, language), count, total, offset,
         has_more and dropped. There is no modules field. Same buffer as
-        web.scripts. Read total and has_more.
+        web.scripts. Read total and has_more. metadata_truncated marks bounded
+        oversized script fields.
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 

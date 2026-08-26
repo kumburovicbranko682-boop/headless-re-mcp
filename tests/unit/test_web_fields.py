@@ -8,7 +8,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from headless_re_mcp.backends.web.client import WebBackend
+from headless_re_mcp.backends.web.client import (
+    _MAX_METADATA_BYTES,
+    _MAX_URL_BYTES,
+    WebBackend,
+)
 from headless_re_mcp.tools.web import build_web_tools
 
 
@@ -108,12 +112,63 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     row = payload["requests"][0]
     assert "type" not in row
     assert row["resourceType"] == "XHR"
+    normalized = backend.network_list("s", offset=-10, limit=0)
+    assert normalized["offset"] == 0
+    assert normalized["count"] == 1
+    assert normalized["has_more"] is True
     doc = _tool_docstring("web.network.list")
     assert "Answers with requests" in doc
     assert "resourceType" in doc
     assert "total" in doc
     assert "has_more" in doc
     assert "dropped" in doc
+    assert "metadata_truncated" in doc
+
+
+def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    huge = "é" * (_MAX_URL_BYTES + 1)
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "request-1",
+            "request": {"url": huge, "method": huge},
+            "type": huge,
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "request-1",
+            "response": {"status": 200, "mimeType": huge},
+        }
+    )
+    cdp.handlers["Debugger.scriptParsed"](
+        {"scriptId": "script-1", "url": huge, "scriptLanguage": huge}
+    )
+
+    request = handle.requests["request-1"]
+    assert len(str(request["url"]).encode()) <= _MAX_URL_BYTES
+    assert len(str(request["method"]).encode()) <= _MAX_METADATA_BYTES
+    assert len(str(request["resourceType"]).encode()) <= _MAX_METADATA_BYTES
+    assert len(str(request["mimeType"]).encode()) <= _MAX_METADATA_BYTES
+    assert request["metadata_truncated"] is True
+    script = handle.scripts["script-1"]
+    assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
+    assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES
+    assert script["metadata_truncated"] is True
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

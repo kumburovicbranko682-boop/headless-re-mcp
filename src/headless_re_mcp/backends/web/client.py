@@ -23,6 +23,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
@@ -35,6 +36,8 @@ _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
+_MAX_URL_BYTES = 16 * 1024
+_MAX_METADATA_BYTES = 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -48,6 +51,14 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    payload = text.encode("utf-8", errors="replace")
+    if len(payload) <= max_bytes:
+        return text, False
+    return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -103,7 +114,8 @@ def _spill_text(
     dir still fills the disk before retention runs: a single media response is
     enough. Returns ``(inline, spill_path_or_none, truncated)``.
     """
-    size = len(text)
+    payload = text.encode("utf-8", errors="replace")
+    size = len(payload)
     if size > UNREGISTERED_CAPTURE_MAX_BYTES:
         raise WebError(
             "too_large",
@@ -113,9 +125,17 @@ def _spill_text(
         )
     if size <= _MAX_INLINE_BODY:
         return text, None, False
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     out = artifact_dir / filename
-    out.write_text(text, encoding="utf-8", errors="replace")
+    out.write_bytes(payload)
     written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
     if over:
         raise WebError(
@@ -124,7 +144,8 @@ def _spill_text(
             size=written,
             cap=UNREGISTERED_CAPTURE_MAX_BYTES,
         )
-    return text[:_MAX_INLINE_BODY], out, True
+    preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
+    return preview, out, True
 
 
 class _Runner:
@@ -261,7 +282,7 @@ class WebBackend:
         def work() -> JsonObject:
             return {
                 "open": True,
-                "url": handle.page.url,
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
 
@@ -323,7 +344,7 @@ class WebBackend:
                 # in that window would leave it with nothing able to close it.
                 summary = {
                     "opened": True,
-                    "url": page.url,
+                    "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
                     "title": _safe_title(page),
                     "headless": headless,
                 }
@@ -363,34 +384,56 @@ class WebBackend:
 
         def on_request(params: JsonObject) -> None:
             req = params.get("request") or {}
+            url, url_truncated = _bounded_metadata(req.get("url"), _MAX_URL_BYTES)
+            method, method_truncated = _bounded_metadata(
+                req.get("method"), _MAX_METADATA_BYTES
+            )
+            resource_type, type_truncated = _bounded_metadata(
+                params.get("type"), _MAX_METADATA_BYTES
+            )
+            entry: JsonObject = {
+                "requestId": params.get("requestId"),
+                "url": url,
+                "method": method,
+                "resourceType": resource_type,
+                "status": None,
+                "mimeType": None,
+            }
+            if url_truncated or method_truncated or type_truncated:
+                entry["metadata_truncated"] = True
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = {
-                    "requestId": params.get("requestId"),
-                    "url": req.get("url"),
-                    "method": req.get("method"),
-                    "resourceType": params.get("type"),
-                    "status": None,
-                    "mimeType": None,
-                }
+                handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
+            mime_type, mime_truncated = _bounded_metadata(
+                resp.get("mimeType"), _MAX_METADATA_BYTES
+            )
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
-                    entry["mimeType"] = resp.get("mimeType")
+                    entry["mimeType"] = mime_type
+                    if mime_truncated:
+                        entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
+            url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
+            language, language_truncated = _bounded_metadata(
+                params.get("scriptLanguage", "JavaScript"), _MAX_METADATA_BYTES
+            )
+            entry: JsonObject = {
+                "scriptId": params.get("scriptId"),
+                "url": url,
+                "language": language,
+            }
+            if url_truncated or language_truncated:
+                entry["metadata_truncated"] = True
             with handle.lock:
-                handle.scripts[str(params.get("scriptId"))] = {
-                    "scriptId": params.get("scriptId"),
-                    "url": params.get("url"),
-                    "language": params.get("scriptLanguage", "JavaScript"),
-                }
+                handle.scripts[str(params.get("scriptId"))] = entry
                 while len(handle.scripts) > _MAX_SCRIPTS:
                     handle.scripts.popitem(last=False)
                     handle.scripts_dropped += 1
@@ -429,7 +472,10 @@ class WebBackend:
                 handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {"url": handle.page.url, "title": _safe_title(handle.page)}
+            return {
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "title": _safe_title(handle.page),
+            }
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
@@ -468,13 +514,15 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
-        window = items[offset : offset + limit]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
         return {
             "requests": window,
             "count": len(window),
             "total": len(items),
-            "offset": offset,
-            "has_more": offset + len(window) < len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
 
@@ -499,7 +547,7 @@ class WebBackend:
         inline, spill, cut = _spill_text(
             body,
             artifact_dir=artifact_dir,
-            filename=f"body-{request_id.replace('.', '_')}.bin",
+            filename=f"body-{uuid4().hex}.bin",
             kind="response body",
         )
         result = dict(entry)
@@ -567,12 +615,12 @@ class WebBackend:
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
-            filename=f"script-{script_id}.js",
+            filename=f"script-{uuid4().hex}.js",
             kind="script source",
         )
         result: JsonObject = {
             "scriptId": script_id,
-            "bytes": len(source),
+            "bytes": len(source.encode("utf-8", errors="replace")),
             "source": inline,
             "truncated": cut,
         }
@@ -605,7 +653,7 @@ class WebBackend:
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
             return {
-                "url": handle.page.url,
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
                 "html": text[:_MAX_INLINE_BODY],
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
@@ -689,7 +737,7 @@ class WebBackend:
 
 def _safe_title(page: Any) -> str:
     try:
-        return str(page.title())
+        return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
     except Exception:  # noqa: BLE001
         return ""
 

@@ -59,10 +59,14 @@ def test_web_network_get_names_body_truncated_not_truncated(
     monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
     monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
     payload = backend.network_get("s", "r1", tmp_path)
+    repeated = backend.network_get("s", "r1", tmp_path)
     assert "truncated" not in payload
     assert payload["body_truncated"] is True
     assert len(payload["body"]) == _MAX_INLINE_BODY
     assert "body_path" in payload
+    assert payload["body_path"] != repeated["body_path"]
+    assert Path(str(payload["body_path"])).is_file()
+    assert Path(str(repeated["body_path"])).is_file()
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
