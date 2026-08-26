@@ -43,6 +43,65 @@ def test_tool_exception_returns_ai_envelope_and_logs(
     assert "[REDACTED]" in logged
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "api_key=sk-DEADBEEFsecret",
+        "api-key: sk-DEADBEEFsecret",
+        "apikey = sk-DEADBEEFsecret",
+        "token=sk-DEADBEEFsecret",
+        "TOKEN: sk-DEADBEEFsecret",
+        "secret=sk-DEADBEEFsecret",
+        "Password=sk-DEADBEEFsecret",
+        "Authorization: Bearer sk-DEADBEEFsecret",
+    ],
+)
+def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
+    """The redactor guards incident logs and envelopes; the keyword set is the guard.
+
+    ``record_exception`` and the envelope both run messages through this regex,
+    so if an edit drops a keyword or a separator the matching secret starts
+    reaching disk in the clear. Pin the whole matrix -- every keyword, both
+    ``:``/``=`` separators, the bearer header, and case-insensitivity.
+    """
+    redacted = boundary._redact_text(f"connect failed while sending {marker} to host")
+
+    assert "sk-DEADBEEFsecret" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
+    """Over-redaction would blind an operator; only secret keywords are touched."""
+    text = "read 4096 bytes at offset=1234 for session id=abc (retryable=false)"
+
+    assert boundary._redact_text(text) == text
+
+
+def test_a_bearer_secret_never_reaches_the_envelope_or_the_log(
+    incident_log: Path,
+) -> None:
+    """A runtime bearer token in a failure message is scrubbed in envelope and log.
+
+    The secret arrives as a value (not a source literal, which the traceback
+    would show regardless), which is how a real credential reaches an error, and
+    must survive neither the caller-facing envelope nor the on-disk incident log.
+    """
+
+    def call_api(*, authorization: str) -> dict[str, object]:
+        raise RuntimeError(f"upstream rejected {authorization}")
+
+    guarded = boundary.guard_tool_handler(call_api, tool_name="net.call")
+    result = guarded(authorization="Authorization: Bearer sk-DEADBEEFsecret")
+
+    assert result["ok"] is False
+    encoded = json.dumps(result)
+    assert "sk-DEADBEEFsecret" not in encoded
+    assert "[REDACTED]" in encoded
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "sk-DEADBEEFsecret" not in logged
+    assert "[REDACTED]" in logged
+
+
 def test_tool_system_exit_cannot_terminate_server(incident_log: Path) -> None:
     def exits() -> dict[str, object]:
         raise SystemExit(9)
