@@ -79,6 +79,24 @@ def test_x64dbg_source_probe_accepts_official_target_shape(tmp_path: Path) -> No
     assert probe.status == ProbeStatus.READY
 
 
+def test_x64dbg_source_probe_bounds_cmake_project_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "x64dbg"
+    (source / "src" / "headless").mkdir(parents=True)
+    (source / "src" / "headless" / "headless.cpp").write_text(
+        "int main(){}", encoding="utf-8"
+    )
+    (source / "CMakeLists.txt").write_bytes(b"x" * 1024)
+    monkeypatch.setattr(doctor_module, "_MAX_CMAKE_FILE_BYTES", 64)
+
+    probe = probe_x64dbg_source(_settings(source, tmp_path / "artifacts"))
+
+    assert probe.status == ProbeStatus.BLOCKED
+    assert probe.details["max_bytes"] == 64
+    assert probe.details["size_at_least"] == 65
+
+
 def _gate_result(
     executable: Path,
     architecture: Architecture,

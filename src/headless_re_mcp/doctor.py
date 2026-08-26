@@ -77,6 +77,7 @@ def required_probe_names(platform_name: str | None = None) -> frozenset[str]:
 
 # Backwards-compatible snapshot for callers that only inspect this constant.
 REQUIRED_PROBES: frozenset[str] = required_probe_names()
+_MAX_CMAKE_FILE_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +267,8 @@ def _is_elevated() -> bool | None:
     if os.name != "nt":
         return None
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined,unused-ignore]
+        return bool(shell32.IsUserAnAdmin())
     except (AttributeError, OSError):
         return None
 
@@ -426,7 +428,28 @@ def probe_x64dbg_source(settings: Settings) -> Probe:
             "x64dbg source exists but the official headless target is absent",
             {"source": str(source)},
         )
-    text = cmake.read_text(encoding="utf-8", errors="replace")
+    try:
+        with cmake.open("rb") as stream:
+            payload = stream.read(_MAX_CMAKE_FILE_BYTES + 1)
+    except OSError as exc:
+        return Probe(
+            "x64dbg_source",
+            ProbeStatus.BLOCKED,
+            "x64dbg CMake project could not be read",
+            {"source": str(source), "error": str(exc)},
+        )
+    if len(payload) > _MAX_CMAKE_FILE_BYTES:
+        return Probe(
+            "x64dbg_source",
+            ProbeStatus.BLOCKED,
+            "x64dbg CMake project exceeds the safety limit",
+            {
+                "source": str(source),
+                "max_bytes": _MAX_CMAKE_FILE_BYTES,
+                "size_at_least": len(payload),
+            },
+        )
+    text = payload.decode("utf-8", errors="replace")
     if "add_executable(headless)" not in text:
         return Probe(
             "x64dbg_source",
