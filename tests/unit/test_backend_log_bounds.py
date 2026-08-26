@@ -33,7 +33,7 @@ def test_ida_rpc_reader_bounds_an_invalid_unterminated_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ida_client, "_MAX_RPC_LINE_CHARS", 32)
-    client = ida_client.IdaClient.__new__(ida_client.IdaClient)
+    client = ida_client.IdaWorkerClient.__new__(ida_client.IdaWorkerClient)
     client._messages = Queue()
     client._stdout_log = deque(maxlen=10)
 
