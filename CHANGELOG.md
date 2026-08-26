@@ -41,15 +41,20 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
-### 修复（监控台只读部署绕过）
+### 修复（监控台只读写请求返回 500）
 
-- **只读部署（`local_full_access=false`）下监控台仍可写**。`/api/write` 的 Web 适配器直接调
-  service 方法、绕过按处理器的 `write_disabled` 守卫,只靠共享 catalog 的 `write_allowed` 标志
-  兜底;而该标志只有 MCP server 与 `bind_all_tools` 会从 `local_full_access` 设值,纯 web 进程
-  从不设,于是 `write_allowed` 恒为默认的 `True`——只读部署经监控台被完全写穿,违背 SECURITY.md
-  「置 false 即拒绝一切写」的承诺。`create_app` 现在像 MCP server 一样从设置写入 `write_allowed`;
-  且 `/api/write` 路由现在捕获适配器抛出的 `PermissionError`,返回承诺的 `403 write_disabled`
-  而非把它漏成 `500`。补只读拒绝、完全访问仍放行、白名单/confirm 门仍先答的回归测试。
+- **只读部署（`local_full_access=false`）下监控台的写请求回 `500` 而非承诺的 `403`**。
+  `/api/write` 的 Web 适配器直接调 service 方法、绕过按处理器的 `write_disabled` 守卫,改以共享
+  catalog 的 `write_allowed` 标志兜底:只读时抛 `PermissionError`。但路由只 catch 了
+  `KeyError`/`ValueError`,这个 `PermissionError` 会漏成 `500 internal_error`。现在路由捕获它
+  并返回承诺的 `403 write_disabled`。
+  （更正上一条记述:写面本身并未被写穿——`create_app` 一定会经 `register_agent_routes` 调
+  `bind_all_tools`,后者已从 `local_full_access` 设好 `write_allowed`,所以只读部署的写请求确实被
+  拒,只是拒的方式是 500 而非 403。此前把它记成"可写穿"是不准确的:那个结论来自把
+  `WebCommandAdapter` 脱离 `create_app` 单独构造的探针,漏掉了 `bind_all_tools` 这一步。）
+  另外 `create_app` 现在也显式从设置写 `write_allowed`,与 MCP server 对齐——这是防御性的,让
+  composition root 成为权威来源,不再依赖"agent 路由注册顺带设了它"这一副作用。补只读拒绝(403)、
+  完全访问仍放行、白名单/confirm 门仍先答的回归测试。
 
 ### 修复（生成 MCP 配置的秘密清洗）
 

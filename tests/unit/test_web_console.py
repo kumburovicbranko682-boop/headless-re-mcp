@@ -433,14 +433,13 @@ def test_web_write_requires_confirm(tmp_path: Path) -> None:
 
 
 def test_a_read_only_deployment_refuses_web_writes(tmp_path: Path) -> None:
-    """local_full_access=false must make /api/write fail closed, not 500.
+    """local_full_access=false must make /api/write answer 403, not 500.
 
-    The Web adapter calls the service method directly, bypassing the per-handler
-    write_disabled guard, so it leans on the catalog's write_allowed flag. Only
-    the MCP server and bind_all_tools set that flag from local_full_access;
-    nothing did on the web-only path, so a read-only deployment was writable
-    through the console. And even once the adapter refused, the route did not
-    catch its PermissionError, turning the denial into a 500.
+    The Web adapter bypasses the per-handler write_disabled guard and leans on
+    the catalog's write_allowed flag, which bind_all_tools (run inside
+    create_app via agent route registration) sets from local_full_access -- so
+    the write was refused, but as an unhandled PermissionError the route turned
+    into a 500 instead of the promised 403 write_disabled.
     """
     from dataclasses import replace
 

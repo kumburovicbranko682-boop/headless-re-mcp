@@ -34,11 +34,11 @@ def create_app(
         ) from exc
 
     cfg = settings or service.settings
-    # The Web write adapter (/api/write) calls service methods directly, so the
-    # per-handler write_disabled guard never runs; it relies on the shared
-    # catalog's write_allowed flag to stay fail-closed. The MCP server and
-    # bind_all_tools set that flag from local_full_access, but nothing did on the
-    # web-only path, so a read-only deployment was writable through the console.
+    # The Web write adapter (/api/write) bypasses the per-handler write_disabled
+    # guard and leans on the shared catalog's write_allowed flag. bind_all_tools
+    # (run below via register_agent_routes) already sets that flag from
+    # local_full_access; setting it here too makes the composition root the
+    # authoritative source instead of a side effect of agent route registration.
     from headless_re_mcp.core.commands import COMMAND_CATALOG
 
     COMMAND_CATALOG.write_allowed = bool(cfg.local_full_access)
