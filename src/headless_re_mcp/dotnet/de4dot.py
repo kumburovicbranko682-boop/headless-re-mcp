@@ -364,7 +364,10 @@ def _capture_process(
                 # discoverable by PPID. It still inherits the dedicated process
                 # group created in _creation_options().
                 try:
-                    os.killpg(int(process.pid), 0)
+                    # A negative POSIX kill target addresses the whole process
+                    # group. Unlike os.killpg, os.kill is also present in
+                    # typeshed on Windows, where this branch is never executed.
+                    os.kill(-int(process.pid), 0)
                 except ProcessLookupError:
                     leftover_children = False
                 except OSError:
