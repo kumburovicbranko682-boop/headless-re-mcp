@@ -38,6 +38,10 @@ HEALTHY_UPTIME_S = 60.0
 MAX_RAPID_RESTARTS = 5
 BACKOFF_START_S = 1.0
 BACKOFF_CAP_S = 30.0
+# urlopen's socket timeout is not an overall deadline. The caller can stop
+# waiting, but Python cannot kill the thread still blocked inside it; admit no
+# replacement until that one actually unwinds.
+_ready_probe_slots = threading.BoundedSemaphore(1)
 
 
 def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
@@ -57,6 +61,9 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     """
     bound = max(0.05, float(timeout))
     box: list[tuple[bool, str] | BaseException] = []
+    slots = _ready_probe_slots
+    if not slots.acquire(blocking=False):
+        return (False, "unreachable: ProbeAlreadyRunning")
 
     def work() -> None:
         try:
@@ -78,9 +85,15 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
             box.append((False, f"unreachable: {type(exc).__name__}"))
         except BaseException as exc:  # noqa: BLE001 - handed to the join
             box.append(exc)
+        finally:
+            slots.release()
 
     thread = threading.Thread(target=work, name="ready-probe", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except BaseException as exc:  # noqa: BLE001 - a probe cannot end supervision
+        slots.release()
+        return (False, f"unreachable: {type(exc).__name__}")
     thread.join(bound)
     if box:
         result = box[0]
