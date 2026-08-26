@@ -14,6 +14,11 @@ from headless_re_mcp.doctor import run_doctor
 
 JsonObject = dict[str, Any]
 
+# Exact-key (casefold) match on purpose: a substring rule would strip
+# near-miss keys like ``token_count`` that carry no secret. Kept aligned with
+# the vocabulary agent/redaction treats as a credential so a doctor detail this
+# stripper misses is not one the rest of the system would have hidden. Both the
+# underscore and no-separator spellings are listed, as with api_key/apikey.
 _SECRET_KEYS = frozenset(
     {
         "token",
@@ -21,9 +26,16 @@ _SECRET_KEYS = frozenset(
         "ida_license",
         "license",
         "password",
+        "passwd",
         "secret",
         "api_key",
         "apikey",
+        "authorization",
+        "credential",
+        "private_key",
+        "privatekey",
+        "access_key",
+        "accesskey",
     }
 )
 

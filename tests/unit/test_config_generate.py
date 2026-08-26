@@ -138,6 +138,33 @@ def test_strip_secrets_drops_secret_keys_recursively_and_case_insensitively() ->
     assert {"token", "password", "secret", "api_key", "apikey"} <= _SECRET_KEYS
 
 
+def test_strip_secrets_covers_the_full_credential_vocabulary() -> None:
+    """config_generate must hide every key the redaction module calls a secret.
+
+    The two secret definitions are independent (this one is exact-key, the
+    redaction module is a substring regex); if a doctor probe emitted a detail
+    named authorization/credential/passwd/private_key/access_key, the redaction
+    module would hide it everywhere else but this copy-pasted config bundle
+    would not. Pin the added vocabulary as stripped, both spellings.
+    """
+    from headless_re_mcp.config_generate import _strip_secrets
+
+    payload = {
+        "Authorization": "Bearer x",
+        "credential": "c",
+        "PASSWD": "p",
+        "private_key": "-----BEGIN-----",
+        "PrivateKey": "-----BEGIN-----",
+        "access_key": "AKIA",
+        "AccessKey": "AKIA",
+        # A near-miss that must still survive the exact-key rule.
+        "credentials_checked": 2,
+    }
+    cleaned = _strip_secrets(payload)
+
+    assert cleaned == {"credentials_checked": 2}
+
+
 def _poisoned_report(*, ready: bool):
     from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus
 
