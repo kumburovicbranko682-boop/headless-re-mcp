@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from headless_re_mcp.config import _as_bool, _as_float, _as_tuple
+from headless_re_mcp.config import _as_bool, _as_float, _as_tuple, _loaded_string_tuple
 
 
 def test_an_unparsable_value_falls_back_to_the_default_not_to_zero() -> None:
@@ -49,6 +49,41 @@ def test_as_tuple_splits_strips_drops_empties_and_dedupes_in_order() -> None:
     # Neither env nor a stringy/listy default -> empty, never a crash.
     assert _as_tuple(None, None) == ()
     assert _as_tuple("", ()) == ()
+
+
+def _tripwire_preset() -> tuple[str, ...]:
+    raise AssertionError("preset must not be consulted when a value is provided")
+
+
+def test_loaded_string_tuple_lets_the_environment_override_everything() -> None:
+    """agent_auto_approve_* resolve here; the env var must win over file+preset."""
+    assert _loaded_string_tuple("a,b", {"k": ["ignored"]}, "k", preset=_tripwire_preset) == (
+        "a",
+        "b",
+    )
+    # An env var set to empty is still a decision: auto-approve nothing, and it
+    # must not fall through to the preset.
+    assert _loaded_string_tuple("", {"k": ["ignored"]}, "k", preset=_tripwire_preset) == ()
+
+
+def test_loaded_string_tuple_treats_an_explicit_empty_list_as_fail_closed() -> None:
+    """A user who writes ``"agent_auto_approve_tools": []`` means *nothing*.
+
+    The key being present -- even as [] -- is an explicit choice and must not be
+    quietly replaced by the packed-analysis preset, or opting out of
+    auto-approval would silently re-enable it.
+    """
+    assert _loaded_string_tuple(None, {"k": []}, "k", preset=_tripwire_preset) == ()
+    assert _loaded_string_tuple(None, {"k": ["x", "x", " y "]}, "k", preset=_tripwire_preset) == (
+        "x",
+        "y",
+    )
+
+
+def test_loaded_string_tuple_uses_the_preset_only_when_the_key_is_absent() -> None:
+    """An unset key (no env, not in the file) is what earns the preset default."""
+    marker = ("state_change",)
+    assert _loaded_string_tuple(None, {}, "k", preset=lambda: marker) == marker
 
 
 def test_the_environment_wins_when_it_parses() -> None:
