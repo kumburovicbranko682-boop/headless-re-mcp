@@ -533,6 +533,14 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 - **只读开关解析固定**：`local_full_access` 的 env/JSON 解析——未配置=完全访问、falsy
   (`0/false/no/off`,大小写与空格不敏感)=只读、truthy=完全访问、JSON 可选只读且 env 覆盖
   JSON——写守卫读的 `catalog.write_allowed` 正来自它,解析错就会悄悄重开写面。
+- **错误信封尺寸钳制**：`RpcError` 把调用方可控的 message 钳在 2048 字符、字符串型 details
+  钳在 1024(恰好放限长边界值原样透传、int/嵌套 dict 不动),并断言 `ok=False` 无 error 的
+  Result 被拒——防止超长 session id 之类把信封撑到几百 KB,也防失败被当成功。
+- **OpenAI 桥接 CLI 三形态**：默认输出完整导出(count==tools==name_map)、`--names-only`
+  只剩 `{name_map,count}`、`--output` 把完整 JSON 写到(自动创建的)路径并在 stdout 报告而不
+  把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
+- **全表面资源策略有界**：全部 265 个工具的 `resource_policy` 都有有限且为正的超时与为正的
+  输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
 
 ### 变更（Android 后端清理）
 
