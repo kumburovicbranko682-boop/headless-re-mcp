@@ -83,3 +83,22 @@ def test_frida_attach_times_out_instead_of_parking_the_worker() -> None:
         client.attach(1, allowed_pid=1, timeout=0.2)
     assert time.monotonic() - started < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_attach_does_not_report_success_when_detach_fails() -> None:
+    """A probe that remains attached is a resource leak, not attached=true."""
+
+    class _Session:
+        def detach(self) -> None:
+            raise RuntimeError("native session is still attached")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid, timeout: _Session()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.attach(7, allowed_pid=7, timeout=0.2)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 7
