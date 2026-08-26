@@ -225,11 +225,20 @@ def _detach_all(sessions: list[Any]) -> None:
             session.detach()
 
 
-def _kill_spawned(device: Any, pids: list[int]) -> None:
+def _kill_spawned(device: Any, pids: list[int]) -> list[JsonObject]:
+    failures: list[JsonObject] = []
     while pids:
         pid = pids.pop()
-        with contextlib.suppress(Exception):
+        try:
             device.kill(pid)
+        except Exception as exc:
+            failures.append(
+                {
+                    "pid": pid,
+                    "kill_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return failures
 
 
 def _run_deadline(
@@ -641,6 +650,22 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_spawned() -> None:
+            cleanup_failures.extend(_kill_spawned(device, pids))
+
+        def cleanup_error() -> FridaError:
+            first = cleanup_failures[0]
+            return FridaError(
+                "frida_spawn_cleanup_failed",
+                f"{len(cleanup_failures)} spawned process cleanup attempt(s) failed",
+                package=pkg,
+                pid=first["pid"],
+                kill_error=first["kill_error"],
+                failed_count=len(cleanup_failures),
+                failures=cleanup_failures,
+            )
 
         def work() -> int:
             try:
@@ -678,12 +703,16 @@ class FridaClient:
 
         try:
             pid = _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _kill_spawned(device, pids)
+                work, timeout=deadline, on_timeout=cleanup_spawned
             )
-        except FridaError:
+        except FridaError as exc:
+            if cleanup_failures:
+                raise cleanup_error() from exc
             raise
         except Exception as exc:  # noqa: BLE001
-            _kill_spawned(device, pids)
+            cleanup_spawned()
+            if cleanup_failures:
+                raise cleanup_error() from exc
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
