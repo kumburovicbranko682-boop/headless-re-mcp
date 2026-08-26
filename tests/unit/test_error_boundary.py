@@ -264,3 +264,40 @@ def test_background_thread_exception_is_logged(incident_log: Path) -> None:
     logged = incident_log.read_text(encoding="utf-8")
     assert "thread:failing-worker" in logged
     assert "thread exploded" in logged
+
+
+def test_the_asyncio_hook_logs_unawaited_failures_and_scrubs_secrets(
+    incident_log: Path,
+) -> None:
+    """A task nobody awaited must leave a redacted incident, not vanish.
+
+    The loop reports never-retrieved failures through its exception handler;
+    ours must write the incident (scrubbed by the same redactor as every other
+    boundary) and, when the loop hands over a context with no exception object
+    at all -- callback errors do this -- synthesize one from the message
+    rather than dropping the report.
+    """
+    import asyncio
+
+    secret = "sk-live-" + "cafef00d0123"
+
+    async def scenario() -> None:
+        boundary.install_asyncio_exception_handler()
+        loop = asyncio.get_running_loop()
+        loop.call_exception_handler(
+            {"exception": RuntimeError(f"provider refused api_key={secret}")}
+        )
+        loop.call_exception_handler({"message": "callback dropped mid-flight"})
+
+    asyncio.run(scenario())
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "asyncio" in logged
+    assert secret not in logged
+    assert "[REDACTED]" in logged
+    assert "callback dropped mid-flight" in logged
+
+
+def test_installing_the_asyncio_hook_outside_a_loop_is_a_quiet_no_op() -> None:
+    """install_global_exception_hooks runs before any loop exists; it must not raise."""
+    boundary.install_asyncio_exception_handler()

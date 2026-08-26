@@ -597,6 +597,11 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **asyncio 异常钩子首次落测**：进程/线程/unraisable 三个钩子早有测试,唯独 asyncio 的
+  没有——没人 await 的任务失败经 loop 异常处理器上报,我们的处理器必须把事故写进 incident 日志
+  (走同一个脱敏器,`api_key=...` 不落盘)、loop 交来无异常对象的上下文(回调错误就是这样)时
+  从 message 合成 RuntimeError 而非丢弃报告;在无运行中 loop 时安装必须静默返回(
+  `install_global_exception_hooks` 恰在任何 loop 存在前运行)。
 - **workflow 取消/超时/重置的不幸路径**：happy path(start→事件→match)已充分测试,但目标
   卡死时 service 求助的那三条转移没有——`timeout_workflow_navigation` 零测试、cancel 只测过
   无导航空转、样本间清场的 `prepare_workflow_reset`(解除所有断点武装+停止监听)零测试。
