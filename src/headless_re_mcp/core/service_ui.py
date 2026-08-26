@@ -807,11 +807,17 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """Capture a PID-bounded hwnd to a BMP under artifact_root/ui/<session>."""
+        if not session_id or Path(session_id).name != session_id:
+            return _failure(
+                ValueError("invalid session id for UI capture path"),
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
-        directory.mkdir(parents=True, exist_ok=True)
         artifact_path = directory / f"screenshot-{uuid4().hex}.bmp"
 
         def action(ctx: JsonObject) -> JsonObject:
+            directory.mkdir(parents=True, exist_ok=True)
             allowed = frozenset(ctx["allowed"])
             result = capture_hwnd_screenshot(
                 hwnd,
@@ -851,11 +857,17 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """OCR a PID-bounded hwnd via screenshot + Windows OCR / tesseract."""
+        if not session_id or Path(session_id).name != session_id:
+            return _failure(
+                ValueError("invalid session id for UI capture path"),
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
-        directory.mkdir(parents=True, exist_ok=True)
         artifact_path = directory / f"ocr-{uuid4().hex}.bmp"
 
         def action(ctx: JsonObject) -> JsonObject:
+            directory.mkdir(parents=True, exist_ok=True)
             allowed = frozenset(ctx["allowed"])
             result = ocr_hwnd(
                 hwnd,
