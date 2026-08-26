@@ -31,7 +31,7 @@ def load_or_create_web_token(*, path: Path | None = None) -> str:
             candidate = raw.get("token")
             if isinstance(candidate, str) and len(candidate) >= 24:
                 return candidate
-    token = secrets.token_urlsafe(32)
+    token: str = str(secrets.token_urlsafe(32))
     payload = {
         "token": token,
         "note": "Local loopback web console auth only. Do not commit or share.",
