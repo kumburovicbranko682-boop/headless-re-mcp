@@ -975,6 +975,63 @@ def test_web_closed_sessions_are_not_hydrated_after_restart(tmp_path: Path) -> N
         first.close_all()
 
 
+def test_every_route_refuses_an_unauthenticated_request_except_the_probe_trio(
+    tmp_path: Path,
+) -> None:
+    """Auth is enforced per-route by hand, so one forgotten call is an open door.
+
+    _require_token/authorize appear at 50+ call sites rather than as a global
+    dependency; nothing structural stops a new route from shipping without one.
+    Walk every registered route unauthenticated (from loopback) and require 401,
+    pinning the deliberate exceptions -- /healthz (liveness), /readyz and
+    /metrics (supervisor probes, unauthenticated by design so an operator does
+    not have to hand the console token to a supervisor) -- and that none of the
+    three leaks the token.
+    """
+    import re
+
+    from fastapi.routing import APIRoute
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    unauthenticated_by_design = {"/healthz", "/readyz", "/metrics"}
+    checked = 0
+    offenders: list[tuple[str, str, int]] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if route.path in unauthenticated_by_design:
+            continue
+        path = re.sub(r"\{[^}]+\}", "x", route.path)
+        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+            response = client.request(method, path, json={})
+            if response.status_code == 422:
+                # A required query param fails validation before the handler
+                # (and its auth check) runs; fill the params and ask again so
+                # the verdict is about authentication, not about the schema.
+                missing = {
+                    item["loc"][1]: "0"
+                    for item in response.json()["detail"]
+                    if item.get("type") == "missing" and item["loc"][0] == "query"
+                }
+                response = client.request(method, path, json={}, params=missing)
+            checked += 1
+            if response.status_code != 401:
+                offenders.append((method, route.path, response.status_code))
+    assert checked >= 80, f"route walk looks broken, only checked {checked}"
+    assert not offenders, f"routes answering without a token: {offenders}"
+
+    # The three deliberate exceptions serve, and none of them leaks the token.
+    for path in sorted(unauthenticated_by_design):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert token not in response.text, path
+
+
 def test_web_session_http_skips_x64dbg_and_exposes_browser_status(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)

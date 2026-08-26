@@ -586,6 +586,12 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **全路由未认证扫描**：认证是逐路由手写的(`_require_token`/`authorize` 50+ 处调用点),
+  没有任何结构性机制阻止新路由漏掉这一行。新增契约测试遍历注册在 app 上的全部 85 个路由,
+  未带 token(回环源)逐一请求并要求 401——必填 query 参数导致的 422 会被自动补参重试,
+  使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
+  `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
+  并断言三者的响应体都不含 token。
 
 ### 变更（Android 后端清理）
 
