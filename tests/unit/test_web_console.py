@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +13,7 @@ from fastapi.testclient import TestClient
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web.app import create_app
+from headless_re_mcp.web import auth as web_auth
 from headless_re_mcp.web.auth import load_or_create_web_token
 
 
@@ -30,6 +35,48 @@ def test_web_token_persists(tmp_path: Path) -> None:
     second = load_or_create_web_token(path=path)
     assert first == second
     assert len(first) >= 24
+
+
+def test_concurrent_web_token_creation_returns_one_persisted_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "web_token.json"
+    barrier = Barrier(2)
+    lock = Lock()
+    issued = 0
+
+    def coordinated_token(_: int) -> str:
+        nonlocal issued
+        barrier.wait(timeout=5)
+        with lock:
+            issued += 1
+            return f"concurrent-token-{issued:032d}"
+
+    monkeypatch.setattr(web_auth.secrets, "token_urlsafe", coordinated_token)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        tokens = list(pool.map(lambda _: load_or_create_web_token(path=path), range(2)))
+
+    assert len(set(tokens)) == 1
+    assert load_or_create_web_token(path=path) == tokens[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes and symlinks")
+def test_web_token_is_private_and_replaces_symlinks_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "unrelated.json"
+    target.write_text(json.dumps({"token": "target-token-" + "x" * 32}), encoding="utf-8")
+    target.chmod(0o644)
+    path = tmp_path / "web_token.json"
+    path.symlink_to(target)
+
+    token = load_or_create_web_token(path=path)
+
+    assert token != "target-token-" + "x" * 32
+    assert not path.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8"))["token"].startswith("target-token-")
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
