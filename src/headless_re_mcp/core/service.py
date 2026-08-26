@@ -674,8 +674,12 @@ class AnalysisService(
         # Snapshot facts first: close_session may trim the old id, and a
         # surviving IDA worker still holds the database lock until that close.
         knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
-        with suppress(BaseException):
-            self.close_session(session_id)
+        closed = self.close_session(session_id)
+        if not closed.ok:
+            # A replacement can contend with exactly what failed to close:
+            # database locks, debugger processes, proxy ports, or browser
+            # runners. Keep the cleanup failure and do not create another owner.
+            return closed
         created = self.create_session(binary)
         if not created.ok or created.data is None:
             return created
