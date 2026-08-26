@@ -44,6 +44,7 @@ _MAX_DISPATCH_TIMEOUT_MS = 30_000
 # dropped connection left it running, so allow for that without letting a stuck
 # worker block the caller indefinitely.
 _RECONNECT_TIMEOUT_SECONDS = 30.0
+_TERMINATE_LOCK_TIMEOUT_SECONDS = 2.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
 
 
@@ -1117,15 +1118,20 @@ class XdbgClient:
 
     def terminate(self) -> None:
         # Kill the process first so a reconnect already in flight cannot outlive
-        # this call, then take the lock to mutate state the way close() does.
-        # Without the lock a concurrent reconnect could publish a transport onto
-        # a client that is being torn down.
+        # this call. Mark closed before waiting so no later request can enter.
         self._terminate_process()
-        with self._request_lock:
-            self._closed = True
+        self._closed = True
+        lock_acquired = self._request_lock.acquire(timeout=_TERMINATE_LOCK_TIMEOUT_SECONDS)
+        try:
+            # Closing the pipe also cancels an RPC that is still holding the
+            # request lock. Forced termination cannot wait forever for the very
+            # operation it exists to interrupt.
             if self._transport is not None:
                 self._transport.close()
                 self._transport = None
+        finally:
+            if lock_acquired:
+                self._request_lock.release()
         self._finish_threads()
 
     def _request(self, method: str, params: JsonObject, *, timeout: float) -> JsonObject:
