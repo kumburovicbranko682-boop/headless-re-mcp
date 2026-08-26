@@ -2500,10 +2500,18 @@ class AnalysisService(
         self,
         session_id: str,
         action: Callable[[_BackendRuntime], JsonObject],
+        *,
+        timeout: float,
     ) -> Result[JsonObject]:
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            runtime.lock.acquire()
+            if not runtime.lock.acquire(timeout=max(0.0, timeout)):
+                raise XdbgRpcError(
+                    "workflow_lock_timeout",
+                    "workflow navigation timed out acquiring the runtime lock",
+                    details={"timeout_seconds": timeout},
+                    retryable=True,
+                )
             try:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 data = action(runtime)
@@ -2665,19 +2673,32 @@ class AnalysisService(
                 ValueError(f"event_budget must be between 1 and {_MAX_WORKFLOW_EVENT_BUDGET}"),
                 session_id=session_id,
             )
+        deadline = monotonic() + validated
 
         def action(runtime: _BackendRuntime) -> JsonObject:
+            remaining = max(0.0, deadline - monotonic())
+            if remaining <= 0:
+                raise XdbgRpcError(
+                    "workflow_lock_timeout",
+                    "workflow navigation exhausted its timeout acquiring the runtime lock",
+                    details={"timeout_seconds": validated},
+                    retryable=True,
+                )
             workflow = self._require_mutable_workflow(session_id)
             return self._navigate_locked(
                 session_id,
                 runtime,
                 workflow,
                 pattern,
-                timeout=validated,
+                timeout=remaining,
                 event_budget=event_budget,
             )
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(
+            session_id,
+            action,
+            timeout=max(0.0, deadline - monotonic()),
+        )
 
     def _navigate_locked(
         self,
