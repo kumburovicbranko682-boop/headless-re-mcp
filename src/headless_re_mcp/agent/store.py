@@ -70,6 +70,10 @@ _RETAINED_EVENTS_PER_RUN = 5_000
 # at 256 KiB. SSE then tries to send the whole thing in one frame.
 _EVENT_DATA_MAX_BYTES = 65_536
 
+# Count-only event pages can still be enormous: 5000 events at the per-event
+# limit are roughly 312 MiB before JSON decoding and response serialization.
+_EVENT_PAGE_MAX_BYTES = 8 * 1024 * 1024
+
 # propose_tool_call had no size cap. 2 MiB of arguments made the database
 # 2.16 MB. The orchestrator refuses the same call at 256 KiB (hard ceiling
 # 4 MiB) but the store is reachable on its own, and a truncated argument is a
@@ -133,6 +137,7 @@ class AgentStore:
         self.retained_message_bytes_per_thread = _RETAINED_MESSAGE_BYTES_PER_THREAD
         self.retained_events_per_run = _RETAINED_EVENTS_PER_RUN
         self.event_data_max_bytes = _EVENT_DATA_MAX_BYTES
+        self.event_page_max_bytes = _EVENT_PAGE_MAX_BYTES
         self.tool_argument_max_bytes = _TOOL_ARGUMENT_MAX_BYTES
         self.tool_effects_max_bytes = _TOOL_EFFECTS_MAX_BYTES
         self.tool_name_max_chars = _TOOL_NAME_MAX_CHARS
@@ -479,8 +484,22 @@ class AgentStore:
         return RunEvent(run_id, seq, event_type, safe, created)
 
     def list_events(self, run_id: str, *, after: int = 0, limit: int = 1000) -> list[RunEvent]:
+        bounded = max(1, min(limit, 5000))
+        byte_limit = max(1024, int(self.event_page_max_bytes))
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run_id, max(0, after), max(1, min(limit, 5000)))).fetchall()
+            rows = con.execute(
+                "SELECT run_id, seq, type, data_json, created_at FROM ("
+                "  SELECT run_id, seq, type, data_json, created_at,"
+                "    ROW_NUMBER() OVER (ORDER BY seq) AS row_number,"
+                "    SUM(length(CAST(data_json AS BLOB))) OVER ("
+                "      ORDER BY seq ROWS UNBOUNDED PRECEDING"
+                "    ) AS bytes_so_far"
+                "  FROM run_events WHERE run_id=? AND seq>?"
+                ") WHERE row_number<=?"
+                "  AND (bytes_so_far<=? OR row_number=1)"
+                " ORDER BY seq",
+                (run_id, max(0, after), bounded, byte_limit),
+            ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
     def list_thread_events(self, thread_id: str, *, limit: int = 4000) -> list[RunEvent]:
@@ -491,17 +510,26 @@ class AgentStore:
         buffer and then wiped it on thread refresh.
         """
         bounded = max(1, min(limit, 8000))
+        byte_limit = max(1024, int(self.event_page_max_bytes))
         with self._reading() as con:
             rows = con.execute(
                 "SELECT run_id, seq, type, data_json, created_at FROM ("
-                "  SELECT e.run_id, e.seq, e.type, e.data_json, e.created_at, r.created_at AS run_created"
+                "  SELECT e.run_id, e.seq, e.type, e.data_json, e.created_at,"
+                "    r.created_at AS run_created,"
+                "    ROW_NUMBER() OVER ("
+                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "    ) AS row_number,"
+                "    SUM(length(CAST(e.data_json AS BLOB))) OVER ("
+                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "      ROWS UNBOUNDED PRECEDING"
+                "    ) AS bytes_so_far"
                 "  FROM run_events e"
                 "  JOIN runs r ON r.id = e.run_id"
                 "  WHERE r.thread_id=?"
-                "  ORDER BY r.created_at DESC, e.seq DESC"
-                "  LIMIT ?"
-                ") ORDER BY run_created, seq",
-                (thread_id, bounded),
+                ") WHERE row_number<=?"
+                "  AND (bytes_so_far<=? OR row_number=1)"
+                " ORDER BY run_created, seq",
+                (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
