@@ -78,6 +78,27 @@ def test_every_declared_tool_is_classified_exactly_once() -> None:
             )
 
 
+def test_every_tool_has_a_bounded_resource_policy() -> None:
+    """Unattended runs depend on every tool having a finite deadline and cap.
+
+    A tool that reached the surface with a zero, negative or non-finite timeout
+    (or output cap) would run unbounded -- exactly the hang an unattended
+    mission cannot recover from -- so the whole surface is pinned rather than
+    trusting each call site to pass a sane number.
+    """
+    import math
+
+    catalog = CommandCatalog()
+    specs = _all_specs(catalog)
+    assert specs, "the catalog is empty"
+
+    for spec in specs:
+        policy = spec.resource_policy
+        assert math.isfinite(policy.timeout_seconds), spec.name
+        assert policy.timeout_seconds > 0, spec.name
+        assert policy.max_result_bytes > 0, spec.name
+
+
 def test_every_bound_tool_carries_a_description_and_object_schema() -> None:
     from headless_re_mcp.core.service import AnalysisService
     from headless_re_mcp.tools.assembly import bind_all_tools
