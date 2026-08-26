@@ -137,8 +137,13 @@ class ProviderConfigStore:
         return raw
 
     def _write(self, data: dict[str, Any]) -> None:
+        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        if len(payload) > _MAX_PROVIDER_CONFIG_BYTES:
+            raise ValueError(
+                f"provider config exceeds {_MAX_PROVIDER_CONFIG_BYTES} bytes"
+            )
         temp = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.write_bytes(payload)
         self._best_effort_protect(temp)
         temp.replace(self.path)
         self._best_effort_protect(self.path)
