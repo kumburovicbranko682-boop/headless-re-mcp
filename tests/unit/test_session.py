@@ -9,6 +9,7 @@ from headless_re_mcp.core.models import (
     BackendHandle,
     BackendKind,
     SessionState,
+    TargetKind,
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
@@ -95,6 +96,35 @@ def test_failed_sessions_enter_the_closed_retirement_queue(tmp_path: Path) -> No
     for stale in ids[:-3]:
         with pytest.raises(KeyError):
             registry.get(stale)
+
+
+def test_open_session_count_is_bounded_and_capacity_returns(tmp_path: Path) -> None:
+    """Created sessions used to remain unlimited until callers closed them.
+
+    Measured with a limit of three: four web session creates left four live
+    registry rows. The same path can be repeated indefinitely by a client that
+    never opens a backend, so no worker limit constrains it.
+    """
+    registry = SessionRegistry(max_open=3)
+    sessions = [
+        registry.create(f"https://example.invalid/{index}", target=TargetKind.WEB)
+        for index in range(3)
+    ]
+
+    with pytest.raises(RuntimeError, match="open session limit"):
+        registry.create("https://example.invalid/overflow", target=TargetKind.WEB)
+
+    assert len(registry.list()) == 3
+    registry.transition(sessions[0].id, SessionState.CLOSING)
+    registry.transition(sessions[0].id, SessionState.CLOSED)
+    replacement = registry.create(
+        "https://example.invalid/replacement", target=TargetKind.WEB
+    )
+    assert replacement.state is SessionState.CREATED
+    assert sum(
+        session.state not in {SessionState.CLOSED, SessionState.FAILED}
+        for session in registry.list()
+    ) == 3
 
 
 def test_retiring_closed_sessions_never_touches_a_live_one(tmp_path: Path) -> None:
