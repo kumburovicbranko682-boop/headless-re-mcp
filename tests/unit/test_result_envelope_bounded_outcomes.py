@@ -19,6 +19,9 @@ Windows, so it runs and gates on both.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.core.results import _failure
@@ -140,3 +143,83 @@ def test_a_genuinely_unexpected_error_is_still_an_internal_error() -> None:
     assert result.error is not None
     assert result.error.code == "internal_error"
     assert "incident_id" in result.error.details
+
+
+def _every_branch_cases() -> list[Any]:
+    """One representative exception per branch of ``_failure``."""
+    import sqlite3
+
+    from headless_re_mcp.backends.ida.client import IdaWorkerError
+    from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
+    from headless_re_mcp.backends.x64dbg.stealth import StealthError
+    from headless_re_mcp.core.addressing import AddressSyncError
+    from headless_re_mcp.core.models import TargetMismatch
+    from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
+    from headless_re_mcp.detection import PeFormatError
+    from headless_re_mcp.detection.die import DieScanError
+    from headless_re_mcp.unpack.upx import UpxScanError
+
+    return [
+        pytest.param(BoundedCancelled([1]), "cancelled", id="bounded_cancelled"),
+        pytest.param(TimedOut(5.0, [1]), "timeout", id="timed_out"),
+        pytest.param(DieScanError("protocol_error", "garbage"), "protocol_error", id="die"),
+        pytest.param(UpxScanError("upx_failed", "boom"), "upx_failed", id="upx"),
+        pytest.param(
+            ExeinfopeScanError("invalid_argument", "bad mode"),
+            "invalid_argument",
+            id="exeinfope",
+        ),
+        pytest.param(PeFormatError("bad pe"), "invalid_pe", id="pe_format"),
+        pytest.param(TargetMismatch("wrong kind"), "target_mismatch", id="target_mismatch"),
+        pytest.param(
+            AddressSyncError("va_out_of_range", "bad va"), "va_out_of_range", id="address_sync"
+        ),
+        pytest.param(StealthError("stealth_failed", "no"), "stealth_failed", id="stealth"),
+        pytest.param(IdaWorkerError("worker_crashed", "gone"), "worker_crashed", id="ida"),
+        pytest.param(XdbgRpcError("rpc_protocol_error", "junk"), "rpc_protocol_error", id="xdbg"),
+        pytest.param(
+            SessionNotFound("session not found: s"), "session_not_found", id="session_not_found"
+        ),
+        pytest.param(FileNotFoundError("missing.bin"), "file_not_found", id="file_not_found"),
+        pytest.param(TimeoutError("workflow step"), "workflow_timeout", id="workflow_timeout"),
+        pytest.param(
+            InvalidStateTransition("cannot run while closing"),
+            "invalid_request",
+            id="invalid_state",
+        ),
+        pytest.param(ValueError("bad argument"), "invalid_request", id="value_error"),
+        pytest.param(
+            sqlite3.OperationalError("database is locked"),
+            "storage_unavailable",
+            id="sqlite_locked",
+        ),
+        pytest.param(RuntimeError("boom"), "internal_error", id="catch_all"),
+    ]
+
+
+@pytest.mark.parametrize("exc, expected_code", _every_branch_cases())
+def test_every_branch_keeps_the_callers_details_and_a_stable_code(
+    exc: BaseException, expected_code: str
+) -> None:
+    """No branch may drop the call details the service mixin passed in.
+
+    Every mixin calls ``_failure(exc, session_id=..., backend=...)`` and the
+    dashboard, the audit trail and the caller's retry logic all key off those
+    fields plus a stable code. A branch that rebuilt its details dict without
+    spreading ``**details`` would silently detach its error family from the
+    session that produced it -- per-branch tests each pin their own family, so
+    this is the one place the shape is asserted across all of them.
+    """
+    result = _failure(exc, session_id="s", backend="b")
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.error is not None
+    assert result.error.code == expected_code
+    assert result.error.message, "an empty message is useless to an unattended caller"
+    assert result.error.details["session_id"] == "s"
+    assert result.error.details["backend"] == "b"
+    if expected_code != "internal_error":
+        # Only the catch-all files an incident; a structured or control-signal
+        # failure must never imply a server defect.
+        assert "incident_id" not in result.error.details
