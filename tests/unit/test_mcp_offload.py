@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 from typing import Any
 
@@ -173,3 +174,41 @@ async def test_catalog_timeout_returns_and_frees_the_limiter_slot() -> None:
         return {"ok": True, "n": 1}
 
     assert await offload(quick, timeout=1.0)() == {"ok": True, "n": 1}
+
+
+@pytest.mark.anyio
+async def test_timed_out_tools_cannot_grow_abandoned_threads_past_the_bound(
+    monkeypatch: Any,
+) -> None:
+    """Cancelling the await used to release admission before work stopped.
+
+    Measured with a two-call gate: two 20ms timeouts left both handlers blocked,
+    then a third call started a third AnyIO worker because abandon_on_cancel had
+    already returned the ordinary limiter tokens.
+    """
+    slots = threading.BoundedSemaphore(2)
+    monkeypatch.setattr(adapter, "_tool_slots", slots, raising=False)
+    release = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def hung() -> dict[str, Any]:
+        nonlocal started
+        with started_lock:
+            started += 1
+        release.wait()
+        return {"ok": True}
+
+    try:
+        for _ in range(2):
+            result = await offload(hung, timeout=0.02)()
+            assert result["error"]["code"] == "tool_timeout"
+
+        result = await offload(hung, timeout=1.0)()
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "tool_concurrency_limit"
+        assert result["error"]["retryable"] is True
+        assert started == 2
+    finally:
+        release.set()
