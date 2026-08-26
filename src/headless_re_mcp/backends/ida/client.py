@@ -35,6 +35,7 @@ _MAX_PENDING_WORKER_MESSAGES = 1_024
 _MAX_WORKER_LINE_CHARS = 1_048_576
 _MAX_DIAGNOSTIC_LINE_CHARS = 8_192
 _TRUNCATED_LINE_MARKER = "...[truncated]"
+_MAX_OBSERVED_WINDOWS = 128
 
 
 def next_receive_deadline(
@@ -147,6 +148,7 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._observed_windows: set[str] = set()
+        self._observed_windows_dropped = 0
 
         assert self._process.stdout is not None
         assert self._process.stderr is not None
@@ -420,7 +422,15 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         windows = describe_process_windows(self._process.pid)
         if not windows:
             return
-        self._observed_windows.update(windows)
+        for window in windows:
+            if window in self._observed_windows:
+                continue
+            if len(self._observed_windows) < _MAX_OBSERVED_WINDOWS:
+                self._observed_windows.add(window)
+                continue
+            self._observed_windows_dropped = (
+                getattr(self, "_observed_windows_dropped", 0) + 1
+            )
         raise IdaWorkerError(
             "analyzer_window_detected",
             "IDA worker has an analyzer window open",
@@ -442,6 +452,8 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             "stdout": list(self._stdout_log),
             "stderr": list(self._stderr_log),
             "analyzer_windows": sorted(self._observed_windows),
+            "analyzer_window_capacity": _MAX_OBSERVED_WINDOWS,
+            "analyzer_windows_dropped": getattr(self, "_observed_windows_dropped", 0),
             "pending_messages": self._messages.qsize(),
             "message_capacity": _MAX_PENDING_WORKER_MESSAGES,
             "message_line_character_limit": _MAX_WORKER_LINE_CHARS,
