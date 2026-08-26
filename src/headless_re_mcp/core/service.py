@@ -1081,11 +1081,17 @@ class AnalysisService(
                 # are still alive. Calling this a clean close hides a resource
                 # the backend deliberately kept tracked for another stop attempt.
                 close_errors.append(("proxy", exc))
-            except BaseException:
-                # Test doubles and optional-backend teardown historically remain
-                # best-effort; only a backend's explicit failure contract proves
-                # that a live resource survived.
-                pass
+            except BaseException as exc:
+                close_errors.append(
+                    (
+                        "proxy",
+                        ProxyError(
+                            "proxy_cleanup_failed",
+                            f"proxy cleanup failed: {type(exc).__name__}: {exc}",
+                            cause_type=type(exc).__name__,
+                        ),
+                    )
+                )
         if apk_binary is not None:
             with suppress(BaseException):
                 ApkClient.release(apk_binary)
