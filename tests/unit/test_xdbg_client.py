@@ -733,7 +733,12 @@ def test_named_pipe_timeout_does_not_wait_forever_after_cancel(
             del handle, overlapped
             return 0
 
-    monkeypatch.setattr(client_module.ctypes, "get_last_error", lambda: 997)
+    monkeypatch.setattr(
+        client_module.ctypes,
+        "get_last_error",
+        lambda: 997,
+        raising=False,
+    )
 
     transport = client_module._NamedPipeTransport.__new__(
         client_module._NamedPipeTransport
