@@ -169,3 +169,35 @@ def test_build_openai_tools_detects_name_collisions() -> None:
     with pytest.raises(RuntimeError, match="collision"):
 
         build_openai_tools(catalog)
+
+
+def test_the_export_covers_every_mcp_tool_and_matches_the_write_classification() -> None:
+    """An OpenAI bridge keys its approval policy on ``write_tools``.
+
+    Two things a bridge relies on that names alone do not prove: no MCP tool is
+    silently dropped from the export (a dropped tool is uncallable), and the
+    exported write set is exactly the catalog's write classification -- the same
+    set ``test_write_policy_surface`` enforces at the guard. If the bridge's list
+    drifts, an OpenAI caller could auto-run a call the project treats as a write.
+    """
+
+    from headless_re_mcp.openai_bridge import build_bound_catalog, build_openai_tools
+    from headless_re_mcp.tools.catalog import CommandTransport
+
+    catalog = build_bound_catalog()
+    payload = build_openai_tools(catalog)
+
+    mcp_specs = catalog.for_transport(CommandTransport.MCP)
+    expected_names = {spec.name for spec in mcp_specs}
+
+    # Every MCP tool is exported exactly once -- nothing dropped or duplicated.
+    assert payload["count"] == len(expected_names)
+    assert set(payload["name_map"].values()) == expected_names
+
+    # write_tools, mapped back to MCP names, is exactly the catalog's write set.
+    exported_writes = {payload["name_map"][name] for name in payload["write_tools"]}
+    catalog_writes = {spec.name for spec in mcp_specs if spec.write}
+    assert exported_writes == catalog_writes
+    # A non-empty write set -- an empty one would mean everything looked
+    # auto-runnable to a bridge that trusts this list.
+    assert catalog_writes
