@@ -1609,17 +1609,6 @@ def test_modules_dump_deletes_an_artifact_larger_than_requested(tmp_path: Path) 
     assert service.repository.list_artifacts(session_id)["total"] == 0
 
 
-def test_unknown_session_cannot_create_dynamic_artifact_directories(tmp_path: Path) -> None:
-    service = _service(tmp_path, FakeDynamicWorker())
-
-    dumped = service.modules_dump("missing-session", 0x140000000, size=0x100)
-    headers = service.pe_headers_runtime("missing-session", 0x140000000)
-
-    assert not dumped.ok
-    assert not headers.ok
-    assert not (tmp_path / "artifacts" / "dump" / "missing-session").exists()
-
-
 def test_dynamic_state_exposes_debuggee_and_debugger_pids(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

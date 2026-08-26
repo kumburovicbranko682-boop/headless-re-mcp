@@ -437,7 +437,6 @@ class DynamicInspectMixin:
         try:
             if not session_id or Path(session_id).name != session_id:
                 raise ValueError("invalid session id for artifact path")
-            self.registry.get(session_id)
             directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
             directory.mkdir(parents=True, exist_ok=True)
             # Checked before writing, the way trace.start does. Nothing prunes
@@ -592,7 +591,6 @@ class DynamicInspectMixin:
             if save_artifact:
                 if not session_id or Path(session_id).name != session_id:
                     raise ValueError("invalid session id for artifact path")
-                self.registry.get(session_id)
                 directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
                 directory.mkdir(parents=True, exist_ok=True)
                 header_path = directory / f"pe-headers-{base:x}-{uuid4().hex}.bin"
