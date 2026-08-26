@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service_device import (
     _MAX_DEVICE_ARTIFACTS,
@@ -62,6 +64,29 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
     assert len(files) == _MAX_DEVICE_ARTIFACTS
     total = sum(path.stat().st_size for path in files)
     assert total == _MAX_DEVICE_ARTIFACTS * 256 * 1024
+
+
+@pytest.mark.parametrize(
+    ("remote_path", "expected_suffix"),
+    [
+        ("/sdcard/report.txt", ".txt"),
+        ("/sdcard/archive.tar.gz", ".gz"),
+        ("/sdcard/report.txt:secret", ".bin"),
+        ("/sdcard/report.txt\\secret", ".bin"),
+        ("/sdcard/report." + "x" * 100, ".bin"),
+        ("/sdcard/report.数据", ".bin"),
+    ],
+)
+def test_device_pull_uses_only_portable_remote_suffixes(
+    tmp_path: Path, remote_path: str, expected_suffix: str
+) -> None:
+    result = _Harness(tmp_path).device_pull("emulator-5554", remote_path)
+
+    assert result.ok and result.data is not None, result.error
+    local_path = Path(str(result.data["path"]))
+    assert local_path.suffix == expected_suffix
+    assert ":" not in local_path.name
+    assert "\\" not in local_path.name
 
 
 def test_device_capture_descriptions_do_not_call_the_file_an_artifact() -> None:
