@@ -241,7 +241,9 @@ def _reap_terminated(pids: list[int], wait_s: float) -> None:
             try:
                 waited, _ = os.waitpid(pid, os.WNOHANG)
             except (ChildProcessError, OSError):
-                pending.discard(pid)
+                # The root may not have finished exiting yet, so its killed
+                # child has not been reparented to this subreaper. Retry until
+                # the deadline rather than leaving that imminent zombie behind.
                 continue
             if waited == pid:
                 pending.discard(pid)
