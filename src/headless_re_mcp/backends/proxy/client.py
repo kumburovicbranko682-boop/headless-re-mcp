@@ -19,6 +19,7 @@ import time
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
@@ -424,7 +425,7 @@ class ProxyBackend:
         }
         if len(body) > 200_000:
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{flow_id}.bin"
+            out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)
             result["response"]["body_path"] = str(out)
         else:

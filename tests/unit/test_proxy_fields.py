@@ -136,11 +136,21 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
         backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
     )
     payload = backend.flow_get("s", "f1", tmp_path)
+    repeated = backend.flow_get("s", "f1", tmp_path)
+    hostile = backend.flow_get("s", "../../escaped", tmp_path)
     assert "body" not in payload
     assert "headers" not in payload
     assert "body" not in payload["response"]
     assert payload["response"]["size"] == 200_001
-    assert payload["response"]["body_path"].endswith("flow-f1.bin")
+    paths = [
+        Path(str(item["response"]["body_path"]))
+        for item in (payload, repeated, hostile)
+    ]
+    assert len(set(paths)) == 3
+    assert all(path.parent == tmp_path for path in paths)
+    assert all(path.name.startswith("flow-") and path.suffix == ".bin" for path in paths)
+    assert all(path.is_file() for path in paths)
+    assert not (tmp_path.parent / "escaped.bin").exists()
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
