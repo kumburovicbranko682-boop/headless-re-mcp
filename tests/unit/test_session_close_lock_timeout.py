@@ -7,9 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import headless_re_mcp.core.service as service_module
 from pytest import MonkeyPatch
 
+import headless_re_mcp.core.service as service_module
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import BackendKind
 from headless_re_mcp.core.service import AnalysisService, _BackendRuntime
