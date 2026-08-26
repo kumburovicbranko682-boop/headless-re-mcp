@@ -100,15 +100,27 @@ class JadxClient:
             raise JadxError("invalid_params", "class_name is required")
         self.export_sources(apk, out_dir, timeout=timeout)
         rel = _class_to_java_path(target)
-        candidate = out_dir / "sources" / rel
+        output_root = out_dir.expanduser().resolve()
+        sources = (output_root / "sources").resolve()
+        if sources == output_root or not sources.is_relative_to(output_root):
+            raise JadxError("backend_error", "jadx sources directory escaped its output root")
+        candidate = (sources / rel).resolve()
+        if candidate == sources or not candidate.is_relative_to(sources):
+            raise JadxError("invalid_params", "class_name escapes the jadx sources directory")
         if not candidate.is_file():
             match = None
-            sources = out_dir / "sources"
             if sources.is_dir():
                 # A simple-name walk used to return the first Main.java in the
                 # tree, which is whoever jadx happened to emit first -- not
                 # necessarily the class the caller named.
-                matches = [path for path in sources.rglob(candidate.name) if path.is_file()]
+                matches = []
+                for path in sources.rglob(candidate.name):
+                    try:
+                        resolved = path.resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    if resolved.is_relative_to(sources) and resolved.is_file():
+                        matches.append(resolved)
                 if len(matches) == 1:
                     match = matches[0]
             if match is None:
@@ -171,10 +183,15 @@ class JadxClient:
 
 
 def _class_to_java_path(class_name: str) -> Path:
-    smali = class_name
+    smali = class_name.strip()
     if smali.startswith("L") and smali.endswith(";"):
         smali = smali[1:-1]
+    if any(char in smali for char in ("\\", ":", "\x00")):
+        raise JadxError("invalid_params", "class_name contains an invalid path character")
     dotted = smali.replace("/", ".")
     # jadx drops inner-class suffixes into the outer file.
     dotted = dotted.split("$", 1)[0]
-    return Path(*dotted.split(".")).with_suffix(".java")
+    parts = dotted.split(".")
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise JadxError("invalid_params", "class_name contains an invalid path segment")
+    return Path(*parts).with_suffix(".java")
