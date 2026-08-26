@@ -252,8 +252,8 @@ def test_static_disassemble_spills_oversized_artifact(tmp_path: Path) -> None:
         ) -> JsonObject:
             del timeout
             if command == "disassemble":
-                # >64KiB rendered text triggers spill path
-                line = "x" * 200
+                # Under 64K characters but over 64KiB once encoded.
+                line = "é" * 100
                 instructions = [{"text": line, "address": 0x140001000 + i} for i in range(400)]
                 return {
                     "address": 0x140001000,
@@ -351,6 +351,22 @@ def test_a_spilled_decompilation_can_actually_be_read_back(tmp_path: Path) -> No
     assert read.ok and read.data is not None, "the spilled artifact must be readable"
     recovered = bytes.fromhex(str(read.data["data"])).decode("utf-8")
     assert recovered == worker.body, "reading it back must yield the whole decompilation"
+
+
+def test_multibyte_decompilation_limit_is_enforced_in_encoded_bytes(tmp_path: Path) -> None:
+    class _MultibyteDecompileWorker(_HugeDecompileWorker):
+        body = "é" * (32 * 1024 + 1)
+
+    worker = _MultibyteDecompileWorker()
+    service, session_id = _service_with(worker, tmp_path)
+
+    result = service.static_decompile(session_id, address=0x140001000)
+
+    assert result.ok and result.data is not None
+    assert result.data.get("truncated") is True
+    assert result.data["artifact_bytes"] == len(worker.body.encode("utf-8"))
+    assert len(str(result.data["code"]).encode("utf-8")) <= 1024
+    assert Path(str(result.data["artifact"])).read_text(encoding="utf-8") == worker.body
 
 
 def test_a_spilled_artifact_is_tracked_so_gc_can_reclaim_it(tmp_path: Path) -> None:
