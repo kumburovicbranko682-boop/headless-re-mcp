@@ -103,7 +103,8 @@ def _spill_text(
     dir still fills the disk before retention runs: a single media response is
     enough. Returns ``(inline, spill_path_or_none, truncated)``.
     """
-    size = len(text)
+    payload = text.encode("utf-8", errors="replace")
+    size = len(payload)
     if size > UNREGISTERED_CAPTURE_MAX_BYTES:
         raise WebError(
             "too_large",
@@ -113,9 +114,17 @@ def _spill_text(
         )
     if size <= _MAX_INLINE_BODY:
         return text, None, False
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     out = artifact_dir / filename
-    out.write_text(text, encoding="utf-8", errors="replace")
+    out.write_bytes(payload)
     written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
     if over:
         raise WebError(
@@ -124,7 +133,8 @@ def _spill_text(
             size=written,
             cap=UNREGISTERED_CAPTURE_MAX_BYTES,
         )
-    return text[:_MAX_INLINE_BODY], out, True
+    preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
+    return preview, out, True
 
 
 class _Runner:
@@ -572,7 +582,7 @@ class WebBackend:
         )
         result: JsonObject = {
             "scriptId": script_id,
-            "bytes": len(source),
+            "bytes": len(source.encode("utf-8", errors="replace")),
             "source": inline,
             "truncated": cut,
         }
