@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -83,6 +84,31 @@ def test_frida_attach_times_out_instead_of_parking_the_worker() -> None:
         client.attach(1, allowed_pid=1, timeout=0.2)
     assert time.monotonic() - started < 2.0
     assert caught.value.code == "timeout"
+
+
+def test_frida_attach_detaches_a_session_that_arrives_after_timeout() -> None:
+    """A native attach completing 100ms late must not leak its session."""
+    detached = Event()
+
+    class _Session:
+        def detach(self) -> None:
+            detached.set()
+
+    class _Frida:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            time.sleep(0.15)
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.attach(5, allowed_pid=5, timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late native session remained attached after timeout"
 
 
 def test_frida_attach_does_not_report_success_when_detach_fails() -> None:
