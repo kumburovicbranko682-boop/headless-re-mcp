@@ -690,7 +690,31 @@ class AnalysisService(
                 "session creation did not return a session object",
             )
         replacement_id = str(payload["id"])
-        self._rebind_recovered_knowledge(knowledge, replacement_id)
+        rebind_failures = self._rebind_recovered_knowledge(knowledge, replacement_id)
+        if rebind_failures:
+            self.registry.transition(replacement_id, SessionState.FAILED)
+            return Result[JsonObject](
+                ok=False,
+                data={
+                    "backends": [],
+                    "requested": [kind.value for kind in requested],
+                    "replaced": True,
+                    "previous_session_id": session_id,
+                    "session_id": replacement_id,
+                    "recovered": 0,
+                    "kept": 0,
+                    "failed": len(rebind_failures),
+                },
+                error=RpcError(
+                    code="knowledge_rebind_failed",
+                    message="one or more durable facts could not be copied to the replacement",
+                    details={
+                        "replacement_session_id": replacement_id,
+                        "failed_count": len(rebind_failures),
+                        "failures": rebind_failures[:50],
+                    },
+                ),
+            )
         entries: list[JsonObject] = []
         for kind in requested:
             if entries and not entries[-1]["ok"]:
@@ -724,11 +748,12 @@ class AnalysisService(
         self,
         snapshot: JsonObject,
         replacement_id: str,
-    ) -> None:
+    ) -> list[JsonObject]:
         """Replay facts onto the replacement id after a FAILED session rebuild."""
         entries = snapshot.get("entries")
         if not isinstance(entries, list):
-            return
+            return []
+        failures: list[JsonObject] = []
         for item in entries:
             if not isinstance(item, dict):
                 continue
@@ -738,13 +763,22 @@ class AnalysisService(
             if not isinstance(kind, str) or not isinstance(key, str):
                 continue
             payload = value if isinstance(value, dict) else {}
-            with suppress(BaseException):
+            try:
                 self.services.artifacts.record_knowledge(
                     session_id=replacement_id,
                     kind=kind,
                     key=key,
                     value=payload,
                 )
+            except BaseException as exc:
+                failures.append(
+                    {
+                        "kind": kind,
+                        "key": key,
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                )
+        return failures
 
     def _open_dynamic(self, session_id: str) -> Result[JsonObject]:
         return self._open_backend(
