@@ -34,6 +34,7 @@ def test_gate_xdbg_cli_reports_missing_executables(
 ) -> None:
     settings = _settings(tmp_path, configured=False)
     monkeypatch.setattr(cli_module.Settings, "load", lambda _path=None: settings)
+    monkeypatch.setattr(cli_module, "is_windows_host", lambda: True)
 
     exit_code = cli_module.main(["gate-xdbg", "--architecture", "all"])
     payload = json.loads(capsys.readouterr().out)
@@ -50,6 +51,7 @@ def test_gate_xdbg_cli_runs_requested_architectures(
 ) -> None:
     settings = _settings(tmp_path, configured=True)
     monkeypatch.setattr(cli_module.Settings, "load", lambda _path=None: settings)
+    monkeypatch.setattr(cli_module, "is_windows_host", lambda: True)
     calls: list[tuple[Architecture, float]] = []
 
     def fake_gate(

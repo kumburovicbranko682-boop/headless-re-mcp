@@ -125,7 +125,10 @@ class _NamedPipeTransport:
         process: subprocess.Popen[str] | DesktopProcess,
     ) -> _NamedPipeTransport:
         if os.name != "nt":
-            raise XdbgRpcError("backend_unavailable", "x64dbg RPC requires Windows")
+            raise XdbgRpcError(
+                "unsupported_on_platform",
+                "x64dbg RPC requires Windows",
+            )
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
         kernel32.WaitNamedPipeW.restype = ctypes.c_int

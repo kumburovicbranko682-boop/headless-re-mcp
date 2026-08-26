@@ -10,6 +10,12 @@ readme = "README.md"
 license = "GPL-3.0-only"
 requires-python = ">=3.11"
 authors = [{ name = "Headless RE-MCP contributors" }]
+classifiers = [
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "mcp>=1.26.0,<2",
   "pydantic>=2.10",
@@ -69,6 +75,7 @@ markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
   "visible_desktop: drives real windows, so it cannot run under HEADLESS_RE_HIDDEN_DESKTOP",
+  "windows_only: requires a Windows debugger, UI API, or fixture",
 ]
 
 [tool.coverage.run]

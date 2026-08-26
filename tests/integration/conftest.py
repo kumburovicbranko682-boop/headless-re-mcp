@@ -41,6 +41,35 @@ _LOCK_POLL_S = 2.0
 # is abandoned, which needs nothing from the operating system either way.
 _LEASE_REFRESH_S = 10.0
 _LEASE_STALE_S = 60.0
+_WINDOWS_ONLY_MODULES = frozenset(
+    {
+        "test_address_sync.py",
+        "test_composite_tools_gate.py",
+        "test_crackme_serial_e2e_gate.py",
+        "test_exeinfope_gate.py",
+        "test_hidden_desktop_gate.py",
+        "test_m4_unload_dump_gate.py",
+        "test_m5_unpack_live_gate.py",
+        "test_m9_condition_breakpoint_gate.py",
+        "test_m9_dynamic_ext_gate.py",
+        "test_m9_target_exit_fail_closed_gate.py",
+        "test_m9_trace_quota_artifact_gate.py",
+        "test_m10_ui_backends_gate.py",
+        "test_m10_ui_drive_breakpoint_gate.py",
+        "test_m10_ui_drive_gate.py",
+        "test_m10_ui_interact_gate.py",
+        "test_m10_ui_pid_gate.py",
+        "test_m11_frida_live_gate.py",
+        "test_m11_optional_backends_gate.py",
+        "test_m11_windbg_live_gate.py",
+        "test_m12_persist_gate.py",
+        "test_mcp_dynamic_xdbg.py",
+        "test_unpack_live_gate.py",
+        "test_workflow_xdbg.py",
+        "test_xdbg_headless_gate.py",
+        "test_xdbg_rpc.py",
+    }
+)
 
 _PATH_SETTINGS = {
     "HEADLESS_RE_X64DBG_HEADLESS_X64": "x64dbg_headless_x64",
@@ -181,6 +210,18 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     nine confusing failures. A skip that names the variable says which of the
     two the operator is looking at.
     """
+    if os.name != "nt":
+        windows_skip = pytest.mark.skip(
+            reason=(
+                "Windows-only integration gate: requires x64dbg/WinDbg/Win32 UI "
+                "or a Windows-native fixture"
+            )
+        )
+        for item in items:
+            if Path(str(item.path)).name in _WINDOWS_ONLY_MODULES:
+                item.add_marker(pytest.mark.windows_only)
+                item.add_marker(windows_skip)
+
     if not _hidden_desktop_is_on():
         return
     skip = pytest.mark.skip(

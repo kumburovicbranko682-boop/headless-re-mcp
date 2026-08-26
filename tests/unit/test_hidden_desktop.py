@@ -193,6 +193,7 @@ def test_process_spawns_on_hidden_desktop() -> None:
         desktop.close()
 
 
+@WINDOWS_ONLY
 def test_wnd_enum_callback_uses_win32_bool() -> None:
     import ctypes
     from ctypes import wintypes

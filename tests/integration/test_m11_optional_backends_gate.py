@@ -166,6 +166,7 @@ def test_m11_capabilities_and_missing_backends() -> None:
 def test_m11_doctor_optional_backends_do_not_block_core_ready() -> None:
     """Optional radare2/ghidra/frida/windbg missing must not flip Doctor.ready."""
     required = {
+        "platform",
         "python",
         "ida_idalib",
         "x64dbg_headless_binaries",
@@ -185,6 +186,7 @@ def test_m11_doctor_optional_backends_do_not_block_core_ready() -> None:
 
     blocked_core = DoctorReport(
         probes=(
+            Probe("platform", ProbeStatus.READY, "ok"),
             Probe("python", ProbeStatus.READY, "ok"),
             Probe("ida_idalib", ProbeStatus.READY, "ok"),
             Probe("x64dbg_source", ProbeStatus.READY, "ok"),

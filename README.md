@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态分析、x64dbg `headless.exe` 动态调试、Android 设备/APK 逆向与 Web（CDP/JS/WASM/抓包）收成 265 个受限语义工具，供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传，也不弹 IDA/x64dbg GUI。
+Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。265 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -10,10 +10,10 @@ Windows 上的无分析器窗口逆向 MCP（v0.2.1）。把 IDA `idalib` 静态
 
 | 依赖 | 说明 |
 |------|------|
-| Windows 10/11 x64 | 仅 Windows |
-| Python 3.11+ | 仅从源码运行时需要；MSI 自带 3.12 运行时 |
-| IDA Professional 9.x（含 idalib） | 商业软件，本仓库不捆绑 |
-| x64dbg `headless.exe`（x86/x64） | 可从 [deps Release](https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0-deps) 取，或本地构建 |
+| Windows 10/11 x64 或 Linux x86_64 | Windows 为完整 PE 动态调试主机；Linux 支持跨平台核心与可移植后端 |
+| Python 3.11+ | Linux/源码运行需要；Windows MSI 自带 3.12 运行时 |
+| IDA Professional 9.x（含 idalib，可选） | 商业软件，本仓库不捆绑；doctor 按宿主查找 `idalib.dll` 或 `libidalib.so` |
+| x64dbg `headless.exe`（x86/x64，仅 Windows） | 可从 [deps Release](https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/tag/v0.1.0-deps) 取，或本地构建 |
 | 可选 CLI | UPX / DIE `diec` / de4dot / cdb 等：用户自备，缺失则降级 |
 
 ```powershell
@@ -23,26 +23,40 @@ powershell -File .\scripts\build_deps_bundle.ps1
 
 解压后执行 `activate_deps.ps1`，再设置 `HEADLESS_RE_IDA_HOME`。
 
+### Linux 支持范围
+
+Linux x86_64 可原生安装并运行 `doctor`、`serve`、`serve-web`、会话/制品/报告、纯 Python PE/.NET 检测，以及已安装的 radare2/rizin、Ghidra headless、Android/Frida、Playwright/Web、wabt/webcrack、mitmproxy、DIE/UPX 等可移植后端。
+
+以下能力在 Linux 上明确返回 `unsupported_on_platform`，不会伪装为 ready，也不会阻塞核心 doctor readiness：
+
+- x64dbg headless RPC 与 ScyllaHide
+- WinDbg/cdb
+- Win32 UI、UIA、SendInput、Windows OCR 与 hidden desktop
+- Exeinfo PE GUI、Scylla/XVLKC/VMP dumper 的现有 Windows 适配
+- WiX/MSI 与 PowerShell 构建、服务安装脚本
+
+Linux 发布/分发使用标准 wheel 或 sdist；Windows MSI 保持不变。
+
 ### 版本兼容矩阵
 
 下表是仓库实际探测并在 `doctor` 中逐项校验的组合；缺可选项只降级，不阻塞就绪。
 
 | 组件 | 支持范围 | 校验方式（doctor 探针） |
 |------|----------|--------------------------|
-| Windows | 10 / 11 x64 | 仅 Windows；隐藏桌面等能力硬校验 `os.name == "nt"` |
+| 宿主平台 | Windows 10/11 x64；Linux x86_64 核心 | `platform`：报告 `full` / `core`，其它架构阻塞 |
 | Python | 3.11 / 3.12 | `python`：低于 3.11 判 `blocked` |
-| IDA Professional | 9.x（含 idalib 与 `idapro` Python 包） | `ida_idalib`：查 `idalib.dll`、`import idapro`、`open_database` 可用性 |
+| IDA Professional | 9.x（含 idalib 与 `idapro` Python 包） | `ida_idalib`：查宿主原生 `idalib.dll`/`libidalib.so`、`import idapro`、`open_database` 可用性 |
 | x64dbg headless | 官方源码含 `add_executable(headless)` 的构建 | `x64dbg_source` + `x64dbg_headless_binaries`（x86/x64 零窗口命令循环 Gate） |
 | 原生工具链 | VS 2022 Build Tools + CMake + Ninja | `native_toolchain` |
 | 可选 CLI | DIE `diec`（需 `--json`）、UPX、de4dot、NETReactorSlayer、Scylla、XVLKC、r2/rizin、Ghidra、frida、cdb/WinDbg | 各自独立探针，`missing` 不影响 `ready` |
 | Android（可选） | `pip install '.[android]'`（adbutils / androguard / frida）；jadx、apktool、apksigner 需自备 JRE | `androguard`/`adbutils`/`adb`/`jadx`/`apktool`/`apksigner` 各自探针 |
 | Web（可选） | `pip install '.[browser]'`（Playwright，另需 `playwright install chromium`）、`.[proxy]`（mitmproxy）；webcrack 需 Node 22/24，wabt 自备 | `playwright`/`mitmproxy`/`webcrack`/`wabt` 各自探针 |
 
-`python -m headless_re_mcp doctor` 按「必需 / 可选」分组输出，并单独列出阻塞项与对应修复命令。
+`python -m headless_re_mcp doctor` 按「当前平台必需 / 可选 / 本平台不支持」分组输出，并单独列出阻塞项与对应修复命令。Linux 必需项只有宿主平台与 Python；Windows 继续要求 IDA 与 x64dbg 双架构运行时。
 
 ## 快速开始
 
-### 用安装包（不需要先装 Python）
+### Windows：用安装包（不需要先装 Python）
 
 到 [Releases](https://github.com/kumburovicbranko682-boop/headless-re-mcp/releases/latest) 下载
 `headless-re-mcp.msi`（约 33 MB，per-user 安装到 `%LocalAppData%\HeadlessReMcp`，无需管理员）。
@@ -55,7 +69,22 @@ Python 运行时与全部依赖在包内，装完直接用：
 
 首次启动会自检环境并打印带 token 的本地地址。IDA 与 x64dbg 仍需自备，在监控台里填路径即可。
 
-### 从源码
+### Linux：从源码
+
+```bash
+cd <repo-root>
+./scripts/install-linux.sh             # 默认安装 pe,web extras
+# 或自行选择 extras：
+python3 -m pip install -e '.[pe,web,test]'
+python3 -m headless_re_mcp doctor --json --strict
+python3 -m headless_re_mcp serve
+# Web 控制台：
+python3 -m headless_re_mcp serve-web
+```
+
+`HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围。Playwright 浏览器仍需按上游方式另装，例如 `python3 -m playwright install chromium`。
+
+### Windows：从源码
 
 ```powershell
 cd <repo-root>
@@ -64,9 +93,10 @@ python -m headless_re_mcp doctor --json --strict
 python -m headless_re_mcp serve
 ```
 
-`setup.py` 会依次安装 `ida,pe,web,native` 依赖、发现本机授权的 IDA Professional 9.x、
+Windows 上 `setup.py` 会依次安装默认 extras、发现本机授权的 IDA Professional 9.x、
 按固定大小与 SHA-256 校验下载缺失的 x64dbg/可选 CLI 依赖包、写入用户 `config.json`、
 激活 idalib，最后生成 MCP 配置并跑一遍 Doctor。IDA、idalib、Hex-Rays 与许可证永远不进依赖包。
+Linux 上运行同一入口时不会下载 Windows 依赖包或强制配置 IDA；默认 extras 也不包含 Qt native GUI/IDA。
 
 无人值守用 `--non-interactive`；已有依赖用 `--skip-release`；不装 Python 包用 `--skip-pip`。
 
@@ -195,8 +225,8 @@ src/headless_re_mcp/   # Python 包与 MCP 服务
 tests/                 # unit / integration / gate
 native/                # x64dbg headless RPC
 fixtures/              # 无害测试样本
-scripts/               # 构建、同步、打包
-packaging/             # WiX 等
+scripts/               # Linux 安装脚本；其余 PowerShell 构建、同步、打包脚本仅 Windows
+packaging/             # Windows WiX/MSI
 external/              # 本机大型依赖占位（二进制多半 gitignore）
 upstream/              # 本地上游 checkout（gitignore）
 artifacts/             # 本地构建产物（gitignore）
@@ -204,7 +234,7 @@ artifacts/             # 本地构建产物（gitignore）
 
 根目录元数据：`pyproject.toml`、`README.md`、`setup.py`、`start_web.py`、`upstream.lock.json`、`LICENSE`。
 
-上游不进 Git：复制 `.cursor/mcp.json.example` 或跑 `python setup.py`；拉取锁定上游：
+上游不进 Git：复制 `.cursor/mcp.json.example` 或跑 `python setup.py`；以下同步脚本仅 Windows：
 
 ```powershell
 powershell -File .\scripts\sync_upstream.ps1
@@ -212,6 +242,20 @@ powershell -File .\scripts\sync_upstream.ps1 -Name x64dbg
 ```
 
 ## 安装与构建
+
+Linux x86_64：
+
+```bash
+python3 -m pip install -e '.[dev,pe,web]'
+python3 -m headless_re_mcp doctor --strict
+
+# 标准 Python 分发产物（需要 build 包）
+python3 -m pip install build
+python3 -m build
+# -> dist/*.whl + dist/*.tar.gz
+```
+
+Windows：
 
 ```powershell
 python -m pip install -e ".[dev,ida,pe,web]"
@@ -231,7 +275,7 @@ $env:HEADLESS_RE_DIEC = "C:\path\to\diec.exe"   # 可选
 $env:HEADLESS_RE_UPX  = "C:\path\to\upx.exe"    # 可选
 ```
 
-### 安装包
+### Windows 安装包
 
 发布版提供 per-user MSI（装到 `%LocalAppData%\HeadlessReMcp`，不需要管理员）。**Python 运行时
 与全部依赖随包发布**，装完即可用，不要求机器上已装 Python；装好后运行 `start_web.cmd` 打开
@@ -253,9 +297,10 @@ powershell -File .\scripts\verify_msi.ps1    # 装 → 跑 → 卸，并断言�
 
 ## 验收
 
-先跑零窗口 Gate，再按需跑 pytest。集成 Gate 依赖本机后端；缺环境出现 `skip` 时不能当通过。
+Windows 先跑零窗口 Gate，再按需跑 pytest。Linux 跳过 Windows-only gate，但运行完整可移植单测、doctor strict 与核心服务冒烟；缺可选环境出现 `skip` 时不能当通过。
 
 ```powershell
+# 以下两个 x64dbg gate 仅 Windows
 python -m headless_re_mcp gate-xdbg --architecture x86 --timeout 60
 python -m headless_re_mcp gate-xdbg --architecture x64 --timeout 60
 
@@ -279,7 +324,7 @@ npx vitest run
 npm run build          # 产物直接写入 src/headless_re_mcp/web/spa
 ```
 
-硬约束：分析器进程（IDA / x64dbg headless）顶层窗口必须为 0；目标程序 GUI 不受此限。
+Windows 硬约束：分析器进程（IDA / x64dbg headless）顶层窗口必须为 0；目标程序 GUI 不受此限。
 
 `tests/integration/test_m10_ui_*` 会驱动目标窗口，需要独占的交互桌面：跑这几个 gate 时不要在
 同一会话里安装软件或打开别的窗口，否则前台焦点被抢会得到 `no foreground window for SendInput`
@@ -377,8 +422,8 @@ Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` �
 自建 runner 的那条 CI 从未绿过；单维护者、公开历史短；IDA idalib 与 x64dbg headless 本身都不是
 为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺可用性数字，这三条得先自己解决。
 
-不适合：跨平台、无 IDA 授权、把可用性责任外包给上游的场景。  
-适合：已有 Windows + IDA 9.x，愿意自己盯着跑，想要 MCP 驱动的逆向辅助（可长期无人值守运行）。
+不适合：在 Linux 上要求 x64dbg/WinDbg/Win32 UI/MSI，或把可用性责任外包给上游的场景。  
+适合：已有 Windows + IDA 9.x 的完整 PE 工作流；或在 Linux x86_64 上使用 MCP 核心、纯静态检测、Web/Android/Ghidra/radare2 等可移植能力。
 
 仅分析你拥有或获明确授权的样本。本地服务含写寄存器/内存能力，勿对不可信代理暴露，勿在未隔离环境处理未知样本。
 

@@ -135,6 +135,7 @@ from headless_re_mcp.dotnet.de4dot import run_de4dot
 from headless_re_mcp.dotnet.net_reactor_slayer import (
     run_net_reactor_slayer,
 )
+from headless_re_mcp.platform_support import unsupported_on_platform_details
 from headless_re_mcp.telemetry import telemetry_log_path
 from headless_re_mcp.unpack.scylla import (
     run_scylla,
@@ -2981,6 +2982,12 @@ def _create_ida_worker(session: Session, settings: Settings) -> StaticWorker:
 
 def _create_xdbg_worker(session: Session, settings: Settings) -> DynamicWorker:
     session.require_pe()
+    if os.name != "nt":
+        raise XdbgRpcError(
+            "unsupported_on_platform",
+            "x64dbg headless RPC is available only on Windows",
+            details=unsupported_on_platform_details("x64dbg"),
+        )
     architecture = session.require_architecture()
     executable = {
         Architecture.X86: settings.x64dbg_headless_x86,

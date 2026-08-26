@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import headless_re_mcp.cli as cli_module
-from headless_re_mcp.config import Settings
+from headless_re_mcp.config import Settings, ida_library_names
 from headless_re_mcp.config_generate import (
     build_stdio_server_config,
     generate_config_bundle,
@@ -57,7 +57,7 @@ def test_embed_discovered_env_uses_real_paths(tmp_path: Path) -> None:
     headless.write_bytes(b"MZ")
     ida = tmp_path / "IDA"
     ida.mkdir()
-    (ida / "idalib.dll").write_bytes(b"MZ")
+    (ida / ida_library_names()[0]).write_bytes(b"MZ")
     settings = Settings(
         ida_home=ida,
         x64dbg_source=None,

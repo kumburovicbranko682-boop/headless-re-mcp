@@ -10,6 +10,10 @@ from headless_re_mcp.backends.x64dbg.gate import run_command_loop_gate
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.doctor import format_report, run_doctor
+from headless_re_mcp.platform_support import (
+    is_windows_host,
+    unsupported_on_platform_details,
+)
 
 
 def _keep_routine_logs_off_the_pipe(logger_name: str = "") -> None:
@@ -57,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--strict",
         action="store_true",
-        help="Return a non-zero code unless all required Wave 0 components are ready",
+        help="Return a non-zero code unless required components for this platform are ready",
     )
     xdbg_gate = subcommands.add_parser(
         "gate-xdbg",
@@ -145,6 +149,22 @@ def _run_xdbg_gates(
     *,
     timeout: float,
 ) -> int:
+    if not is_windows_host():
+        details = unsupported_on_platform_details("x64dbg")
+        results = [
+            {
+                "ok": False,
+                "architecture": architecture.value,
+                "error": {
+                    "code": "unsupported_on_platform",
+                    "message": "x64dbg headless gates require Windows",
+                    "details": details,
+                },
+            }
+            for architecture in architectures
+        ]
+        print(json.dumps({"ok": False, "results": results}, indent=2, ensure_ascii=False))
+        return 1
     paths = {
         Architecture.X86: settings.x64dbg_headless_x86,
         Architecture.X64: settings.x64dbg_headless_x64,

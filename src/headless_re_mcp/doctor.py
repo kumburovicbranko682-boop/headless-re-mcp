@@ -15,8 +15,17 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.x64dbg.gate import run_command_loop_gate
-from headless_re_mcp.config import Settings
+from headless_re_mcp.config import (
+    Settings,
+    find_ida_executable,
+    find_idalib_library,
+    ida_library_names,
+)
 from headless_re_mcp.core.models import Architecture
+from headless_re_mcp.platform_support import (
+    runtime_platform_report,
+    unsupported_on_platform_details,
+)
 
 
 class ProbeStatus(StrEnum):
@@ -24,6 +33,7 @@ class ProbeStatus(StrEnum):
     DETECTED = "detected"
     MISSING = "missing"
     BLOCKED = "blocked"
+    UNSUPPORTED = "unsupported_on_platform"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,32 +44,49 @@ class Probe:
     details: dict[str, Any] = field(default_factory=dict)
     remediation: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, required: bool | None = None) -> dict[str, Any]:
+        payload = {
             "name": self.name,
             "status": self.status.value,
             "summary": self.summary,
             "details": self.details,
             "remediation": self.remediation,
         }
+        if required is not None:
+            payload["required"] = required
+        return payload
 
 
-REQUIRED_PROBES: frozenset[str] = frozenset(
+WINDOWS_REQUIRED_PROBES: frozenset[str] = frozenset(
     {
+        "platform",
         "python",
         "ida_idalib",
         "x64dbg_headless_binaries",
     }
 )
+LINUX_REQUIRED_PROBES: frozenset[str] = frozenset({"platform", "python"})
+
+
+def required_probe_names(platform_name: str | None = None) -> frozenset[str]:
+    current = platform_name or str(runtime_platform_report()["name"])
+    if current == "windows":
+        return WINDOWS_REQUIRED_PROBES
+    return LINUX_REQUIRED_PROBES
+
+
+# Backwards-compatible snapshot for callers that only inspect this constant.
+REQUIRED_PROBES: frozenset[str] = required_probe_names()
 
 
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
     probes: tuple[Probe, ...]
+    required_probes: frozenset[str] = field(default_factory=required_probe_names)
 
     @property
     def ready(self) -> bool:
-        required = REQUIRED_PROBES
+        required = self.required_probes
         return all(
             probe.status == ProbeStatus.READY
             for probe in self.probes
@@ -67,9 +94,26 @@ class DoctorReport:
         ) and required.issubset({probe.name for probe in self.probes})
 
     def to_dict(self) -> dict[str, Any]:
+        platform_probe = next(
+            (probe for probe in self.probes if probe.name == "platform"),
+            None,
+        )
         return {
             "ready": self.ready,
-            "probes": [probe.to_dict() for probe in self.probes],
+            "platform": (
+                {
+                    "status": platform_probe.status.value,
+                    "summary": platform_probe.summary,
+                    **platform_probe.details,
+                }
+                if platform_probe is not None
+                else runtime_platform_report()
+            ),
+            "required_probes": sorted(self.required_probes),
+            "probes": [
+                probe.to_dict(required=probe.name in self.required_probes)
+                for probe in self.probes
+            ],
         }
 
     def to_json(self) -> str:
@@ -78,41 +122,134 @@ class DoctorReport:
 
 def run_doctor(settings: Settings | None = None) -> DoctorReport:
     current = settings or Settings.load()
+    platform_info = runtime_platform_report()
+    on_windows = platform_info["name"] == "windows"
+
+    def windows_only(name: str, summary: str) -> Probe:
+        return unsupported_windows_probe(name, summary)
+
+    probes = [
+        probe_platform(),
+        probe_python(),
+        probe_ida(current),
+        (
+            probe_x64dbg_source(current)
+            if on_windows
+            else windows_only("x64dbg_source", "x64dbg source/build path requires Windows")
+        ),
+        (
+            probe_x64dbg_binaries(current)
+            if on_windows
+            else windows_only(
+                "x64dbg_headless_binaries",
+                "x64dbg headless RPC binaries require Windows",
+            )
+        ),
+        (
+            probe_x64dbg_scyllahide(current)
+            if on_windows
+            else windows_only("x64dbg_scyllahide", "ScyllaHide for x64dbg requires Windows")
+        ),
+        (
+            probe_native_toolchain()
+            if on_windows
+            else windows_only("native_toolchain", "x64dbg native build toolchain requires Windows")
+        ),
+        probe_windows_feature(
+            "win32_ui",
+            "Win32 UI, UIA, SendInput, screenshot, and Windows OCR",
+        ),
+        probe_windows_feature("hidden_desktop", "hidden Win32 desktop"),
+        probe_isolation(current),
+        probe_die(current),
+        (
+            probe_exeinfope(current)
+            if on_windows
+            else windows_only("exeinfope", "Exeinfo PE silent GUI adapter requires Windows")
+        ),
+        probe_upx(current),
+        probe_de4dot(current),
+        probe_net_reactor_slayer(current),
+        (
+            probe_xvlkc(current)
+            if on_windows
+            else windows_only("xvlkc", "configured XVLKC adapter requires Windows")
+        ),
+        (
+            probe_vmp_dumper(current)
+            if on_windows
+            else windows_only("vmp_dumper", "configured VMP dumper adapter requires Windows")
+        ),
+        (
+            probe_scylla(current)
+            if on_windows
+            else windows_only("scylla", "Scylla dump/IAT adapter requires Windows")
+        ),
+        probe_command("radare2", ("r2", "rizin")),
+        probe_ghidra(current),
+        probe_python_module("frida", "frida"),
+        probe_command("java", ("java",)),
+        (
+            probe_command("windbg", ("cdb", "windbg", "windbgx"))
+            if on_windows
+            else windows_only("windbg", "WinDbg/cdb requires Windows")
+        ),
+        # Android reverse-engineering (all optional; missing only degrades).
+        probe_python_module("androguard", "androguard"),
+        probe_python_module("adbutils", "adbutils"),
+        probe_optional_tool("adb", current, "adb", ("adb",)),
+        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
+        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
+        probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+        # Web reverse-engineering (all optional).
+        probe_python_module("playwright", "playwright"),
+        probe_python_module("mitmproxy", "mitmproxy"),
+        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+    ]
     return DoctorReport(
-        probes=(
-            probe_python(),
-            probe_ida(current),
-            probe_x64dbg_source(current),
-            probe_x64dbg_binaries(current),
-            probe_x64dbg_scyllahide(current),
-            probe_native_toolchain(),
-            probe_isolation(current),
-            probe_die(current),
-            probe_exeinfope(current),
-            probe_upx(current),
-            probe_de4dot(current),
-            probe_net_reactor_slayer(current),
-            probe_xvlkc(current),
-            probe_vmp_dumper(current),
-            probe_scylla(current),
-            probe_command("radare2", ("r2", "rizin")),
-            probe_ghidra(current),
-            probe_python_module("frida", "frida"),
-            probe_command("java", ("java",)),
-            probe_command("windbg", ("cdb", "windbg", "windbgx")),
-            # Android reverse-engineering (all optional; missing only degrades).
-            probe_python_module("androguard", "androguard"),
-            probe_python_module("adbutils", "adbutils"),
-            probe_optional_tool("adb", current, "adb", ("adb",)),
-            probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-            probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
-            probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
-            # Web reverse-engineering (all optional).
-            probe_python_module("playwright", "playwright"),
-            probe_python_module("mitmproxy", "mitmproxy"),
-            probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
-            probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probes=tuple(probes),
+        required_probes=required_probe_names(str(platform_info["name"])),
+    )
+
+
+def probe_platform() -> Probe:
+    details = runtime_platform_report()
+    if details["core_supported"]:
+        scope = "full Windows" if details["support_level"] == "full" else "portable Linux core"
+        return Probe(
+            "platform",
+            ProbeStatus.READY,
+            f"{details['system']} {details['architecture']} supports the {scope}",
+            details,
         )
+    return Probe(
+        "platform",
+        ProbeStatus.BLOCKED,
+        f"{details['system']} {details['machine']} is outside the supported host matrix",
+        details,
+        "Use Windows x86_64 or Linux x86_64 with Python 3.11+.",
+    )
+
+
+def unsupported_windows_probe(name: str, summary: str) -> Probe:
+    return Probe(
+        name,
+        ProbeStatus.UNSUPPORTED,
+        summary,
+        unsupported_on_platform_details(name),
+        "Run this optional capability on a Windows host.",
+    )
+
+
+def probe_windows_feature(name: str, summary: str) -> Probe:
+    if runtime_platform_report()["name"] != "windows":
+        return unsupported_windows_probe(name, f"{summary} is unsupported on this platform")
+    return Probe(
+        name,
+        ProbeStatus.READY,
+        f"{summary} is supported by this Windows host",
+        {"supported_platforms": ["windows"]},
     )
 
 
@@ -141,13 +278,19 @@ def probe_isolation(settings: Settings) -> Probe:
     because the debugger really executes the target, and an operator should see
     that fact before launching an untrusted binary.
     """
-    hints = sorted({name for name, path in _VM_DRIVER_HINTS if Path(path).exists()})
+    on_windows = runtime_platform_report()["name"] == "windows"
+    hints = (
+        sorted({name for name, path in _VM_DRIVER_HINTS if Path(path).exists()})
+        if on_windows
+        else []
+    )
     elevated = _is_elevated()
     hidden_desktop = bool(getattr(settings, "hidden_desktop", False))
     details: dict[str, Any] = {
         "virtualization_hints": hints,
         "elevated": elevated,
         "hidden_desktop": hidden_desktop,
+        "hidden_desktop_supported": on_windows,
         "advisory": True,
     }
     if elevated:
@@ -158,7 +301,7 @@ def probe_isolation(settings: Settings) -> Probe:
             details,
             "Run from a dedicated low-privilege account inside a disposable VM or host.",
         )
-    if hints or hidden_desktop:
+    if hints or (on_windows and hidden_desktop):
         signals = ", ".join(hints or ["hidden desktop"])
         return Probe(
             "isolation",
@@ -171,7 +314,13 @@ def probe_isolation(settings: Settings) -> Probe:
         ProbeStatus.MISSING,
         "no virtualization or hidden-desktop isolation detected",
         details,
-        "Analyse unknown samples in a disposable VM/host, or set HEADLESS_RE_HIDDEN_DESKTOP=1.",
+        (
+            "Analyse unknown samples in a disposable VM/host, or set "
+            "HEADLESS_RE_HIDDEN_DESKTOP=1."
+            if on_windows
+            else "Analyse unknown samples in a dedicated low-privilege disposable Linux VM/host; "
+            "hidden desktop is a Windows-only feature."
+        ),
     )
 
 
@@ -197,20 +346,21 @@ def probe_ida(settings: Settings) -> Probe:
             remediation="Set HEADLESS_RE_IDA_HOME to an authorized IDA 9.x installation.",
         )
 
-    idalib = home / "idalib.dll"
-    ida = home / "ida.exe"
+    idalib = find_idalib_library(home)
+    ida = find_ida_executable(home)
     idapro_spec = importlib.util.find_spec("idapro")
     details: dict[str, Any] = {
         "home": str(home),
-        "ida": str(ida) if ida.is_file() else None,
-        "idalib": str(idalib) if idalib.is_file() else None,
+        "ida": str(ida) if ida is not None else None,
+        "idalib": str(idalib) if idalib is not None else None,
+        "expected_idalib_names": list(ida_library_names()),
         "idapro_module": idapro_spec.origin if idapro_spec else None,
     }
-    if not idalib.is_file():
+    if idalib is None:
         return Probe(
             "ida_idalib",
             ProbeStatus.BLOCKED,
-            "IDA was detected but idalib.dll is missing",
+            "IDA was detected but its platform-native idalib library is missing",
             details,
             "Install IDA Professional 9.x with IDA Library support.",
         )
@@ -219,7 +369,7 @@ def probe_ida(settings: Settings) -> Probe:
         return Probe(
             "ida_idalib",
             ProbeStatus.BLOCKED,
-            "idalib.dll exists but the idapro Python package is unavailable",
+            "idalib exists but the idapro Python package is unavailable",
             {**details, "activation_script": str(activation)},
             f'Run: "{sys.executable}" "{activation}" --ida-install-dir "{home}"',
         )
@@ -937,8 +1087,19 @@ def probe_python_module(name: str, module: str) -> Probe:
 
 
 def format_report(report: DoctorReport) -> str:
-    required = [probe for probe in report.probes if probe.name in REQUIRED_PROBES]
-    optional = [probe for probe in report.probes if probe.name not in REQUIRED_PROBES]
+    required = [probe for probe in report.probes if probe.name in report.required_probes]
+    optional = [
+        probe
+        for probe in report.probes
+        if probe.name not in report.required_probes
+        and probe.status != ProbeStatus.UNSUPPORTED
+    ]
+    unsupported = [
+        probe
+        for probe in report.probes
+        if probe.name not in report.required_probes
+        and probe.status == ProbeStatus.UNSUPPORTED
+    ]
     ready_required = sum(1 for probe in required if probe.status == ProbeStatus.READY)
     blocking = [probe for probe in required if probe.status != ProbeStatus.READY]
 
@@ -957,8 +1118,9 @@ def format_report(report: DoctorReport) -> str:
             if probe.remediation and probe.status != ProbeStatus.READY:
                 lines.append(f"             fix: {probe.remediation}")
 
-    _emit("Required backends:", required)
+    _emit("Required core components:", required)
     _emit("Optional backends:", optional)
+    _emit("Unsupported on this platform (optional):", unsupported)
 
     if blocking:
         lines.append("")

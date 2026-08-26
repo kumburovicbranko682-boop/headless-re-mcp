@@ -51,6 +51,7 @@ from headless_re_mcp.core.windows import (
     resolve_allowed_ui_pids,
     window_capture_rank,
 )
+from headless_re_mcp.platform_support import unsupported_on_platform_details
 
 if TYPE_CHECKING:
     from headless_re_mcp.config import Settings
@@ -58,6 +59,17 @@ if TYPE_CHECKING:
     from headless_re_mcp.core.service import DynamicWorker, _BackendRuntime
 
 JsonObject = dict[str, Any]
+
+
+def _unsupported_ui(session_id: str, capability: str) -> Result[JsonObject]:
+    return _failure(
+        XdbgRpcError(
+            "unsupported_on_platform",
+            f"{capability} requires Windows",
+            details=unsupported_on_platform_details(capability),
+        ),
+        session_id=session_id,
+    )
 
 
 def _as_positive_pid(value: object) -> int | None:
@@ -247,6 +259,8 @@ class UiAutomationMixin:
 
     def virtual_desktop_snapshot(self, session_id: str) -> Result[JsonObject]:
         """Return a passive, PID-bounded snapshot of the session desktop."""
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.virtual_desktop.snapshot")
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
             snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
@@ -290,6 +304,8 @@ class UiAutomationMixin:
         hwnd: int | None = None,
     ) -> Result[JsonObject]:
         """Capture one authorized hidden-desktop window without switching desktops."""
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.virtual_desktop.capture")
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
             snapshot_fn = getattr(runtime.worker, "desktop_snapshot", None)
@@ -807,6 +823,8 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """Capture a PID-bounded hwnd to a BMP under artifact_root/ui/<session>."""
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.screenshot")
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
         directory.mkdir(parents=True, exist_ok=True)
         artifact_path = directory / f"screenshot-{uuid4().hex}.bmp"
@@ -851,6 +869,8 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """OCR a PID-bounded hwnd via screenshot + Windows OCR / tesseract."""
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.ocr")
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
         directory.mkdir(parents=True, exist_ok=True)
         artifact_path = directory / f"ocr-{uuid4().hex}.bmp"
@@ -898,14 +918,7 @@ class UiAutomationMixin:
         ensure_running_for_interact: bool = True,
     ) -> Result[JsonObject]:
         if os.name != "nt":
-            return _failure(
-                XdbgRpcError(
-                    "capability_unavailable",
-                    f"{capability} requires Windows",
-                    details={"capability": capability},
-                ),
-                session_id=session_id,
-            )
+            return _unsupported_ui(session_id, capability)
         _INTERACT = {
             "ui.click",
             "ui.click_at",

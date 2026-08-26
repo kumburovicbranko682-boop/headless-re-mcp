@@ -81,7 +81,7 @@ class _RECT(ctypes.Structure):
 def _user32() -> Any:
     if os.name != "nt":
         raise UiPidBoundaryError(
-            "capability_unavailable",
+            "unsupported_on_platform",
             "SendInput UI requires Windows",
         )
     return ctypes.windll.user32

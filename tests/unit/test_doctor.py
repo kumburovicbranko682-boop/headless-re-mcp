@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -14,12 +15,14 @@ from headless_re_mcp.doctor import (
     DoctorReport,
     Probe,
     ProbeStatus,
+    WINDOWS_REQUIRED_PROBES,
     format_report,
     probe_die,
     probe_exeinfope,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
+    run_doctor,
 )
 
 
@@ -156,26 +159,30 @@ def test_x64dbg_binary_probe_blocks_on_failed_gate(
 
 def test_doctor_requires_runtime_gated_x64dbg_binaries() -> None:
     required = (
+        Probe("platform", ProbeStatus.READY, "ready"),
         Probe("python", ProbeStatus.READY, "ready"),
         Probe("ida_idalib", ProbeStatus.READY, "ready"),
         Probe("x64dbg_source", ProbeStatus.READY, "ready"),
         Probe("native_toolchain", ProbeStatus.READY, "ready"),
     )
-    assert not DoctorReport(required).ready
+    assert not DoctorReport(required, required_probes=WINDOWS_REQUIRED_PROBES).ready
     assert DoctorReport(
-        (*required, Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"))
+        (*required, Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready")),
+        required_probes=WINDOWS_REQUIRED_PROBES,
     ).ready
 
 
 def test_doctor_ready_does_not_require_source_tree_or_msvc() -> None:
     assert DoctorReport(
         (
+            Probe("platform", ProbeStatus.READY, "ready"),
             Probe("python", ProbeStatus.READY, "ready"),
             Probe("ida_idalib", ProbeStatus.READY, "ready"),
             Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
             Probe("x64dbg_source", ProbeStatus.MISSING, "optional"),
             Probe("native_toolchain", ProbeStatus.MISSING, "optional"),
-        )
+        ),
+        required_probes=WINDOWS_REQUIRED_PROBES,
     ).ready
 
 
@@ -408,6 +415,11 @@ def test_isolation_probe_accepts_hidden_desktop(
 ) -> None:
     monkeypatch.setattr(doctor_module, "_is_elevated", lambda: False)
     monkeypatch.setattr(doctor_module, "_VM_DRIVER_HINTS", ())
+    monkeypatch.setattr(
+        doctor_module,
+        "runtime_platform_report",
+        lambda: {"name": "windows"},
+    )
     settings = replace(_settings(None, tmp_path / "artifacts"), hidden_desktop=True)
 
     probe = doctor_module.probe_isolation(settings)
@@ -434,6 +446,7 @@ def _all_required_ready() -> tuple[Probe, ...]:
     return tuple(
         Probe(name, ProbeStatus.READY, f"{name} ready")
         for name in (
+            "platform",
             "python",
             "ida_idalib",
             "x64dbg_headless_binaries",
@@ -442,14 +455,17 @@ def _all_required_ready() -> tuple[Probe, ...]:
 
 
 def test_format_report_ready_lists_required_count() -> None:
-    text = format_report(DoctorReport(_all_required_ready()))
-    assert text.splitlines()[0] == "Overall: READY (required 3/3 ready)"
-    assert "Required backends:" in text
+    text = format_report(
+        DoctorReport(_all_required_ready(), required_probes=WINDOWS_REQUIRED_PROBES)
+    )
+    assert text.splitlines()[0] == "Overall: READY (required 4/4 ready)"
+    assert "Required core components:" in text
     assert "Blocking required backends" not in text
 
 
 def test_format_report_flags_blocking_required_and_groups_optional() -> None:
     required = (
+        Probe("platform", ProbeStatus.READY, "supported"),
         Probe("python", ProbeStatus.READY, "Python 3.12"),
         Probe(
             "ida_idalib",
@@ -459,11 +475,57 @@ def test_format_report_flags_blocking_required_and_groups_optional() -> None:
         ),
         Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ok"),
     )
-    optional = (Probe("diec", ProbeStatus.MISSING, "optional DIE not set"),)
-    text = format_report(DoctorReport((*required, *optional)))
+    optional = (
+        Probe("diec", ProbeStatus.MISSING, "optional DIE not set"),
+        Probe("windbg", ProbeStatus.UNSUPPORTED, "Windows only"),
+    )
+    text = format_report(
+        DoctorReport((*required, *optional), required_probes=WINDOWS_REQUIRED_PROBES)
+    )
 
-    assert text.splitlines()[0] == "Overall: NOT READY (required 2/3 ready)"
+    assert text.splitlines()[0] == "Overall: NOT READY (required 3/4 ready)"
     assert "Optional backends:" in text
+    assert "Unsupported on this platform (optional):" in text
     assert "Blocking required backends (resolve these first):" in text
     assert "- ida_idalib (missing)" in text
     assert "Set HEADLESS_RE_IDA_HOME." in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux platform policy")
+def test_linux_doctor_requires_only_portable_core(tmp_path: Path) -> None:
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    statuses = {probe.name: probe.status for probe in report.probes}
+
+    assert report.ready is True
+    assert report.required_probes == frozenset({"platform", "python"})
+    assert statuses["platform"] == ProbeStatus.READY
+    for name in (
+        "x64dbg_headless_binaries",
+        "windbg",
+        "win32_ui",
+        "hidden_desktop",
+    ):
+        assert statuses[name] == ProbeStatus.UNSUPPORTED
+
+    payload = report.to_dict()
+    assert payload["platform"]["name"] == "linux"
+    assert payload["platform"]["support_level"] == "core"
+    required = {
+        probe["name"]
+        for probe in payload["probes"]
+        if probe["required"] is True
+    }
+    assert required == {"platform", "python"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux platform policy")
+def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path) -> None:
+    settings = replace(
+        _settings(None, tmp_path / "artifacts"),
+        hidden_desktop=True,
+    )
+    probe = doctor_module.probe_isolation(settings)
+
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.details["hidden_desktop"] is True
+    assert probe.details["hidden_desktop_supported"] is False

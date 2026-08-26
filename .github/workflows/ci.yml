@@ -80,6 +80,61 @@ jobs:
           if ($j.count -lt 1) { throw "openai bridge exported no tools" }
           Write-Host "openai tools: $($j.count)"
 
+  linux-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: Ruff
+        run: python -m ruff check src tests fixtures openai_bridge.py
+
+      - name: Mypy strict
+        run: python -m mypy
+
+      - name: Compileall and dependency check
+        run: |
+          python -m compileall -q src
+          python -m pip check
+
+      - name: Linux unit tests
+        run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term
+
+      - name: Doctor and core service smoke
+        run: |
+          python -m headless_re_mcp doctor --json --strict
+          python -c "from headless_re_mcp.core.service import AnalysisService; service = AnalysisService(); assert service.readiness().ok; service.close_all()"
+          python -m headless_re_mcp config generate --skip-doctor --no-examples --output artifacts_ci_config.json
+          python openai_bridge.py --names-only > artifacts_ci_openai.json
+
+      - name: Build Linux wheel and sdist
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: License and lock consistency
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          assert "GNU GENERAL PUBLIC LICENSE" in Path("LICENSE").read_text(encoding="utf-8")
+          json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
