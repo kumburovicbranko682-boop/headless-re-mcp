@@ -1385,6 +1385,79 @@ def test_workflow_cancel_stops_in_flight_navigation(tmp_path: Path) -> None:
     ).get("status") in {"cancelled", "canceled"}
 
 
+def test_workflow_navigation_times_out_reacquiring_a_busy_runtime_lock(
+    tmp_path: Path,
+) -> None:
+    """A 100ms navigation timeout must not hang behind a competing lock owner."""
+    from threading import Event, Thread
+
+    entered = Event()
+    release_read = Event()
+
+    class BlockingWorker(FakeDynamicWorker):
+        def read_events(
+            self,
+            cursor: int,
+            *,
+            limit: int = 100,
+            timeout: float = 10.0,
+        ) -> DebugEventBatch:
+            del limit, timeout
+            entered.set()
+            assert release_read.wait(2)
+            return _debug_batch(cursor)
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = BlockingWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    outcome: dict[str, object] = {}
+
+    navigation = Thread(
+        target=lambda: outcome.setdefault(
+            "result",
+            service.workflow_navigate_to_event(
+                session_id,
+                "breakpoint.hit",
+                timeout=0.1,
+                event_budget=8,
+            ),
+        ),
+        daemon=True,
+    )
+    navigation.start()
+    assert entered.wait(1)
+
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    release_read.set()
+    navigation.join(timeout=0.4)
+    returned_within_bound = not navigation.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    navigation.join(timeout=2)
+
+    assert returned_within_bound, "navigation remained blocked reacquiring the runtime lock"
+    result = outcome["result"]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "workflow_lock_timeout"
+    assert result.error.retryable is True
+
+
 def test_workflow_acknowledges_breakpoint_already_removed_by_debugger(
     tmp_path: Path,
 ) -> None:
