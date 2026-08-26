@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -197,3 +198,40 @@ def test_frida_device_hook_timeout_does_not_hide_a_failed_detach() -> None:
     assert caught.value.details["pid"] == 31
     assert caught.value.details["detach_error"] == "RuntimeError: detach refused"
     assert detach_attempts == [1]
+
+
+def test_frida_device_hook_detaches_a_session_that_arrives_after_timeout() -> None:
+    """A late device attach must not begin script loading after its deadline."""
+    detached = Event()
+    script_called = Event()
+
+    class _Script:
+        def load(self) -> None:
+            script_called.set()
+            time.sleep(10)
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            detached.set()
+
+    class _Device:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            time.sleep(0.15)
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device(None, 41, "noop", allowed_pids={41}, timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late device hook session remained attached"
+    assert script_called.is_set() is False
