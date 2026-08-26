@@ -1005,14 +1005,18 @@ class AnalysisService(
         web_backend = None
         proxy_backend = None
         apk_binary = None
+        already_closed = False
         with self._lock:
             try:
                 session = self.registry.get(session_id)
+                web_backend = getattr(self, "_web_backend", None)
+                proxy_backend = getattr(self, "_proxy_backend", None)
                 if session.state == SessionState.CLOSED:
-                    result = _success({"session": _session_json(session), "already_closed": True})
-                    note_session_closed(self, session_id, result)
-                    return result
-                if session.state is SessionState.OPENING:
+                    # A previous close may have reached CLOSED while returning a
+                    # retryable auxiliary-cleanup error. Continue through the
+                    # idempotent teardown below so retry means another attempt.
+                    already_closed = True
+                elif session.state is SessionState.OPENING:
                     # Opening no longer holds the service-wide lock, so a close
                     # can arrive mid-launch instead of queueing behind it. Say
                     # what to do about it rather than leaving the caller with the
@@ -1021,17 +1025,16 @@ class AnalysisService(
                         "session is still opening its first backend; "
                         "close it once that open returns"
                     )
-                self.registry.transition(session_id, SessionState.CLOSING)
-                runtimes = self._runtime_owner.pop_session(session_id)
-                self._health.forget(session_id)
-                self._workflow_owner.clear(session_id)
-                self._unpack_owner.clear(session_id)
-                self._clear_unpack_cancel(session_id)
-                self._debuggee_owner.clear(session_id)
-                web_backend = getattr(self, "_web_backend", None)
-                proxy_backend = getattr(self, "_proxy_backend", None)
-                if session.target is TargetKind.APK and session.binary is not None:
-                    apk_binary = session.binary
+                else:
+                    self.registry.transition(session_id, SessionState.CLOSING)
+                    runtimes = self._runtime_owner.pop_session(session_id)
+                    self._health.forget(session_id)
+                    self._workflow_owner.clear(session_id)
+                    self._unpack_owner.clear(session_id)
+                    self._clear_unpack_cancel(session_id)
+                    self._debuggee_owner.clear(session_id)
+                    if session.target is TargetKind.APK and session.binary is not None:
+                        apk_binary = session.binary
             except BaseException as exc:
                 result = _failure(exc, session_id=session_id)
                 note_session_closed(self, session_id, result)
@@ -1106,7 +1109,7 @@ class AnalysisService(
         try:
             for kind in tuple(session.backends):
                 self.registry.detach_backend(session_id, kind)
-            if close_errors:
+            if close_errors and not already_closed:
                 self.registry.transition(session_id, SessionState.FAILED)
             closed = self.registry.transition(session_id, SessionState.CLOSED)
         except BaseException as exc:
@@ -1124,7 +1127,9 @@ class AnalysisService(
             )
             note_session_closed(self, session_id, result)
             return result
-        result = _success({"session": _session_json(closed), "already_closed": False})
+        result = _success(
+            {"session": _session_json(closed), "already_closed": already_closed}
+        )
         note_session_closed(self, session_id, result)
         # Closing a session is the natural retention checkpoint: it is the moment
         # an analysis stops producing artifacts, and it is infrequent enough that
