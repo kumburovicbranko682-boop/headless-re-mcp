@@ -130,7 +130,8 @@ def _is_elevated() -> bool | None:
     if os.name != "nt":
         return None
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined,unused-ignore]
+        return bool(shell32.IsUserAnAdmin())
     except (AttributeError, OSError):
         return None
 
