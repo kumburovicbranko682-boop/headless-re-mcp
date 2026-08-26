@@ -1063,6 +1063,10 @@ def register_legacy_routes(
                 status_code=400,
                 detail="unknown_or_disallowed_write",
             ) from exc
+        except PermissionError as exc:
+            # Read-only deployment: the adapter refuses because it bypasses the
+            # per-handler guard. Surface the promised denial, not a 500.
+            raise HTTPException(status_code=403, detail="write_disabled") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(_result_payload(result))

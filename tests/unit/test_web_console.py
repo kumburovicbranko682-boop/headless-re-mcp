@@ -432,6 +432,59 @@ def test_web_write_requires_confirm(tmp_path: Path) -> None:
     assert confirmed.json()["ok"] is True
 
 
+def test_a_read_only_deployment_refuses_web_writes(tmp_path: Path) -> None:
+    """local_full_access=false must make /api/write fail closed, not 500.
+
+    The Web adapter calls the service method directly, bypassing the per-handler
+    write_disabled guard, so it leans on the catalog's write_allowed flag. Only
+    the MCP server and bind_all_tools set that flag from local_full_access;
+    nothing did on the web-only path, so a read-only deployment was writable
+    through the console. And even once the adapter refused, the route did not
+    catch its PermissionError, turning the denial into a 500.
+    """
+    from dataclasses import replace
+
+    settings = replace(_settings(tmp_path), local_full_access=False)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    refused = client.post(
+        "/api/write/artifacts.gc",
+        headers=headers,
+        json={"confirm": True, "max_total_bytes": 1024},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "write_disabled"
+
+    # The whitelist and confirm gate still apply and answer before the adapter.
+    unknown = client.post(
+        "/api/write/not.a.real.write", headers=headers, json={"confirm": True}
+    )
+    assert unknown.status_code == 400
+    assert unknown.json()["detail"] == "unknown_or_disallowed_write"
+
+
+def test_full_access_deployment_still_allows_web_writes(tmp_path: Path) -> None:
+    """The default (local_full_access=true) path must be unchanged by the guard."""
+    from dataclasses import replace
+
+    settings = replace(_settings(tmp_path), local_full_access=True)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ok = client.post(
+        "/api/write/artifacts.gc",
+        headers=headers,
+        json={"confirm": True, "max_total_bytes": 1024},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+
+
 def test_web_monitor_endpoint(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)

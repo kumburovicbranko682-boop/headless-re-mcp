@@ -34,6 +34,14 @@ def create_app(
         ) from exc
 
     cfg = settings or service.settings
+    # The Web write adapter (/api/write) calls service methods directly, so the
+    # per-handler write_disabled guard never runs; it relies on the shared
+    # catalog's write_allowed flag to stay fail-closed. The MCP server and
+    # bind_all_tools set that flag from local_full_access, but nothing did on the
+    # web-only path, so a read-only deployment was writable through the console.
+    from headless_re_mcp.core.commands import COMMAND_CATALOG
+
+    COMMAND_CATALOG.write_allowed = bool(cfg.local_full_access)
     install_global_exception_hooks("web")
     app = FastAPI(title="Headless RE-MCP Monitor", docs_url=None, redoc_url=None)
     register_fastapi_exception_boundary(app)
