@@ -553,6 +553,56 @@ def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
     assert state["detached"] is True
 
 
+def test_frida_java_timeout_does_not_hide_a_failed_detach() -> None:
+    """A timed-out Java probe must disclose its one retained native session."""
+    detach_attempts: list[int] = []
+
+    class _HangApi:
+        def classes(self, name_filter: str, count: int) -> list[str]:
+            del name_filter, count
+            time.sleep(1)
+            return []
+
+    class _HangScript:
+        exports_sync = _HangApi()
+
+        def load(self) -> None:
+            return None
+
+    class _LeakedSession:
+        def create_script(self, source: str) -> _HangScript:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            detach_attempts.append(1)
+            raise RuntimeError("detach refused")
+
+    class _Device:
+        def attach(self, pid: int) -> _LeakedSession:
+            del pid
+            return _LeakedSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(
+            None,
+            29,
+            allowed_pids={29},
+            mode="classes",
+            timeout=0.1,
+        )
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 29
+    assert caught.value.details["detach_error"] == "RuntimeError: detach refused"
+    assert detach_attempts == [1]
+
+
 def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:
     """The catalog said bind a device and never named the payload.
 
