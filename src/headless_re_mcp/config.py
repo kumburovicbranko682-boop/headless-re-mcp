@@ -416,18 +416,20 @@ def update_config_values(
             data[key] = str(value)
         else:
             data[key] = value
+    encoded = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(encoded) > _MAX_CONFIG_FILE_BYTES:
+        raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
+            mode="wb",
             dir=path.parent,
             prefix=f".{path.name}-",
             suffix=".tmp",
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
-            stream.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

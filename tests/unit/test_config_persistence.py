@@ -82,6 +82,21 @@ def test_config_reads_are_bounded_and_oversized_files_are_preserved(
         Settings.load(path)
 
 
+def test_config_update_refuses_a_file_it_could_not_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config_module, "_MAX_CONFIG_FILE_BYTES", 128)
+    path = tmp_path / "config.json"
+    original = b'{"kept": true}\n'
+    path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="configuration file exceeds 128 bytes"):
+        update_config_values({"padding": "x" * 256}, config_path=path)
+
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob(".config.json-*.tmp")) == []
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_config_update_restricts_permissions_on_posix(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
