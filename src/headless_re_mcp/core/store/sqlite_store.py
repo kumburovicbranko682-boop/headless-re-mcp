@@ -97,16 +97,29 @@ AUDIT_JSON_MAX_CHARS = 4000
 def encode_audit_json(value: JsonObject, *, limit: int = AUDIT_JSON_MAX_CHARS) -> str:
     """Keep audit cells valid JSON even when the row is size-capped."""
     encoded = json.dumps(value, ensure_ascii=False)
-    if len(encoded) <= limit:
+    cap = max(1, int(limit))
+    if len(encoded) <= cap:
         return encoded
     wrapper = {"truncated": True, "chars": len(encoded), "preview": ""}
-    budget = max(32, limit - len(json.dumps(wrapper, ensure_ascii=False)))
-    wrapper["preview"] = encoded[:budget]
-    clipped = json.dumps(wrapper, ensure_ascii=False)
-    if len(clipped) <= limit:
-        return clipped
-    wrapper["preview"] = encoded[: max(0, budget - (len(clipped) - limit))]
-    return json.dumps(wrapper, ensure_ascii=False)[:limit]
+    smallest = json.dumps(wrapper, ensure_ascii=False)
+    if len(smallest) > cap:
+        # Even the metadata envelope cannot fit. Preserve valid JSON rather
+        # than slicing through a quoted string or escape sequence.
+        return "{}" if cap >= 2 else "0"
+
+    low = 0
+    high = len(encoded)
+    best = smallest
+    while low <= high:
+        midpoint = (low + high) // 2
+        wrapper["preview"] = encoded[:midpoint]
+        candidate = json.dumps(wrapper, ensure_ascii=False)
+        if len(candidate) <= cap:
+            best = candidate
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    return best
 
 
 def encode_knowledge_value(value: JsonObject) -> str:
