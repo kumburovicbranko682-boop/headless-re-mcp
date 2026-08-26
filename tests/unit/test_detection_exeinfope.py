@@ -246,6 +246,46 @@ def test_process_capture_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     assert caught.value.code == ExeinfopeErrorCode.TIMEOUT
 
 
+def test_process_capture_cleanup_threads_share_one_drain_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three stuck cleanup threads must not add three seconds after timeout."""
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _TimedOutProcess(_FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            budget = float(timeout or 0.0)
+            clock[0] += budget
+            raise subprocess.TimeoutExpired("fake", budget)
+
+    class _StuckThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _TimedOutProcess(hangs=True)
+    monkeypatch.setattr(adapter.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(adapter, "Thread", _StuckThread)
+    monkeypatch.setattr(adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(adapter, "_terminate_process", lambda child: child.kill())
+    monkeypatch.setattr(adapter, "describe_process_windows", lambda pid: set())
+
+    with pytest.raises(ExeinfopeTimeoutError):
+        adapter._capture_process(["fake"], timeout=0.1, max_output_size=32)
+
+    assert len(join_timeouts) == 3
+    assert sum(join_timeouts) <= 1.0
+    assert clock[0] <= 1.1
+
+
 def test_process_capture_stream_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _FakeProcess()
     process.stdout = io.BytesIO(b"x" * 64)
