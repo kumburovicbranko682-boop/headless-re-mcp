@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.frida.client import FridaClient
+import pytest
+
+from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.tools.frida import build_frida_tools
 
 
@@ -60,3 +62,34 @@ def test_frida_hook_template_answers_with_loaded_not_hooked() -> None:
     assert "loaded" in described
     assert "persisted" in described
     assert "no hooked" in described
+
+
+def test_frida_hook_template_does_not_hide_a_failed_detach() -> None:
+    """loaded=true must not conceal the native probe attachment."""
+
+    class _Script:
+        def load(self) -> None:
+            return None
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    class _Frida:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(17, "log_file", allowed_pid=17, timeout=0.5)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 17
