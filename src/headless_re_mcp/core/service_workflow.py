@@ -91,6 +91,8 @@ class WorkflowAnalysisMixin:
             self,
             session_id: str,
             action: Callable[[_BackendRuntime], JsonObject],
+            *,
+            timeout: float,
         ) -> Result[JsonObject]: ...
 
         def _execute_workflow_transition_locked(
@@ -225,7 +227,7 @@ class WorkflowAnalysisMixin:
             self._workflow_owner.put(session_id, reset)
             return {"workflow": reset.to_dict()}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_cancel(
         self,
@@ -260,7 +262,7 @@ class WorkflowAnalysisMixin:
                 )
             return {"workflow": updated.to_dict()}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_events_consume(
         self,
@@ -311,7 +313,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict(), "module_key": key.strip()}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_module_untrack(
         self,
@@ -336,7 +338,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict(), "module_key": key.strip()}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_module_refresh(
         self,
@@ -372,7 +374,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict()}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_breakpoint_put(
         self,
@@ -411,7 +413,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict(), "intent_id": intent.id}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_breakpoint_disable(
         self,
@@ -439,7 +441,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict(), "intent_id": intent_id}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_breakpoint_remove(
         self,
@@ -475,7 +477,7 @@ class WorkflowAnalysisMixin:
             )
             return {"workflow": updated.to_dict(), "intent_id": intent_id}
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
     def workflow_breakpoint_list(self, session_id: str) -> Result[JsonObject]:
         def action(runtime: _BackendRuntime) -> JsonObject:
@@ -488,7 +490,7 @@ class WorkflowAnalysisMixin:
                 "breakpoints": state["breakpoints"],
             }
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=30.0)
 
     def workflow_navigate_to_event(
         self,
@@ -561,6 +563,6 @@ class WorkflowAnalysisMixin:
                 event_budget=event_budget,
             )
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(session_id, action, timeout=validated)
 
 
