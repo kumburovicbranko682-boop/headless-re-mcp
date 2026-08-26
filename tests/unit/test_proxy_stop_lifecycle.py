@@ -151,3 +151,45 @@ def test_proxy_close_all_continues_after_an_unexpected_stop_error() -> None:
 
     assert healthy.stops == 1
     assert backend._instances == {"broken": broken}
+
+
+def test_retrying_closed_session_retries_retained_proxy_cleanup(
+    tmp_path: Path,
+) -> None:
+    """A retryable close error must have a cleanup action on retry.
+
+    Measured: the first proxy timeout closed the session and returned failure;
+    the second ``session.close`` returned ``ok=True, already_closed=True``
+    without making a second stop attempt, so the retained listener stayed live.
+    """
+
+    class _EventuallyStops:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stop(self, session_id: str) -> dict[str, bool]:
+            del session_id
+            self.calls += 1
+            if self.calls == 1:
+                raise ProxyError("timeout", "proxy listener is still alive")
+            return {"stopped": True}
+
+        def close_all(self) -> None:
+            return None
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    proxy = _EventuallyStops()
+    service._proxy_backend = proxy  # type: ignore[assignment]
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+
+    first = service.close_session(session_id)
+    second = service.close_session(session_id)
+
+    assert first.ok is False
+    assert first.error is not None and first.error.retryable is True
+    assert second.ok is True
+    assert second.data is not None and second.data["already_closed"] is True
+    assert proxy.calls == 2
