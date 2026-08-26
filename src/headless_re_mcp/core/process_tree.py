@@ -196,7 +196,7 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
-def _collect_linux_process_group(group_id: int) -> list[int]:
+def collect_process_group(group_id: int) -> list[int]:
     """Members of an isolated CLI process group, including an orphaned child."""
     if not sys.platform.startswith("linux") or group_id <= 0:
         return []
@@ -271,7 +271,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
         with suppress(Exception):
             descendants = collect_descendants(pid)
         with suppress(Exception):
-            descendants.extend(_collect_linux_process_group(pid))
+            descendants.extend(collect_process_group(pid))
         descendants = list(dict.fromkeys(child for child in descendants if child != pid))
 
     with suppress(OSError, AttributeError):
@@ -306,7 +306,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             descendants = collect_descendants(pid)
         with suppress(Exception):
-            descendants.extend(_collect_linux_process_group(pid))
+            descendants.extend(collect_process_group(pid))
         descendants = list(dict.fromkeys(child for child in descendants if child != pid))
     killed: list[int] = []
     with suppress(Exception):
