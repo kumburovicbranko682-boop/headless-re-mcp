@@ -553,6 +553,19 @@ def test_a_live_thread_does_not_keep_every_message_it_ever_wrote(tmp_path: Path)
     assert [m.content for m in other] == ["leave me"]
 
 
+def test_message_pages_apply_a_utf8_byte_budget(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "message-pages.db")
+    store.message_page_max_bytes = 1024
+    thread = store.create_thread()
+    for index in range(3):
+        store.add_message(thread.id, "user", f"{index}:" + "界" * 300)
+
+    messages = store.list_messages(thread.id, limit=2000)
+
+    assert len(messages) == 1
+    assert messages[0].content.startswith("2:")
+
+
 def test_a_live_thread_message_bytes_are_bounded_not_just_message_count(
     tmp_path: Path,
 ) -> None:
