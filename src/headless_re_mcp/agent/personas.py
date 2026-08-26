@@ -159,7 +159,13 @@ class PersonaStore:
                         "current": str(data.get("current")) == normalized_id,
                     }
                 )
-            personas.sort(key=lambda item: (not item["current"], item["id"] != SEAGULL_PERSONA_ID, item["title"]))
+            personas.sort(
+                key=lambda item: (
+                    not item["current"],
+                    item["id"] != SEAGULL_PERSONA_ID,
+                    item["title"],
+                )
+            )
             return {"current": data.get("current") or DEFAULT_PERSONA_ID, "personas": personas}
 
     def current_id(self) -> str:
