@@ -18,6 +18,7 @@ from headless_re_mcp.core.windows import UiPidBoundaryError
 
 JsonObject = dict[str, Any]
 _MAX_OCR_SECONDS = 30.0
+_MAX_OCR_INPUT_BYTES = 128 * 1024 * 1024
 _T = TypeVar("_T")
 
 
@@ -88,15 +89,28 @@ def _run_async(coro: Coroutine[Any, Any, _T]) -> _T:
         return pool.submit(asyncio.run, coro).result(timeout=_MAX_OCR_SECONDS)
 
 
+def _read_bounded_bmp(path: Path) -> bytes:
+    with path.open("rb") as stream:
+        data = stream.read(_MAX_OCR_INPUT_BYTES + 1)
+    if not data:
+        raise UiPidBoundaryError("invalid_params", "OCR input BMP is empty")
+    if len(data) > _MAX_OCR_INPUT_BYTES:
+        raise UiPidBoundaryError(
+            "invalid_params",
+            "OCR input BMP exceeds the safety limit",
+            path=str(path),
+            max_bytes=_MAX_OCR_INPUT_BYTES,
+        )
+    return data
+
+
 async def _ocr_bmp_windows_async(path: Path, *, language: str = "en-US") -> JsonObject:
     from winsdk.windows.globalization import Language
     from winsdk.windows.graphics.imaging import BitmapDecoder
     from winsdk.windows.media.ocr import OcrEngine
     from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
-    data = path.read_bytes()
-    if not data:
-        raise UiPidBoundaryError("invalid_params", "OCR input BMP is empty")
+    data = _read_bounded_bmp(path)
     stream = InMemoryRandomAccessStream()
     # winsdk is skipped by mypy (optional Windows SDK). The ignores stay for
     # local runs that do have the stubs: those type DataWriter/create_async
