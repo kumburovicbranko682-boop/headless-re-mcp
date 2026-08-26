@@ -107,4 +107,5 @@ def test_recovery_rebinds_knowledge_beyond_the_first_page(tmp_path: Path) -> Non
     replacement_id = str(recovered.data["session_id"])
     rebound = repository.list_knowledge(replacement_id, limit=1000)
     assert rebound["total"] == 501
-    assert rebound["count"] == 501
+    assert rebound["count"] == 500
+    assert rebound["has_more"] is True
