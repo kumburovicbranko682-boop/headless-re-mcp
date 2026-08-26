@@ -350,8 +350,9 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
-- 262 个工具在敌意输入下全部返回结构化错误信封，无一抛出（只排除会真删数据的 `artifacts.gc`），
-  且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制校验，不是一次性测量。
+- 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
+  结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
+  校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
   敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的
   `storage_unavailable` 码并区分是否可重试），就绪探针如实报不可用，服务在目录恢复后自愈
 - 长期驻留状态有专门的有界性与并发回归测试（`tests/unit/test_unattended_resource_bounds.py`）：
