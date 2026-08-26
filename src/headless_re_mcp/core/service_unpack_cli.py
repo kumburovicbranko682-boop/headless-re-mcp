@@ -138,6 +138,14 @@ class UnpackCliMixin:
                 session_id=session_id,
                 backend="upx",
             )
+        except BoundedCancelled:
+            # A caller cancel during unpack.auto's UPX phase is not a tool
+            # failure. unpack.auto runs this under a cancel scope and catches
+            # BoundedCancelled to record a clean cancelled state; the generic
+            # handler below would instead route it through _failure() -- which
+            # has no BoundedCancelled case, so it becomes an internal_error
+            # incident and a false upx_test_failed.
+            raise
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="upx")
 
@@ -304,6 +312,11 @@ class UnpackCliMixin:
                 session_id=session_id,
                 backend="upx",
             )
+        except BoundedCancelled:
+            # See unpack_upx_test: a cancel during unpack.auto's UPX phase must
+            # propagate as cancellation, not be folded into _failure() (which
+            # would report internal_error and a false upx_unpack_failed).
+            raise
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="upx")
 
