@@ -313,6 +313,8 @@ _CONSUMER_CURSOR_ERROR = "event_cursor_inconsistent"
 _MAX_WORKFLOW_EVENT_BUDGET = 100_000
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 _RUNTIME_CLOSE_LOCK_TIMEOUT_S = 2.0
+_RECOVERY_KNOWLEDGE_PAGE_SIZE = 500
+_RECOVERY_KNOWLEDGE_LIMIT = 10_000
 _RUN_CONTROL_TRANSITION_EVENTS: dict[str, frozenset[str]] = {
     "debug.resume": frozenset({"debug.resumed"}),
     "debug.step_into": frozenset({"debug.resumed", "debug.stepped"}),
@@ -664,6 +666,39 @@ class AnalysisService(
             entry["error"] = opened.error.model_dump(mode="json")
         return entry
 
+    def _snapshot_recovery_knowledge(self, session_id: str) -> JsonObject:
+        """Read every bounded knowledge page before the old session is closed."""
+        entries: list[object] = []
+        offset = 0
+        while len(entries) < _RECOVERY_KNOWLEDGE_LIMIT:
+            page = self.services.artifacts.list_knowledge(
+                session_id,
+                offset=offset,
+                limit=min(
+                    _RECOVERY_KNOWLEDGE_PAGE_SIZE,
+                    _RECOVERY_KNOWLEDGE_LIMIT - len(entries),
+                ),
+            )
+            batch = page.get("entries") if isinstance(page, dict) else None
+            if not isinstance(batch, list):
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "knowledge snapshot page has no entries array",
+                )
+            entries.extend(batch)
+            if page.get("has_more") is not True:
+                return {"entries": entries}
+            if not batch:
+                raise XdbgRpcError(
+                    "rpc_protocol_error",
+                    "knowledge snapshot made no progress while more entries were reported",
+                )
+            offset += len(batch)
+        raise XdbgRpcError(
+            "knowledge_snapshot_too_large",
+            f"recovery knowledge exceeds the {_RECOVERY_KNOWLEDGE_LIMIT} fact limit",
+        )
+
     def _recover_by_replacement(
         self,
         session_id: str,
@@ -673,7 +708,7 @@ class AnalysisService(
         """Rebuild a failed session as a fresh one over the same binary."""
         # Snapshot facts first: close_session may trim the old id, and a
         # surviving IDA worker still holds the database lock until that close.
-        knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
+        knowledge = self._snapshot_recovery_knowledge(session_id)
         closed = self.close_session(session_id)
         if not closed.ok:
             # A replacement can contend with exactly what failed to close:
