@@ -633,6 +633,11 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   钉住:cancel/timeout 把 WAITING 导航置为对应终态且恰好请求一次 ENSURE_PAUSED;对已了结的
   导航幂等、不再发第二个暂停命令;reset 禁用全部 intent 并规划物理 REMOVE、取消导航,空闲态
   reset 不规划任何工作。
+- **`normalize_base_url` 直测(provider 端点规范化)**：base_url 决定 api key 发往何处,却无
+  直接测试。钉住:裸 host 追加 `/v1`、已有 `/v1` 不重复、去尾斜杠、子路径追加 `/v1`、首尾
+  空白与 scheme 大小写归一;并显式验证 query 与 fragment 被丢弃(base_url 是前缀而非请求,
+  混进 `?token=...` 会随每次调用外泄/落日志);非绝对 http(s)(空、`ftp`、`file`、缺 scheme、
+  缺 host)一律拒绝;`ProviderProfile` 构造时即规范化,调用者无法绕过。
 - **workflow 运行台账首次落测**：`workflows/runtime.py` 是 service 每次调试器操作都推进、
   监控台直接渲染的状态台账,status 与 failure 必须步调一致(FAILED 必带结构化 failure、
   非 FAILED 不得残留 failure),此前无直接测试。钉住:新建台账 IDLE 且 id 唯一;四条

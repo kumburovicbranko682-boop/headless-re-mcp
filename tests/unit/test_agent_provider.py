@@ -8,9 +8,65 @@ import httpx
 import pytest
 
 import headless_re_mcp.agent.providers.openai_compatible as openai_compatible
-from headless_re_mcp.agent.config import ProviderProfile
+from headless_re_mcp.agent.config import ProviderProfile, normalize_base_url
 from headless_re_mcp.agent.providers.openai_compatible import OpenAICompatibleProvider
 from headless_re_mcp.agent.providers.retrying import is_retryable
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://api.example.com", "https://api.example.com/v1"),
+        ("https://api.example.com/", "https://api.example.com/v1"),
+        ("https://api.example.com/v1", "https://api.example.com/v1"),
+        ("https://api.example.com/v1/", "https://api.example.com/v1"),
+        ("https://api.example.com/openai", "https://api.example.com/openai/v1"),
+        ("  https://api.example.com/v1  ", "https://api.example.com/v1"),
+        ("HTTPS://api.example.com/v1", "https://api.example.com/v1"),
+        ("http://127.0.0.1:11434", "http://127.0.0.1:11434/v1"),
+    ],
+)
+def test_normalize_base_url_canonicalizes_the_endpoint(raw: str, expected: str) -> None:
+    """The endpoint the api key is sent to must be one canonical shape."""
+    assert normalize_base_url(raw) == expected
+
+
+def test_normalize_base_url_drops_query_and_fragment() -> None:
+    """A base url is a prefix, not a request: a stray ?token=... must not ride along.
+
+    urlsplit keeps query and fragment; if they survived into the stored profile
+    every request would carry them, and a credential pasted into the query would
+    be logged with every call. The rebuilt url must be scheme://netloc/path only.
+    """
+    assert normalize_base_url("https://api.example.com/v1?token=leak#frag") == (
+        "https://api.example.com/v1"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "   ",
+        "ftp://api.example.com",
+        "file:///etc/passwd",
+        "api.example.com/v1",  # no scheme
+        "https://",  # scheme but no host
+        "://api.example.com",
+    ],
+)
+def test_normalize_base_url_refuses_a_non_absolute_http_endpoint(bad: str) -> None:
+    """Anything that is not absolute http(s) is refused rather than guessed at."""
+    with pytest.raises(ValueError, match="base URL"):
+        normalize_base_url(bad)
+
+
+def test_provider_profile_normalizes_its_base_url_on_construction() -> None:
+    """ProviderProfile stores the canonical form, so callers cannot bypass it."""
+    profile = ProviderProfile("default", "https://api.example.com", "m", api_key="k")
+    assert profile.base_url == "https://api.example.com/v1"
+    with pytest.raises(ValueError, match="base URL"):
+        ProviderProfile("default", "ftp://api.example.com", "m", api_key="k")
 
 
 @pytest.mark.asyncio
