@@ -1252,14 +1252,43 @@ class AnalysisService(
                     )
         adb_backend = getattr(self, "_adb_backend", None)
         if adb_backend is not None:
-            with suppress(BaseException):
-                adb_backend.release_forwards()
+            try:
+                cleanup = adb_backend.release_forwards()
+                failed = cleanup.get("failed") if isinstance(cleanup, dict) else None
+                if isinstance(failed, list) and failed:
+                    error = RpcError(
+                        code="adb_cleanup_failed",
+                        message="one or more ADB forwards remain active",
+                        details={
+                            "backend": "adb",
+                            "failed_count": len(failed),
+                            # AdbBackend caps owned forwards at 32. Retain that
+                            # bound even for an injected implementation.
+                            "failed": failed[:32],
+                        },
+                        retryable=True,
+                    )
+                    errors.append(
+                        {
+                            "backend": "adb",
+                            "error": error.model_dump(mode="json"),
+                        }
+                    )
+            except BaseException as exc:
+                failure = _failure(exc, backend="adb")
+                if failure.error is not None:
+                    errors.append(
+                        {
+                            "backend": "adb",
+                            "error": failure.error.model_dump(mode="json"),
+                        }
+                    )
         if errors:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
                     code="close_all_failed",
-                    message="one or more sessions failed to close cleanly",
+                    message="one or more resources failed to close cleanly",
                     details={"closed": closed, "errors": errors},
                 ),
             )
