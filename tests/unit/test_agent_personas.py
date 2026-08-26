@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from headless_re_mcp.agent.personas import (
@@ -30,6 +31,27 @@ def test_persona_store_seeds_default_and_optional_seagull(tmp_path: Path) -> Non
     assert imported["current"].startswith("lab-notes-")
     store.delete(imported["current"])
     assert store.current_id() in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}
+
+
+def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Path) -> None:
+    root = tmp_path / "personas"
+    store = PersonaStore(root, seed_paths=())
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside prompt must stay private", encoding="utf-8")
+    orphan = root / "orphan.md"
+    orphan.write_text("unindexed prompt", encoding="utf-8")
+
+    for persona_id in ("../outside", "orphan"):
+        with pytest.raises(KeyError):
+            store.select(persona_id)
+        with pytest.raises(KeyError):
+            store.delete(persona_id)
+        assert "outside prompt" not in store.prompt_for(persona_id)
+        assert "unindexed prompt" not in store.prompt_for(persona_id)
+
+    assert outside.is_file()
+    assert orphan.is_file()
+    assert store.current_id() == DEFAULT_PERSONA_ID
 
 
 def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
