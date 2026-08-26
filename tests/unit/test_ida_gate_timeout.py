@@ -86,3 +86,62 @@ def test_idalib_gate_timeout_kills_the_process_the_worker_started(
     assert len(killed) >= 2
     for pid in killed:
         assert _pid_is_alive(int(pid)) is False
+
+
+def test_idalib_gate_timeout_shares_one_cleanup_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-timeout pipe drain and monitor join must not stack to seven seconds."""
+    binary = tmp_path / "sample.exe"
+    binary.write_bytes(b"MZ")
+    fake_ida = tmp_path / "IDA"
+    fake_ida.mkdir()
+    settings = replace(Settings.load(), ida_home=fake_ida)
+    clock = [0.0]
+    cleanup_timeouts: list[float] = []
+
+    class _TimedOutProcess:
+        pid = 4242
+        returncode: int | None = None
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            budget = float(timeout or 0.0)
+            cleanup_timeouts.append(budget)
+            clock[0] += budget
+            raise gate_mod.subprocess.TimeoutExpired("ida-gate", budget)
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    class _StuckMonitor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            cleanup_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _TimedOutProcess()
+    monkeypatch.setattr(gate_mod.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(gate_mod, "Thread", _StuckMonitor)
+    monkeypatch.setattr(gate_mod, "describe_process_windows", lambda _pid: ())
+    monkeypatch.setattr(gate_mod, "monotonic", lambda: clock[0], raising=False)
+
+    def terminate(child: _TimedOutProcess) -> list[int]:
+        child.kill()
+        return [child.pid]
+
+    monkeypatch.setattr(gate_mod, "terminate_process_tree", terminate)
+
+    result = run_idalib_gate(binary, settings, timeout=0.1)
+
+    assert result.ok is False
+    assert result.payload["killed_pids"] == [4242]
+    assert cleanup_timeouts[0] == 0.1
+    assert sum(cleanup_timeouts[1:]) <= 5.0
+    assert clock[0] <= 5.1
