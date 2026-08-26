@@ -48,13 +48,11 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   catalog 的 `write_allowed` 标志兜底:只读时抛 `PermissionError`。但路由只 catch 了
   `KeyError`/`ValueError`,这个 `PermissionError` 会漏成 `500 internal_error`。现在路由捕获它
   并返回承诺的 `403 write_disabled`。
-  （更正上一条记述:写面本身并未被写穿——`create_app` 一定会经 `register_agent_routes` 调
-  `bind_all_tools`,后者已从 `local_full_access` 设好 `write_allowed`,所以只读部署的写请求确实被
-  拒,只是拒的方式是 500 而非 403。此前把它记成"可写穿"是不准确的:那个结论来自把
-  `WebCommandAdapter` 脱离 `create_app` 单独构造的探针,漏掉了 `bind_all_tools` 这一步。）
-  另外 `create_app` 现在也显式从设置写 `write_allowed`,与 MCP server 对齐——这是防御性的,让
-  composition root 成为权威来源,不再依赖"agent 路由注册顺带设了它"这一副作用。补只读拒绝(403)、
-  完全访问仍放行、白名单/confirm 门仍先答的回归测试。
+  说明:写面本身并未被写穿——`create_app` 一定会经 `register_agent_routes` 调 `bind_all_tools`,
+  后者已从 `local_full_access` 设好 `write_allowed`,所以只读部署的写请求确实被拒,只是拒的
+  方式此前是 500 而非承诺的 403。另外 `create_app` 现在也显式从设置写 `write_allowed`,与 MCP
+  server 对齐——这是防御性的,让 composition root 成为权威来源,不再依赖"agent 路由注册顺带设
+  了它"这一副作用。补只读拒绝(403)、完全访问仍放行、白名单/confirm 门仍先答的回归测试。
 
 ### 修复（生成 MCP 配置的秘密清洗）
 
