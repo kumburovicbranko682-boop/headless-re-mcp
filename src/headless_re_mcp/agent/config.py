@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 from dataclasses import asdict, dataclass, field
@@ -26,6 +27,20 @@ ZEROFALL_IMPORT_FIELDS = frozenset(
         "contextCompressionThresholdPercent",
     }
 )
+
+
+def _windows_acl_principal() -> str:
+    try:
+        principal = os.getlogin().strip()
+    except OSError:
+        principal = ""
+    if not principal:
+        principal = os.environ.get("USERNAME", "").strip()
+    if not principal:
+        principal = getpass.getuser().strip()
+    if not principal:
+        raise OSError("current Windows account is unavailable")
+    return principal
 
 
 def normalize_base_url(value: str) -> str:
@@ -90,8 +105,9 @@ class ProviderConfigStore:
                 import subprocess
 
                 target = str(path)
+                principal = _windows_acl_principal()
                 grant = (
-                    f"{os.getlogin()}:(OI)(CI)F" if directory else f"{os.getlogin()}:F"
+                    f"{principal}:(OI)(CI)F" if directory else f"{principal}:F"
                 )
                 # icacls is looked up on PATH. A hanging stand-in plus
                 # subprocess.run's untimed drain after kill left this ACL

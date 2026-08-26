@@ -613,3 +613,30 @@ def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     ProviderConfigStore._best_effort_protect(target, timeout=0.8)
     elapsed = time.monotonic() - started
     assert elapsed < 10.0, f"deadline 0.8s, caller waited {elapsed:.1f}s"
+
+
+def test_windows_config_acl_uses_username_when_getlogin_has_no_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows services commonly have no login session for os.getlogin()."""
+    from headless_re_mcp.agent import config
+
+    calls: list[list[str]] = []
+
+    def no_login() -> str:
+        raise OSError("no controlling terminal")
+
+    def capture(command: list[str], **_: object) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(config.os, "name", "nt")
+    monkeypatch.setattr(config.os, "getlogin", no_login)
+    monkeypatch.setenv("USERNAME", "service-account")
+    monkeypatch.setattr(config, "run_bounded", capture)
+
+    config.ProviderConfigStore._best_effort_protect(tmp_path / "providers.json")
+
+    assert calls == [
+        ["icacls", str(tmp_path / "providers.json"), "/inheritance:r", "/grant:r", "service-account:F"]
+    ]
