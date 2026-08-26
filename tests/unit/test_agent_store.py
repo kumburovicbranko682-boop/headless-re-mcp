@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -486,6 +487,26 @@ def test_a_run_event_too_large_to_store_is_cut_not_written_whole(tmp_path: Path)
     assert fat.data["original_bytes"] > 8_192
     assert thin.data == {"delta": "ok"}
     assert store.path.stat().st_size < 100_000
+
+
+def test_run_event_preview_obeys_budget_after_json_escaping(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "escaped-event.db")
+    store.event_data_max_bytes = 1024
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="p", model=None, deadline_seconds=60
+    )
+
+    event = store.append_event(
+        run.id,
+        "message.delta",
+        {"delta": "\x00" * (64 * 1024)},
+    )
+
+    encoded = json.dumps(event.data, ensure_ascii=False).encode("utf-8")
+    assert len(encoded) <= 1024
+    assert event.data["truncated"] is True
+    assert event.data["summary"]
 
 
 def test_a_run_does_not_keep_every_streamed_delta(tmp_path: Path) -> None:
