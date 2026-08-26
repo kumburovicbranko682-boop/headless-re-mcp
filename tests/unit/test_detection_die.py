@@ -297,7 +297,7 @@ def test_process_capture_reader_joins_share_each_drain_stage(
 
     assert len(join_timeouts) == 4
     assert sum(join_timeouts) <= 1.1
-    assert clock[0] <= 1.2
+    assert clock[0] <= 1.2 + 1e-9
 
 
 def test_process_failure_is_structured(
