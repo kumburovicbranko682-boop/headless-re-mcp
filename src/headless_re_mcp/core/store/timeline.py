@@ -57,7 +57,28 @@ def append_session_timeline(
         "message": message,
         "details": dict(details or {}),
     }
-    line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        entry["write_failed"] = f"{type(exc).__name__}: {exc}"
+        return entry
+    if len(line) > _MAX_BYTES:
+        original_bytes = len(line)
+        entry = {
+            "at": entry["at"],
+            "event": "timeline.entry.truncated",
+            "message": "timeline entry exceeded the persistence limit",
+            "details": {
+                "original_event": str(event)[:128],
+                "original_bytes": original_bytes,
+                "max_bytes": _MAX_BYTES,
+                "truncated": True,
+            },
+        }
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(line) > _MAX_BYTES:
+            entry["write_failed"] = "ValueError: timeline persistence limit is too small"
+            return entry
     try:
         with _timeline_lock(path):
             path.parent.mkdir(parents=True, exist_ok=True)
