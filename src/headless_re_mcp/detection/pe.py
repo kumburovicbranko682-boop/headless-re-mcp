@@ -127,9 +127,10 @@ def scan_pe(
         raise PeFormatError(
             f"input exceeds the {max_file_size}-byte built-in scan limit: {resolved}"
         )
-    data = resolved.read_bytes()
-    # The file may have changed between stat() and read_bytes().  Re-check the
-    # actual bytes so a race cannot silently bypass the caller's bound.
+    # Do not use read_bytes() after the size check: the file can grow between
+    # those operations and force an unbounded allocation before we notice.
+    with resolved.open("rb") as stream:
+        data = stream.read(max_file_size + 1)
     if len(data) > max_file_size:
         raise PeFormatError(
             f"input exceeds the {max_file_size}-byte built-in scan limit: {resolved}"

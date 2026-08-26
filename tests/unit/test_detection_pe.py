@@ -481,6 +481,36 @@ def test_size_limit_is_inclusive_and_validated(tmp_path: Path) -> None:
         scan_pe(path, max_file_size=True)  # type: ignore[arg-type]
 
 
+def test_scan_reads_only_one_byte_beyond_the_configured_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "bounded-read.exe"
+    payload = _sample("x64", imports=False, tls=False, dotnet=False)
+    path.write_bytes(payload)
+    requested: list[int] = []
+    real_open = Path.open
+
+    class BoundedReader:
+        def __init__(self) -> None:
+            self.stream = real_open(path, "rb")
+
+        def __enter__(self) -> BoundedReader:
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.stream.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            requested.append(size)
+            return self.stream.read(size)
+
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: BoundedReader())
+
+    assert scan_pe(path, max_file_size=len(payload)).size == len(payload)
+    assert requested == [len(payload) + 1]
+
+
 def test_entry_point_at_section_end_is_not_executable(tmp_path: Path) -> None:
     pe = _SyntheticPe("x86")
     text = pe.add_section(
