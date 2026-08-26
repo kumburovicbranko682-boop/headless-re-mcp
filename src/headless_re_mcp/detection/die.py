@@ -349,12 +349,14 @@ def _capture_process(
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
         # truncate a short-lived process's final JSON bytes.
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         _close_pipe(stdout_pipe)
         _close_pipe(stderr_pipe)
-        stdout_thread.join(timeout=0.1)
-        stderr_thread.join(timeout=0.1)
+        close_drain_deadline = monotonic() + 0.1
+        stdout_thread.join(timeout=max(0.0, close_drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, close_drain_deadline - monotonic()))
 
     if returncode is None:
         returncode = -1
