@@ -76,6 +76,56 @@ def test_apk_sign_names_apk_not_signed_apk(
     assert "verify" in doc
 
 
+def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """SECURITY.md promises keystore passwords never reach error details.
+
+    apksigner echoes its argument vector (including ``--ks-pass pass:...``) into
+    stderr on usage errors, and that stderr is copied into the ApktoolError that
+    becomes the tool's error envelope. Both failure paths -- the sign call and
+    the verify call -- must scrub the password before it leaves the client.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+
+    def failing_sign(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        return "", f"usage: apksigner sign --ks-pass pass:{password} refused", 1
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_sign)
+    client = ApktoolClient(fake_tool, signer)
+    with pytest.raises(ApktoolError) as sign_failure:
+        client.sign(
+            apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+        )
+    sign_stderr = str(sign_failure.value.details["stderr"])
+    assert password not in sign_stderr
+    assert "***" in sign_stderr
+
+    def failing_verify(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        if "verify" in cmd:
+            return "", f"DOES NOT VERIFY (tried pass:{password})", 1
+        out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_verify)
+    with pytest.raises(ApktoolError) as verify_failure:
+        client.sign(
+            apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+        )
+    verify_stderr = str(verify_failure.value.details["stderr"])
+    assert password not in verify_stderr
+    assert "***" in verify_stderr
+
+
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

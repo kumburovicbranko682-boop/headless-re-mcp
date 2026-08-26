@@ -30,7 +30,7 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float, redact_from: int | None = None) -> tuple[str, str, int]:
+def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
@@ -45,7 +45,6 @@ def _run(cmd: list[str], *, timeout: float, redact_from: int | None = None) -> t
         ) from exc
     except OSError as exc:
         raise ApktoolError("backend_error", f"failed to launch {cmd[0]}: {exc}") from exc
-    del redact_from
     return (
         completed.stdout.decode("utf-8", errors="replace"),
         completed.stderr.decode("utf-8", errors="replace"),
