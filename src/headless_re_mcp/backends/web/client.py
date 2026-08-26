@@ -40,6 +40,8 @@ _MAX_CONSOLE_TEXT = 8 * 1024
 # from parking a worker thread forever when that happens.
 _CALL_TIMEOUT = 60.0
 _OPENING = object()
+_MAX_RUNNER_THREADS = 16
+_RUNNER_SLOTS = threading.BoundedSemaphore(_MAX_RUNNER_THREADS)
 
 
 class WebError(RuntimeError):
@@ -144,30 +146,44 @@ class _Runner:
     """
 
     def __init__(self, name: str) -> None:
-        self._queue: queue.SimpleQueue[tuple[Callable[[], Any], Future[Any]] | None] = (
-            queue.SimpleQueue()
-        )
-        self._wedged = False
-        self._closed = False
-        self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
-        self._thread.start()
+        slots = _RUNNER_SLOTS
+        if not slots.acquire(blocking=False):
+            raise WebError(
+                "resource_exhausted",
+                f"all {_MAX_RUNNER_THREADS} browser runner threads are still occupied",
+            )
+        self._slot = slots
+        try:
+            self._queue: queue.SimpleQueue[
+                tuple[Callable[[], Any], Future[Any]] | None
+            ] = queue.SimpleQueue()
+            self._wedged = False
+            self._closed = False
+            self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
+            self._thread.start()
+        except BaseException:
+            slots.release()
+            raise
 
     @property
     def wedged(self) -> bool:
         return self._wedged
 
     def _loop(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                return
-            work, future = item
-            if not future.set_running_or_notify_cancel():
-                continue
-            try:
-                future.set_result(work())
-            except BaseException as exc:  # noqa: BLE001 - handed to the caller
-                future.set_exception(exc)
+        try:
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    return
+                work, future = item
+                if not future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    future.set_result(work())
+                except BaseException as exc:  # noqa: BLE001 - handed to the caller
+                    future.set_exception(exc)
+        finally:
+            self._slot.release()
 
     def call(self, work: Callable[[], T], *, timeout: float = _CALL_TIMEOUT) -> T:
         if self._closed:
