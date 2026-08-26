@@ -652,13 +652,20 @@ class FridaClient:
             pids.append(spawned)
             try:
                 _invoke(device.resume, spawned, timeout=deadline)
-            except FridaError:
-                with contextlib.suppress(Exception):
-                    device.kill(spawned)
-                raise
             except Exception as exc:  # noqa: BLE001
-                with contextlib.suppress(Exception):
+                try:
                     device.kill(spawned)
+                except Exception as kill_exc:
+                    raise FridaError(
+                        "frida_spawn_cleanup_failed",
+                        f"spawned pid {spawned} could not be killed after resume failed",
+                        package=pkg,
+                        pid=spawned,
+                        resume_error=f"{type(exc).__name__}: {exc}",
+                        kill_error=f"{type(kill_exc).__name__}: {kill_exc}",
+                    ) from kill_exc
+                if isinstance(exc, FridaError):
+                    raise
                 if _is_timeout(exc):
                     raise _timeout_error(deadline) from exc
                 raise FridaError(
