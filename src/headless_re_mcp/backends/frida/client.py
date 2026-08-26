@@ -483,16 +483,25 @@ class FridaClient:
             try:
                 script = session.create_script(source)
                 script.load()
-                return {
-                    "pid": pid,
-                    "template": template,
-                    "loaded": True,
-                    "device": "local",
-                    **_PROBE_DISCLOSURE,
-                }
-            finally:
+            except BaseException:
                 with contextlib.suppress(Exception):
                     session.detach()
+                raise
+            try:
+                session.detach()
+            except Exception as exc:
+                raise FridaError(
+                    "frida_detach_failed",
+                    f"hook probe detach failed: {type(exc).__name__}: {exc}",
+                    pid=pid,
+                ) from exc
+            return {
+                "pid": pid,
+                "template": template,
+                "loaded": True,
+                "device": "local",
+                **_PROBE_DISCLOSURE,
+            }
 
         try:
             return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
