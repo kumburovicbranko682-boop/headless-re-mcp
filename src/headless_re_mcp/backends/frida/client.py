@@ -321,15 +321,19 @@ class FridaClient:
             )
         session = self._attach_local(pid, timeout=timeout)
         try:
-            return {
-                "pid": pid,
-                "attached": True,
-                "device": "local",
-                "note": "probe attach; detached immediately",
-            }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+            session.detach()
+        except Exception as exc:
+            raise FridaError(
+                "frida_detach_failed",
+                f"probe detach failed: {type(exc).__name__}: {exc}",
+                pid=pid,
+            ) from exc
+        return {
+            "pid": pid,
+            "attached": True,
+            "device": "local",
+            "note": "probe attach; detached immediately",
+        }
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
