@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from dataclasses import asdict, dataclass, field
@@ -57,6 +58,17 @@ class ProviderProfile:
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
+        parsed = urlsplit(self.base_url)
+        if self.api_key and parsed.scheme == "http":
+            hostname = parsed.hostname or ""
+            try:
+                loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = hostname.casefold() == "localhost"
+            if not loopback:
+                raise ValueError(
+                    "provider API keys require HTTPS unless the host is loopback"
+                )
         if not self.id.strip() or not self.model.strip():
             raise ValueError("profile id and model are required")
         if not 10 <= self.context_compression_threshold_percent <= 95:
