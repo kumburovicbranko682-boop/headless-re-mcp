@@ -21,8 +21,15 @@ def load_or_create_web_token(*, path: Path | None = None) -> str:
     token_path = path or web_token_path()
     token_path.parent.mkdir(parents=True, exist_ok=True)
     if token_path.is_file():
-        raw = json.loads(token_path.read_text(encoding="utf-8"))
-        token = raw.get("token")
+        # A truncated or hand-mangled file must regenerate, not crash the
+        # console at startup -- the same recovery config.json already gets.
+        # Regenerating is safe: this is the server's own credential, so a new
+        # value only invalidates stale sessions.
+        try:
+            raw = json.loads(token_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = None
+        token = raw.get("token") if isinstance(raw, dict) else None
         if isinstance(token, str) and len(token) >= 24:
             return token
     token = secrets.token_urlsafe(32)

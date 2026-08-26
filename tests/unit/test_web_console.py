@@ -411,6 +411,38 @@ def test_a_weak_token_file_is_replaced_with_a_strong_private_one(tmp_path: Path)
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        pytest.param('{"token": "test-token-value-0123456789', id="truncated-json"),
+        pytest.param("not json at all", id="garbage"),
+        pytest.param('"a-bare-string-not-an-object"', id="non-dict-json"),
+        pytest.param("[1, 2, 3]", id="list-json"),
+    ],
+)
+def test_a_corrupt_token_file_regenerates_instead_of_crashing(
+    tmp_path: Path, damaged: str
+) -> None:
+    """A half-written token file must not make the console unbootable.
+
+    write_text is not atomic, so a crash mid-write leaves truncated JSON; the
+    loader used to feed that straight to json.loads (or call .get on a
+    non-dict) and raise, and the console then failed at startup until someone
+    deleted the file by hand. config.json already treats corruption as
+    replace-not-fatal; the token file must match, and regenerating is safe
+    because this is the server's own credential.
+    """
+    path = tmp_path / "web_token.json"
+    path.write_text(damaged, encoding="utf-8")
+
+    token = load_or_create_web_token(path=path)
+
+    assert len(token) >= 24
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Redirect config persistence to a temp path so the gate never writes the
     # real user config (which would leak workspace_profile into other tests).
