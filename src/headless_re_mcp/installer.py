@@ -227,7 +227,7 @@ def extract_dependency_release(
         bundle_root = _find_bundle_root(staging)
         if bundle_root is None:
             raise InstallError("MANIFEST.json missing from dependency release")
-        manifest = json.loads((bundle_root / "MANIFEST.json").read_text(encoding="utf-8-sig"))
+        manifest = _load_bundle_manifest(bundle_root / "MANIFEST.json")
         if manifest.get("never_bundles_ida") is not True:
             raise InstallError("dependency bundle does not prove that IDA is excluded")
         if final.exists():
@@ -252,6 +252,16 @@ def _find_bundle_root(root: Path) -> Path | None:
     return matches[0].parent.resolve() if len(matches) == 1 else None
 
 
+def _load_bundle_manifest(path: Path) -> JsonObject:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"dependency bundle manifest is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise InstallError("dependency bundle manifest root must be an object")
+    return cast(JsonObject, raw)
+
+
 def configure_dependency_bundle(bundle_root: Path) -> JsonObject:
     """Validate the bundle manifest and persist only executable paths it declares."""
 
@@ -259,7 +269,7 @@ def configure_dependency_bundle(bundle_root: Path) -> JsonObject:
     manifest_path = root / "MANIFEST.json"
     if not manifest_path.is_file():
         raise InstallError(f"dependency MANIFEST.json not found under {root}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    manifest = _load_bundle_manifest(manifest_path)
     if manifest.get("never_bundles_ida") is not True:
         raise InstallError("refusing a dependency bundle that may contain IDA")
     included = manifest.get("included")

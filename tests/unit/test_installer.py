@@ -169,3 +169,23 @@ def test_download_rejects_an_insecure_override_before_network_access(
             expected_size=1,
         )
 
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"[]", "root must be an object"),
+        (b"\xff", "manifest is unreadable"),
+    ],
+)
+def test_configure_normalizes_corrupt_bundle_manifest_errors(
+    tmp_path: Path,
+    payload: bytes,
+    error: str,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "MANIFEST.json").write_bytes(payload)
+
+    with pytest.raises(installer.InstallError, match=error):
+        installer.configure_dependency_bundle(bundle)
+
