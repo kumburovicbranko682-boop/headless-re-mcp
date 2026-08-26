@@ -3059,9 +3059,42 @@ class AnalysisService(
         wait_for: set[str] | None = None,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not isfinite(timeout)
+            or not 0 < timeout <= 30.0
+        ):
+            return _failure(
+                ValueError("timeout must be greater than 0 and at most 30 seconds"),
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
+        requested_timeout = float(timeout)
+        deadline = monotonic() + requested_timeout
+
+        def remaining() -> float:
+            value = deadline - monotonic()
+            if value <= 0:
+                raise XdbgRpcError(
+                    "timeout",
+                    f"{method} exceeded its {requested_timeout:g}s deadline",
+                    details={"method": method, "timeout_seconds": requested_timeout},
+                    retryable=True,
+                )
+            return value
+
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with runtime.lock:
+            lock_acquired = runtime.lock.acquire(timeout=remaining())
+            if not lock_acquired:
+                raise XdbgRpcError(
+                    "timeout",
+                    f"{method} timed out acquiring the runtime lock",
+                    details={"method": method, "timeout_seconds": requested_timeout},
+                    retryable=True,
+                )
+            try:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 if method not in runtime.worker.capabilities:
                     raise XdbgRpcError(
@@ -3085,29 +3118,31 @@ class AnalysisService(
                     marker = dynamic.read_events(
                         0,
                         limit=1,
-                        timeout=min(timeout, 5.0),
+                        timeout=min(remaining(), 5.0),
                     )
                     after_event_sequence = marker.latest_sequence
                 try:
                     submitted = runtime.worker.request(
                         method,
                         params,
-                        timeout=min(timeout, 30.0),
+                        timeout=min(remaining(), 30.0),
                     )
                 except XdbgRpcError as exc:
                     submitted = self._absorb_redundant_run_control(
-                        dynamic, method, wait_for, exc, timeout
+                        dynamic, method, wait_for, exc, remaining()
                     )
                 state = submitted
                 if wait_for is not None:
                     state = dynamic.wait_for_state(
                         wait_for,
-                        timeout=timeout,
+                        timeout=remaining(),
                         after_event_sequence=after_event_sequence,
                         transition_event_kinds=transition_event_kinds,
                     )
                 if method.startswith("debug."):
                     self._observe_debuggee_state(session_id, state)
+            finally:
+                runtime.lock.release()
             data = state if wait_for is None else {"submitted": submitted, "state": state}
             return _success(
                 data,
