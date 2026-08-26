@@ -8,8 +8,14 @@
 ## 开发环境
 
 完整栈只在 Windows 上可用(IDA idalib、x64dbg headless),但**日常开发不需要**:
-lint、mypy、单元测试与 OpenAI 桥接导出在 Linux/macOS 上照常运行,CI 的 quality job
+lint、单元测试与 OpenAI 桥接导出在 Linux/macOS 上照常跑,CI 的 quality job
 也只装 `.[test,dev,web]`,不装任何商业后端。
+
+一个平台差异要知道:CI 的 quality job 跑在 **windows-latest**,`python -m mypy` 的
+权威门也在那里(零错误)。在 Linux/macOS 上直接跑 mypy 会额外报出若干 **Windows 专属
+stdlib 属性**的假阳性(`msvcrt.locking`/`get_last_error`、`ctypes.windll` 等)——这是
+mypy 在非 Windows 上解析不到这些属性所致,不是真错误;同理少数单元测试是 Windows 专属,
+在其它平台可能失败或跳过。判定类型是否真的干净,以 Windows 为准。
 
 ```bash
 python -m pip install -e ".[test,dev,web]"
@@ -24,7 +30,7 @@ CI(`.github/workflows/ci.yml`)对每个 PR 跑下面这套,提交前请在本地
 
 ```bash
 python -m ruff check src tests fixtures openai_bridge.py
-python -m mypy                          # strict,零错误
+python -m mypy                          # strict;零错误以 Windows 为准(见上「平台差异」)
 python -m compileall -q src
 python -m pip check
 python -m pytest tests/unit -q -rs      # -rs 列出每个 skip 的原因

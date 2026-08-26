@@ -492,6 +492,12 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   （`agent_auto_approve_effects` / `agent_auto_approve_tools` / `agent_never_auto_approve`）
   连同环境变量与效果列成表，并写明未配置=packed-analysis 预设、显式空列表=fail-closed
   两条易踩坑规则。
+- 修正文档口径：README 里「敌意输入下全部返回信封」的工具数从过时的 262 改为 264（=全部
+  265 个 MCP 工具减去会真删数据的 `artifacts.gc`），并改述为「绑定工具数 − 1」的不变式，
+  跟 `test_tool_fault_contract.py` 的断言一致，避免再随目录增长漂移。
+- `CONTRIBUTING.md` 补上平台差异说明：CI 的 quality job 跑在 windows-latest，`python -m mypy`
+  的权威零错误门在 Windows；在 Linux/macOS 直接跑 mypy 会报若干 Windows 专属 stdlib 属性
+  （`msvcrt`/`ctypes.windll` 等）的假阳性，属环境差异而非真错误。
 
 ### 测试（契约护栏）
 
