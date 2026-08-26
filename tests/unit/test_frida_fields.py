@@ -169,6 +169,40 @@ def test_frida_exports_does_not_hide_a_failed_detach() -> None:
     assert caught.value.details["pid"] == 11
 
 
+def test_frida_memory_read_does_not_hide_a_failed_detach() -> None:
+    """Returned bytes must not conceal their still-attached native session."""
+
+    class _ReadApi:
+        def read(self, address: int, size: int) -> bytes:
+            del address, size
+            return b"\x90"
+
+    class _ReadScript:
+        exports_sync = _ReadApi()
+
+        def load(self) -> None:
+            return None
+
+    class _LeakedSession:
+        def create_script(self, source: str) -> _ReadScript:
+            del source
+            return _ReadScript()
+
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid: _LeakedSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(13, 0x1000, 1, allowed_pid=13)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 13
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
