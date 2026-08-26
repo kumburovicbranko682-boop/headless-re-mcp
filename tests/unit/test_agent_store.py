@@ -35,6 +35,43 @@ def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     assert [event.seq for event in events] == sorted({event.seq for event in events})
 
 
+def test_canonical_args_hash_is_key_order_independent() -> None:
+    """The approval gate compares two independently computed hashes.
+
+    The orchestrator hashes the arguments it proposed; the console hashes the
+    arguments it reconstructs to approve. Both call canonical_args_sha256, so
+    the hash must depend on the argument *values*, not on the key order a JSON
+    serializer happened to use -- otherwise a reordered but identical payload
+    would fail the mismatch check and block a legitimate approval. Nesting must
+    canonicalize too, and a genuinely different value must still differ.
+    """
+    a = {"session_id": "s", "value": 7, "opts": {"x": 1, "y": 2}}
+    reordered = {"opts": {"y": 2, "x": 1}, "value": 7, "session_id": "s"}
+    assert canonical_args_sha256(a) == canonical_args_sha256(reordered)
+
+    changed = {"session_id": "s", "value": 8, "opts": {"x": 1, "y": 2}}
+    assert canonical_args_sha256(a) != canonical_args_sha256(changed)
+
+
+def test_a_reordered_argument_payload_still_approves_the_call(tmp_path: Path) -> None:
+    """End-to-end: recomputing the hash on reordered args matches the stored one."""
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+    run = store.create_run(thread.id, provider_profile="default", model="fake", deadline_seconds=30)
+    store.transition(run.id, RunStatus.STREAMING)
+
+    proposed = store.propose_tool_call(
+        run.id, "call-1", "dynamic.resume", {"session_id": "s", "value": 7}, ["state_change"]
+    )
+    # A client that rebuilt the same arguments in a different key order arrives
+    # at the identical canonical hash the store recorded, so approval matches.
+    client_hash = canonical_args_sha256({"value": 7, "session_id": "s"})
+    assert client_hash == proposed["args_sha256"]
+    decided = store.decide_tool_call(run.id, "call-1", client_hash, approved=True)
+    assert decided["approved"] is True
+    assert store.consume_approval(run.id, "call-1", client_hash)
+
+
 def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "thread-events.db")
     thread = store.create_thread()
