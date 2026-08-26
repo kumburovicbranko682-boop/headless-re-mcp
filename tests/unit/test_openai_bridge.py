@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -201,3 +202,43 @@ def test_the_export_covers_every_mcp_tool_and_matches_the_write_classification()
     # A non-empty write set -- an empty one would mean everything looked
     # auto-runnable to a bridge that trusts this list.
     assert catalog_writes
+
+
+def test_cli_prints_the_full_export_as_json_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`python openai_bridge.py` is the shape a caller pipes into its client."""
+    from headless_re_mcp.openai_bridge import main
+
+    assert main([]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == len(payload["tools"]) == len(payload["name_map"])
+    assert payload["count"] > 0
+
+
+def test_cli_names_only_drops_the_tool_bodies(capsys: pytest.CaptureFixture[str]) -> None:
+    """--names-only is the CI smoke; it must stay just the map and the count."""
+    from headless_re_mcp.openai_bridge import main
+
+    assert main(["--names-only"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"name_map", "count"}
+    assert payload["count"] == len(payload["name_map"])
+    assert payload["count"] > 0
+
+
+def test_cli_output_writes_a_file_and_reports_it(
+    tmp_path: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from headless_re_mcp.openai_bridge import main
+
+    out = tmp_path / "nested" / "openai_tools.json"
+    assert main(["--output", str(out)]) == 0
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["count"] == len(written["tools"]) > 0
+    printed = capsys.readouterr().out
+    assert f"wrote {written['count']}" in printed
+    # The file path is reported, and the tool bodies went to disk, not stdout.
+    assert str(out) in printed
+    assert "\"type\": \"function\"" not in printed
