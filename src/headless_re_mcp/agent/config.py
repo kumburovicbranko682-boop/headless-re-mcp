@@ -35,6 +35,8 @@ def normalize_base_url(value: str) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("provider base URL must be absolute http(s)")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("provider base URL must not include credentials")
     path = parsed.path.rstrip("/")
     if not path.endswith("/v1"):
         path = f"{path}/v1" if path else "/v1"
