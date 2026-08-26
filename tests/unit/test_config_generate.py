@@ -35,6 +35,79 @@ def test_stdio_config_has_no_secret_fields(tmp_path: Path) -> None:
     assert "serve" in server["args"]
 
 
+def test_strip_secrets_reaches_dicts_nested_in_lists() -> None:
+    """The doctor report keeps every probe inside a list.
+
+    A dict-only walk stripped a top-level "token" but let the identical key
+    pass through untouched one level down inside ``probes``, so the exported
+    bundle carried whatever a probe had put under a secret-named detail.
+    """
+    from headless_re_mcp.config_generate import _strip_secrets
+
+    doctor = {
+        "ready": True,
+        "token": "topsecret",
+        "probes": [
+            {
+                "name": "x",
+                "details": {
+                    "rpc_token": "SUPERSECRET",
+                    "license": "IDA-ABC-123",
+                    "executable": "C:/tools/x.exe",
+                },
+            }
+        ],
+    }
+    cleaned = _strip_secrets(doctor)
+    blob = json.dumps(cleaned)
+    assert "SUPERSECRET" not in blob
+    assert "IDA-ABC-123" not in blob
+    assert "topsecret" not in blob
+    # Non-secret detail survives untouched.
+    assert cleaned["probes"][0]["details"]["executable"] == "C:/tools/x.exe"
+
+
+def test_exported_doctor_snapshot_carries_no_secret_probe_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: a secret-keyed probe detail must not reach the export."""
+    import headless_re_mcp.config_generate as config_generate
+
+    class _FakeReport:
+        ready = True
+
+        @staticmethod
+        def to_json() -> str:
+            return json.dumps(
+                {
+                    "ready": True,
+                    "probes": [
+                        {
+                            "name": "ida_idalib",
+                            "status": "ready",
+                            "summary": "ok",
+                            "details": {"license": "IDA-ABC-123", "home": "C:/IDA"},
+                            "remediation": None,
+                        }
+                    ],
+                }
+            )
+
+    monkeypatch.setattr(config_generate, "run_doctor", lambda _settings: _FakeReport())
+    bundle = generate_config_bundle(
+        _settings(tmp_path),
+        python_path=Path("python"),
+        config_path=tmp_path / "config.json",
+        run_doctor_check=False,
+        include_examples=False,
+        embed_discovered_env=True,
+    )
+    assert bundle["ok"] is True
+    blob = json.dumps(bundle["doctor"])
+    assert "IDA-ABC-123" not in blob
+    assert bundle["doctor"]["probes"][0]["details"]["home"] == "C:/IDA"
+
+
 def test_generate_skips_doctor_when_requested(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     bundle = generate_config_bundle(

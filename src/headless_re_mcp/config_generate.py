@@ -67,11 +67,20 @@ def _strip_secrets(data: JsonObject) -> JsonObject:
     for key, value in data.items():
         if key.casefold() in _SECRET_KEYS:
             continue
-        if isinstance(value, dict):
-            cleaned[key] = _strip_secrets(value)
-        else:
-            cleaned[key] = value
+        cleaned[key] = _strip_secret_values(value)
     return cleaned
+
+
+def _strip_secret_values(value: Any) -> Any:
+    # The doctor report nests every probe inside a list ("probes"), so a
+    # dict-only walk never reached probe details: a "rpc_token" or "license"
+    # detail sailed through into the exported bundle while the very same key
+    # one level up was stripped. Lists must be walked too.
+    if isinstance(value, dict):
+        return _strip_secrets(value)
+    if isinstance(value, list):
+        return [_strip_secret_values(item) for item in value]
+    return value
 
 
 def _path_exists(path: Path | None) -> bool:
