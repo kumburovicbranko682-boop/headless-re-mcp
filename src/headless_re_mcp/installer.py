@@ -14,6 +14,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from headless_re_mcp.config import (
     Settings,
@@ -36,9 +37,28 @@ class InstallError(RuntimeError):
 
 
 def load_dependency_release() -> JsonObject:
-    payload = cast(JsonObject, json.loads(_RELEASE_MANIFEST.read_text(encoding="utf-8")))
+    try:
+        raw = json.loads(_RELEASE_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"dependency release manifest is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise InstallError("dependency release manifest root must be an object")
+    payload = cast(JsonObject, raw)
     if payload.get("schema_version") != 1:
         raise InstallError("unsupported dependency release manifest")
+    for field in ("tag", "asset"):
+        value = payload.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value in {".", ".."}
+            or "/" in value
+            or "\\" in value
+        ):
+            raise InstallError(f"dependency release manifest has an invalid {field}")
+    size = payload.get("size")
+    if type(size) is not int or size <= 0:
+        raise InstallError("dependency release manifest has an invalid size")
     digest = str(payload.get("sha256") or "").lower()
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise InstallError("dependency release manifest has an invalid SHA-256")
@@ -47,7 +67,22 @@ def load_dependency_release() -> JsonObject:
     urls = payload.get("download_urls")
     if not isinstance(urls, list) or not urls:
         raise InstallError("dependency release has no download URLs")
+    if any(not isinstance(url, str) or not _is_safe_download_url(url) for url in urls):
+        raise InstallError("dependency release has an invalid download URL")
     return payload
+
+
+def _is_safe_download_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -59,6 +94,8 @@ def _sha256(path: Path) -> str:
 
 
 def _download_one(url: str, destination: Path, *, expected_size: int) -> None:
+    if not _is_safe_download_url(url):
+        raise InstallError("dependency download URL must be credential-free HTTPS")
     request = urllib.request.Request(
         url,
         headers={

@@ -102,3 +102,70 @@ def test_extract_rejects_zip_slip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         installer.extract_dependency_release(archive, tmp_path / "installed")
     assert not (tmp_path / "escaped.txt").exists()
 
+
+@pytest.mark.parametrize(
+    ("update", "error"),
+    [
+        ({"tag": "../escape"}, "invalid tag"),
+        ({"asset": r"..\escape.zip"}, "invalid asset"),
+        ({"size": 0}, "invalid size"),
+        ({"size": True}, "invalid size"),
+        ({"download_urls": ["http://mirror.invalid/deps.zip"]}, "invalid download URL"),
+        (
+            {"download_urls": ["https://token@mirror.invalid/deps.zip"]},
+            "invalid download URL",
+        ),
+    ],
+)
+def test_release_manifest_rejects_unsafe_paths_sizes_and_urls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    update: dict[str, object],
+    error: str,
+) -> None:
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "tag": "release",
+        "asset": "deps.zip",
+        "size": 1,
+        "sha256": "0" * 64,
+        "never_bundles_ida": True,
+        "download_urls": ["https://mirror.invalid/deps.zip"],
+    }
+    manifest.update(update)
+    path = tmp_path / "dependency_release.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match=error):
+        installer.load_dependency_release()
+
+
+def test_release_manifest_requires_an_object_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "dependency_release.json"
+    path.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match="root must be an object"):
+        installer.load_dependency_release()
+
+
+def test_download_rejects_an_insecure_override_before_network_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(installer.urllib.request, "urlopen", fail_network)
+
+    with pytest.raises(installer.InstallError, match="credential-free HTTPS"):
+        installer._download_one(
+            "http://mirror.invalid/deps.zip",
+            tmp_path / "deps.zip",
+            expected_size=1,
+        )
+
