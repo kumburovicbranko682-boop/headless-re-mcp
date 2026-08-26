@@ -478,6 +478,24 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
 
+### 新增（项目文档）
+
+- 补充 `SECURITY.md`（围绕受限工具面界定漏洞范围与私密上报流程）与 `CONTRIBUTING.md`
+  （质量门命令、测试目录与命名契约、加新工具的硬规矩）。
+
+### 测试（契约护栏）
+
+- **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
+  `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
+  分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
+- **工具面边界契约**：禁止 `dynamic.command` / `device.shell` / `web.evaluate` 等自由命令 /
+  eval 工具重现，每个工具须带非空描述与对象型 input_schema，读写分级唯一且互斥。
+- **四个复制的 `_capture_process` 由共享契约固定**（DIE / Exeinfo PE / UPX /
+  de4dot+NETReactorSlayer）：headless 启动（Windows 上 `CREATE_NO_WINDOW`、不继承 stdin）与
+  缺执行文件时的结构化 `executable_not_found`，一处修好不会漏掉其它三处。
+- **OpenAI 导出**：断言每个 MCP 工具都被导出且 `write_tools` 映射回来恰好等于 catalog 的写
+  集合，桥接方的审批清单不会与写策略护栏漂移。
+
 ## [0.2.1] - 2026-08-12
 
 0.2.0 的安装包无法使用，这个版本修掉它，并带上一轮代码审计发现的自愈缺陷。
