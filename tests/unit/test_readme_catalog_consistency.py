@@ -60,3 +60,25 @@ def test_the_hostile_input_coverage_count_is_total_minus_the_gc_exclusion() -> N
     claim = _single_match(r"(\d+) 个工具（全部 (\d+) 个 MCP 工具", text)
     assert int(claim.group(2)) == total
     assert int(claim.group(1)) == total - 1
+
+
+def test_the_headline_version_matches_pyproject_and_build_info() -> None:
+    """A version bump must move the README headline, not just pyproject.
+
+    The front-line banner carries the version in fullwidth parens, e.g.
+    ``（v0.2.1）``; the release-tag URL ``v0.1.0-deps`` further down is not a
+    version claim and must stay untouched. Pin the banner to pyproject's version
+    and to what build_info() reports at runtime, so all three move together.
+    """
+    import re
+
+    from headless_re_mcp.core.readiness import build_info
+
+    pyproject = (README.parent / "pyproject.toml").read_text(encoding="utf-8")
+    project_version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
+    assert project_version is not None, "pyproject lost its version field"
+    version = project_version.group(1)
+
+    banner = _single_match(r"（v(\d+\.\d+\.\d+)）", README.read_text(encoding="utf-8"))
+    assert banner.group(1) == version, "README headline version drifted from pyproject"
+    assert build_info().get("version") == version, "build_info version drifted from pyproject"
