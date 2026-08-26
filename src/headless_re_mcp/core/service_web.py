@@ -43,6 +43,7 @@ class WebAnalysisMixin:
     def _web_artifact_dir(self, session_id: str) -> Path:
         if not session_id or Path(session_id).name != session_id:
             raise WebError("invalid_params", "invalid session id")
+        self.registry.get(session_id)
         root = self.settings.artifact_root.expanduser().resolve() / "web" / session_id
         root.mkdir(parents=True, exist_ok=True)
         return root
