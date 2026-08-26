@@ -18,6 +18,8 @@ Windows, so it runs and gates on both.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.core.results import _failure
 from headless_re_mcp.detection.exeinfope import (
@@ -101,6 +103,29 @@ def test_exeinfope_process_error_is_process_failed_not_internal_error() -> None:
     assert result.error.code == "process_failed"
     assert result.error.code != "internal_error"
     assert "incident_id" not in result.error.details
+
+
+def test_exeinfope_retryable_flag_travels_through_the_envelope() -> None:
+    """The branch forwards exc.retryable; an unattended caller acts on it.
+
+    A timeout is worth retrying (the tool was healthy, the deadline was not);
+    a missing executable is not -- retrying cannot install it. Both flags are
+    set at the raise site and must survive into the envelope unchanged.
+    """
+    from headless_re_mcp.detection.exeinfope import (
+        ExeinfopeExecutableNotFoundError,
+        ExeinfopeTimeoutError,
+    )
+
+    timed_out = _failure(ExeinfopeTimeoutError(30.0), session_id="s")
+    assert timed_out.error is not None
+    assert timed_out.error.code == "timeout"
+    assert timed_out.error.retryable is True
+
+    missing = _failure(ExeinfopeExecutableNotFoundError(Path("/opt/exeinfope")))
+    assert missing.error is not None
+    assert missing.error.code == "executable_not_found"
+    assert missing.error.retryable is False
 
 
 def test_a_genuinely_unexpected_error_is_still_an_internal_error() -> None:
