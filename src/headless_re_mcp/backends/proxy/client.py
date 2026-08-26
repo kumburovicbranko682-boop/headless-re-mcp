@@ -381,13 +381,27 @@ class ProxyBackend:
             inst = self._instances.get(session_id)
         if inst is None:
             return {"running": False}
-        return {
-            "running": True,
+        thread = getattr(inst, "_thread", None)
+        failure = getattr(inst, "_error", None)
+        running = (
+            bool(thread is not None and thread.is_alive() and failure is None)
+            if hasattr(inst, "_thread")
+            else True
+        )
+        status: JsonObject = {
+            "running": running,
             "host": inst.host,
             "port": inst.port,
             "flow_count": inst.recorder.count(),
             "retained_max": _MAX_FLOWS,
         }
+        if not running:
+            status["error"] = (
+                f"{type(failure).__name__}: {failure}"
+                if failure is not None
+                else "proxy worker thread is not alive"
+            )
+        return status
 
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
