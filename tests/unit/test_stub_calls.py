@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.iat_rank import analyze_import_entries, gate_iat_rebuild
 from headless_re_mcp.unpack import stub_calls
+from headless_re_mcp.unpack.iat_rank import analyze_import_entries, gate_iat_rebuild
 from headless_re_mcp.unpack.stub_calls import (
     analyze_dump_stub_coupling,
     code_section_ranges,
