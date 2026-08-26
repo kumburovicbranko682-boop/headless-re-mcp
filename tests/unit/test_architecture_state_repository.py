@@ -407,6 +407,14 @@ def test_repository_gc_drops_untrusted_rows_without_unlinking_external_files(
     assert newest.is_file()
 
 
+@pytest.mark.parametrize("invalid", (None, True, "1024", 1.5, 0, -1))
+def test_repository_gc_rejects_non_positive_or_non_integer_budgets(
+    repository: AnalysisRepository, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        repository.gc_artifacts(max_total_bytes=invalid)  # type: ignore[arg-type]
+
+
 def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:
     image = bytearray(0x200)
     image[:2] = b"MZ"

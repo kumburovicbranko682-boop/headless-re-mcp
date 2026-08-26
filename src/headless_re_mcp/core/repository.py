@@ -278,6 +278,8 @@ class SqliteAnalysisRepository:
         return self.store.describe_artifact(artifact_id)
 
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:
+        if type(max_total_bytes) is not int or max_total_bytes < 1:
+            raise ValueError("max_total_bytes must be a positive integer")
         with self.transaction():
             return self.store.gc_artifacts(max_total_bytes=max_total_bytes)
 

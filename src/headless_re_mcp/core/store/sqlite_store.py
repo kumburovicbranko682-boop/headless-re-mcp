@@ -629,6 +629,8 @@ class SessionStore:
         Skipping keeps the row, so the artifact stays readable if the handle was
         the only problem and is collected on a later pass.
         """
+        if type(max_total_bytes) is not int or max_total_bytes < 1:
+            raise ValueError("max_total_bytes must be a positive integer")
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, path, size FROM artifacts ORDER BY created_at ASC"
