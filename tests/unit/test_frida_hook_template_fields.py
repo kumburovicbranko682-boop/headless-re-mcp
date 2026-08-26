@@ -93,3 +93,35 @@ def test_frida_hook_template_does_not_hide_a_failed_detach() -> None:
 
     assert caught.value.code == "frida_detach_failed"
     assert caught.value.details["pid"] == 17
+
+
+def test_frida_device_hook_template_does_not_hide_a_failed_detach() -> None:
+    """Each loaded device hook must disclose its still-attached session."""
+
+    class _Script:
+        def load(self) -> None:
+            return None
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    class _Device:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device(None, 23, "noop", allowed_pids={23}, timeout=0.5)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 23
