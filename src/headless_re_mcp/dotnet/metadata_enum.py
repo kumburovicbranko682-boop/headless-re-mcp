@@ -267,7 +267,7 @@ class _MetaCtx:
 def _load_metadata_context(path: Path) -> _MetaCtx:
     pe_report = scan_pe(path)
     del pe_report
-    data = path.read_bytes()
+    data = pe_mod._read_pe_bytes(path)  # noqa: SLF001
     layout = pe_mod._parse_layout(data)  # noqa: SLF001
     cor_rva, cor_size = pe_mod._directory(layout, 14)  # noqa: SLF001
     if cor_rva == 0 or cor_size < 72:

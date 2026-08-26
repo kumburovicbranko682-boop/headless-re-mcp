@@ -108,6 +108,19 @@ class _Layout:
     sections: tuple[_Section, ...]
 
 
+def _read_pe_bytes(
+    path: Path, max_file_size: int = _DEFAULT_MAX_FILE_SIZE
+) -> bytes:
+    """Read at most the scanner's input budget, including under file growth."""
+    with path.open("rb") as stream:
+        data = stream.read(max_file_size + 1)
+    if len(data) > max_file_size:
+        raise PeFormatError(
+            f"input exceeds the {max_file_size}-byte built-in scan limit: {path}"
+        )
+    return data
+
+
 def scan_pe(
     path: Path,
     *,
@@ -127,13 +140,9 @@ def scan_pe(
         raise PeFormatError(
             f"input exceeds the {max_file_size}-byte built-in scan limit: {resolved}"
         )
-    data = resolved.read_bytes()
-    # The file may have changed between stat() and read_bytes().  Re-check the
-    # actual bytes so a race cannot silently bypass the caller's bound.
-    if len(data) > max_file_size:
-        raise PeFormatError(
-            f"input exceeds the {max_file_size}-byte built-in scan limit: {resolved}"
-        )
+    # Do not use read_bytes() after the size check: the file can grow between
+    # those operations and force an unbounded allocation before we notice.
+    data = _read_pe_bytes(resolved, max_file_size)
     layout = _parse_layout(data)
     sections = tuple(_section_summary(data, section) for section in layout.sections)
     imports = _parse_imports(data, layout)

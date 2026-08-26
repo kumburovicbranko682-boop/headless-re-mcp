@@ -5,6 +5,8 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, DotnetKind, inspect_dotnet
@@ -91,6 +93,19 @@ def test_inspect_native_pe(tmp_path: Path) -> None:
         raise AssertionError("expected DotnetInspectError")
     except DotnetInspectError as exc:
         assert exc.code == "not_dotnet"
+
+
+def test_inspect_does_not_use_an_unbounded_second_file_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "native.exe"
+    _write_native_pe(path)
+
+    def unbounded_read_forbidden(_path: Path) -> bytes:
+        raise AssertionError("dotnet inspection must not call read_bytes()")
+
+    monkeypatch.setattr(Path, "read_bytes", unbounded_read_forbidden)
+    assert inspect_dotnet(path).kind is DotnetKind.NOT_DOTNET
 
 
 def test_inspect_clr_hint_fixture() -> None:

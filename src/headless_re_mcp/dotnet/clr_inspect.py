@@ -108,10 +108,10 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     """Inspect CLR headers/metadata. Does not run de4dot or mutate the file."""
     target = Path(path).expanduser().resolve(strict=True)
     pe_report = scan_pe(target)
-    data = target.read_bytes()
     try:
         from headless_re_mcp.detection import pe as pe_mod
 
+        data = pe_mod._read_pe_bytes(target)  # noqa: SLF001
         # Reuse layout helpers via private APIs carefully through scan already done.
         layout = pe_mod._parse_layout(data)  # noqa: SLF001
     except Exception as exc:  # pragma: no cover - scan_pe already validated
