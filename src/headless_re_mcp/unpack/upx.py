@@ -287,8 +287,9 @@ def _capture_process(
             break
         sleep(min(0.05, remaining))
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+    drain_deadline = monotonic() + 2.0
+    stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+    stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     with suppress(OSError):
         stdout_pipe.close()
     with suppress(OSError):
