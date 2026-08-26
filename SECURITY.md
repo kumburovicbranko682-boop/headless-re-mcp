@@ -68,3 +68,28 @@ Frida 脚本——每个能力都是具名、参数经校验的工具。任何�
 - Web 监控台保持默认的回环 + token,不要端口转发到局域网;
 - 给不可信的 MCP 客户端只读部署(`local_full_access: false`),
   或用 `agent_never_auto_approve` 把高危写操作钉死为人工批准。
+
+## 安全开关速查(配置项)
+
+上面提到的边界都是具体的配置项,均可写进 `config.json` 或用环境变量覆盖(环境变量优先)。
+下表是与安全直接相关的开关及其效果:
+
+| 配置键 | 环境变量 | 作用 |
+|--------|----------|------|
+| `local_full_access`(默认 `true`) | `HEADLESS_RE_LOCAL_FULL_ACCESS` | 置 `false` 即**只读部署**:所有写工具在到达处理器前返回 `write_disabled`,只读工具照常。 |
+| `agent_auto_approve_effects` | `HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS` | 允许自动批准的效应类,取 `state_change` / `file_write`(逗号分隔)。两类都放开等价于 UI 的「完全访问」。 |
+| `agent_auto_approve_tools` | `HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS` | 具名放行的工具(不牵连整类),用于只想自动跑少数几个写工具的场景。 |
+| `agent_never_auto_approve` | `HEADLESS_RE_AGENT_NEVER_AUTO_APPROVE` | **硬停名单,优先级最高**:名单内工具永远等待人工批准,覆盖上面所有放行(连只读基线也压过)。 |
+
+关于 autonomy(无人值守)默认值,有三条容易踩坑、务必记牢的规则:
+
+- **完全不配置这三个键** → 应用 *packed-analysis 预设*:自动批准 `state_change` 以及**非敏感**的
+  `file_write`。补壳 PE 分析常用的写会自动跑,但 patches(打补丁/回滚/改字节)、APK 改包与签名、
+  产物 GC(`artifacts.gc`)、设备与 Web 抓取(截图 / pull / HAR 导出等)始终留给人工。
+- **显式写成空列表**(`"agent_auto_approve_effects": []`)→ *fail-closed*:只有只读工具自动运行,
+  任何写都等待批准。空列表不是"沿用默认",而是"什么都别自动批准"。
+- **想彻底只读**用 `local_full_access: false`;**想无人值守但钉死个别高危工具**,
+  在开放效应类的同时把它们列进 `agent_never_auto_approve`。
+
+这些行为由契约测试固定(`tests/unit/test_write_policy_surface.py`、`tests/unit/test_agent_autonomy.py`),
+改动预设或名单会让测试失败,以防高危写操作被悄悄放开。

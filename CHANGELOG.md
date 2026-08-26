@@ -482,6 +482,10 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 - 补充 `SECURITY.md`（围绕受限工具面界定漏洞范围与私密上报流程）与 `CONTRIBUTING.md`
   （质量门命令、测试目录与命名契约、加新工具的硬规矩）。
+- `SECURITY.md` 增加「安全开关速查」：把 `local_full_access` 与三个 autonomy 配置键
+  （`agent_auto_approve_effects` / `agent_auto_approve_tools` / `agent_never_auto_approve`）
+  连同环境变量与效果列成表，并写明未配置=packed-analysis 预设、显式空列表=fail-closed
+  两条易踩坑规则。
 
 ### 测试（契约护栏）
 
@@ -495,6 +499,15 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   缺执行文件时的结构化 `executable_not_found`，一处修好不会漏掉其它三处。
 - **OpenAI 导出**：断言每个 MCP 工具都被导出且 `write_tools` 映射回来恰好等于 catalog 的写
   集合，桥接方的审批清单不会与写策略护栏漂移。
+- **packed-analysis 自动批准的排除名单钉死到真实 catalog**：`_EXCLUDED_AUTO_FILE_WRITES`
+  里的每个名字都必须是真实存在的 `file_write` 工具，预设 = agent 文件写工具减去该名单——
+  改名会让排除项变成死字符串、悄悄放开某个敏感写(打补丁 / APK 重签 / 产物 GC)，新增文件写
+  工具也会被这条断言逮到而不是默认随预设自动批准；并用真实 spec 验证 patches / apk 改包 /
+  `artifacts.gc` / `web.screenshot` 等仍留人工，而代表性的 `dynamic.stealth.set` 照常自动跑。
+- **敏感信息脱敏覆盖整个关键字与分隔符矩阵**：错误信封与事故日志共用一条 secret 正则，
+  过去只验过 `token=` 一种形态；现补齐 `api_key`/`api-key`/`apikey`/`token`/`secret`/`password`、
+  `:` 与 `=` 两种分隔符、`Authorization: Bearer` 头与大小写不敏感，并断言普通诊断文本不被误抹、
+  运行期 bearer 口令在信封与事故日志里都被抹成 `[REDACTED]`。
 
 ## [0.2.1] - 2026-08-12
 
