@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
 from headless_re_mcp.web import auth as web_auth
+from headless_re_mcp.web.app import create_app
 from headless_re_mcp.web.auth import load_or_create_web_token
 
 
