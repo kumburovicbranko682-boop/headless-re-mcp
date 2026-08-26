@@ -200,6 +200,19 @@ def ocr_bmp_tesseract(path: str | Path, *, tesseract: Path | None = None) -> Jso
             timeout_seconds=_MAX_OCR_SECONDS,
             killed_pids=exc.killed,
         ) from exc
+    except OSError as exc:
+        # A configured tesseract that exists but cannot be launched (not
+        # marked +x, or replaced after the is_file() check) raises OSError
+        # from the spawn. In backend="auto" the fallback chain swallows it,
+        # but an explicit backend="tesseract" call propagated it raw, so a
+        # misconfigured binary surfaced as an internal_error incident instead
+        # of the backend problem it is -- the same mapping every other
+        # run_bounded adapter (jadx, apktool, jsre, windbg, doctor) applies.
+        raise UiPidBoundaryError(
+            "backend_error",
+            f"failed to launch tesseract: {exc}",
+            executable=str(exe),
+        ) from exc
     if completed.returncode != 0:
         raise UiPidBoundaryError(
             "backend_error",

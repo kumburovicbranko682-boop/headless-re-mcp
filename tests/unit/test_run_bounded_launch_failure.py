@@ -24,8 +24,10 @@ import pytest
 
 import headless_re_mcp.backends.ghidra.client as ghidra_client
 import headless_re_mcp.backends.r2.client as r2_client
+import headless_re_mcp.core.ui_ocr as ui_ocr
 from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
+from headless_re_mcp.core.ui_ocr import UiPidBoundaryError, ocr_bmp_tesseract
 
 
 def _nonexecutable_file(path: Path) -> Path:
@@ -73,5 +75,28 @@ def test_ghidra_launch_oserror_becomes_backend_error_not_internal(
 
     with pytest.raises(GhidraError) as caught:
         client.analyze_binary(binary, tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert caught.value.code != "internal_error"
+
+
+def test_tesseract_launch_oserror_becomes_backend_error_not_internal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """backend="tesseract" must not turn a bad binary into an internal fault.
+
+    In backend="auto" the fallback chain's except Exception swallowed the
+    OSError, which is why only the explicit-backend path ever showed it.
+    """
+    exe = _nonexecutable_file(tmp_path / "tesseract")
+    bmp = tmp_path / "shot.bmp"
+    bmp.write_bytes(b"BM" + b"\x00" * 64)
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ui_ocr, "run_bounded", boom)
+
+    with pytest.raises(UiPidBoundaryError) as caught:
+        ocr_bmp_tesseract(bmp, tesseract=exe)
     assert caught.value.code == "backend_error"
     assert caught.value.code != "internal_error"
