@@ -1224,10 +1224,32 @@ class AnalysisService(
         self._health.stop()
         web_backend = getattr(self, "_web_backend", None)
         if web_backend is not None:
-            web_backend.close_all()
+            try:
+                web_backend.close_all()
+            except BaseException as exc:
+                failure = _failure(exc, backend="web")
+                if failure.error is not None:
+                    errors.append(
+                        {
+                            "backend": "web",
+                            "error": failure.error.model_dump(mode="json"),
+                        }
+                    )
         proxy_backend = getattr(self, "_proxy_backend", None)
         if proxy_backend is not None:
-            proxy_backend.close_all()
+            try:
+                proxy_backend.close_all()
+            except BaseException as exc:
+                # close_all is an API boundary too. A wedged proxy used to throw
+                # past it, discarding every count and error already collected.
+                failure = _failure(exc, backend="proxy")
+                if failure.error is not None:
+                    errors.append(
+                        {
+                            "backend": "proxy",
+                            "error": failure.error.model_dump(mode="json"),
+                        }
+                    )
         adb_backend = getattr(self, "_adb_backend", None)
         if adb_backend is not None:
             with suppress(BaseException):
