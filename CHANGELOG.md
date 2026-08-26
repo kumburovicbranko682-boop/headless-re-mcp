@@ -35,6 +35,12 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台回环护栏）
+
+- 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
+  `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
+  且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
@@ -508,6 +514,10 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   过去只验过 `token=` 一种形态；现补齐 `api_key`/`api-key`/`apikey`/`token`/`secret`/`password`、
   `:` 与 `=` 两种分隔符、`Authorization: Bearer` 头与大小写不敏感，并断言普通诊断文本不被误抹、
   运行期 bearer 口令在信封与事故日志里都被抹成 `[REDACTED]`。
+- **监控台认证边界成套固定**：错 token 与缺 token 同样 401 且不发放 bootstrap cookie；
+  公网源地址即使带对 token 也被 403(含 `/readyz`);`/healthz` 是唯一的非回环例外且不含
+  任何秘密;IPv6 回环(`::1`)照常通过主机守卫;被截短/篡改的 token 文件会被强 token 顶替
+  并保持 0600 权限。正是这批测试暴露了上面「回环护栏 500」的缺陷。
 
 ## [0.2.1] - 2026-08-12
 
