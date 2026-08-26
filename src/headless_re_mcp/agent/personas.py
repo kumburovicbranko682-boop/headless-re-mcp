@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -123,7 +122,14 @@ class PersonaStore:
             if not seagull_path.is_file():
                 for source in self.seed_paths:
                     if source.is_file():
-                        shutil.copy2(source, seagull_path)
+                        try:
+                            with source.open("rb") as stream:
+                                payload = stream.read(_MAX_IMPORT_BYTES + 1)
+                        except OSError:
+                            continue
+                        if len(payload) > _MAX_IMPORT_BYTES:
+                            continue
+                        seagull_path.write_bytes(payload)
                         items[SEAGULL_PERSONA_ID] = {
                             "id": SEAGULL_PERSONA_ID,
                             "title": SEAGULL_PERSONA_TITLE,

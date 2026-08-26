@@ -34,6 +34,22 @@ def test_persona_store_seeds_default_and_optional_seagull(tmp_path: Path) -> Non
     assert store.current_id() in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}
 
 
+def test_oversized_optional_seed_is_not_copied_into_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(personas_module, "_MAX_IMPORT_BYTES", 64)
+    seed = tmp_path / "oversized.md"
+    seed.write_bytes(b"x" * 1024)
+
+    store = PersonaStore(tmp_path / "personas", seed_paths=(seed,))
+
+    assert store.current_id() == DEFAULT_PERSONA_ID
+    assert not (store.root / f"{SEAGULL_PERSONA_ID}.md").exists()
+    assert {item["id"] for item in store.list_public()["personas"]} == {
+        DEFAULT_PERSONA_ID
+    }
+
+
 def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Path) -> None:
     root = tmp_path / "personas"
     store = PersonaStore(root, seed_paths=())
