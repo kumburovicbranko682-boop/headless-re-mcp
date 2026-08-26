@@ -617,6 +617,39 @@ def test_close_uses_one_deadline_across_rpc_and_process_wait(
     assert clock[0] <= 10.0
 
 
+def test_close_times_out_waiting_for_the_request_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconnect holding the client lock must not make close unbounded."""
+    client = _client(ScriptedTransport(), FakeProcess())
+    finished = Event()
+    client._terminate_process = lambda: None  # type: ignore[method-assign]
+    client._finish_threads = finished.set  # type: ignore[method-assign]
+    monkeypatch.setattr(client_module, "_TERMINATE_LOCK_TIMEOUT_SECONDS", 0.05)
+    failures: list[XdbgRpcError] = []
+
+    def close() -> None:
+        try:
+            client.close(timeout=0.05)
+        except XdbgRpcError as exc:
+            failures.append(exc)
+
+    client._request_lock.acquire()
+    thread = Thread(target=close, daemon=True)
+    thread.start()
+    thread.join(timeout=0.25)
+    returned_within_bound = not thread.is_alive()
+    client._request_lock.release()
+    thread.join(timeout=2.0)
+
+    assert returned_within_bound, "x64dbg close remained blocked on the request lock"
+    assert len(failures) == 1
+    assert failures[0].code == "timeout"
+    assert client._closed is True
+    assert client._transport is None
+    assert finished.is_set()
+
+
 def test_memory_regions_and_modules_dump_helpers_dispatch_expected_rpc() -> None:
     client = object.__new__(XdbgClient)
     calls: list[tuple[str, JsonObject, float]] = []
