@@ -28,9 +28,9 @@ def load_or_create_web_token(*, path: Path | None = None) -> str:
         except (OSError, UnicodeError, json.JSONDecodeError):
             raw = None
         if isinstance(raw, dict):
-            token = raw.get("token")
-            if isinstance(token, str) and len(token) >= 24:
-                return token
+            candidate = raw.get("token")
+            if isinstance(candidate, str) and len(candidate) >= 24:
+                return candidate
     token = secrets.token_urlsafe(32)
     payload = {
         "token": token,
