@@ -348,6 +348,30 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     assert "has_more" in doc
 
 
+def test_frida_java_enumeration_does_not_hide_a_failed_detach() -> None:
+    """Returned Java classes must not conceal an attached device session."""
+
+    class _LeakedSession(_JavaSession):
+        def detach(self) -> None:
+            raise RuntimeError("detach refused")
+
+    class _LeakedDevice:
+        def attach(self, pid: int) -> _LeakedSession:
+            del pid
+            return _LeakedSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _LeakedDevice()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 19, allowed_pids={19}, mode="classes")
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 19
+
+
 class _SpawnDevice:
     def spawn(self, argv: list[str]) -> int:
         return 4242
