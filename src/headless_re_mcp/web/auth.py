@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 
@@ -21,16 +23,39 @@ def load_or_create_web_token(*, path: Path | None = None) -> str:
     token_path = path or web_token_path()
     token_path.parent.mkdir(parents=True, exist_ok=True)
     if token_path.is_file():
-        raw = json.loads(token_path.read_text(encoding="utf-8"))
-        token = raw.get("token")
-        if isinstance(token, str) and len(token) >= 24:
-            return token
+        try:
+            raw = json.loads(token_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raw = None
+        if isinstance(raw, dict):
+            token = raw.get("token")
+            if isinstance(token, str) and len(token) >= 24:
+                return token
     token = secrets.token_urlsafe(32)
     payload = {
         "token": token,
         "note": "Local loopback web console auth only. Do not commit or share.",
     }
-    token_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=token_path.parent,
+            prefix=f".{token_path.name}-",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(payload, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, token_path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
     with suppress(OSError):
         token_path.chmod(0o600)
     return token

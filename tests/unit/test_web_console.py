@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,57 @@ def test_web_token_persists(tmp_path: Path) -> None:
     second = load_or_create_web_token(path=path)
     assert first == second
     assert len(first) >= 24
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        b"{",
+        b"[]",
+        b'{"token": 3}',
+        b'{"token": "short"}',
+        b"\xff",
+    ],
+)
+def test_web_token_recovers_from_damaged_file(tmp_path: Path, damaged: bytes) -> None:
+    path = tmp_path / "web_token.json"
+    path.write_bytes(damaged)
+
+    token = load_or_create_web_token(path=path)
+
+    assert len(token) >= 24
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
+    assert load_or_create_web_token(path=path) == token
+    assert list(tmp_path.glob(".web_token.json-*.tmp")) == []
+
+
+def test_web_token_preserves_old_file_if_atomic_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "web_token.json"
+    path.write_text("{", encoding="utf-8")
+
+    def fail_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        assert Path(source).is_file()
+        assert Path(destination) == path
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("headless_re_mcp.web.auth.os.replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        load_or_create_web_token(path=path)
+
+    assert path.read_text(encoding="utf-8") == "{"
+    assert list(tmp_path.glob(".web_token.json-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_web_token_is_private_on_posix(tmp_path: Path) -> None:
+    path = tmp_path / "web_token.json"
+
+    load_or_create_web_token(path=path)
+
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_web_requires_token_and_serves_sessions(tmp_path: Path) -> None:
