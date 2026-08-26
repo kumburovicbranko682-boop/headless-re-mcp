@@ -28,7 +28,13 @@ browser = ["playwright>=1.40"]
 # HTTP(S) interception shared by Web and Android workflows.
 proxy = ["mitmproxy>=11"]
 test = ["pytest>=8.3", "pytest-asyncio>=0.25", "pytest-cov>=6.0"]
-dev = ["headless-re-mcp[test]", "ruff>=0.9", "mypy>=1.14", "pip-audit>=2.10.1"]
+dev = [
+  "headless-re-mcp[test]",
+  "ruff>=0.9",
+  "mypy>=1.14",
+  "pip-audit>=2.10.1",
+  "setuptools>=84.0.0",
+]
 
 [project.scripts]
 headless-re-mcp = "headless_re_mcp.cli:main"
