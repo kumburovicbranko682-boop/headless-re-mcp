@@ -372,6 +372,41 @@ def test_inmemory_gc_does_not_delete_the_newest_artifact(tmp_path: Path) -> None
     assert result["skipped_count"] == 0
 
 
+def test_repository_gc_drops_untrusted_rows_without_unlinking_external_files(
+    repository: AnalysisRepository, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside-artifact.bin"
+    outside.write_bytes(b"outside")
+    untrusted = repository.register_artifact(
+        session_id="s",
+        kind="dump",
+        path=outside,
+        sha256="1" * 64,
+        source="test",
+        size=outside.stat().st_size,
+    )
+    root = repository.artifact_root  # type: ignore[attr-defined]
+    newest = root / "trace" / "s" / "newest.bin"
+    newest.parent.mkdir(parents=True, exist_ok=True)
+    newest.write_bytes(b"newest")
+    repository.register_artifact(
+        session_id="s",
+        kind="dump",
+        path=newest,
+        sha256="2" * 64,
+        source="test",
+        size=newest.stat().st_size,
+    )
+
+    result = repository.gc_artifacts(max_total_bytes=1)
+
+    assert outside.read_bytes() == b"outside"
+    assert str(untrusted["id"]) in result["invalid_paths"]
+    assert result["invalid_path_count"] == 1
+    assert repository.describe_artifact(str(untrusted["id"])) is None
+    assert newest.is_file()
+
+
 def _write_minimal_pe(path: Path, *, machine: int = 0x8664) -> None:
     image = bytearray(0x200)
     image[:2] = b"MZ"

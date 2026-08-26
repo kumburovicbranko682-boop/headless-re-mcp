@@ -599,12 +599,20 @@ class InMemoryAnalysisRepository:
             item = self._artifacts.get(artifact_id)
             return None if item is None else dict(item)
 
+    def _collectable_artifact_path(self, path: Path) -> bool:
+        try:
+            relative = path.expanduser().resolve().relative_to(self.artifact_root)
+        except (OSError, ValueError):
+            return False
+        return bool(relative.parts) and relative.parts[0] != "meta"
+
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:
         with self.transaction():
             ordered = sorted(self._artifacts.values(), key=lambda item: str(item["created_at"]))
             total = sum(int(item["size"]) for item in ordered)
             removed: list[str] = []
             skipped: list[JsonObject] = []
+            invalid_paths: list[str] = []
             # Same newest-file skip as SessionStore: collection now also runs
             # right after registration, and a single dump larger than the
             # budget would otherwise delete the file its caller is about to
@@ -614,6 +622,12 @@ class InMemoryAnalysisRepository:
                     break
                 path = Path(str(item["path"]))
                 size = int(item["size"])
+                artifact_id = str(item["id"])
+                if not self._collectable_artifact_path(path):
+                    self._artifacts.pop(artifact_id, None)
+                    invalid_paths.append(artifact_id)
+                    total -= size
+                    continue
                 if path.is_file():
                     try:
                         path.unlink()
@@ -622,7 +636,6 @@ class InMemoryAnalysisRepository:
                             {"id": str(item["id"]), "reason": f"{type(exc).__name__}: {exc}"}
                         )
                         continue
-                artifact_id = str(item["id"])
                 self._artifacts.pop(artifact_id, None)
                 removed.append(artifact_id)
                 total -= size
@@ -631,6 +644,8 @@ class InMemoryAnalysisRepository:
             "count": len(removed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "invalid_paths": invalid_paths,
+            "invalid_path_count": len(invalid_paths),
             "bytes_remaining_estimate": max(0, total),
         }
 
