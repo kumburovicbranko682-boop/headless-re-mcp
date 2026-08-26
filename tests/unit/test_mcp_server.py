@@ -402,15 +402,8 @@ async def test_stdio_reader_drains_oversized_records_without_buffering_them() ->
 
     from headless_re_mcp.mcp.stdio_errors import _read_bounded_line
 
-    class AsyncBytes:
-        def __init__(self, payload: bytes) -> None:
-            self.stream = BytesIO(payload)
-
-        async def readline(self, size: int = -1) -> bytes:
-            return self.stream.readline(size)
-
     valid = b'{"jsonrpc":"2.0","id":2,"method":"ping"}\n'
-    stream = AsyncBytes(b'{"padding":"' + b"x" * 256 + b'"}\n' + valid)
+    stream = BytesIO(b'{"padding":"' + b"x" * 256 + b'"}\n' + valid)
 
     oversized, was_oversized = await _read_bounded_line(stream, limit=64)
     following, following_oversized = await _read_bounded_line(stream, limit=64)

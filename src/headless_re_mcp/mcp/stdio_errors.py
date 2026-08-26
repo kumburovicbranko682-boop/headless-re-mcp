@@ -6,6 +6,7 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from mcp.types import (
     INVALID_REQUEST,
     ErrorData,
@@ -28,7 +29,7 @@ async def _read_bounded_line(
 ) -> tuple[bytes, bool]:
     """Read one binary NDJSON record and drain any oversized remainder."""
     cap = max(1, int(limit))
-    line = await stream.readline(cap + 1)
+    line = await anyio.to_thread.run_sync(stream.readline, cap + 1)
     if not line:
         return b"", False
     if len(line) <= cap:
@@ -36,7 +37,7 @@ async def _read_bounded_line(
 
     prefix = line
     while line and not line.endswith(b"\n"):
-        line = await stream.readline(cap + 1)
+        line = await anyio.to_thread.run_sync(stream.readline, cap + 1)
     return prefix, True
 
 
@@ -78,13 +79,12 @@ async def stdio_server_with_parse_replies() -> Any:
     import sys
     from io import TextIOWrapper
 
-    import anyio
     import anyio.lowlevel
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
     from mcp.shared.message import SessionMessage
     from mcp.types import JSONRPCMessage as RpcMessage
 
-    stdin = anyio.wrap_file(sys.stdin.buffer)
+    stdin = sys.stdin.buffer
     stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
     read_stream_writer: MemoryObjectSendStream[SessionMessage]
     read_stream: MemoryObjectReceiveStream[SessionMessage]
