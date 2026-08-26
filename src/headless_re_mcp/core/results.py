@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
@@ -28,7 +29,34 @@ def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
 
 
 def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
-    if isinstance(exc, DieScanError):
+    if isinstance(exc, BoundedCancelled):
+        # A caller cancel is a control signal, not a fault. Endpoints that run a
+        # bounded tool under a cancel scope re-raise this to their own handler
+        # before reaching here; naming it in the canonical envelope keeps a path
+        # that forgets that from filing a caller cancel as an internal_error with
+        # a logged incident -- the exact miscasting the upx and net_reactor_slayer
+        # adapters carried until each grew its own re-raise.
+        error = RpcError(
+            code="cancelled",
+            message=str(exc) or "cancelled by caller",
+            details={**details, "killed_pids": list(getattr(exc, "killed", []) or [])},
+            retryable=True,
+        )
+    elif isinstance(exc, TimedOut):
+        # Same reasoning for its sibling: outrunning the deadline is a bound the
+        # run_bounded wrappers normally remap to a tool-specific timeout. One that
+        # slips through must still not read as an unexpected internal fault.
+        error = RpcError(
+            code="timeout",
+            message=str(exc),
+            details={
+                **details,
+                "timeout_s": float(getattr(exc, "timeout", 0.0) or 0.0),
+                "killed_pids": list(getattr(exc, "killed", []) or []),
+            },
+            retryable=True,
+        )
+    elif isinstance(exc, DieScanError):
         error = RpcError(
             code=exc.code,
             message=str(exc),
