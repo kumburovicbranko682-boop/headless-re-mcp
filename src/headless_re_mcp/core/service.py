@@ -17,7 +17,7 @@ from uuid import uuid4
 from headless_re_mcp.backends.adb import AdbBackend
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
-from headless_re_mcp.backends.proxy import ProxyBackend
+from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import (
@@ -1041,26 +1041,38 @@ class AnalysisService(
         # the service lock froze every other session; a throw after pop_session
         # also leaked the debugger workers. Both stay outside the lock and
         # cannot skip the worker-close loop below.
+        close_errors: list[tuple[str, BaseException]] = []
         if web_backend is not None:
             with suppress(BaseException):
                 web_backend.close(session_id)
         if proxy_backend is not None:
-            with suppress(BaseException):
+            try:
                 proxy_backend.stop(session_id)
+            except ProxyError as exc:
+                # ProxyError("timeout") means the listener thread and its port
+                # are still alive. Calling this a clean close hides a resource
+                # the backend deliberately kept tracked for another stop attempt.
+                close_errors.append(("proxy", exc))
+            except BaseException:
+                # Test doubles and optional-backend teardown historically remain
+                # best-effort; only a backend's explicit failure contract proves
+                # that a live resource survived.
+                pass
         if apk_binary is not None:
             with suppress(BaseException):
                 ApkClient.release(apk_binary)
         self._forget_session_work_dirs(session_id)
 
-        close_errors: list[tuple[BackendKind, BaseException]] = []
         for kind, runtime in runtimes:
+            runtime_close_failed = False
             if kind == BackendKind.X64DBG:
                 self._stop_event_drain(runtime)
             with runtime.lock:
                 try:
                     runtime.worker.close()
                 except BaseException as exc:
-                    close_errors.append((kind, exc))
+                    runtime_close_failed = True
+                    close_errors.append((kind.value, exc))
                     # Terminate is already the fallback for a failed close, and
                     # it can throw in its own right: on Windows the worker's
                     # temporary userdir is often still held when it runs. Letting
@@ -1072,7 +1084,7 @@ class AnalysisService(
             if kind == BackendKind.X64DBG:
                 self._finalize_trace_after_worker_loss(
                     session_id,
-                    reason="session_closed" if not close_errors else "worker_close_failed",
+                    reason="worker_close_failed" if runtime_close_failed else "session_closed",
                 )
 
         # Cleared only now: the loop above is what finalises and registers a
@@ -1100,11 +1112,11 @@ class AnalysisService(
             note_session_closed(self, session_id, result)
             return result
         if close_errors:
-            kind, error = close_errors[0]
+            backend, error = close_errors[0]
             result = _failure(
                 error,
                 session_id=session_id,
-                backend=kind.value,
+                backend=backend,
                 state=closed.state.value,
                 close_error_count=len(close_errors),
             )
