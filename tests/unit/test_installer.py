@@ -158,6 +158,18 @@ def test_release_manifest_requires_an_object_root(
         installer.load_dependency_release()
 
 
+def test_release_manifest_is_rejected_before_an_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(installer, "_MAX_MANIFEST_BYTES", 64)
+    path = tmp_path / "dependency_release.json"
+    path.write_bytes(b"{" + b" " * 64 + b"}")
+    monkeypatch.setattr(installer, "_RELEASE_MANIFEST", path)
+
+    with pytest.raises(installer.InstallError, match="manifest exceeds 64 bytes"):
+        installer.load_dependency_release()
+
+
 def test_download_rejects_an_insecure_override_before_network_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -192,5 +204,17 @@ def test_configure_normalizes_corrupt_bundle_manifest_errors(
     (bundle / "MANIFEST.json").write_bytes(payload)
 
     with pytest.raises(installer.InstallError, match=error):
+        installer.configure_dependency_bundle(bundle)
+
+
+def test_bundle_manifest_is_rejected_before_an_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(installer, "_MAX_MANIFEST_BYTES", 64)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "MANIFEST.json").write_bytes(b"{" + b" " * 64 + b"}")
+
+    with pytest.raises(installer.InstallError, match="manifest exceeds 64 bytes"):
         installer.configure_dependency_bundle(bundle)
 

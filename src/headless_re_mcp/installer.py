@@ -31,16 +31,31 @@ _RELEASE_MANIFEST = Path(__file__).with_name("dependency_release.json")
 _DOWNLOAD_CHUNK = 1024 * 1024
 _MAX_ARCHIVE_FILES = 20_000
 _MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class InstallError(RuntimeError):
     """Installation failed without leaving a partially activated dependency tree."""
 
 
-def load_dependency_release() -> JsonObject:
+def _read_manifest(path: Path, *, label: str) -> bytes:
     try:
-        raw = json.loads(_RELEASE_MANIFEST.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        with path.open("rb") as stream:
+            payload = stream.read(_MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        raise InstallError(f"{label} is unreadable: {exc}") from exc
+    if len(payload) > _MAX_MANIFEST_BYTES:
+        raise InstallError(f"{label} exceeds {_MAX_MANIFEST_BYTES} bytes")
+    return payload
+
+
+def load_dependency_release() -> JsonObject:
+    encoded = _read_manifest(
+        _RELEASE_MANIFEST, label="dependency release manifest"
+    )
+    try:
+        raw = json.loads(encoded.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise InstallError(f"dependency release manifest is unreadable: {exc}") from exc
     if not isinstance(raw, dict):
         raise InstallError("dependency release manifest root must be an object")
@@ -253,9 +268,10 @@ def _find_bundle_root(root: Path) -> Path | None:
 
 
 def _load_bundle_manifest(path: Path) -> JsonObject:
+    encoded = _read_manifest(path, label="dependency bundle manifest")
     try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = json.loads(encoded.decode("utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise InstallError(f"dependency bundle manifest is unreadable: {exc}") from exc
     if not isinstance(raw, dict):
         raise InstallError("dependency bundle manifest root must be an object")
