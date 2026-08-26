@@ -113,3 +113,49 @@ def test_unpack_plan_on_a_closed_session_is_refused(tmp_path: Path) -> None:
         assert "closed" in result.error.message
     finally:
         service.close_all()
+
+
+def test_unpack_start_close_race_does_not_recreate_cancel_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Close clears unpack state, but start recreated one cancel Event afterward.
+
+    One plan/close race leaves one entry forever. Repeating the race for unique
+    session ids therefore grows _unpack_cancel_events without the registry's
+    closed-session bound.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        original_plan = service.unpack_plan
+
+        def plan_then_close(*args, **kwargs):
+            planned = original_plan(*args, **kwargs)
+            assert planned.ok, planned.error
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            return planned
+
+        monkeypatch.setattr(service, "unpack_plan", plan_then_close)
+
+        result = service.unpack_start(session_id, use_die=False, execute_upx=False)
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert session_id not in service._unpack_cancel_events
+    finally:
+        service.close_all()
