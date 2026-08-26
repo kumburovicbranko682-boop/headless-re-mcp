@@ -1470,7 +1470,7 @@ class TestPerSessionStateDiesWithTheSession:
         finally:
             service.close_all()
 
-    def test_a_web_close_that_throws_still_closes_the_debugger_worker(
+    def test_a_web_close_that_throws_reports_failure_after_closing_the_debugger_worker(
         self, tmp_path: Any
     ) -> None:
         from dataclasses import replace
@@ -1514,7 +1514,10 @@ class TestPerSessionStateDiesWithTheSession:
             service._web_backend = _ExplodingWeb()  # type: ignore[assignment]
 
             closed = service.close_session(session_id)
-            assert closed.ok, closed.error
+            assert closed.ok is False
+            assert closed.error is not None
+            assert closed.error.code == "web_cleanup_failed"
+            assert closed.error.details["backend"] == "web"
             assert worker.closed is True
         finally:
             service.close_all()
