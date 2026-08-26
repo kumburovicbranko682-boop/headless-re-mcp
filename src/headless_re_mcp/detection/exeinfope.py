@@ -461,9 +461,10 @@ def _capture_process(
                 _terminate_process(process)
                 returncode = process.poll()
         stop_monitor.set()
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
-        monitor_thread.join(timeout=1.0)
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        monitor_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         _close_pipe(stdout_pipe)
         _close_pipe(stderr_pipe)
         with suppress(OSError, ValueError):
