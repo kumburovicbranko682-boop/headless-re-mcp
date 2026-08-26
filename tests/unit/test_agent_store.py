@@ -509,6 +509,42 @@ def test_run_event_preview_obeys_budget_after_json_escaping(tmp_path: Path) -> N
     assert event.data["summary"]
 
 
+def test_event_pages_apply_a_byte_budget_in_addition_to_the_count_limit(
+    tmp_path: Path,
+) -> None:
+    store = AgentStore(tmp_path / "event-pages.db")
+    store.event_page_max_bytes = 1024
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="p", model=None, deadline_seconds=60
+    )
+    for index in range(3):
+        store.append_event(
+            run.id,
+            "message.delta",
+            {"index": index, "delta": "x" * 700},
+        )
+
+    first_page = [
+        event
+        for event in store.list_events(run.id, limit=5000)
+        if event.type == "message.delta"
+    ]
+    assert [event.data["index"] for event in first_page] == [0]
+    second_page = [
+        event
+        for event in store.list_events(
+            run.id, after=first_page[-1].seq, limit=5000
+        )
+        if event.type == "message.delta"
+    ]
+    assert [event.data["index"] for event in second_page] == [1]
+
+    # Thread history is a newest window rather than a cursor page.
+    thread_page = store.list_thread_events(thread.id, limit=8000)
+    assert [event.data["index"] for event in thread_page] == [2]
+
+
 def test_a_run_does_not_keep_every_streamed_delta(tmp_path: Path) -> None:
     """list_events pages at most 5000; the table itself did not stop writing.
 
