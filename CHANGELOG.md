@@ -514,7 +514,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
   过去只验过 `token=` 一种形态；现补齐 `api_key`/`api-key`/`apikey`/`token`/`secret`/`password`、
   `:` 与 `=` 两种分隔符、`Authorization: Bearer` 头与大小写不敏感，并断言普通诊断文本不被误抹、
   运行期 bearer 口令在信封与事故日志里都被抹成 `[REDACTED]`。
-- **监控台认证边界成套固定**：错 token 与缺 token 同样 401 且不发放 bootstrap cookie；
+- **监控台认证边界成套固定**：错 token 与缺 token 同样 401 且不发放 bootstrap cookie，
+  服务端从未签发过的伪造 bootstrap cookie 也不被提升为授权；
   公网源地址即使带对 token 也被 403(含 `/readyz`);`/healthz` 是唯一的非回环例外且不含
   任何秘密;IPv6 回环(`::1`)照常通过主机守卫;被截短/篡改的 token 文件会被强 token 顶替
   并保持 0600 权限。正是这批测试暴露了上面「回环护栏 500」的缺陷。`?token%3D…` 的编码
