@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import tempfile
@@ -28,6 +29,7 @@ ZEROFALL_IMPORT_FIELDS = frozenset(
         "contextCompressionThresholdPercent",
     }
 )
+_MAX_PROVIDER_CONFIG_BYTES = 4 * 1024 * 1024
 
 
 def normalize_base_url(value: str) -> str:
@@ -37,6 +39,8 @@ def normalize_base_url(value: str) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("provider base URL must be absolute http(s)")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("provider base URL must not include credentials")
     path = parsed.path.rstrip("/")
     if not path.endswith("/v1"):
         path = f"{path}/v1" if path else "/v1"
@@ -57,6 +61,17 @@ class ProviderProfile:
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
+        parsed = urlsplit(self.base_url)
+        if self.api_key and parsed.scheme == "http":
+            hostname = parsed.hostname or ""
+            try:
+                loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = hostname.casefold() == "localhost"
+            if not loopback:
+                raise ValueError(
+                    "provider API keys require HTTPS unless the host is loopback"
+                )
         if not self.id.strip() or not self.model.strip():
             raise ValueError("profile id and model are required")
         if not 10 <= self.context_compression_threshold_percent <= 95:
@@ -112,12 +127,23 @@ class ProviderConfigStore:
     def _read(self) -> dict[str, Any]:
         if not self.path.is_file():
             return {"profiles": {}, "current": None}
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        with self.path.open("rb") as stream:
+            payload = stream.read(_MAX_PROVIDER_CONFIG_BYTES + 1)
+        if len(payload) > _MAX_PROVIDER_CONFIG_BYTES:
+            raise ValueError(
+                f"provider config exceeds {_MAX_PROVIDER_CONFIG_BYTES} bytes"
+            )
+        raw = json.loads(payload.decode("utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("provider config root must be an object")
         return raw
 
     def _write(self, data: dict[str, Any]) -> None:
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        if len(payload.encode("utf-8")) > _MAX_PROVIDER_CONFIG_BYTES:
+            raise ValueError(
+                f"provider config exceeds {_MAX_PROVIDER_CONFIG_BYTES} bytes"
+            )
         temporary: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -129,7 +155,7 @@ class ProviderConfigStore:
                 delete=False,
             ) as stream:
                 temporary = Path(stream.name)
-                stream.write(json.dumps(data, ensure_ascii=False, indent=2))
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             self._best_effort_protect(temporary)
