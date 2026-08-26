@@ -64,6 +64,48 @@ def test_session_timeline_path_rejects_non_child_session_ids(
     assert outside.read_text(encoding="utf-8") == '{"event": "private"}\n'
 
 
+def test_unserializable_timeline_details_do_not_fail_the_completed_operation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sessions" / "abc" / "timeline.jsonl"
+
+    entry = append_session_timeline(
+        path,
+        event="completed",
+        message="the operation already succeeded",
+        details={"not_json": object()},
+    )
+
+    assert entry["event"] == "timeline.entry.write_failed"
+    assert entry["details"] == {"error_type": "TypeError"}
+    assert "TypeError" in str(entry["write_failed"])
+    json.dumps(entry)
+    assert not path.exists()
+
+
+def test_one_oversized_timeline_entry_cannot_break_the_file_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(timeline_module, "_MAX_BYTES", 1024)
+    monkeypatch.setattr(timeline_module, "_TRIM_TO_BYTES", 768)
+    path = tmp_path / "sessions" / "abc" / "timeline.jsonl"
+
+    entry = append_session_timeline(
+        path,
+        event="huge.result",
+        message="completed",
+        details={"payload": "x" * 5000},
+    )
+
+    assert entry["event"] == "timeline.entry.truncated"
+    assert entry["details"]["original_event"] == "huge.result"
+    assert entry["details"]["original_bytes"] > 1024
+    assert path.stat().st_size <= 1024
+    listed = list_session_timeline(path)
+    assert listed["events"] == [entry]
+
+
 def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> None:
     """Reading counts separators and decodes only the page asked for.
 

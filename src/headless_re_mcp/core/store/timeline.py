@@ -70,7 +70,34 @@ def append_session_timeline(
         "message": message,
         "details": dict(details or {}),
     }
-    line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        failure = f"{type(exc).__name__}: {exc}"
+        return {
+            "at": entry["at"],
+            "event": "timeline.entry.write_failed",
+            "message": "timeline entry could not be serialized",
+            "details": {"error_type": type(exc).__name__},
+            "write_failed": failure,
+        }
+    if len(line) > _MAX_BYTES:
+        original_bytes = len(line)
+        entry = {
+            "at": entry["at"],
+            "event": "timeline.entry.truncated",
+            "message": "timeline entry exceeded the persistence limit",
+            "details": {
+                "original_event": str(event)[:128],
+                "original_bytes": original_bytes,
+                "max_bytes": _MAX_BYTES,
+                "truncated": True,
+            },
+        }
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(line) > _MAX_BYTES:
+            entry["write_failed"] = "ValueError: timeline persistence limit is too small"
+            return entry
     try:
         with _timeline_lock(path):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +130,15 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
     budget = max(0, _TRIM_TO_BYTES - reserve)
     kept: list[bytes] = []
     total = 0
-    for raw in reversed(path.read_bytes().splitlines(keepends=True)):
+    with path.open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        start = max(0, size - _MAX_BYTES)
+        stream.seek(start)
+        tail = stream.read(_MAX_BYTES)
+    if start:
+        newline = tail.find(b"\n")
+        tail = tail[newline + 1 :] if newline >= 0 else b""
+    for raw in reversed(tail.splitlines(keepends=True)):
         if total + len(raw) > budget or len(kept) >= _MAX_LINES - 1:
             break
         kept.append(raw)
@@ -180,9 +215,16 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
             # them apart.
             return {**empty, "exists": False}
         try:
-            raw = path.read_bytes()
+            with path.open("rb") as stream:
+                raw = stream.read(_MAX_BYTES + 1)
         except OSError as exc:
             return {**empty, "read_failed": f"{type(exc).__name__}: {exc}", "path": str(path)}
+        if len(raw) > _MAX_BYTES:
+            return {
+                **empty,
+                "read_failed": f"timeline exceeds {_MAX_BYTES} bytes",
+                "path": str(path),
+            }
     # Counted and sliced as bytes, and only the requested page decoded. Holding
     # the lock across a full decode of the 8 MB cap cost 13ms, which every
     # append landing behind a reader waited out; this is 5.6ms for the same

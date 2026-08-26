@@ -139,3 +139,41 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     # The reader already skips what will not parse.
     listed = store.list_session_timeline(path)
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
+
+
+def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store, "_MAX_BYTES", 64)
+    path = tmp_path / "timeline.jsonl"
+    path.write_bytes(b'{"event":"external"}\n' * 100)
+
+    listed = store.list_session_timeline(path)
+
+    assert listed["events"] == []
+    assert listed["read_failed"] == "timeline exceeds 64 bytes"
+
+
+def test_trimming_an_oversized_external_timeline_reads_only_its_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store, "_MAX_BYTES", 1024)
+    monkeypatch.setattr(store, "_TRIM_TO_BYTES", 640)
+    path = tmp_path / "timeline.jsonl"
+    path.write_bytes(
+        b"".join(
+            json.dumps({"event": f"external-{index}", "message": "x" * 20}).encode()
+            + b"\n"
+            for index in range(100)
+        )
+    )
+
+    def unbounded_read_forbidden(_path: Path) -> bytes:
+        raise AssertionError("timeline trimming must not call read_bytes()")
+
+    monkeypatch.setattr(Path, "read_bytes", unbounded_read_forbidden)
+    _append(path, 999)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[-1])["event"] == "e0999"
+    assert path.stat().st_size <= store._MAX_BYTES
