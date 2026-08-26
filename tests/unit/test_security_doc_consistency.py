@@ -80,3 +80,12 @@ def test_the_documented_quality_gate_matches_the_ci_workflow() -> None:
     assert 'pip install -e ".[test,dev,web]"' in ci
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     assert 'pip install -e ".[test,dev,web]"' in contributing
+
+    # ...and each of those extras must be a real optional-dependency group, or
+    # the documented install line fails on a fresh clone.
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    groups = pyproject.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+    for extra in ("test", "dev", "web"):
+        assert re.search(rf"^{extra} =", groups, re.M), (
+            f"documented install extra '{extra}' is not a pyproject optional-dependency"
+        )
