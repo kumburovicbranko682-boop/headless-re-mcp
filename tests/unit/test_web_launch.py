@@ -191,3 +191,6 @@ def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) 
 
     assert code == 0
     assert closed, "the server exited without releasing its sessions"
+    released = web_app._claim_artifact_root(settings.artifact_root)
+    assert released is not None, "normal shutdown leaked the single-instance lock"
+    web_app.os.close(released)
