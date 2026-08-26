@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -476,6 +477,37 @@ def test_frida_spawn_timeout_reports_a_probe_process_that_cannot_be_killed() -> 
     assert caught.value.details["pid"] == 4242
     assert caught.value.details["kill_error"] == "RuntimeError: kill refused"
     assert killed == [4242]
+
+
+def test_frida_spawn_kills_a_process_that_arrives_after_timeout() -> None:
+    """A native spawn completing 100ms late must not resume an untracked pid."""
+    killed = Event()
+    resumed: list[int] = []
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            time.sleep(0.15)
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            resumed.append(pid)
+
+        def kill(self, pid: int) -> None:
+            assert pid == 4242
+            killed.set()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert killed.wait(0.5), "late spawned process remained alive after timeout"
+    assert resumed == []
 
 
 def test_frida_spawn_reports_a_process_that_cannot_be_killed_after_resume_failure() -> None:
