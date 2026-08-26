@@ -117,7 +117,15 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
     budget = max(0, _TRIM_TO_BYTES - reserve)
     kept: list[bytes] = []
     total = 0
-    for raw in reversed(path.read_bytes().splitlines(keepends=True)):
+    with path.open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        start = max(0, size - _MAX_BYTES)
+        stream.seek(start)
+        tail = stream.read(_MAX_BYTES)
+    if start:
+        newline = tail.find(b"\n")
+        tail = tail[newline + 1 :] if newline >= 0 else b""
+    for raw in reversed(tail.splitlines(keepends=True)):
         if total + len(raw) > budget or len(kept) >= _MAX_LINES - 1:
             break
         kept.append(raw)
@@ -194,9 +202,16 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
             # them apart.
             return {**empty, "exists": False}
         try:
-            raw = path.read_bytes()
+            with path.open("rb") as stream:
+                raw = stream.read(_MAX_BYTES + 1)
         except OSError as exc:
             return {**empty, "read_failed": f"{type(exc).__name__}: {exc}", "path": str(path)}
+        if len(raw) > _MAX_BYTES:
+            return {
+                **empty,
+                "read_failed": f"timeline exceeds {_MAX_BYTES} bytes",
+                "path": str(path),
+            }
     # Counted and sliced as bytes, and only the requested page decoded. Holding
     # the lock across a full decode of the 8 MB cap cost 13ms, which every
     # append landing behind a reader waited out; this is 5.6ms for the same
