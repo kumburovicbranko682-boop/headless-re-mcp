@@ -19,7 +19,11 @@ from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    BoundedCancelled,
+    TimedOut,
+    run_bounded,
+)
 from headless_re_mcp.dotnet.de4dot import _capture_process
 
 JsonObject = dict[str, Any]
@@ -162,6 +166,12 @@ def run_net_reactor_slayer(
                 capture = _capture_process(
                     argv, timeout=timeout, max_output_size=max_output_size
                 )
+            except BoundedCancelled:
+                # A caller cancel is not a tool failure; let it propagate as
+                # cancellation, the way the scylla/vmp_dumper/xvlkc adapters do.
+                # Remapping it here would report the same cancel as
+                # process_failed and diverge from every sibling adapter.
+                raise
             except Exception as exc:
                 # de4dot capture raises De4dotError; remap for this adapter.
                 code = getattr(exc, "code", NetReactorSlayerErrorCode.PROCESS_FAILED)

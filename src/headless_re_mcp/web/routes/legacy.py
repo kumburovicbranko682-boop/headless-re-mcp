@@ -1063,10 +1063,12 @@ def register_legacy_routes(
                 status_code=400,
                 detail="unknown_or_disallowed_write",
             ) from exc
-        except PermissionError as exc:
-            # Read-only deployment: the adapter refuses because it bypasses the
-            # per-handler guard. Surface the promised denial, not a 500.
-            raise HTTPException(status_code=403, detail="write_disabled") from exc
+        except PermissionError:
+            # A read-only deployment refusing a write is policy, not a defect.
+            # Uncaught, this fell through to the generic exception boundary and
+            # came back as a 500 internal_error with a logged incident; return
+            # the same write_disabled envelope the MCP transport uses instead.
+            return JSONResponse(commands.write_refusal(action), status_code=403)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(_result_payload(result))

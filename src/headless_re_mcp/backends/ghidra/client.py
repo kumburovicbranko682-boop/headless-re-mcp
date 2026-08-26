@@ -263,6 +263,16 @@ class GhidraClient:
                 timeout=timeout,
                 killed_pids=exc.killed,
             ) from exc
+        except OSError as exc:
+            # A launcher that is present but cannot be executed -- not marked
+            # +x, or gone between discovery and spawn -- makes Popen raise
+            # OSError. Uncaught, that surfaces as an internal_error incident
+            # instead of a backend problem, unlike the sibling run_bounded
+            # adapters (jadx, apktool, jsre, windbg) which all map it here.
+            raise GhidraError(
+                "backend_error",
+                f"failed to launch analyzeHeadless: {exc}",
+            ) from exc
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)

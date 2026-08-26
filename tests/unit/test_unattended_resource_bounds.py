@@ -1813,13 +1813,28 @@ _EXIT0_LAUNCHER = (
 def _pid_is_alive(pid: int) -> bool:
     import ctypes
     import os
+    from pathlib import Path
 
     if os.name != "nt":
+        # ``os.kill(pid, 0)`` succeeds on a zombie, so it reports a process that
+        # has already been killed but not yet reaped as still alive. These tests
+        # kill a launcher this test process parents and never wait() on it, and in
+        # a container whose pid 1 does not reap orphans that launcher lingers as a
+        # zombie -- an os.kill probe would call the successful kill a failure. The
+        # process state in ``/proc/<pid>/stat`` distinguishes a live process
+        # ('R'/'S'/'D'...) from one already killed and only awaiting reaping
+        # ('Z'/'X').
         try:
-            os.kill(pid, 0)
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
         except OSError:
             return False
-        return True
+        close = stat.rfind(")")
+        if close < 0:
+            return False
+        fields = stat[close + 2 :].split()
+        if not fields:
+            return False
+        return fields[0] not in {"Z", "X", "x"}
     handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
     if not handle:
         return False
@@ -1932,24 +1947,10 @@ class TestATimeoutBindsWhatTheToolStarted:
         return process, int(process.stdout.readline().strip())
 
     def _alive(self, pid: int) -> bool:
-        import ctypes
-        import os
-
-        if os.name != "nt":
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                return False
-            return True
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-            return code.value == 259
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+        # Same zombie-vs-live distinction as the module-level probe: a killed but
+        # unreaped process must read as dead, or a successful tree kill looks like
+        # a leak in a container without a reaping init.
+        return _pid_is_alive(pid)
 
     def test_the_process_the_launcher_started_is_killed_too(self) -> None:
         import time

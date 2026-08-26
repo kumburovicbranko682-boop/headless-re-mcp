@@ -492,48 +492,49 @@ def test_web_write_requires_confirm(tmp_path: Path) -> None:
     assert confirmed.json()["ok"] is True
 
 
-def test_a_read_only_deployment_refuses_web_writes(tmp_path: Path) -> None:
-    """local_full_access=false must make /api/write answer 403, not 500.
+def test_web_write_refusal_in_read_only_deployment_is_403_not_500(
+    tmp_path: Path,
+) -> None:
+    """local_full_access=false must refuse writes with the policy envelope.
 
-    The Web adapter bypasses the per-handler write_disabled guard and leans on
-    the catalog's write_allowed flag, which bind_all_tools (run inside
-    create_app via agent route registration) sets from local_full_access -- so
-    the write was refused, but as an unhandled PermissionError the route turned
-    into a 500 instead of the promised 403 write_disabled.
+    invoke_write raises PermissionError for a read-only deployment; the route
+    only caught KeyError/ValueError, so the refusal fell through to the generic
+    exception boundary and surfaced as a 500 internal_error with an incident
+    logged -- a deliberate policy answer dressed up as a server defect.
     """
     from dataclasses import replace
+
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
 
     settings = replace(_settings(tmp_path), local_full_access=False)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"
-    client = TestClient(create_app(service, token=token, settings=settings))
-    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        client = TestClient(create_app(service, token=token, settings=settings))
+        headers = {"Authorization": f"Bearer {token}"}
+        refused = client.post(
+            "/api/write/artifacts.gc",
+            headers=headers,
+            json={"confirm": True, "max_total_bytes": 1024},
+        )
+        assert refused.status_code == 403
+        body = refused.json()
+        assert body["ok"] is False
+        assert body["error"]["code"] == "write_disabled"
+        assert body["error"]["details"]["setting"] == "local_full_access"
 
-    refused = client.post(
-        "/api/write/artifacts.gc",
-        headers=headers,
-        json={"confirm": True, "max_total_bytes": 1024},
-    )
-    assert refused.status_code == 403
-    assert refused.json()["detail"] == "write_disabled"
-
-    # The whitelist and confirm gate still apply and answer before the adapter.
-    unknown = client.post(
-        "/api/write/not.a.real.write", headers=headers, json={"confirm": True}
-    )
-    assert unknown.status_code == 400
-    assert unknown.json()["detail"] == "unknown_or_disallowed_write"
+        unknown = client.post(
+            "/api/write/not.a.real.write", headers=headers, json={"confirm": True}
+        )
+        assert unknown.status_code == 400
+        assert unknown.json()["detail"] == "unknown_or_disallowed_write"
+    finally:
+        COMMAND_CATALOG.write_allowed = True
+        service.close_all()
 
 
 def test_the_web_write_surface_is_self_consistent() -> None:
-    """/api/write depends on confirm_required == spec.write on the WEB transport.
-
-    The route whitelists actions by write_names() (confirm_required WEB tools),
-    while invoke_write independently requires spec.write and WEB transport. If a
-    WEB tool were confirm_required but not a write, the route would accept it and
-    invoke_write would 400 it; if it were a write but not confirm_required, the
-    write would never be reachable through the console. Pin them equal.
-    """
+    """/api/write depends on confirm_required == spec.write on the WEB transport."""
     from headless_re_mcp.core.commands import COMMAND_CATALOG, CommandTransport
 
     web = list(COMMAND_CATALOG.for_transport(CommandTransport.WEB))

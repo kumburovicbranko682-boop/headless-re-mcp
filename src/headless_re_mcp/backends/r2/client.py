@@ -120,6 +120,18 @@ class R2Client:
                 timeout=timeout,
                 killed_pids=exc.killed,
             ) from exc
+        except OSError as exc:
+            # A configured executable that is present but cannot be launched --
+            # not marked +x, or replaced between the is_file() check and the
+            # spawn -- makes Popen raise OSError (PermissionError for a
+            # non-executable file). Uncaught, that reaches the service envelope
+            # as an internal_error with a logged incident, casting a backend
+            # misconfiguration as a server defect. The sibling adapters (jadx,
+            # apktool, jsre, windbg) all map this to backend_error; r2 did not.
+            raise R2Error(
+                "backend_error",
+                f"failed to launch {self.executable}: {exc}",
+            ) from exc
         produced = len(completed.stdout)
         out = completed.stdout[:_MAX_OUTPUT]
         err = completed.stderr[:_MAX_OUTPUT]

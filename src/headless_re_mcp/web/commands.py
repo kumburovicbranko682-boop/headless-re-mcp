@@ -26,6 +26,10 @@ class WebCommandAdapter:
     def write_methods(self) -> frozenset[str]:
         return self._catalog.write_names(CommandTransport.WEB)
 
+    def write_refusal(self, action: str) -> JsonObject:
+        """The same read-only refusal envelope the MCP transport returns."""
+        return self._catalog.write_refusal(action)
+
     def invoke_write(self, action: str, body: JsonObject) -> Result[JsonObject]:
         spec = self._catalog.get(action)
         if (

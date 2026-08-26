@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
@@ -18,6 +19,7 @@ from headless_re_mcp.core.models import Result, RpcError, TargetMismatch
 from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
 from headless_re_mcp.detection import PeFormatError
 from headless_re_mcp.detection.die import DieScanError
+from headless_re_mcp.detection.exeinfope import ExeinfopeScanError
 from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
@@ -28,7 +30,34 @@ def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
 
 
 def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
-    if isinstance(exc, DieScanError):
+    if isinstance(exc, BoundedCancelled):
+        # A caller cancel is a control signal, not a fault. Endpoints that run a
+        # bounded tool under a cancel scope re-raise this to their own handler
+        # before reaching here; naming it in the canonical envelope keeps a path
+        # that forgets that from filing a caller cancel as an internal_error with
+        # a logged incident -- the exact miscasting the upx and net_reactor_slayer
+        # adapters carried until each grew its own re-raise.
+        error = RpcError(
+            code="cancelled",
+            message=str(exc) or "cancelled by caller",
+            details={**details, "killed_pids": list(getattr(exc, "killed", []) or [])},
+            retryable=True,
+        )
+    elif isinstance(exc, TimedOut):
+        # Same reasoning for its sibling: outrunning the deadline is a bound the
+        # run_bounded wrappers normally remap to a tool-specific timeout. One that
+        # slips through must still not read as an unexpected internal fault.
+        error = RpcError(
+            code="timeout",
+            message=str(exc),
+            details={
+                **details,
+                "timeout_s": float(getattr(exc, "timeout", 0.0) or 0.0),
+                "killed_pids": list(getattr(exc, "killed", []) or []),
+            },
+            retryable=True,
+        )
+    elif isinstance(exc, DieScanError):
         error = RpcError(
             code=exc.code,
             message=str(exc),
@@ -36,6 +65,19 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             retryable=exc.code in {"timeout", "process_failed"},
         )
     elif isinstance(exc, UpxScanError):
+        error = RpcError(
+            code=exc.code,
+            message=str(exc),
+            details={**details, **exc.details},
+            retryable=exc.retryable,
+        )
+    elif isinstance(exc, ExeinfopeScanError):
+        # The sibling of DieScanError: detect_scan's outer handler routes both
+        # into this envelope, but only DIE was named here. An Exeinfo PE error
+        # (invalid_argument, executable_not_found, timeout, process_failed, ...)
+        # then fell through to internal_error, minting an incident and hiding a
+        # structured code the caller could have acted on -- the same miscasting
+        # the bounded cancel/timeout cases carried until each was named.
         error = RpcError(
             code=exc.code,
             message=str(exc),

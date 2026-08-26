@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
-from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerResult
+from headless_re_mcp.dotnet import net_reactor_slayer as nrs_mod
+from headless_re_mcp.dotnet.net_reactor_slayer import (
+    NetReactorSlayerError,
+    NetReactorSlayerResult,
+    run_net_reactor_slayer,
+)
 
 
 def _write_verified_clr_pe(path: Path) -> None:
@@ -105,6 +114,50 @@ def test_dotnet_reactor_unpack_mocked(tmp_path: Path) -> None:
     out = Path(result.data["net_reactor_slayer"]["output_path"])
     assert out.is_file()
     assert file_sha256(binary) == result.data["net_reactor_slayer"]["input_sha256"]
+
+
+def _prepare_run_inputs(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    exe = tmp_path / "NETReactorSlayer.CLI.exe"
+    exe.write_bytes(b"placeholder")
+    source = tmp_path / "managed.exe"
+    source.write_bytes(b"managed-assembly-bytes")
+    destination = tmp_path / "out" / "slayed.exe"
+    return exe, source, destination, file_sha256(source)
+
+
+def test_run_net_reactor_slayer_propagates_cancel(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A caller cancel must surface as BoundedCancelled, not a tool failure.
+
+    scylla/vmp_dumper/xvlkc re-raise BoundedCancelled before their generic
+    remap; this adapter used to fold it into NetReactorSlayerError(process_failed)
+    and diverge from every sibling.
+    """
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def cancel_capture(*args: Any, **kwargs: Any) -> Any:
+        raise BoundedCancelled()
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", cancel_capture)
+
+    with pytest.raises(BoundedCancelled):
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+
+
+def test_run_net_reactor_slayer_remaps_other_failures(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A genuine tool error still becomes the adapter's error envelope."""
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("de4dot capture failed")
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", boom)
+
+    with pytest.raises(NetReactorSlayerError):
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
 
 
 def test_doctor_reports_net_reactor_slayer_missing(tmp_path: Path) -> None:
