@@ -54,6 +54,26 @@ def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Pat
     assert store.current_id() == DEFAULT_PERSONA_ID
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (b"x" * (256 * 1024 + 1), "persona_too_large"),
+        (b"\xff", "persona_path_unreadable"),
+    ],
+)
+def test_persona_path_import_rejects_invalid_content(
+    tmp_path: Path,
+    content: bytes,
+    error: str,
+) -> None:
+    source = tmp_path / "persona.md"
+    source.write_bytes(content)
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+
+    with pytest.raises(ValueError, match=error):
+        store.import_path(source)
+
+
 def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = Settings(

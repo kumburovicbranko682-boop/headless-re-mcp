@@ -252,8 +252,15 @@ class PersonaStore:
         if not resolved.is_file():
             raise ValueError("persona_path_missing")
         try:
-            body = resolved.read_text(encoding="utf-8")
+            with resolved.open("rb") as stream:
+                payload = stream.read(_MAX_IMPORT_BYTES + 1)
         except OSError as exc:
+            raise ValueError("persona_path_unreadable") from exc
+        if len(payload) > _MAX_IMPORT_BYTES:
+            raise ValueError("persona_too_large")
+        try:
+            body = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
             raise ValueError("persona_path_unreadable") from exc
         return self.import_markdown(title=resolved.stem, body=body, source=str(resolved))
 
