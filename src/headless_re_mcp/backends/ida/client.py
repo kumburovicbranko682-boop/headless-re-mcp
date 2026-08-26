@@ -33,6 +33,8 @@ _MAX_IDA_STARTUP_SECONDS = 240.0
 # receiving; retain enough headroom for progress while bounding malformed output.
 _MAX_PENDING_WORKER_MESSAGES = 1_024
 _MAX_WORKER_LINE_CHARS = 1_048_576
+_MAX_DIAGNOSTIC_LINE_CHARS = 8_192
+_TRUNCATED_LINE_MARKER = "...[truncated]"
 
 
 def next_receive_deadline(
@@ -311,12 +313,12 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                 try:
                     payload = json.loads(stripped)
                 except json.JSONDecodeError:
-                    self._stdout_log.append(stripped)
+                    self._append_diagnostic_line(self._stdout_log, stripped)
                     continue
                 if isinstance(payload, dict):
                     self._enqueue_message(payload)
                 else:
-                    self._stdout_log.append(stripped)
+                    self._append_diagnostic_line(self._stdout_log, stripped)
         finally:
             self._enqueue_message(None)
 
@@ -331,8 +333,25 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         self._message_overflow.set()
 
     def _read_stderr(self, stream: TextIO) -> None:
-        for line in stream:
-            self._stderr_log.append(line.rstrip("\r\n"))
+        while True:
+            line = stream.readline(_MAX_DIAGNOSTIC_LINE_CHARS + 1)
+            if not line:
+                return
+            stripped = line.rstrip("\r\n")
+            oversized = len(stripped) > _MAX_DIAGNOSTIC_LINE_CHARS or (
+                len(line) > _MAX_DIAGNOSTIC_LINE_CHARS and not line.endswith("\n")
+            )
+            self._append_diagnostic_line(self._stderr_log, stripped)
+            if oversized:
+                while line and not line.endswith("\n"):
+                    line = stream.readline(_MAX_DIAGNOSTIC_LINE_CHARS + 1)
+
+    def _append_diagnostic_line(self, target: deque[str], line: str) -> None:
+        if len(line) <= _MAX_DIAGNOSTIC_LINE_CHARS:
+            target.append(line)
+            return
+        prefix_chars = _MAX_DIAGNOSTIC_LINE_CHARS - len(_TRUNCATED_LINE_MARKER)
+        target.append(line[:prefix_chars] + _TRUNCATED_LINE_MARKER)
 
     def _receive(
         self,
