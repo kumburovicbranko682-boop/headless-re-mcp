@@ -66,8 +66,9 @@ def _claim_artifact_root(root: Path) -> int | None:
         (root / "meta").mkdir(parents=True, exist_ok=True)
         handle = os.open(root / "meta" / "console.lock", os.O_CREAT | os.O_RDWR)
     except OSError:
-        # Cannot make the lock. That is not a reason to refuse to serve.
-        return -1
+        # Without a lock there is no way to preserve the single-writer
+        # invariant. Serving anyway can corrupt the shared scheduler database.
+        return None
     try:
         if os.name == "nt":
             import msvcrt
