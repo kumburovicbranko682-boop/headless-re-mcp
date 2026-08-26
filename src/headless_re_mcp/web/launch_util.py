@@ -87,21 +87,26 @@ def _parse_healthz_http(raw: bytes) -> JsonObject | None:
         return None
     header_blob = raw[:header_end]
     body = raw[header_end + 4 :]
-    for line in header_blob.split(b"\r\n")[1:]:
+    header_lines = header_blob.split(b"\r\n")
+    status = header_lines[0].split(b" ", 2)
+    if len(status) < 2 or status[0] not in {b"HTTP/1.0", b"HTTP/1.1"} or status[1] != b"200":
+        return None
+    content_length: int | None = None
+    for line in header_lines[1:]:
         if not line.lower().startswith(b"content-length:"):
             continue
         try:
             length = int(line.split(b":", 1)[1].strip())
         except ValueError:
             return None
-        if length > _MAX_HEALTHZ_BYTES:
+        if length < 0 or length > _MAX_HEALTHZ_BYTES:
             return None
-        if len(body) < length:
+        if content_length is not None and length != content_length:
             return None
-        body = body[:length]
-        break
-    if len(body) > _MAX_HEALTHZ_BYTES:
+        content_length = length
+    if content_length is None or len(body) < content_length:
         return None
+    body = body[:content_length]
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
     except ValueError:
@@ -125,8 +130,7 @@ def probe_our_healthz(host: str, port: int, *, timeout: float = 0.6) -> JsonObje
             return None
         sock.settimeout(remaining)
         request = (
-            f"GET /healthz HTTP/1.0\r\nHost: {host}:{int(port)}\r\n"
-            f"Connection: close\r\n\r\n"
+            f"GET /healthz HTTP/1.0\r\nHost: {host}:{int(port)}\r\nConnection: close\r\n\r\n"
         ).encode("ascii")
         sock.sendall(request)
         raw = _recv_until(sock, cap=_MAX_HEALTHZ_BYTES + 1024, deadline=deadline)
