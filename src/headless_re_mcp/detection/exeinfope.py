@@ -342,7 +342,7 @@ def _visible_blocked_windows(
     if os.name == "nt" and visible_check is None:
         import ctypes
 
-        visible_check = ctypes.windll.user32.IsWindowVisible
+        visible_check = ctypes.windll.user32.IsWindowVisible  # type: ignore[attr-defined,unused-ignore]
     elif visible_check is None:
         return []
 
