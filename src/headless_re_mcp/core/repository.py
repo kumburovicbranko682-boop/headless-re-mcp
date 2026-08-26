@@ -28,13 +28,6 @@ from headless_re_mcp.core.store.timeline import (
 JsonObject = dict[str, Any]
 
 
-def _checked_artifact_path(artifact_root: Path, value: str | Path) -> Path:
-    path = Path(value).expanduser().resolve()
-    if path == artifact_root or not path.is_relative_to(artifact_root):
-        raise ValueError(f"artifact path escapes artifact_root: {path}")
-    return path
-
-
 class AnalysisRepository(Protocol):
     """Persistence operations used by application services."""
 
@@ -269,10 +262,8 @@ class SqliteAnalysisRepository:
             )
 
     def register_artifact(self, **fields: Any) -> JsonObject:
-        checked = dict(fields)
-        checked["path"] = _checked_artifact_path(self.artifact_root, fields["path"])
         with self.transaction():
-            return self.store.register_artifact(**checked)
+            return self.store.register_artifact(**fields)
 
     def list_artifacts(
         self,
@@ -563,7 +554,7 @@ class InMemoryAnalysisRepository:
             )
 
     def register_artifact(self, **fields: Any) -> JsonObject:
-        path = _checked_artifact_path(self.artifact_root, fields["path"])
+        path = Path(fields["path"])
         item: JsonObject = {
             "id": uuid4().hex,
             "session_id": str(fields["session_id"]),

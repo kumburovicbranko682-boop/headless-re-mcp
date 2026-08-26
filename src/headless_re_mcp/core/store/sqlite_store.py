@@ -124,9 +124,6 @@ def encode_knowledge_value(value: JsonObject) -> str:
 class SessionStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
-        self.artifact_root = (
-            db_path.parent.parent.expanduser().resolve() if db_path.parent.name == "meta" else None
-        )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self.audit_retained_rows = AUDIT_RETAINED_ROWS
@@ -639,22 +636,6 @@ class SessionStore:
                     break
                 path = Path(row["path"])
                 size = int(row["size"])
-                try:
-                    resolved = path.expanduser().resolve()
-                except (OSError, RuntimeError) as exc:
-                    skipped.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
-                    continue
-                if self.artifact_root is not None and (
-                    resolved == self.artifact_root
-                    or not resolved.is_relative_to(self.artifact_root)
-                ):
-                    skipped.append(
-                        {
-                            "id": row["id"],
-                            "reason": "artifact path escapes artifact_root",
-                        }
-                    )
-                    continue
                 if path.is_file():
                     try:
                         path.unlink()
