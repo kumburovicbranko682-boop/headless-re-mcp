@@ -166,7 +166,6 @@ def run_bounded(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=creationflags,
-        start_new_session=os.name != "nt",
         cwd=cwd,
         env=env,
         start_new_session=os.name != "nt",
