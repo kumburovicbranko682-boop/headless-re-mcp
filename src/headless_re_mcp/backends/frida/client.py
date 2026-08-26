@@ -687,8 +687,10 @@ class FridaClient:
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
         cleanup_failures: list[JsonObject] = []
+        expired = Event()
 
         def cleanup_spawned() -> None:
+            expired.set()
             cleanup_failures.extend(_kill_spawned(device, pids))
 
         def cleanup_error() -> FridaError:
@@ -711,6 +713,13 @@ class FridaClient:
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
             pids.append(spawned)
+            # Native spawn can return after the deadline callback inspected an
+            # empty pid list. Kill that late process instead of resuming it.
+            if expired.is_set():
+                cleanup_spawned()
+                if cleanup_failures:
+                    raise cleanup_error()
+                raise _timeout_error(deadline)
             try:
                 _invoke(device.resume, spawned, timeout=deadline)
             except Exception as exc:  # noqa: BLE001
