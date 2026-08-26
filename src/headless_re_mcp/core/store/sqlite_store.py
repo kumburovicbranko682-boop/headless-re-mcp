@@ -279,16 +279,20 @@ class SessionStore:
         """
         if self.db_path.parent.name != "meta":
             return
+        # A stored id is always a uuid, but cleanup must never be the thing that
+        # follows a traversing id out of the root; skip anything that is not a
+        # single path component, matching the debug-events guard below.
+        if Path(session_id).name != session_id:
+            return
         path = session_timeline_path(self.db_path.parent.parent, session_id)
         with suppress(OSError):
             if path.is_file():
                 path.unlink()
         self._prune_emptied_parent(path)
-        if Path(session_id).name == session_id:
-            events = self.db_path.parent.parent / "debug-events" / session_id
-            with suppress(OSError):
-                if events.is_dir():
-                    shutil.rmtree(events)
+        events = self.db_path.parent.parent / "debug-events" / session_id
+        with suppress(OSError):
+            if events.is_dir():
+                shutil.rmtree(events)
 
     def get_session(self, session_id: str) -> JsonObject | None:
         """The stored row, or None if this id was never created."""

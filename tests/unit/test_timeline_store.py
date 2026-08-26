@@ -24,6 +24,28 @@ def _append(path: Path, index: int) -> None:
     )
 
 
+@pytest.mark.parametrize("hostile", ["../../outside", "..", "/etc/passwd", "../sibling"])
+def test_a_traversing_session_id_cannot_escape_the_sessions_root(
+    tmp_path: Path, hostile: str
+) -> None:
+    """A session id is a uuid; a client-supplied ``..`` must not leave the root.
+
+    Once any session exists the ``sessions`` directory exists too, so before
+    the guard ``session_timeline_path(root, "../../x")`` resolved to a real
+    ``timeline.jsonl`` outside the artifact root -- read by timeline.list and
+    unlinked by closed-session cleanup. Fail closed on the escape, but still
+    allow a plain uuid and an in-root nested id (which never leaves the root).
+    """
+    root = tmp_path / "artifacts"
+    (root / "sessions").mkdir(parents=True)
+    with pytest.raises(ValueError, match="invalid session id"):
+        store.session_timeline_path(root, hostile)
+
+    ok = store.session_timeline_path(root, "deadbeef" * 4)
+    assert ok.relative_to((root / "sessions").resolve())
+    assert ok.name == "timeline.jsonl"
+
+
 def test_appending_does_not_read_the_whole_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

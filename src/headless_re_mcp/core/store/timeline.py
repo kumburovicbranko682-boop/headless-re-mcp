@@ -32,7 +32,19 @@ def _timeline_lock(path: Path) -> Lock:
 
 
 def session_timeline_path(artifact_root: Path, session_id: str) -> Path:
-    return artifact_root.expanduser().resolve() / "sessions" / session_id / "timeline.jsonl"
+    base = (artifact_root.expanduser().resolve() / "sessions").resolve()
+    candidate = (base / session_id / "timeline.jsonl").resolve()
+    # A session id is a single opaque token (uuid hex). A client-supplied id
+    # that escapes the sessions root -- ``..`` traversal, an absolute path,
+    # embedded separators -- is hostile input, not a session: once any session
+    # exists the ``sessions`` directory does too, so ``../../x`` resolved to a
+    # real ``timeline.jsonl`` outside the artifact root and both the reader and
+    # the closed-session cleanup (unlink) followed it. Fail closed instead.
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        raise ValueError(f"invalid session id: {session_id!r}") from None
+    return candidate
 
 
 def append_session_timeline(

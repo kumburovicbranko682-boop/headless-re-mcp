@@ -99,6 +99,65 @@ def test_a_session_with_no_events_yet_is_not_mistaken_for_a_missing_one(
     assert page["total"] == 1
 
 
+def test_a_traversing_session_id_is_refused_end_to_end(tmp_path: Path) -> None:
+    """The read path takes a client-supplied session id; it must not read out.
+
+    session.timeline forwards its session_id argument here unchanged. Plant a
+    timeline.jsonl outside the artifact root, make the sessions directory exist
+    (as it does once anything has run), then ask for it via ``..``. The service
+    must answer with an invalid_request envelope, never the file's contents.
+    """
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    root = tmp_path / "artifacts"
+    (root / "sessions").mkdir(parents=True)
+    outside = tmp_path / "outside" / "timeline.jsonl"
+    outside.parent.mkdir(parents=True)
+    outside.write_text(
+        json.dumps({"at": "t", "event": "secret.event", "message": "OUT OF ROOT"}) + "\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=root,
+    )
+    service = AnalysisService(settings)
+    try:
+        result = service.timeline_list("../../outside")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "OUT OF ROOT" not in json.dumps(result.error.model_dump(), default=str)
+    finally:
+        service.close_all()
+
+
+def test_closed_session_cleanup_skips_a_traversing_id(tmp_path: Path) -> None:
+    """Cleanup unlinks the timeline of a closed session; a bad id must be skipped.
+
+    Stored ids are uuids, but the unlink path once followed a traversing id and
+    could have deleted a timeline.jsonl outside the root. Prove the guard: a
+    sibling file survives an attempt to forget a ``..`` id.
+    """
+    from headless_re_mcp.core.store.sqlite_store import SessionStore
+
+    meta = tmp_path / "artifacts" / "meta"
+    meta.mkdir(parents=True)
+    (tmp_path / "artifacts" / "sessions").mkdir()
+    victim = tmp_path / "outside" / "timeline.jsonl"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("keep me\n", encoding="utf-8")
+
+    store = SessionStore(meta / "store.db")
+    store._forget_closed_session_files("../../outside")
+    assert victim.is_file(), "cleanup followed a traversing id out of the root"
+
+
 def test_the_service_reports_a_missing_session_rather_than_an_empty_log() -> None:
     """The store says which it is; this is the layer that turns that into an error.
 
