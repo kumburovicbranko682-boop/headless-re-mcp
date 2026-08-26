@@ -174,3 +174,34 @@ def test_ghidra_refuses_an_oversized_export_json(
     with pytest.raises(ghidra_client.GhidraError) as caught:
         client.functions(_binary(tmp_path), tmp_path / "project")
     assert caught.value.code == "too_large"
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_type"),
+    [
+        (b"\xff", "UnicodeDecodeError"),
+        (b"{", "JSONDecodeError"),
+    ],
+)
+def test_ghidra_reports_corrupt_export_as_a_backend_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    error_type: str,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_bytes(payload)
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "export JSON invalid"
+    assert error_type in str(caught.value.details["error"])

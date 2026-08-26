@@ -216,8 +216,12 @@ class GhidraClient:
             )
         try:
             payload = json.loads(out_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise GhidraError("backend_error", "export JSON invalid", error=str(exc)) from exc
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise GhidraError(
+                "backend_error",
+                "export JSON invalid",
+                error=f"{type(exc).__name__}: {exc}",
+            ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
