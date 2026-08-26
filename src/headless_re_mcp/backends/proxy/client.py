@@ -518,11 +518,14 @@ class ProxyBackend:
     def close_all(self) -> None:
         with self._lock:
             session_ids = list(self._instances)
-        errors: list[ProxyError] = []
+        errors: list[BaseException] = []
         for session_id in session_ids:
             try:
                 self.stop(session_id)
-            except ProxyError as exc:
+            except BaseException as exc:
+                # Bulk teardown is the last chance to release every listening
+                # socket. Preserve the first unexpected failure, but do not let
+                # it skip stop attempts for later sessions.
                 errors.append(exc)
         if errors:
             raise errors[0]
