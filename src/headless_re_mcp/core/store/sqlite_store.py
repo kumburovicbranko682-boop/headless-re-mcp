@@ -372,9 +372,12 @@ class SessionStore:
     ) -> JsonObject:
         artifact_path = Path(path)
         resolved = str(artifact_path)
-        file_size = size if size is not None else (
-            artifact_path.stat().st_size if artifact_path.is_file() else 0
-        )
+        if artifact_path.is_file():
+            file_size = artifact_path.stat().st_size
+        else:
+            file_size = int(size) if size is not None else 0
+        if file_size < 0:
+            raise ValueError("artifact size cannot be negative")
         artifact_id = uuid4().hex
         created = datetime.now(UTC).isoformat()
         with self._lock, self._connect() as conn:
