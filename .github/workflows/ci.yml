@@ -49,6 +49,9 @@ jobs:
       - name: Pip check
         run: python -m pip check
 
+      - name: Python dependency audit
+        run: python -m pip_audit --strict --skip-editable --progress-spinner=off
+
       - name: Unit tests
         # -rs prints every skip reason: a suite that quietly skips half of
         # itself reads exactly like a suite that passed.
