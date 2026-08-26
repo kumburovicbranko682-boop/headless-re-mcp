@@ -317,8 +317,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Render a Markdown analysis report from session state, findings and audit.
 
-        Answers with markdown, path, bytes, findings and artifact_id. The text
-        is inline; the same file is registered so artifacts.gc can collect it.
+        Answers with markdown, path, bytes, findings, artifact_id and truncated.
+        Markdown up to 64 KiB is inline; larger reports return a bounded preview
+        and hint, while the registered artifact always contains the full report.
         """
         return _dump(
             analysis.report_generate(

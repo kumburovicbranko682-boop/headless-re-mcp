@@ -62,3 +62,37 @@ def test_report_generate_on_a_closed_session_does_not_write(tmp_path: Path) -> N
         assert not reports.exists()
     finally:
         service.close_all()
+
+
+def test_large_report_returns_bounded_preview_and_keeps_full_artifact(tmp_path: Path) -> None:
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = str(created.data["session"]["id"])
+        for index in range(10):
+            recorded = service.knowledge_record(
+                session_id,
+                "note",
+                f"finding-{index}",
+                {"text": "é" * 3500},
+            )
+            assert recorded.ok, recorded.error
+
+        result = service.report_generate(session_id, title="large")
+
+        assert result.ok and result.data is not None, result.error
+        assert result.data["truncated"] is True
+        assert result.data["hint"] == "full_markdown_in_artifact"
+        preview = str(result.data["markdown"]).encode("utf-8")
+        artifact = Path(str(result.data["path"])).read_bytes()
+        assert len(preview) <= 64 * 1024
+        assert len(artifact) == result.data["bytes"]
+        assert len(artifact) > len(preview)
+        assert artifact.startswith(preview)
+        assert result.data["artifact_id"]
+    finally:
+        service.close_all()

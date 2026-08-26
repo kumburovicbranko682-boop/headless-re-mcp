@@ -41,6 +41,7 @@ from headless_re_mcp.workflows.navigation import EventPattern
 JsonObject = dict[str, Any]
 _TERMINAL_EVENT_KINDS = frozenset({"process.exited", "debug.stopped"})
 _DEBUG_EVENT_BUDGET_PER_BATCH = 64
+_REPORT_INLINE_MAX_BYTES = 64 * 1024
 
 
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
@@ -1005,13 +1006,20 @@ class ExtAnalysisMixin(UiDriveMixin):
                 audit=audit,
                 title=title,
             )
+            markdown_bytes = markdown.encode("utf-8", errors="replace")
+            response_markdown = markdown
+            response_truncated = len(markdown_bytes) > _REPORT_INLINE_MAX_BYTES
+            if response_truncated:
+                response_markdown = markdown_bytes[:_REPORT_INLINE_MAX_BYTES].decode(
+                    "utf-8", errors="ignore"
+                )
             directory = (
                 self.settings.artifact_root.expanduser().resolve() / "reports" / session_id
             )
             directory.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
             path = directory / f"report-{stamp}.md"
-            path.write_text(markdown, encoding="utf-8")
+            path.write_bytes(markdown_bytes)
             payload = _register_capture(
                 self,
                 session_id,
@@ -1020,11 +1028,14 @@ class ExtAnalysisMixin(UiDriveMixin):
                 source="report.generate",
                 payload={
                     "path": str(path),
-                    "bytes": path.stat().st_size,
+                    "bytes": len(markdown_bytes),
                     "findings": int(knowledge.get("total") or 0),
-                    "markdown": markdown,
+                    "markdown": response_markdown,
+                    "truncated": response_truncated,
                 },
             )
+            if response_truncated:
+                payload["hint"] = "full_markdown_in_artifact"
             return _success(payload, session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
