@@ -635,6 +635,57 @@ def test_frida_java_timeout_does_not_hide_a_failed_detach() -> None:
     assert detach_attempts == [1]
 
 
+def test_frida_java_detaches_a_session_that_arrives_after_timeout() -> None:
+    """A late device attach must not enter Java.perform after its deadline."""
+    detached = Event()
+    java_called = Event()
+
+    class _NeverRunApi:
+        def classes(self, name_filter: str, count: int) -> list[str]:
+            del name_filter, count
+            java_called.set()
+            time.sleep(10)
+            return []
+
+    class _Script:
+        exports_sync = _NeverRunApi()
+
+        def load(self) -> None:
+            return None
+
+    class _Session:
+        def create_script(self, source: str) -> _Script:
+            del source
+            return _Script()
+
+        def detach(self) -> None:
+            detached.set()
+
+    class _Device:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            time.sleep(0.15)
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(
+            None,
+            37,
+            allowed_pids={37},
+            mode="classes",
+            timeout=0.05,
+        )
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late Java session remained attached after timeout"
+    assert java_called.is_set() is False
+
+
 def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:
     """The catalog said bind a device and never named the payload.
 
