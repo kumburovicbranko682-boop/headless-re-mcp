@@ -330,6 +330,8 @@ def test_web_setup_run_persist_defaults(tmp_path: Path, monkeypatch: pytest.Monk
 def test_web_pick_file_returns_a_local_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from types import SimpleNamespace
+
     from headless_re_mcp.core import windows as winmod
     from headless_re_mcp.web.routes import legacy as legacy_mod
 
@@ -341,7 +343,10 @@ def test_web_pick_file_returns_a_local_path(
         "busy": False,
         "error": None,
     })
-    monkeypatch.setattr(legacy_mod.os, "name", "nt")
+    # Replacing os.name mutates Python's process-wide os module and makes
+    # pathlib try to construct WindowsPath on Linux. Give only this route a
+    # Windows-shaped module view instead.
+    monkeypatch.setattr(legacy_mod, "os", SimpleNamespace(name="nt"))
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
     token = "test-token-value-0123456789abcdef"
