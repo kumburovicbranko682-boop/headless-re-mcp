@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **279（162 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -678,6 +678,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   其对目标的调用可能漏计）与 `callers`（含 `count/total/offset/has_more`）；`total` 上限 50000、越限置
   `scan_capped`；`truncated` 在 code 段本身畸形时为 true（已读到的 caller 照常返回）。非 WebAssembly
   文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.producers`：解码 "producers" 自定义段——模块的构建工具链指纹，纯 Python、**不需要 wabt**，
+  说出 `wasm.sections` 说不出的东西（后者只报该自定义段存在）。排查的第一手情报：知道模块出自
+  Rust 1.75 / LLVM、还是 Emscripten、还是 wasm-bindgen，直接决定反混淆与命名还原策略。段内字段
+  （惯例为 language、processed-by、sdk）摊平成每工具一行：`field`（来自哪个字段）、`name`（语言或
+  工具名，如 Rust、clang、wasm-bindgen）与 `version`（自由字符串，生产者留空时为空串）。返回
+  `has_producers_section`（模块无该段时为 false，此时 `producers` 空、`total` 0，而非报错）与
+  `producers`（含 `count/total/offset/has_more`）；`total` 上限 10000、越限置 `scan_capped`；`truncated`
+  在段畸形时为 true（已读到的行照常返回）。注意该段为自报告、可被剥除，故其缺失并不能证明任何事。
+  非 WebAssembly 文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

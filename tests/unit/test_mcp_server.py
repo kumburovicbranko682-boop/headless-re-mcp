@@ -307,6 +307,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "wasm.info",
         "wasm.memory",
         "wasm.names",
+        "wasm.producers",
         "wasm.sections",
         "wasm.strings",
         "wasm.tables",

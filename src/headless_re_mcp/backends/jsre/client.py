@@ -181,6 +181,12 @@ _MAX_WASM_CALLEES = 100
 # undercounted.
 _MAX_WASM_CALLERS_COLLECT = 50000
 _MAX_WASM_CALLERS_PAGE = 1000
+# wasm.producers decodes the "producers" custom section -- the build-toolchain
+# fingerprint. Its format is vec(field), each field a name ("language",
+# "processed-by", "sdk") plus a vec of (name, version) pairs; the whole thing is
+# flattened to one (field, name, version) row per pair.
+_MAX_WASM_PRODUCERS_COLLECT = 10000
+_MAX_WASM_PRODUCERS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -2065,6 +2071,88 @@ def parse_wasm_callers(
         "has_code_section": has_code_section,
         "imported_count": imported_count,
         "undecoded_bodies": undecoded,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _parse_producers(body: bytes) -> tuple[list[JsonObject], bool, bool]:
+    """Flatten the producers section; return (rows, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        field_count, pos = _read_uleb(body, 0)
+        for _ in range(field_count):
+            field_name, pos = _read_wasm_name(body, pos)
+            value_count, pos = _read_uleb(body, pos)
+            for _ in range(value_count):
+                name, pos = _read_wasm_name(body, pos)
+                version, pos = _read_wasm_name(body, pos)
+                if len(rows) >= _MAX_WASM_PRODUCERS_COLLECT:
+                    scan_more = True
+                    break
+                rows.append(
+                    {"field": field_name, "name": name, "version": version}
+                )
+            if scan_more:
+                break
+    except _WasmParseError:
+        return rows, scan_more, True
+    return rows, scan_more, False
+
+
+def parse_wasm_producers(
+    path: Path, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """Decode a WebAssembly module's build-toolchain fingerprint, wabt-free.
+
+    The "producers" custom section records what built the module -- the source
+    language, the compilers and tools it passed through, and the SDK -- so this
+    is the provenance a triage opens with: knowing it came from Rust 1.75 via
+    LLVM, or Emscripten, or wasm-bindgen, points straight at the right
+    deobfuscation and naming strategy. Read in pure Python -- no wabt needed --
+    and it says what wasm.sections cannot (that tool only reports the custom
+    section exists). The section's fields (conventionally language, processed-by
+    and sdk) are flattened to one row per tool: field (which of the three it came
+    from), name (the language or tool, e.g. Rust, clang, wasm-bindgen) and
+    version (a free-form string, empty when the producer left it blank). Returns
+    has_producers_section (false when the module has none -- then producers is
+    empty and total 0, not an error), and producers with count, total, offset
+    and has_more so a filled page is not read as the whole list; total is capped
+    at 10000 with scan_capped when more may exist, and truncated is true when the
+    section is malformed (rows read so far are still returned). Note the section
+    is self-reported and strippable, so its absence is not proof of anything. A
+    file that is not a WebAssembly module is refused as invalid_params, one over
+    16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    body, truncated = _find_custom_section(raw, "producers")
+    has_producers_section = body is not None
+    rows: list[JsonObject] = []
+    scan_more = False
+    if body is not None:
+        rows, scan_more, prod_trunc = _parse_producers(body)
+        truncated = truncated or prod_trunc
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_PRODUCERS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "producers": window,
+        "has_producers_section": has_producers_section,
         "count": len(window),
         "total": len(rows),
         "offset": start,

@@ -396,6 +396,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.producers")
+    def wasm_producers(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Decode a WebAssembly module's build-toolchain fingerprint, wabt-free.
+
+        The "producers" custom section records what built the module -- the
+        source language, the compilers and tools it passed through, and the SDK
+        -- so this is the provenance a triage opens with: knowing it came from
+        Rust 1.75 via LLVM, or Emscripten, or wasm-bindgen, points straight at
+        the right deobfuscation and naming strategy. Read in pure Python -- no
+        wabt needed -- and it says what wasm.sections cannot (that tool only
+        reports the custom section exists). The section's fields (conventionally
+        language, processed-by and sdk) are flattened to one row per tool: field
+        (which of the three it came from), name (the language or tool, e.g.
+        Rust, clang, wasm-bindgen) and version (a free-form string, empty when
+        the producer left it blank). Returns has_producers_section (false when
+        the module has none -- then producers is empty and total 0, not an
+        error), and producers with count, total, offset and has_more so a filled
+        page is not read as the whole list; total is capped at 10000 with
+        scan_capped when more may exist, and truncated is true when the section
+        is malformed (rows read so far are still returned). Note the section is
+        self-reported and strippable, so its absence is not proof of anything. A
+        file that is not a WebAssembly module is refused as invalid_params, one
+        over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_producers(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.sections")
     def wasm_sections(
         path: str,
