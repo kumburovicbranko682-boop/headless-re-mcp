@@ -347,6 +347,24 @@ def test_cancel_signals_navigation_then_records_a_cancelled_status(
     assert any(c[0] == "ensure_paused" for c in host.calls)
 
 
+def test_cancel_proceeds_even_when_the_navigation_signal_cannot_be_delivered(
+    engine: dict[str, list[Any]],
+) -> None:
+    host = _Double()
+
+    def unreachable_runtime(session_id: str, kind: Any) -> Any:
+        raise RuntimeError("worker pipe is gone")
+
+    # The best-effort pre-signal must not abort the cancel: the transition
+    # still has to run so the workflow lands in a cancelled state.
+    host._runtime = unreachable_runtime  # type: ignore[method-assign]
+    result = host.workflow_cancel("sess")
+    assert result.ok is True
+    assert host.cancel_signalled is False
+    exec_calls = [c for c in host.calls if c[0] == "exec"]
+    assert exec_calls and exec_calls[0][2] is WorkflowRunStatus.CANCELLED
+
+
 def test_breakpoint_list_projects_status_and_breakpoints() -> None:
     host = _Double()
     result = host.workflow_breakpoint_list("sess")
