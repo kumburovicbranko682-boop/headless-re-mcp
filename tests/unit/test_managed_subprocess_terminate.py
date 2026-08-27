@@ -6,9 +6,11 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.common import subprocess_rpc
 from headless_re_mcp.backends.common.subprocess_rpc import (
     ManagedSubprocessMixin,
     no_window_popen_kwargs,
@@ -45,9 +47,56 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 class _Dummy(ManagedSubprocessMixin):
-    def __init__(self, process: subprocess.Popen) -> None:
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
         self._process = process
         self._observed_windows: set[str] = set()
+
+
+def _dead_process() -> subprocess.Popen[Any]:
+    """A real (already-exited) Popen: gives a genuine pid without a live child.
+
+    The window-probe and tree-killer are monkeypatched in these tests, so the
+    process only needs a valid ``pid``; reaping it here keeps the suite clean.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc
+
+
+def test_pid_reflects_the_underlying_process() -> None:
+    proc = _dead_process()
+    assert _Dummy(proc).pid == proc.pid
+
+
+def test_analyzer_windows_returns_sorted_titles_and_accumulates_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # analyzer_windows is what the service layer polls to notice a debugger
+    # popping a modal window; it must return a stable, sorted view and never
+    # forget a title once seen, even if a later probe reports fewer.
+    proc = _dead_process()
+    dummy = _Dummy(proc)
+    monkeypatch.setattr(subprocess_rpc, "describe_process_windows", lambda pid: {"Zed", "Alpha"})
+    assert list(dummy.analyzer_windows) == ["Alpha", "Zed"]
+    assert dummy._observed_windows == {"Alpha", "Zed"}
+
+    monkeypatch.setattr(subprocess_rpc, "describe_process_windows", lambda pid: {"Beta"})
+    assert list(dummy.analyzer_windows) == ["Beta"]
+    assert dummy._observed_windows == {"Alpha", "Zed", "Beta"}
+
+
+def test_terminate_process_delegates_to_the_tree_killer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _dead_process()
+    calls: list[tuple[int, float]] = []
+
+    def fake_kill(process: subprocess.Popen[Any], *, wait_s: float) -> None:
+        calls.append((process.pid, wait_s))
+
+    monkeypatch.setattr(subprocess_rpc, "terminate_process_tree", fake_kill)
+    _Dummy(proc).terminate_process(wait_timeout=1.5)
+    assert calls == [(proc.pid, 1.5)]
 
 
 def test_managed_terminate_kills_the_process_the_child_started() -> None:
