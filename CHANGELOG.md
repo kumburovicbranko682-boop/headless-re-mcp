@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`device.force_stop` 的 `ps` 回退把同前缀的邻居误当成残留进程）
+
+- `force_stop` 先跑 `am force-stop`,再读进程表核对是否真停了:`stopped` 即「该包已无残留 PID」。
+  设备没有 `pidof` 时回退到 `ps -A`,而旧解析用 `package in line` 在整行里找子串——于是
+  `com.example.app` 命中了 `com.example.appstore`、`com.example.app2` 这类只是共享名字前缀的
+  **另一个应用**的进程行。结果:目标包其实已被停掉,却因为一个前缀相邻的邻居还在跑而回
+  `stopped=false` 并把邻居的 PID 列进 `remaining_pids`,无人值守的 agent 据此以为没停成、反复重试。
+- 现在 `ps` 回退按进程名列精确匹配:只认最后一列等于 `package`,或以 `package:` 开头(Android 给应用的
+  私有/隔离进程命名成 `包名:子进程`)的行;`com.example.appstore` / `com.example.app2` 不再命中。PID
+  仍从行首的数字列取(兼容 `USER PID …` 的 toybox 与 `PID USER …` 的 busybox 两种排布),残留数照旧封顶 16
+  条防止进程表爆表。`pidof` 主路径本就精确匹配,不受影响。
+- 新增回归:前缀相邻的邻居在跑时 `force_stop` 仍回 `stopped=true`/`remaining_pids=[]`、目标包及其
+  `包名:子进程` 行被如实计入、`_pids_from_ps` 精确匹配名字(拒 `app2`/`appstore`)、空行与表头不崩、
+  海量进程表封顶 16 条。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
