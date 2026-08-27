@@ -77,3 +77,47 @@ def test_invalid_bind_host_is_refused_before_any_launch(monkeypatch: Any, bad: s
         backend.ensure_frida_server("emulator-5554", bind_host=bad)
     assert caught.value.code == "invalid_params"
     assert commands == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "data/local/tmp/frida",  # no leading slash: not an absolute device path
+        "/data/local/tmp/frida; reboot",  # command separator
+        "/data/local/tmp/$(id)",  # command substitution
+        "/data/local/tmp/`id`",  # backtick substitution
+        "/data/local/tmp/frida server",  # whitespace splits the argv
+        "/data/local/tmp/'evil'",  # a quote reshapes the su -c string
+        "/data/local/tmp/x&&reboot",  # command chaining
+        "",  # empty is not a path at all
+    ],
+)
+def test_invalid_remote_path_is_refused_before_any_launch(monkeypatch: Any, bad: str) -> None:
+    """remote_path lands in the same su -c string, so it is validated too.
+
+    The launcher interpolates remote_path into ``su -c 'nohup <remote_path> -l
+    ...'`` exactly as it does bind_host, so a metacharacter here is the same
+    root-shell injection: a path carrying ``;``, ``$(...)``, backticks, a
+    quote, whitespace, or ``&&`` -- or one that is not even absolute -- must be
+    refused as invalid_params before any device command runs, not passed to a
+    root shell. The push/chmod that would precede the launch use an argv list
+    (no shell), so this guard is the one line between the argument and ``su``.
+    """
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", remote_path=bad)
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details.get("remote_path") == bad
+    assert commands == []
+
+
+def test_valid_remote_path_reaches_the_launch_verbatim(monkeypatch: Any) -> None:
+    """A well-formed device path is accepted and used as the frida-server path."""
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    backend.ensure_frida_server(
+        "emulator-5554", port=27042, remote_path="/data/local/tmp/fs"
+    )
+    launch = next(command for command in commands if "nohup" in command)
+    assert "nohup /data/local/tmp/fs -l 127.0.0.1:27042" in launch
