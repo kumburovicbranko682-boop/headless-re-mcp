@@ -102,6 +102,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（工作流刷新失败仍谎报模块「已刷新」）
+
+- `execute_workflow_transition`（`workflows/executor.py`）的既定契约是「精确上报走到哪一步」，
+  好让失败时 `service_workflow` 能从这份部分执行结果里对账。但模块刷新那段先把
+  `refreshed_keys` 赋成 `transition.refresh_module_keys`（即请求要刷新的集合），再去调
+  `port.ensure_paused` / `port.refresh_modules`。一旦调试器在这两步里掉线，`except BaseException`
+  兜住异常并用当时的 `refreshed_keys` 造 `WorkflowExecution`——于是抛出的 `WorkflowExecutionError`
+  的 `execution.refreshed_module_keys` 报成 `{payload}`，可状态压根没变、刷新从未发生，正是这个
+  执行器唯一一处违背「精确上报」的地方。已实测复现：让 `refresh_modules` 抛错，端口只走到
+  `ensure_paused, refresh_modules`，而 `refreshed_module_keys` 却是 `frozenset({'payload'})`。
+  现改用独立的 `requested_refresh` 承载「请求刷新的集合」（仍用于构建 selectors 与「引用未跟踪
+  模块」的 fail-closed 校验），把上报用的 `refreshed_keys` 留空，直到 `refresh_modules` 返回新基址、
+  `apply_workflow_module_refresh` 把新基址落进 state 之后才赋值——此刻刷新才算「事实」。成功路径
+  行为不变；若失败发生在刷新完成之后的重对账阶段，`refreshed_keys` 仍如实反映刷新已发生。新增回归
+  `test_a_failed_refresh_does_not_claim_the_modules_were_refreshed`：刷新中途掉线时断言
+  `refreshed_module_keys` 为空且 state 未变；去掉修复后它因 `frozenset({'payload'})` 失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

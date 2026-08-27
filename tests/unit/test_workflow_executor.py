@@ -75,6 +75,7 @@ class _RecordingPort:
 
     refresh_result: dict[str, RebasedModuleMapping | None] | None = None
     fail_on_apply: int | None = None
+    fail_on_refresh: bool = False
 
     def __post_init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
@@ -104,6 +105,8 @@ class _RecordingPort:
     ) -> dict[str, RebasedModuleMapping | None]:
         self.calls.append(("refresh_modules", dict(selectors)))
         self.timeouts.append(timeout)
+        if self.fail_on_refresh:
+            raise RuntimeError("debugger dropped during module refresh")
         assert self.refresh_result is not None, "test forgot to stub the refresh"
         return self.refresh_result
 
@@ -210,6 +213,39 @@ def test_a_module_refresh_rebinds_breakpoints_at_the_new_base() -> None:
     assert execution.refreshed_module_keys == frozenset({"payload"})
     residue = plan_breakpoint_reconciliation(
         execution.state.breakpoints, execution.state.lifecycle
+    )
+    assert residue.operations == ()
+
+
+def test_a_failed_refresh_does_not_claim_the_modules_were_refreshed() -> None:
+    """A refresh that never completed must not report its modules as refreshed.
+
+    The executor's contract is to report exactly how far it got so the service
+    can reconcile. ``refreshed_module_keys`` used to be set to the requested set
+    before the port was touched, so a debugger that dropped inside
+    ``ensure_paused``/``refresh_modules`` produced a partial execution claiming
+    the modules were refreshed when the state never changed. The keys are a fact
+    only once the port has returned new bases and the state reflects them.
+    """
+    old_base = 0x7FF800000000
+    planned = put_workflow_breakpoint_intent(
+        _state(old_base), BreakpointIntent(id="oep", module_key="payload", rva=0x1234)
+    )
+    bound = execute_workflow_transition(planned, _RecordingPort(), timeout=5.0)
+    refresh = request_workflow_module_refresh(bound.state)
+
+    port = _RecordingPort(fail_on_refresh=True)
+    with pytest.raises(WorkflowExecutionError) as excinfo:
+        execute_workflow_transition(refresh, port, timeout=5.0)
+
+    error = excinfo.value
+    assert isinstance(error.cause, RuntimeError)
+    # The refresh was reached but raised, so it is not a fact.
+    assert [name for name, _ in port.calls] == ["ensure_paused", "refresh_modules"]
+    assert error.execution.refreshed_module_keys == frozenset()
+    # The state is untouched: the old binding is still bound at the old base.
+    residue = plan_breakpoint_reconciliation(
+        error.execution.state.breakpoints, error.execution.state.lifecycle
     )
     assert residue.operations == ()
 
