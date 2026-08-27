@@ -62,7 +62,7 @@ _API_BODY = b'{"answer": "capture-42"}'
 # page's wasm real to the CDP debugger, not just a fetched blob.
 _WASM_ADD = bytes.fromhex(
     "0061736d01000000"  # magic + version
-    "01070160027f7f017f"  # type: (i32, i32) -> i32
+    "01070160027f7f017f"  # type section: (i32, i32) -> i32
     "03020100"  # one function of type 0
     "070701036164640000"  # export "add"
     "0a09010700200020016a0b"  # body: local.get 0, local.get 1, i32.add
