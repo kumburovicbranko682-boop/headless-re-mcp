@@ -13,10 +13,13 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# Linked-library lists are short in practice (tens of entries); the cap only
+# bounds a hostile or corrupt binary that claims thousands.
+_MAX_LIBRARIES = 1024
 # Every r2 tool schema declares ``0 < timeout <= 120``. See clamp_cli_timeout.
 _MAX_TIMEOUT_S = 120.0
 _ALLOWED = frozenset(
@@ -31,6 +34,7 @@ _ALLOWED = frozenset(
         "izj",
         "iij",
         "iEj",
+        "ilj",
         "pdj",
         "axj",
         "aa",
@@ -112,6 +116,59 @@ class R2Client:
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
+
+    def libraries(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
+        """List the shared libraries the binary links against (``ilj``).
+
+        ``ilj`` emits a JSON array of library-name strings (DT_NEEDED for ELF,
+        the import DLLs for PE, the dylibs for Mach-O). The shared
+        ``enrich_r2_payload`` item mapper keeps only dict entries, so it would
+        drop every string and report an empty list -- reading as a statically
+        linked binary. This parses the string array itself instead. A non-list
+        payload (an r2 error banner, an empty buffer) raises rather than
+        answering zero libraries, so "could not read" is never confused with
+        "none linked".
+        """
+        data = self.run(binary, ["ilj"], timeout=timeout)
+        raw = str(data.get("raw") or "")
+        parsed = parse_r2_json(raw)
+        if not isinstance(parsed, list):
+            raise R2Error(
+                "backend_error",
+                "could not parse r2 library list",
+                raw_excerpt=raw[:2000],
+            )
+        libraries: list[str] = []
+        truncated = False
+        for entry in parsed:
+            # ilj yields strings; a {"name": ...}/{"library": ...} object shape
+            # is tolerated too so a future r2 that enriches each entry does not
+            # silently drop every library.
+            if isinstance(entry, str):
+                name = entry
+            elif isinstance(entry, dict):
+                name = str(
+                    entry.get("name") or entry.get("library") or entry.get("lib") or ""
+                )
+            else:
+                continue
+            if not name:
+                continue
+            if len(libraries) >= _MAX_LIBRARIES:
+                truncated = True
+                break
+            libraries.append(name)
+        result: JsonObject = {
+            "libraries": libraries,
+            "count": len(libraries),
+            "total": len(parsed),
+            "truncated": truncated,
+        }
+        if data.get("truncated"):
+            # The raw r2 buffer itself hit the output cap before JSON parsing;
+            # the library list may be short a few entries the buffer cut.
+            result["output_truncated"] = True
+        return result
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         try:

@@ -100,6 +100,27 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.libs")
+    def r2_libs(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Shared libraries the binary links against (ilj) -- its dependency surface.
+
+        Runs ``ilj``: the DT_NEEDED entries for an ELF, the import DLLs for a
+        PE, the linked dylibs for a Mach-O. Answers with libraries (a list of
+        plain name strings, not objects and with no address -- a linked-library
+        name has none), count and total (the entries radare2 reported).
+        Because ``ilj`` returns strings, this does not go through the shared
+        item mapper (which keeps only addressed objects and would drop every
+        one); the list field is libraries, not items. An empty libraries list
+        is a statically linked binary, not an error, whereas output radare2
+        could not render as a JSON list is a backend_error -- "could not read"
+        is never reported as "none linked". truncated marks the 1024-entry cap;
+        output_truncated marks the rarer case where r2's own output buffer was
+        cut before parsing. There is no has_more field.
+        """
+        return _dump(analysis.r2_libs(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

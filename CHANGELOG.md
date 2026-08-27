@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -24,7 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 新增（监控台工作台）
+### 新增（本地二进制链接库）
+
+- `r2.libs`（只读）:跑 `ilj`,列二进制链接的共享库——ELF 的 DT_NEEDED、PE 的导入 DLL、Mach-O 的
+  dylib,即它的依赖面。回 `libraries`（纯名字字符串的列表,不是对象、也没有地址——链接库名本就没有)、
+  `count` 与 `total`（radare2 报告的条目数)。关键点:`ilj` 返回的是**字符串数组**,而共享的
+  `enrich_r2_payload` 项映射器只保留带地址的字典条目,会把每个字符串都丢掉、报成空列表（读起来就像
+  静态链接)——所以 `r2.libs` 不走那条通用映射,自己解析字符串数组,列表字段是 libraries 而非 items。
+  空 `libraries` 是静态链接的二进制,不是错误;而 radare2 输出无法解析成 JSON 列表(错误横幅、空缓冲)
+  则报 `backend_error`——「读不到」绝不谎报成「没链接」。`truncated` 标记 1024 条上限;`output_truncated`
+  标记更罕见的 r2 输出缓冲在解析前就被截断的情形。没有 has_more 字段。radare2 未安装时无法在 CI 实跑,
+  故回归测试用权威来源（r2pipe-api 的 `enumerateLibraries(): string[]`)确认的字符串数组形状喂真实
+  `ilj` 载荷,验证解析、封顶与「读不到 vs 没链接」的区分。
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
 - 分析会话在控制台重启后按同一 ID 从 `sessions.db` 恢复（休眠，不自动拉起 IDA/x64dbg）。
