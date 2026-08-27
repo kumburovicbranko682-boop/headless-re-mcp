@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -119,6 +120,45 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     _assert_valid_har(json.dumps(build_har([entry])))
     params = [(p["name"], p["value"]) for p in entry["request"]["queryString"]]
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
+
+
+def test_a_url_the_parser_rejects_does_not_sink_the_whole_export() -> None:
+    """One malformed URL must degrade to an empty queryString, not abort the HAR.
+
+    har_entry parses queryString by handing the URL to urlsplit, which raises
+    ValueError on an unmatched IPv6 bracket. A proxy records whatever the client
+    sent, malformed URLs included, and har_entry runs inside the comprehension
+    that builds *every* entry -- so an unguarded raise there would lose the whole
+    capture over one bad row. The guard keeps the raw URL verbatim, empties only
+    its parsed query, and leaves the entry spec-valid so the export still writes.
+    """
+    bad_url = "http://[::1/path?a=b"
+    # Ground the premise: this really is a URL urlsplit refuses to parse, so the
+    # test exercises the guard rather than a URL that happens to parse cleanly.
+    with pytest.raises(ValueError):
+        urlsplit(bad_url)
+
+    entry = har_entry(method="GET", url=bad_url, status=200, mime_type="text/html")
+    assert entry["request"]["queryString"] == []
+    # Only the query parse degraded; the URL itself is still reported verbatim.
+    assert entry["request"]["url"] == bad_url
+
+    # A mixed capture -- the bad row beside a good one -- must serialize whole,
+    # with the good row's query still parsed. That is the property the guard
+    # protects: a hostile URL cannot take the rest of the HAR down with it.
+    good = har_entry(
+        method="GET", url="https://example.com/s?q=1", status=200, mime_type="text/html"
+    )
+    result = serialize_har([entry, good], max_bytes=64 * 1024 * 1024)
+    assert result.entry_count == 2
+    doc = _assert_valid_har(result.text)
+    by_url = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    assert by_url[bad_url]["request"]["queryString"] == []
+    good_params = [
+        (p["name"], p["value"])
+        for p in by_url["https://example.com/s?q=1"]["request"]["queryString"]
+    ]
+    assert good_params == [("q", "1")]
 
 
 def test_har_entry_reports_a_known_response_body_size() -> None:
