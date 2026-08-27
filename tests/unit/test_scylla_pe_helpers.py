@@ -10,6 +10,7 @@ the cleanup that unlinks a published output when the run fails afterwards.
 
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 
@@ -87,6 +88,25 @@ def test_is_pe_file_rejects_a_missing_pe_signature(tmp_path: Path) -> None:
     assert _is_pe_file(off) is False
 
 
+def test_is_pe_file_returns_false_when_the_signature_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    valid = _write_pe(tmp_path / "ok.exe")
+    header = valid.read_bytes()
+    calls = {"n": 0}
+
+    def flaky_open(self: Path, *args: object, **kwargs: object) -> io.BytesIO:
+        calls["n"] += 1
+        # The header read (first open) succeeds so the MZ/offset checks pass;
+        # only the second open, for the PE signature, fails.
+        if calls["n"] >= 2:
+            raise OSError("signature read gone")
+        return io.BytesIO(header)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    assert _is_pe_file(valid) is False
+
+
 # --------------------------------------------------------------------------- #
 # _collect_newest_pe                                                          #
 # --------------------------------------------------------------------------- #
@@ -107,6 +127,51 @@ def test_collect_newest_pe_raises_when_nothing_was_produced(tmp_path: Path) -> N
     work_input = _write_pe(work / "input.exe")
     (work / "log.txt").write_bytes(b"only the log survived")
 
+    with pytest.raises(ScyllaError) as excinfo:
+        _collect_newest_pe(work, work_input)
+    assert excinfo.value.code == ScyllaErrorCode.OUTPUT_MISSING
+
+
+def test_collect_newest_pe_skips_a_candidate_that_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    work_input = _write_pe(work / "input.exe")
+    _write_pe(work / "cand.exe")
+    real_resolve = Path.resolve
+
+    def flaky_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        if self.name == "cand.exe":
+            raise OSError("resolve denied")
+        return real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "resolve", flaky_resolve)
+    with pytest.raises(ScyllaError) as excinfo:
+        _collect_newest_pe(work, work_input)
+    assert excinfo.value.code == ScyllaErrorCode.OUTPUT_MISSING
+
+
+def test_collect_newest_pe_skips_a_candidate_that_cannot_be_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    work_input = _write_pe(work / "input.exe")
+    _write_pe(work / "cand.exe")
+    real_stat = Path.stat
+    calls = {"n": 0}
+
+    def flaky_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == "cand.exe":
+            calls["n"] += 1
+            # is_file() takes the first stat; the explicit st_mtime read is the
+            # second and is the one this test forces to fail.
+            if calls["n"] >= 2:
+                raise OSError("mtime gone")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
     with pytest.raises(ScyllaError) as excinfo:
         _collect_newest_pe(work, work_input)
     assert excinfo.value.code == ScyllaErrorCode.OUTPUT_MISSING
