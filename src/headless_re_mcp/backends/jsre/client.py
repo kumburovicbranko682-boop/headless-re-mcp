@@ -8,6 +8,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +41,19 @@ _MAX_INPUT_BYTES = 16 * 1024 * 1024
 # subprocess into a precise invalid_params -- the same reason the size cap
 # refuses input up front rather than handing it to the child.
 _WASM_MAGIC = b"\x00asm"
+# js.source_maps finds the sourceMappingURL annotations a bundler appends. The
+# value can be a short external path or a multi-megabyte inline data: URI (the
+# whole map base64-encoded), so an inline hit is reported by its media-type
+# prefix only, never its payload. Bounded like every other scan.
+_MAX_SOURCE_MAPS_COLLECT = 2000
+_MAX_SOURCE_MAPS_PAGE = 1000
+_MAX_MAP_URL_LEN = 2000
+# Both the modern (//#) and legacy (//@) line forms, and the /* */ block form
+# CSS bundles use. The value runs until whitespace, a quote, or the * that
+# closes a block comment.
+_SOURCEMAP_RE = re.compile(
+    r"(?://[#@]|/\*[#@])\s*sourceMappingURL\s*=\s*([^\s'\"*]+)"
+)
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -99,6 +113,60 @@ def _looks_like_wasm(path: Path) -> bool:
             return handle.read(4) == _WASM_MAGIC
     except OSError:
         return False
+
+
+def scan_source_maps(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Find sourceMappingURL references in a JavaScript/CSS/text file.
+
+    Node-free and read-only. A source map is the single biggest shortcut in
+    front-end RE: it maps a minified bundle back to the original, often
+    TypeScript, source, so knowing one is shipped -- and where -- is high value.
+    Matches the modern //# , legacy //@ and CSS /* */ sourceMappingURL forms.
+    Each row is url and inline: for an external reference url is the map path or
+    URL (app.js.map, /static/app.js.map, https://.../app.js.map) and inline is
+    false; for an embedded data: URI (the whole map base64-encoded) inline is
+    true and url is only its media-type prefix (data:application/json;base64,),
+    never the payload, so a multi-megabyte map cannot bloat the reply. Rows are
+    deduped and sorted. Returns source_maps, count, total, offset and has_more
+    so a filled page is not read as every reference; total is capped at 2000
+    with scan_capped when more may exist. Input over 16 MiB is refused as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    text = raw.decode("utf-8", errors="replace")
+    seen: set[tuple[str, bool]] = set()
+    scan_more = False
+    for match in _SOURCEMAP_RE.finditer(text):
+        if len(seen) >= _MAX_SOURCE_MAPS_COLLECT:
+            scan_more = True
+            break
+        value = match.group(1)
+        inline = value.startswith("data:")
+        if inline:
+            head, sep, _rest = value.partition(",")
+            display = (head + sep)[:_MAX_MAP_URL_LEN]
+        else:
+            display = value[:_MAX_MAP_URL_LEN]
+        if display:
+            seen.add((display, inline))
+    rows = [{"url": url, "inline": inline} for url, inline in sorted(seen)]
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_SOURCE_MAPS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "source_maps": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+    }
 
 
 def _run(

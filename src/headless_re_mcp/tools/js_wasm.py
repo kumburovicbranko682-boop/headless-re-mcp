@@ -49,6 +49,29 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
+    @tools.tool(name="js.source_maps")
+    def js_source_maps(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find sourceMappingURL references in a JavaScript/CSS/text file.
+
+        Node-free and read-only. A source map is the single biggest shortcut in
+        front-end RE: it maps a minified bundle back to the original (often
+        TypeScript) source, so knowing one is shipped -- and where -- is high
+        value. Matches the modern //# , legacy //@ and CSS /* */ forms. Each row
+        is url and inline: for an external reference url is the map path or URL
+        (app.js.map, https://.../app.js.map) and inline is false; for an
+        embedded data: URI inline is true and url is only its media-type prefix
+        (data:application/json;base64,), never the payload, so a multi-megabyte
+        map cannot bloat the reply. Answers with source_maps, count, total,
+        offset and has_more so a filled page is not read as every reference;
+        total is capped at 2000 with scan_capped when more may exist. Input over
+        16 MiB is refused as too_large.
+        """
+        return _dump(analysis.js_source_maps(path, offset=offset, limit=limit))
+
     @tools.tool(name="js.unpack_bundle")
     def js_unpack_bundle(
         path: str,
