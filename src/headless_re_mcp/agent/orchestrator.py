@@ -18,6 +18,7 @@ from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import (
     RUN_DEADLINE_EXCEEDED,
+    RUN_RESPONSE_FILTERED,
     RUN_RESPONSE_TRUNCATED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
@@ -480,17 +481,20 @@ class AgentOrchestrator:
                 await self._finish_failure(run_id, RUN_ROUNDS_EXHAUSTED, event="run.failed")
                 return
             if not completed_calls:
-                if completed_finish_reason == "length":
-                    # The provider hit its output-token limit mid-turn: the
-                    # visible answer is a fragment and there are no tool calls to
+                provider_cut = {
+                    "length": RUN_RESPONSE_TRUNCATED,
+                    "content_filter": RUN_RESPONSE_FILTERED,
+                }.get(completed_finish_reason or "")
+                if provider_cut is not None:
+                    # The provider ended this turn, not the model: the visible
+                    # answer is a fragment (token limit) or was suppressed
+                    # mid-flight (moderation), and there are no tool calls to
                     # carry the run forward. Marking it completed would file a
                     # cut-off turn as a finished one -- the same "cut-off work as
                     # success" this loop already refuses on a stream that ends
-                    # with no completed event. Fail with a distinct reason so the
-                    # console and audit say the answer was truncated.
-                    await self._finish_failure(
-                        run_id, RUN_RESPONSE_TRUNCATED, event="run.failed"
-                    )
+                    # with no completed event. Fail with a reason that names
+                    # which cut it was, so the console and audit say so.
+                    await self._finish_failure(run_id, provider_cut, event="run.failed")
                     return
                 self.store.transition(run_id, RunStatus.COMPLETED)
                 self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
