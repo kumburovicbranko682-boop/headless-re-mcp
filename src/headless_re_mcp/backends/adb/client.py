@@ -517,8 +517,13 @@ class AdbBackend:
         return result
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Validate the package before resolving the device: _check_package is a
+        # cheap regex, _device reaches the adb server. Ordering it first means a
+        # malformed package fails fast as invalid_params instead of being masked
+        # by a device error when the server or device is also unreachable (same
+        # as install/push validating the local file first).
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _call(dev.uninstall, pkg, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -539,8 +544,11 @@ class AdbBackend:
         return result
 
     def launch(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Package first, device second: a malformed package is a cheap local
+        # reject and must not be masked by a device error when the adb server is
+        # unreachable (same ordering as uninstall/force_stop and install/push).
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(
                 dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
@@ -565,8 +573,11 @@ class AdbBackend:
         }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Package first, device second: a malformed package is a cheap local
+        # reject and must not be masked by a device error when the adb server is
+        # unreachable (same ordering as uninstall/launch and install/push).
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(dev, ["am", "force-stop", pkg])
         except AdbError:

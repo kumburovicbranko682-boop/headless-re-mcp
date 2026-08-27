@@ -242,3 +242,37 @@ def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
     assert payload["size"] == 5
     assert payload["remote"] == "/sdcard/small.bin"
     assert sync.pushed == (str(small), "/sdcard/small.bin")
+
+
+def _backend_with_unreachable_device() -> AdbBackend:
+    """A backend whose _device always fails, as if the adb server were down."""
+    backend = AdbBackend()
+    backend._available = True
+
+    def _boom(serial: str) -> Any:
+        raise AdbError("backend_error", "adb server unreachable")
+
+    backend._device = _boom  # type: ignore[method-assign]
+    return backend
+
+
+@pytest.mark.parametrize("op", ["uninstall", "launch", "force_stop"])
+def test_package_ops_validate_the_package_before_touching_the_device(op: str) -> None:
+    """uninstall/launch/force_stop check the package before resolving the device.
+
+    _check_package is a cheap regex; _device reaches the adb server. When the
+    server is unreachable a malformed package must still surface as
+    invalid_params rather than be masked by the device's backend_error -- the
+    same ordering install/push use for the local file. A well-formed package is
+    the only input that gets as far as the (here failing) device round-trip.
+    """
+    backend = _backend_with_unreachable_device()
+    method = getattr(backend, op)
+
+    with pytest.raises(AdbError) as bad:
+        method("emulator-5554", "not a package")
+    assert bad.value.code == "invalid_params"
+
+    with pytest.raises(AdbError) as good:
+        method("emulator-5554", "com.example.app")
+    assert good.value.code == "backend_error"
