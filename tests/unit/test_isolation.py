@@ -175,6 +175,65 @@ def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  #
     assert policy.required is True
 
 
+def test_a_malformed_command_string_does_not_crash_settings_load(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """An unbalanced quote in the isolation command must not take down startup.
+
+    _as_command splits the operator's string inside Settings.load(), which every
+    entry point calls, so a typo here used to raise ValueError out of load and
+    crash doctor, serve, serve-web and the stdio server alike -- over an optional
+    feature. It must survive, and must not silently empty out (that would read as
+    "no isolation" and run the next sample dirty): the whole line is kept as one
+    argv element instead.
+    """
+    from headless_re_mcp.config import Settings
+
+    monkeypatch.setenv("HEADLESS_RE_ISOLATION_COMMAND", 'revert.ps1 "clean')
+    monkeypatch.delenv("HEADLESS_RE_ISOLATION_REQUIRED", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.isolation_command == ('revert.ps1 "clean',)
+
+
+def test_a_malformed_command_stays_configured_and_fails_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A command that will not parse must gate the next sample, not be skipped.
+
+    Kept whole, it reads as configured, and the real runner cannot start a
+    program by that name, so a required step refuses to continue rather than
+    quietly letting the next unknown binary run on a dirty machine.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    policy = IsolationPolicy.from_settings(
+        replace(base, isolation_command='revert.ps1 "clean')
+    )
+
+    assert policy.configured is True
+    assert policy.command == ('revert.ps1 "clean',)
+
+    with pytest.raises(IsolationError):
+        IsolationRunner(policy).rotate()
+
+
+def test_a_malformed_optional_command_reports_without_raising(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    policy = IsolationPolicy.from_settings(
+        replace(base, isolation_command='revert.ps1 "clean', isolation_required=False)
+    )
+
+    outcome = IsolationRunner(policy).rotate()
+
+    assert outcome["ok"] is False
+    assert outcome["performed"] is True
+
+
 def test_the_default_runner_is_the_one_that_binds_children() -> None:
     """The injectable run is for tests. The default has to be the bounded one."""
     import inspect

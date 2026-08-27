@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`isolation_command` 写歪一处引号就让所有入口在启动时崩溃）
+
+- 隔离命令是一个由算子书写的命令行，`Settings.load()` 通过 `_as_command` → `shlex.split` 把它拆成
+  argv。而 `shlex.split` 遇到不成对的引号会抛 `ValueError`（Windows 路径还会拒绝内嵌 NUL），
+  `Settings.load()` 又是 doctor、serve、serve-web、stdio 服务每个入口在启动时都会调的——于是这个
+  可选样本隔离功能里的一个引号笔误，会让所有入口都以 traceback 崩在启动阶段。把错误吞成空 argv
+  是更糟的修法：空命令会被读成「没有配置隔离」，下一个未知样本就会在上一个样本动过的机器上运行——
+  正是这个步骤要防的交叉污染。现新增 `_safe_split_command`：拆解失败时不抛异常，而是把整行原样留作
+  单个 argv 元素，于是策略仍读作「已配置」，运行器在无法启动该程序时按既有路径「失败即拒绝继续」
+  （required 时抛 `IsolationError`，optional 时如实上报）。`config._as_command` 与
+  `IsolationPolicy.from_settings` 都改走这个兜底。新增测试：畸形命令下 `Settings.load()` 不再崩、
+  整行被保留为单元素 argv；`from_settings` 仍判定为已配置；`rotate()` 在 required 下拒绝继续、
+  在 optional 下如实上报。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

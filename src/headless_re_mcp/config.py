@@ -574,12 +574,12 @@ def _as_command(raw: str | None, default: object) -> tuple[str, ...]:
     is the wrong tool: it splits on commas and de-duplicates, so
     ``pwsh -File C:\\vm\\revert.ps1`` becomes one un-runnable program name.
     """
-    from headless_re_mcp.core.isolation import _split_command
+    from headless_re_mcp.core.isolation import _safe_split_command
 
     if raw is not None:
-        return _split_command(raw)
+        return _safe_split_command(raw)
     if isinstance(default, str):
-        return _split_command(default)
+        return _safe_split_command(default)
     if isinstance(default, (list, tuple)):
         return tuple(str(part) for part in default if str(part).strip())
     return ()

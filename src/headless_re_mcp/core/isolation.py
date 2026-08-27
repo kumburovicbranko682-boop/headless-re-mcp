@@ -47,6 +47,29 @@ def _split_command(raw: str) -> tuple[str, ...]:
     return tuple(part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL)))
 
 
+def _safe_split_command(raw: str) -> tuple[str, ...]:
+    """Split a command string, keeping it whole rather than raising on garbage.
+
+    ``shlex.split`` raises ``ValueError`` on an unbalanced quote (and the
+    Windows path here rejects an embedded NUL), and this runs inside
+    ``Settings.load()``, which every entry point -- doctor, serve, serve-web,
+    the stdio server -- calls at startup. A typo in the operator's optional
+    isolation command must not take all of them down with a traceback.
+
+    Swallowing the error to an empty argv would be the worse failure: an empty
+    command reads as "no isolation configured", so the next unknown sample would
+    run on a machine the last one touched -- the exact cross-contamination this
+    step exists to prevent. Instead keep the whole line as a single argv element
+    so the policy still reads as configured and the runner fails closed when it
+    cannot start that program.
+    """
+    try:
+        return _split_command(raw)
+    except ValueError:
+        cleaned = raw.strip()
+        return (cleaned,) if cleaned else ()
+
+
 @dataclass(frozen=True, slots=True)
 class IsolationPolicy:
     """The command to run between samples, if the deployment has one."""
@@ -62,9 +85,11 @@ class IsolationPolicy:
     def from_settings(cls, settings: object) -> IsolationPolicy:
         raw = getattr(settings, "isolation_command", ()) or ()
         # A single string is read the way an operator would write it in a config
-        # file; a sequence is taken as an argv that is already split.
+        # file; a sequence is taken as an argv that is already split. A malformed
+        # string is kept whole rather than raised so a bad command fails closed
+        # at rotate time instead of crashing whoever built the policy.
         command = (
-            _split_command(raw)
+            _safe_split_command(raw)
             if isinstance(raw, str)
             else tuple(str(part) for part in raw)
         )
