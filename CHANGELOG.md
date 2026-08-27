@@ -881,6 +881,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   functions/symbols/xrefs/decompile,断言取到带 entry/body_size 的具名函数、带 type 的符号、
   `main→helper` 的真实 CALL 边、以及点名被调者 `secret` 的反编译 C。已在 Linux 对真实 Ghidra 12.1.3
   验证四个工具全部返回。
+- **本地 Frida 读取(`modules`/`exports`/`memory.read`)把后端故障报成 internal_error 事故**。这三条
+  本地读取 attach 之后加载枚举脚本、跑 RPC,却没有任何错误映射:目标进程中途死掉、页不可读、
+  `script.load()` 被拒时抛出的原始 frida 异常一路穿到服务信封,被记成 `internal_error` 加一条事故日志
+  ——正是 r2/apk 适配器早已修掉的反模式,也与 Frida 自己的设备侧读取(`java_enumerate`/
+  `hook_template_device` 映射成 `backend_error`)不一致。现三条本地读取统一走
+  `_read_with_script` 辅助:attach 之后的 frida 故障映射为 `backend_error`(看着像超时的映射为
+  `timeout`),且始终 detach 探针;attach 本身的失败仍由 `_attach_local` 提前抛出结构化 FridaError。
+  另外 `memory.read` 现按 r2 `disasm`/`xrefs` 的约定先行校验地址为非负整数——工具面把 address 标成 int
+  却没设下界,负地址此前会一路到 agent 里的 `ptr(address)` 再回成 internal_error 事故,而非干净的
+  `invalid_params`。新增单测钉住:后端故障映射为 `backend_error` 且探针已 detach、负地址回 `invalid_params`。
+- **r2 的 `strings`/`imports`/`exports`/`disasm` 补上真实 live 覆盖**。单测都 mock r2 的 JSON,结构上
+  抓不到「某命令在新版 r2 上不再吐列举」这类漂移——正是 `axj` 回归藏身之处:live 工具在现代 r2 上什么
+  都不返回,而所有 mock 单测照过。r2 live gate 现对现编 ELF 真跑 `izj`/`iij`/`iEj`/`aflj`/`pdj`,断言各自
+  解析出应有内容(格式串、`printf` 导入、至少一个导出、映射出地址的反汇编)。夹具的格式串加长到超过
+  r2 字符串扫描的 4 字节下限,`izj` 才会报它。已在 radare2 6.2.0 验证通过。
 
 ### 变更（Android 后端清理）
 
