@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（用假 DEX 分析钉住 apk 的 external 过滤、缓存复用与原生库 ABI 解析）
+
+- apk 的 DEX 分析方法(`classes`/`methods`/`xrefs`)由分页夹紧测试通过 monkeypatch `_parsed` 驱动,而那些\
+  假类/假方法的 `is_external()` 恒为 False——于是这些方法赖以存在的"排除 external 符号"过滤从未运行。\
+  external 类是 androguard 为"被引用但未定义"的类型(应用调用的框架类)合成出来的;把它列进应用自有类、\
+  或把框架方法的调用方算作应用的,正是无人值守 agent 会据以得出的错误结论。新增 `test_apk_dex_filters.py`,\
+  改为把真实 `_ParsedApk` 播入进程缓存(而非桩掉 `_parsed`),从而顺带覆盖缓存命中路径与 `_ParsedApk` 容器,\
+  并钉住:`classes()` 丢弃 external 类;`xrefs()` 跳过 external 方法与名字非目标的方法(某名字若无 in-app\
+  定义则如实返回空,而非把 external 调用方算进来);`native_libs()` 仅从正确嵌套的 lib/<abi>/<file> 路径\
+  提取 ABI、对顶层 lib/<file> 不臆造 ABI 但仍计为一条 lib 条目、非 lib 条目整体忽略;以及无 androguard 的\
+  客户端 `available=False` 且 DEX 读取以 `capability_unavailable` 拒绝而非佯装可用。apk/client.py 覆盖率\
+  由 86% 升至 91%(其余未覆盖行均为需真实 androguard 的解析/未命中路径)。(纯测试补充,无行为变更。)
+
 ### 测试（用假 APK 钉住 apk 清单级读取的故障映射、版本回退与输出诚实，不依赖 androguard）
 
 - `ApkClient` 的清单级读取(`manifest`/`permissions`/`certificates`)只解析 APK 容器,但仍走 androguard 的\
