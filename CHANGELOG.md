@@ -1022,6 +1022,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`session.list` / `static.functions` / `static.strings` 的分页参数没有在 schema 上设界**。
+  「负数 offset 一律在 schema 拒绝」那轮扫过了 apk.* / web.* / artifacts.* / audit.list /
+  timeline.list，唯独漏了这三个核心工具。`session.list` 经 `list_sessions` 用
+  `start = max(0, int(offset))` 把负 offset 静默夹成 0 并把这个夹后的值回给调用方，等于
+  谎报了请求；`static.functions` / `static.strings` 则把 offset/limit 直接转发给 IDA worker，
+  而 worker 的 `_paging` 早已把负 offset、越出 1..1000 的 limit（`static.strings` 还有越出
+  1..65536 的 `max_length`）判成 `invalid_argument`——但要多跑一次 worker 往返才报错，且
+  catalog 对外仍宣称 limit 无上界。现在把这三个工具的边界钉到运行期本就强制的同一档位，越界
+  的一页在 MCP 边界即被拒，跟其它分页工具一致。
 
 ### 新增（项目文档）
 
