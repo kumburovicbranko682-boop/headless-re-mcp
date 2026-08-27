@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 frida.java 工具的 pid 参数在 schema 层收敛为非负并文档化其契约）
+
+- `frida.java.classes` / `frida.java.methods` 的 `pid` 过去是裸 `int`(默认 0),而它是 OS 进程号:唯一哨兵是
+  0(取"最近一次 spawn/授权的 pid"),负值永远不是合法 pid。兄弟 PE 工具 `dynamic.attach` 早已在 schema 里给
+  pid 加了 `Field(ge=1, le=0xFFFFFFFF)` 界;这两条设备工具的 pid 却无界,于是一个负 pid 会溜过 schema、一路走到
+  设备授权检查才以 `permission_denied`("pid not allowed")被拒——对畸形输入来说是错的错误分类,也没在 schema
+  里向客户端公布有效区间。
+- 现给 pid 加 `Annotated[int, Field(ge=0, le=0xFFFFFFFF)]`(0 仍是合法默认哨兵),让框架在 schema 层就 fail-fast
+  拒掉负 pid 并登记有效区间;同时把 pid 契约(0=最近 spawn 的 pid;指定 pid 必须是本会话经 `frida.spawn` 授权过
+  的;非负)写进两条工具的 docstring,与既有 `name_filter` / `class_name` 界的可发现性看齐。
+- `tests/unit/test_frida_java_input_bounds.py` 新增两例:经 `input_schema_for` 断言 pid 的 schema 界
+  (minimum=0、maximum=0xFFFFFFFF、默认 0),以及两条 docstring 都公布了 pid 契约。
+
 ### 加固（把 proxy.export_har 的服务层制品登记与时间线留痕钉进测试）
 
 - `ProxyBackend.export_har` 的后端行为(spec-valid HAR、按抓取上限做字节裁剪)已有测试,但它外面那层**服务**接线

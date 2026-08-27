@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -25,7 +25,21 @@ from headless_re_mcp.backends.frida.client import (
     FridaClient,
     FridaError,
 )
+from headless_re_mcp.tools.binding import input_schema_for
 from headless_re_mcp.tools.frida import build_frida_tools
+
+
+def _tool_schema(name: str) -> dict[str, Any]:
+    """The JSON input schema for the tool declared with @tools.tool(name=...).
+
+    Built with a dummy analysis: the handlers close over it only when called,
+    and input_schema_for reads the signature only, so no live service is needed
+    to see the parameter bounds the schema advertises to a client.
+    """
+    for bound in build_frida_tools(cast(Any, object())):
+        if bound.name == name:
+            return input_schema_for(bound.handler)
+    raise AssertionError(f"no such frida tool: {name}")
 
 
 def _tool_docstring(name: str) -> str:
@@ -232,6 +246,37 @@ def test_the_tool_docstrings_publish_the_input_bound() -> None:
     assert "class_name is required" in methods_doc
     assert "512" in methods_doc
     assert "invalid_params" in methods_doc
+
+
+@pytest.mark.parametrize("tool", ["frida.java.classes", "frida.java.methods"])
+def test_the_tool_pid_is_bounded_non_negative_at_the_schema(tool: str) -> None:
+    """pid is an OS process id: its only sentinel is 0 (most recent spawn), and a
+    negative value is never a pid. The sibling PE tool dynamic.attach already
+    bounds its pid in the schema; these device tools used to take a bare int, so
+    a negative pid slipped past the schema and was only caught later by the
+    device authorization check as permission_denied -- the wrong taxonomy for
+    malformed input. The bound now makes the framework reject it up front, and
+    advertises the valid range to a client reading the schema.
+    """
+    schema = _tool_schema(tool)
+    pid = schema["properties"]["pid"]
+    assert pid["minimum"] == 0
+    assert pid["maximum"] == 0xFFFFFFFF
+    # 0 stays a valid default (the "last spawned pid" sentinel), so the lower
+    # bound admits the sentinel rather than forcing an explicit pid.
+    assert schema["properties"]["pid"].get("default") == 0
+
+
+def test_the_tool_docstrings_publish_the_pid_contract() -> None:
+    """The pid contract -- 0 means the last spawned pid, a specific pid must be
+    one frida.spawn authorized -- must be readable from the tool schema, the same
+    way the name_filter / class_name bounds are, so a caller is not surprised by
+    an invalid_params or a permission_denied it could not have anticipated."""
+    for name in ("frida.java.classes", "frida.java.methods"):
+        doc = _tool_docstring(name)
+        assert "pid" in doc
+        assert "frida.spawn" in doc
+        assert "non-negative" in doc
 
 
 def test_the_authorization_boundary_still_precedes_input_validation() -> None:

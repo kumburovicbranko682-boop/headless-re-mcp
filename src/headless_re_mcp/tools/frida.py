@@ -156,7 +156,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         name_filter: str = "",
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[int, Field(ge=0, le=0xFFFFFFFF)] = 0,
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
@@ -164,7 +164,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit is not read as every loaded class. name_filter is an optional
         substring match: an empty value means no filtering, and an over-long
         (>512 bytes) or NUL-bearing filter is refused with invalid_params
-        before the device is touched.
+        before the device is touched. pid selects which authorized process to
+        enumerate: 0 (the default) targets the most recently spawned/authorized
+        pid, a specific pid must be one this session authorized via frida.spawn,
+        and it is a non-negative process id (a negative value is refused by the
+        schema before the device is touched).
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -175,7 +179,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         class_name: str,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[int, Field(ge=0, le=0xFFFFFFFF)] = 0,
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
@@ -185,7 +189,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         methods list alone cannot distinguish from a loaded class that declares
         none of its own. class_name is required and bounded: empty, over-long
         (>512 bytes) or NUL-bearing values are refused with invalid_params
-        before the device is touched, and it is stripped before use.
+        before the device is touched, and it is stripped before use. pid selects
+        which authorized process to enumerate: 0 (the default) targets the most
+        recently spawned/authorized pid, a specific pid must be one this session
+        authorized via frida.spawn, and it is a non-negative process id (a
+        negative value is refused by the schema before the device is touched).
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
