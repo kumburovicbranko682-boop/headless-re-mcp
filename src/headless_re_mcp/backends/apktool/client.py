@@ -2,11 +2,13 @@
 
 Both CLIs need a JRE and are user-provided, so a missing tool degrades to
 ``capability_unavailable`` instead of blocking readiness. Keystore passwords
-never reach an observable channel: the password travels to apksigner in an
+never reach an observable channel: each password travels to apksigner in an
 environment variable (its native ``env:`` source) rather than on argv -- a
 command line is world-readable in the process table for as long as the signing
-JVM runs -- and a failed sign scrubs the password from stderr before it enters
-error details.
+JVM runs -- and a failed sign scrubs every password from stderr before it
+enters error details. A release keystore may guard its key with a password
+distinct from the store password; when the caller supplies one it rides its own
+child-only variable, otherwise both sources point at the single store password.
 """
 
 from __future__ import annotations
@@ -31,10 +33,29 @@ _MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
-# The child-only variable both --ks-pass and --key-pass read via env:NAME.
-# Deliberately not HEADLESS_RE_*: that prefix is the operator config namespace,
-# and this is not a knob -- it exists only in the signer's copied environment.
+# The child-only variable --ks-pass reads via env:NAME (and --key-pass too when
+# the key shares the store password). Deliberately not HEADLESS_RE_*: that
+# prefix is the operator config namespace, and this is not a knob -- it exists
+# only in the signer's copied environment.
 _PASSWORD_ENV = "APKSIGNER_KS_PASS"
+# The separate child-only variable --key-pass reads when the caller gives the
+# key its own password. Only set on the child's environment in that case, so
+# the common shared-password path keeps carrying exactly one secret.
+_KEY_PASSWORD_ENV = "APKSIGNER_KEY_PASS"
+
+
+def _scrub_secrets(text: str, *secrets: str) -> str:
+    """Mask every non-empty secret in tool output before it enters an error.
+
+    apksigner echoes its argument vector on a usage error and can name a
+    password in a diagnostic; the store and key passwords may differ, so both
+    are masked. Masking each independently is order-safe: once one is replaced
+    it is gone, and equal secrets collapse to a single ``***``.
+    """
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
 
 
 class ApktoolError(RuntimeError):
@@ -195,6 +216,7 @@ class ApktoolClient:
         keystore: Path | None = None,
         keystore_password: str = "",
         key_alias: str = "",
+        key_password: str = "",
         timeout: float = 300.0,
     ) -> JsonObject:
         """Sign an APK, defaulting to the standard Android debug keystore."""
@@ -220,6 +242,10 @@ class ApktoolClient:
                 "invalid_params",
                 "keystore_password and key_alias are required for a custom keystore",
             )
+        # A release keystore can guard the key with a password of its own; when
+        # none is given it falls back to the store password (the common case,
+        # and every debug keystore), so the shared-password path is unchanged.
+        key_pass = key_password or password
         out_apk.parent.mkdir(parents=True, exist_ok=True)
         # pass:<password> would put the secret on argv, and argv is readable by
         # every local process (/proc/<pid>/cmdline, Windows process listings)
@@ -227,6 +253,13 @@ class ApktoolClient:
         # natively, and the copied environment is visible only to the child.
         sign_env = dict(os.environ)
         sign_env[_PASSWORD_ENV] = password
+        # Only allocate the second variable when the key password truly differs,
+        # so the shared-password path carries exactly one secret as before.
+        if key_pass != password:
+            sign_env[_KEY_PASSWORD_ENV] = key_pass
+            key_pass_source = f"env:{_KEY_PASSWORD_ENV}"
+        else:
+            key_pass_source = f"env:{_PASSWORD_ENV}"
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -238,7 +271,7 @@ class ApktoolClient:
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"env:{_PASSWORD_ENV}",
+                key_pass_source,
                 "--out",
                 str(out_apk),
                 str(apk),
@@ -247,9 +280,9 @@ class ApktoolClient:
             env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
-            # argv no longer carries the password, but keep scrubbing stderr as
-            # defense in depth: the tool's own diagnostics must never leak it.
-            scrubbed = stderr.replace(password, "***") if password else stderr
+            # argv no longer carries either password, but keep scrubbing stderr
+            # as defense in depth: the tool's own diagnostics must never leak it.
+            scrubbed = _scrub_secrets(stderr, password, key_pass)
             raise ApktoolError(
                 "backend_error",
                 "apksigner failed",
@@ -262,9 +295,7 @@ class ApktoolClient:
             timeout=verify_timeout,
         )
         if verify_code != 0:
-            scrubbed = (
-                verify_stderr.replace(password, "***") if password else verify_stderr
-            )
+            scrubbed = _scrub_secrets(verify_stderr, password, key_pass)
             raise ApktoolError(
                 "backend_error",
                 "apksigner reported the output is not signed",
