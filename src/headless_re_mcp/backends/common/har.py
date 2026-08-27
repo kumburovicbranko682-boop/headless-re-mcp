@@ -89,6 +89,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    status_text: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -98,11 +99,16 @@ def har_entry(
     absent field. ``queryString`` is parsed from the URL, and when the capture
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    ``status_text`` (the HTTP reason phrase, e.g. ``OK`` or ``Not Found``) fills
+    the required-but-otherwise-empty ``response.statusText`` so a viewer renders
+    a full status line rather than a bare code; it stays "" when the capture did
+    not record it (HTTP/2 carries no reason phrase). ``resource_type`` rides
+    along as Chrome's ``_resourceType`` extension so the browser capture keeps
+    that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
+    reason = str(status_text or "")
     if isinstance(response_body_size, int) and response_body_size >= 0:
         content_size = response_body_size
     else:
@@ -122,7 +128,7 @@ def har_entry(
         },
         "response": {
             "status": status_code,
-            "statusText": "",
+            "statusText": reason,
             "httpVersion": "",
             "cookies": [],
             "headers": [],

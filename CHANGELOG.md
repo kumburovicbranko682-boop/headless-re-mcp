@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（HAR 导出补上 statusText，把响应状态行补全成「200 OK」）
+
+- HAR 1.2 把 `response.statusText` 列为必填，可两端的 HAR 导出（`proxy.export_har` /
+  `web.har.export`）一直写成空串——字段在、但只有状态码没有原因短语，Chrome DevTools「Import HAR」
+  等查看器里响应状态行只显示裸的 `404` 而不是 `404 Not Found`。两端其实都拿得到原因短语：mitmproxy
+  的 `flow.response.reason`（`OK`、`Not Found`），CDP `Network.responseReceived` 的
+  `response.statusText`。现 `har_entry` 新增 `status_text` 参数，在场时填进 `response.statusText`、
+  缺失时仍如实留空串（HTTP/2 本就没有原因短语，留空是合法 HAR，绝不臆造）；proxy 的
+  `_FlowRecorder._record` 从 `resp.reason` 取（无响应或 h2 时为 null），web 的 `on_response` 从
+  `response.statusText` 取。该原因短语也如实出现在 `proxy.flows` 与 `web.network.list` 的
+  `status_text` 行上（proxy 无响应或 web 响应未到时为 null），并按既有 metadata 上限夹取、命中即
+  计入 `metadata_truncated`。它与上一处补上的 `httpVersion` 一起，把响应状态行补全成
+  `HTTP/2 200 OK`。工具文档串同步。\
+  新增四条直测：`har_entry` 有原因短语时填 statusText、无则留空串；proxy 从 `reason` 取到（列表与
+  HAR 皆有）、无 reason 的流列表为 null 且 HAR 留空串；web 从 CDP 的 `statusText` 取到（列表与 HAR
+  皆有）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

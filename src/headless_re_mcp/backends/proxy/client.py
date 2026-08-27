@@ -369,6 +369,12 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # The HTTP reason phrase completes the status line; keep it on the
+        # summary so the flow list and the HAR's statusText carry "OK"/"Not
+        # Found" beside the code (empty on HTTP/2, which has no reason phrase).
+        status_text, status_text_truncated = _bounded_metadata(
+            getattr(resp, "reason", None) if resp else None, _MAX_METADATA_BYTES
+        )
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -400,6 +406,7 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
                 "response_size": response_size,
+                "status_text": status_text or None,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -411,6 +418,7 @@ class _FlowRecorder:
                 or url_truncated
                 or host_truncated
                 or type_truncated
+                or status_text_truncated
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
@@ -730,6 +738,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                status_text=f.get("status_text"),
             )
             for f in inst.recorder.snapshot()
         ]
