@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -163,6 +165,40 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_binary(data: bytes, *, artifact_dir: Path, filename: str) -> Path:
+    """Write a decoded binary response body to disk, bounded by the capture cap.
+
+    The bytes-oriented sibling of ``_spill_text``. CDP hands a binary body back
+    base64-encoded, and the old path passed that base64 straight to
+    ``_spill_text``: the ``.bin`` artifact then held base64 *text* rather than
+    the asset, and the cap was measured against the ~33%-larger base64 instead
+    of the real length. ``proxy.flow_get`` already writes raw bytes; this makes
+    the browser path match, so a captured image/font/wasm body is the file it
+    claims to be. The caller has already checked the decoded length against the
+    cap; the post-write check guards a racing/symlinked path like the text one.
+    """
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", "invalid response body artifact filename")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(data)
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            "response body exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    return out
 
 
 class _Runner:
@@ -568,18 +604,54 @@ class WebBackend:
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
+        result = dict(entry)
+        if base64_encoded:
+            # Binary body: decode to the real bytes so the artifact is the asset
+            # and the cap is measured against its true length, not the base64.
+            try:
+                raw = base64.b64decode(body, validate=False)
+            except (binascii.Error, ValueError) as exc:
+                return {
+                    **entry,
+                    "base64_encoded": True,
+                    "body_error": f"invalid base64 body: {exc}",
+                }
+            if len(raw) > UNREGISTERED_CAPTURE_MAX_BYTES:
+                raise WebError(
+                    "too_large",
+                    "response body exceeds capture cap",
+                    size=len(raw),
+                    cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+                )
+            result["base64_encoded"] = True
+            result["size"] = len(raw)
+            if len(raw) <= _MAX_INLINE_BODY:
+                # Small enough to hand back inline; keep the base64 string so the
+                # caller can decode it. Nothing is cut, so a truncated base64 --
+                # which would not decode -- can never be produced.
+                result["body"] = body
+                result["body_truncated"] = False
+            else:
+                out = _spill_binary(
+                    raw, artifact_dir=artifact_dir, filename=f"body-{uuid4().hex}.bin"
+                )
+                # Binary is not inlined once it spills: body is empty and the
+                # complete bytes live at body_path.
+                result["body"] = ""
+                result["body_path"] = str(out)
+                result["body_truncated"] = True
+            return result
         inline, spill, cut = _spill_text(
             body,
             artifact_dir=artifact_dir,
             filename=f"body-{uuid4().hex}.bin",
             kind="response body",
         )
-        result = dict(entry)
         result["body"] = inline
         result["body_truncated"] = cut
         if spill is not None:
             result["body_path"] = str(spill)
-        result["base64_encoded"] = base64_encoded
+        result["base64_encoded"] = False
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:

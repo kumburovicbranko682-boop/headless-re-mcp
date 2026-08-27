@@ -90,7 +90,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
         not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        written to disk. A binary body (base64_encoded true) is decoded to the
+        real bytes: small ones come back inline as base64 in body with size;
+        larger ones are written as raw bytes to body_path (body empty), never
+        as base64 text. The cap is measured against the decoded length.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
