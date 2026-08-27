@@ -198,6 +198,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `proxy.export_har` 每调一次就往产物根加那么多。`web.har_export` 早就按 `UNREGISTERED_CAPTURE_
   MAX_BYTES` 丢条目收敛，proxy 这条一直没有。现在与它对齐：丢到装得下为止、回 `truncated` 与
   `size`，落盘的仍是完整合法的 HAR（不是被字节截断的碎片），装不下最小 HAR 时回 `too_large`。
+- **APK 分页在 Agent 传输上不受约束**。`apk.classes/methods/strings/xrefs` 的 `offset`/`limit`
+  边界只写在 MCP 输入 schema（`offset>=0`、`limit<=cap`）里；但 Agent 编排器经
+  `catalog.invoke` → `handler(**arguments)` 直接调用处理器，不跑 pydantic 值校验，模型给的负
+  `offset` 会把 `names[offset:offset+limit]` 变成尾部切片、悄悄把列表末尾当第零页返回，超额
+  `limit` 则无视页上限（`apk.xrefs` 更是完全没有上限）。web/proxy/frida/adb 后端早就无论走哪条
+  传输都自行 clamp；APK 这条没有。现在后端统一 clamp（`offset` 归零下限、`limit` 收到与 schema
+  一致的页上限），两条传输行为一致。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

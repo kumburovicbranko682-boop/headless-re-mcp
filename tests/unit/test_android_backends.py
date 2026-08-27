@@ -268,6 +268,108 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _FakeDexString:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_value(self) -> str:
+        return self._value
+
+
+class _FakeDexClass:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_external(self) -> bool:
+        return False
+
+
+class _FakePagedParsed:
+    def __init__(
+        self,
+        classes: list[_FakeDexClass] | None = None,
+        strings: list[_FakeDexString] | None = None,
+    ) -> None:
+        self.analysis = self
+        self._classes = classes or []
+        self._strings = strings or []
+
+    def get_classes(self) -> list[_FakeDexClass]:
+        return self._classes
+
+    def get_strings(self) -> list[_FakeDexString]:
+        return self._strings
+
+
+class TestApkPaginationIsClampedInTheBackend:
+    """The MCP schema bounds offset>=0 and limit<=cap, but the agent transport
+    reaches these handlers through catalog.invoke -> handler(**arguments),
+    which skips pydantic value validation. A negative offset would tail-slice
+    the list and return its end as page zero; an oversized limit would ignore
+    the cap. The backend now clamps, so both transports behave the same.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, parsed: Any) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+        return client
+
+    def test_negative_class_offset_reads_page_zero_not_the_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parsed = _FakePagedParsed(
+            classes=[_FakeDexClass(f"Lc/{index};") for index in range(10)]
+        )
+        client = self._client(monkeypatch, parsed)
+        result = client.classes(tmp_path / "app.apk", offset=-1, limit=100)
+
+        assert result["offset"] == 0
+        assert result["count"] == 10
+        assert result["classes"][0] == "Lc/0;"
+        assert result["has_more"] is False
+
+    def test_oversized_class_limit_is_capped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_CLASSES_PAGE
+
+        parsed = _FakePagedParsed(
+            classes=[_FakeDexClass(f"Lc/{index:05d};") for index in range(_MAX_CLASSES_PAGE + 25)]
+        )
+        client = self._client(monkeypatch, parsed)
+        result = client.classes(tmp_path / "app.apk", offset=0, limit=10_000_000)
+
+        assert result["count"] == _MAX_CLASSES_PAGE
+        assert result["has_more"] is True
+
+    def test_negative_string_offset_reads_page_zero_not_the_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parsed = _FakePagedParsed(
+            strings=[_FakeDexString(f"s{index:03d}") for index in range(10)]
+        )
+        client = self._client(monkeypatch, parsed)
+        result = client.strings(tmp_path / "app.apk", offset=-5, limit=200)
+
+        assert result["offset"] == 0
+        assert result["count"] == 10
+        assert result["strings"][0] == "s000"
+
+    def test_oversized_xref_limit_is_capped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_XREFS_PAGE
+
+        parsed = _FakeParsed([_FakeMethod("decrypt", _MAX_XREFS_PAGE + 25)])
+        client = self._client(monkeypatch, parsed)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10_000_000)
+
+        assert result["count"] == _MAX_XREFS_PAGE
+        assert result["has_more"] is True
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

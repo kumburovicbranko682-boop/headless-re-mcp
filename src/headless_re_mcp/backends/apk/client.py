@@ -27,6 +27,16 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Page ceilings mirror the MCP input-schema Field(le=...) bounds. They are
+# enforced in the backend, not only in the schema, because the agent transport
+# reaches these methods through catalog.invoke -> handler(**arguments), which
+# does not run pydantic value validation: an agent's offset and limit arrive
+# here unchecked. The sibling web/proxy/frida backends already clamp for the
+# same reason.
+_MAX_CLASSES_PAGE = 1000
+_MAX_METHODS_PAGE = 1000
+_MAX_STRINGS_PAGE = 2000
+_MAX_XREFS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -35,6 +45,20 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _page_bounds(offset: int, limit: int, *, cap: int) -> tuple[int, int]:
+    """Clamp caller pagination the way the web/proxy/frida backends do.
+
+    A negative offset turns ``values[offset:offset+limit]`` into a tail slice
+    that silently returns the end of the list as page zero, and an oversized
+    limit ignores the page cap. The MCP schema refuses both (offset>=0,
+    limit<=cap), but the agent transport calls handlers directly without that
+    validation, so bound them here as well. Returns ``(start, capped_limit)``.
+    """
+    start = max(0, int(offset))
+    capped = max(1, min(int(limit), cap))
+    return start, capped
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -303,13 +327,14 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        start, capped = _page_bounds(offset, limit, cap=_MAX_CLASSES_PAGE)
+        window = names[start : start + capped]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -348,14 +373,15 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        start, capped = _page_bounds(offset, limit, cap=_MAX_METHODS_PAGE)
+        window = methods[start : start + capped]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -369,13 +395,14 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        start, capped = _page_bounds(offset, limit, cap=_MAX_STRINGS_PAGE)
+        window = values[start : start + capped]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 
@@ -384,7 +411,7 @@ class ApkClient:
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
+        _, cap = _page_bounds(0, limit, cap=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
