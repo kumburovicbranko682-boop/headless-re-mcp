@@ -1142,6 +1142,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (**内容短于字符上限**故裁剪只能来自字节预算)断言末行是最新(#1899)、首行不是最旧(#0)、编码体不超预算;1500 个 255 字符包名、`limit`=2000
   (**不触行数上限**)断言 `0<count<1500`、`has_more` 真、编码体不超预算。
 
+- **`frida.memory.read` 大读几乎必被传输层整条丢弃,`frida` 的枚举列表也会——输出随输入放大却只按原始大小或行数封顶。**
+  把编码预算收敛推到动态插桩面。①`memory.read` 是最确凿的一个:`size` 上限 256KiB,而 `data.hex()` 把字节数翻倍成最多约 512KiB 的十六进制串
+  ——接近整个 262144 预算的两倍,任何超过约 128KiB 的读取编码后必然越界,`bounded_tool_result` 把**整条**结果(连 `data`、`address` 一起)换成
+  约 16KiB 摘要,即大读实际什么可用数据都拿不到。现按「编码后十六进制能装下多少就返回多少」裁(十六进制无需 JSON 转义,可读预算恰好减半),新增
+  `returned`(`data` 实际字节数)与 `truncated`,调用方据此从 `address+returned` 续读。②`modules`/`exports`/`applications` 与 java `classes`/
+  `methods` 只按行数封顶:模块 `path` 长度无上限(Android 深层 data 路径)、C++ 修饰导出名可达数百字符、包名可长达 255、大应用有数千个长类名,任何
+  一整页都可能越过预算被整条丢弃。各用 `fit_json_list` 按编码体积裁,`has_more`(由裁后长度重算,或与裁剪标志相或)仍如实报告「还有更多」。六条
+  工具描述同步更新:读 `count`/`returned`、别读 `limit`/`size`,凭 `has_more` 翻页。`enumerate_devices`(设备数天然很少)保持原样。单测
+  (`test_frida_budget.py`):200000 字节的 `memory.read` 断言 `truncated` 真、`0<returned<size`、`len(data)==returned*2`、编码体不超预算,另有
+  16 字节小读断言整块返回不裁;256 个 ~2000 字符 path 的 `modules`、512 个 ~1000 字符修饰名的 `exports`(**不触行数上限**故 `has_more` 只能来自
+  字节裁剪)、2000 个长类名/方法名的 java `classes`/`methods`、1000 个 255 字符包名的 `applications`,各断言 `0<count<上限`、`has_more` 真、编码体
+  不超预算。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
