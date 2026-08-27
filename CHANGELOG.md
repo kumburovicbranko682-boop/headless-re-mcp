@@ -1050,6 +1050,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`core/limits` 的平台探针与失败分支补齐**（89%→100%）：既有 eviction 测试固定了 POSIX
+  内存探针与目录辅助的正常路径,剩下的是 Windows `GlobalMemoryStatusEx` 那条臂和三处
+  `OSError` 兜底(读不动的 capture 目录不能拖垮服务)。新测试用假 `ctypes` 驱动 Windows 臂,
+  让同一断言在 Linux CI 也成立:API 返回可用物理内存则如实上报、返回 0(读取失败)降级为
+  None 以便调用方放行而非拒绝;`prune_capped_dir` 在 `iterdir` 抛 OSError 时返回 0 而不炸;
+  `_dir_size` 跳过 stat 失败的子项、在遍历整体抛错时返回已累计值。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
