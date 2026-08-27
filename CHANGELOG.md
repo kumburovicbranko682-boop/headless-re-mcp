@@ -225,6 +225,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   在 POSIX 核心上 attach 一个本地进程、跑通 attach/modules/exports/memory_read/hook，并断言在
   某模块基址读回 ELF 魔数——正是能逮住这个「API 被删」缺陷的断言（缺 frida / 无目标 / ptrace
   受限均 skip≠pass）。
+- **抓包与浏览器抓取都只回响应体、丢掉请求体**。`proxy.flow.get` 只返回 `response` 的正文，
+  `web.network.get` 只取 `Network.getResponseBody`——可对逆向 Web/移动 API 来说，POST 的
+  请求体（表单/JSON 载荷、凭据、接口参数）往往才是要看的东西，而它被整份丢弃了（mitmproxy 的
+  `request.raw_content`、CDP 的 `Network.getRequestPostData` 明明都留着）。现在两条线都对称地回请求体：
+  `proxy.flow.get` 的 `request` 增加 `size` 与 `body`，超 200000 字节溢出为 `request.body_path`；
+  `web.network.get` 在 `requestWillBeSent` 标记带体请求、按需取回 `request_body`（含
+  `request_body_truncated` / `request_body_path`，浏览器已不留载荷时回 `request_body_error`）。
+  溢出的请求体也登记为可下载产物。活体门各加一条 POST 断言（本地 origin 回读发出的 JSON 载荷）。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
