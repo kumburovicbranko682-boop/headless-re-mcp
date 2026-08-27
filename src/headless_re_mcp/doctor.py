@@ -199,9 +199,9 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("androguard", "androguard"),
         probe_python_module("adbutils", "adbutils"),
         probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
-        probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+        probe_jvm_backed_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
+        probe_jvm_backed_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
+        probe_jvm_backed_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
         # Web reverse-engineering (all optional).
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
@@ -1095,6 +1095,39 @@ def probe_optional_tool(
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
+def probe_jvm_backed_tool(
+    name: str,
+    settings: Settings,
+    settings_attr: str,
+    commands: tuple[str, ...],
+) -> Probe:
+    """Detect an optional CLI that is a JVM launcher, honest about the JRE too.
+
+    jadx, apktool and apksigner are launcher scripts that start a JVM, exactly
+    like Ghidra's analyzeHeadless. ``probe_optional_tool`` finds the launcher and
+    stops, so a host with the launcher but no ``java`` on PATH reads as
+    "detected" while every call fails when the launcher cannot start the JVM.
+    ``probe_ghidra`` already refuses that half-truth -- it reports "present but
+    java is not on PATH" and points at the JRE. Share that honesty here so
+    finding the launcher is never mistaken for being able to run it.
+    """
+    probe = probe_optional_tool(name, settings, settings_attr, commands)
+    if probe.status != ProbeStatus.DETECTED:
+        return probe
+    java = shutil.which("java")
+    details = dict(probe.details)
+    details["java"] = java
+    if java is not None:
+        return Probe(name, ProbeStatus.DETECTED, probe.summary, details, probe.remediation)
+    return Probe(
+        name,
+        ProbeStatus.DETECTED,
+        f"{probe.summary}, but java is not on PATH so it cannot run",
+        details,
+        "Install a JRE and put java on PATH before treating this tool as ready.",
+    )
 
 
 def probe_python_module(name: str, module: str) -> Probe:
