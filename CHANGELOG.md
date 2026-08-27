@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 修复（frida.java pid 在 schema 上没有下限）
+
+- **`frida.java.classes` / `frida.java.methods` 的 `pid` 声明成裸 `int`**。其余非 PE 线的
+  分页/标识整型（`apk.*`、`web.*`、`proxy.*`、`device.*`）都用 `Field` 声明边界，唯独这两个的
+  `pid` 没有下限。`pid=0` 是「用本会话最近授权的 pid」那一哨兵，所以下限是 0 而非 1。后端
+  `_authorize` 本就把 `pid<=0` 判成 `invalid_params`，但那条边界只在 Agent / OpenAI 桥接路径上
+  跑（它们直接调 handler，不走 pydantic 校验）；MCP 路径应当与兄弟工具一样在 schema 层就把负
+  pid 拒成 `invalid_params`，而不是把负数透传到后端的权限检查。现在两者的 schema 都带
+  `minimum: 0`（见 `test_frida_pid_schema.py`）。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。

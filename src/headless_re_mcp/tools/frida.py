@@ -150,7 +150,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         name_filter: str = "",
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[int, Field(ge=0)] = 0,
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
@@ -166,7 +166,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         class_name: str,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[int, Field(ge=0)] = 0,
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
