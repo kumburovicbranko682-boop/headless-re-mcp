@@ -3154,6 +3154,36 @@ class TestDeviceListsDiscloseTruncation:
         assert result["count"] == 5
         assert result["has_more"] is False
 
+    def test_logcat_drops_the_partial_leading_line_when_it_cuts(self) -> None:
+        """A char-capped dump sliced mid-line and returned the fragment.
+
+        Measured: lines longer than the char cap left, so text[-cap:] began
+        inside a line and lines[0] was the tail of that line -- returned
+        beside whole entries with only truncated=True to hint at it, so a
+        parser read half a log line as a complete record.
+        """
+        from headless_re_mcp.backends.adb.client import _MAX_LOGCAT_CHARS
+
+        entry = "L{:06d}:" + ("D" * 200)
+        count = (_MAX_LOGCAT_CHARS // len(entry.format(0))) + 500
+        raw = "\n".join(entry.format(index) for index in range(count))
+        result = self._backend(raw).logcat("emulator-5554", lines=5000)
+        assert result["truncated"] is True
+        assert result["lines"], "expected complete lines to survive the cut"
+        # Every complete entry starts with its "L<digits>:" tag; a mid-line
+        # fragment is a bare run of "D" with neither the tag nor the colon.
+        assert all(
+            line.startswith("L") and ":D" in line for line in result["lines"]
+        )
+        assert result["count"] == len(result["lines"])
+
+    def test_logcat_that_fits_is_not_labelled_truncated(self) -> None:
+        raw = "\n".join(f"line {index}" for index in range(20))
+        result = self._backend(raw).logcat("emulator-5554", lines=200)
+        assert result["truncated"] is False
+        assert result["lines"] == [f"line {index}" for index in range(20)]
+        assert result["count"] == 20
+
     def test_properties_past_the_cap_say_so(self) -> None:
         raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))
         result = self._backend(raw).properties("emulator-5554", limit=4)

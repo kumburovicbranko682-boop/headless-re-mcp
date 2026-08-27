@@ -573,9 +573,17 @@ class AdbBackend:
         text = str(raw)
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
+            # Keep the newest bytes, but that slice starts mid-line, so drop
+            # the leading partial fragment. Returned as lines[0] it reads as a
+            # complete log entry and mis-parses -- the truncated flag says
+            # bytes were cut, not that the first line is half a line.
             text = text[-_MAX_LOGCAT_CHARS:]
+            newline = text.find("\n")
+            text = text[newline + 1 :] if newline != -1 else ""
+        out_lines = text.splitlines()[-capped:]
         return {
-            "lines": text.splitlines()[-capped:],
+            "lines": out_lines,
+            "count": len(out_lines),
             "requested": capped,
             "truncated": truncated,
         }

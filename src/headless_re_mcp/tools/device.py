@@ -141,8 +141,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return the last N lines of logcat (non-streaming snapshot).
 
-        Answers with lines, requested, and truncated when the dump was cut
-        at the character cap.
+        Answers with lines, count, requested, and truncated. When the dump
+        exceeds the character cap the oldest bytes are dropped and the leading
+        partial line is removed, so every returned line is a complete entry.
         """
         return _dump(analysis.device_logcat(serial, lines=lines))
 
