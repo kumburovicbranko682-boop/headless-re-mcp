@@ -199,17 +199,29 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("androguard", "androguard"),
         probe_python_module("adbutils", "adbutils"),
         probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat"), needs_java=True),
         probe_optional_tool(
-            "apktool", current, "apktool", ("apktool", "apktool.bat"), needs_java=True
+            "jadx", current, "jadx", ("jadx", "jadx.bat"), needs_runtime=("java", "a JRE")
         ),
         probe_optional_tool(
-            "apksigner", current, "apksigner", ("apksigner", "apksigner.bat"), needs_java=True
+            "apktool",
+            current,
+            "apktool",
+            ("apktool", "apktool.bat"),
+            needs_runtime=("java", "a JRE"),
+        ),
+        probe_optional_tool(
+            "apksigner",
+            current,
+            "apksigner",
+            ("apksigner", "apksigner.bat"),
+            needs_runtime=("java", "a JRE"),
         ),
         # Web reverse-engineering (all optional).
         probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_optional_tool(
+            "webcrack", current, "webcrack", ("webcrack",), needs_runtime=("node", "Node.js")
+        ),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
     ]
     return DoctorReport(
@@ -1090,30 +1102,35 @@ def probe_optional_tool(
     settings_attr: str,
     commands: tuple[str, ...],
     *,
-    needs_java: bool = False,
+    needs_runtime: tuple[str, str] | None = None,
 ) -> Probe:
     """Detect an optional CLI from its configured path or PATH, never blocking.
 
-    ``needs_java`` marks a tool whose launcher is only a shell/bat wrapper for a
-    JVM -- jadx, apktool, apksigner. Finding that wrapper says nothing about
-    whether it can run, so when java is not on PATH the probe stays DETECTED but
-    carries a remediation hint, exactly as probe_ghidra does. Without it the
-    doctor would call a JRE-less machine's jadx "detected" and the operator
-    would only discover the missing runtime when a decode/sign actually failed.
+    ``needs_runtime`` is ``(command, display_name)`` for a tool whose launcher
+    is only a wrapper around an interpreter: ("java", "a JRE") for the jadx /
+    apktool / apksigner JVM scripts, ("node", "Node.js") for webcrack. Finding
+    the wrapper says nothing about whether it can run, so when the interpreter
+    is not on PATH the probe stays DETECTED but carries a remediation hint,
+    exactly as probe_ghidra does. Without it the doctor would call a JRE-less
+    machine's jadx or a Node-less machine's webcrack "detected" and the operator
+    would only discover the missing runtime when a call actually failed.
     """
     configured = getattr(settings, settings_attr, None)
-    java_missing = needs_java and shutil.which("java") is None
-    remediation = (
-        f"Install a JRE and put java on PATH before {name} can run."
-        if java_missing
-        else None
-    )
-    java_note = " but java is not on PATH" if java_missing else ""
+    remediation: str | None = None
+    runtime_note = ""
+    if needs_runtime is not None:
+        runtime_command, display_name = needs_runtime
+        if shutil.which(runtime_command) is None:
+            remediation = (
+                f"Install {display_name} and put {runtime_command} on PATH "
+                f"before {name} can run."
+            )
+            runtime_note = f" but {runtime_command} is not on PATH"
     if configured is not None and Path(str(configured)).is_file():
         return Probe(
             name,
             ProbeStatus.DETECTED,
-            f"{name} configured{java_note}",
+            f"{name} configured{runtime_note}",
             {"path": str(configured)},
             remediation,
         )
@@ -1123,7 +1140,7 @@ def probe_optional_tool(
         return Probe(
             name,
             ProbeStatus.DETECTED,
-            f"{name} command detected{java_note}",
+            f"{name} command detected{runtime_note}",
             found,
             remediation,
         )

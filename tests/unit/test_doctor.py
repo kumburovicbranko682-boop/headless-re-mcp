@@ -128,7 +128,9 @@ def test_jvm_tool_probe_flags_missing_java_on_path(
     )
     settings = replace(_settings(None, tmp_path / "artifacts"), jadx=None)
 
-    probe = probe_optional_tool("jadx", settings, "jadx", ("jadx", "jadx.bat"), needs_java=True)
+    probe = probe_optional_tool(
+        "jadx", settings, "jadx", ("jadx", "jadx.bat"), needs_runtime=("java", "a JRE")
+    )
 
     assert probe.status == ProbeStatus.DETECTED
     assert probe.remediation is not None
@@ -151,7 +153,11 @@ def test_jvm_tool_probe_is_clean_when_java_present(
     settings = replace(_settings(None, tmp_path / "artifacts"), apktool=None)
 
     probe = probe_optional_tool(
-        "apktool", settings, "apktool", ("apktool", "apktool.bat"), needs_java=True
+        "apktool",
+        settings,
+        "apktool",
+        ("apktool", "apktool.bat"),
+        needs_runtime=("java", "a JRE"),
     )
 
     assert probe.status == ProbeStatus.DETECTED
@@ -168,7 +174,7 @@ def test_jvm_tool_probe_flags_missing_java_for_configured_path(
     settings = replace(_settings(None, tmp_path / "artifacts"), apksigner=configured)
 
     probe = probe_optional_tool(
-        "apksigner", settings, "apksigner", ("apksigner",), needs_java=True
+        "apksigner", settings, "apksigner", ("apksigner",), needs_runtime=("java", "a JRE")
     )
 
     assert probe.status == ProbeStatus.DETECTED
@@ -179,8 +185,8 @@ def test_jvm_tool_probe_flags_missing_java_for_configured_path(
 def test_non_jvm_tool_probe_needs_no_java_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A native tool (radare2) must not grow a JRE hint just because java is
-    # absent: needs_java stays False and the probe is a clean detection.
+    # A native tool (radare2) must not grow a runtime hint just because java or
+    # node is absent: needs_runtime stays unset and the probe is a clean detection.
     on_path = tmp_path / "r2"
     on_path.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -192,6 +198,63 @@ def test_non_jvm_tool_probe_needs_no_java_hint(
 
     assert probe.status == ProbeStatus.DETECTED
     assert probe.remediation is None
+
+
+def test_webcrack_probe_flags_missing_node_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack is a Node launcher exactly as jadx is a JVM launcher.
+
+    npm installs a `webcrack` shim that execs node, so the shim being on PATH
+    says nothing about whether it can run; the JVM tools got this hint but
+    webcrack shipped without it, and a Node-less machine read as "detected".
+    """
+    on_path = tmp_path / "webcrack"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda cmd: str(on_path) if cmd == "webcrack" else None
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), webcrack=None)
+
+    probe = probe_optional_tool(
+        "webcrack", settings, "webcrack", ("webcrack",), needs_runtime=("node", "Node.js")
+    )
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is not None
+    assert "node" in probe.remediation.lower()
+    assert "node is not on PATH" in probe.summary
+
+
+def test_run_doctor_wires_runtime_hints_for_all_launcher_backends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real probe list must pass the hints, not merely support them.
+
+    The unit tests above call probe_optional_tool directly, so they cannot catch
+    a call site that forgets needs_runtime. With the four launchers on PATH but
+    java and node absent, each probe run_doctor emits must carry the remediation.
+    """
+    launchers = {"jadx", "apktool", "apksigner", "webcrack"}
+
+    def which(cmd: str) -> str | None:
+        return f"/usr/bin/{cmd}" if cmd in launchers else None  # java, node absent
+
+    monkeypatch.setattr(doctor_module.shutil, "which", which)
+
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    by_name = {probe.name: probe for probe in report.probes}
+
+    for name, runtime in (
+        ("jadx", "java"),
+        ("apktool", "java"),
+        ("apksigner", "java"),
+        ("webcrack", "node"),
+    ):
+        probe = by_name[name]
+        assert probe.status == ProbeStatus.DETECTED, name
+        assert probe.remediation is not None, name
+        assert f"{runtime} is not on PATH" in probe.summary, name
 
 
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
