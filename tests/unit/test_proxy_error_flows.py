@@ -16,10 +16,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.backends.proxy.client import (
     _MAX_METADATA_BYTES,
     _OMITTED_BODY,
+    ProxyBackend,
+    ProxyError,
     _FlowRecorder,
+    _ProxyInstance,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
 
@@ -126,3 +131,47 @@ def test_docstring_names_the_error_fields() -> None:
     doc = _tool_docstring("proxy.flows")
     assert "error" in doc
     assert "error_msg" in doc
+
+
+class TestFlowGetAndReplayErrorClassification:
+    """flow.get / replay must classify a bad flow id, not crash on it.
+
+    The lifecycle gate proves the happy path (record a flow, fetch it, replay
+    it); these pin the two error paths an agent hits in practice -- a stale or
+    mistyped flow id, and calling before proxy.start -- without launching a real
+    proxy. A _ProxyInstance carries a real empty recorder, so raw(flow_id)
+    returns None and the not_found branch runs exactly as it would in
+    production; a regression that dropped the None check would raise an
+    AttributeError on the missing flow and be filed as an internal_error
+    incident instead of the honest not_found.
+    """
+
+    def _backend_with_empty_session(self, session_id: str = "s") -> ProxyBackend:
+        backend = ProxyBackend()
+        backend._instances[session_id] = _ProxyInstance("127.0.0.1", 0)
+        return backend
+
+    def test_flow_get_unknown_id_is_not_found(self, tmp_path: Path) -> None:
+        backend = self._backend_with_empty_session()
+        with pytest.raises(ProxyError) as info:
+            backend.flow_get("s", "no-such-flow", tmp_path)
+        assert info.value.code == "not_found"
+        assert info.value.details.get("flow_id") == "no-such-flow"
+
+    def test_replay_unknown_id_is_not_found(self) -> None:
+        backend = self._backend_with_empty_session()
+        with pytest.raises(ProxyError) as info:
+            backend.replay("s", "no-such-flow")
+        assert info.value.code == "not_found"
+        assert info.value.details.get("flow_id") == "no-such-flow"
+
+    def test_reading_a_session_with_no_proxy_is_invalid_state(self, tmp_path: Path) -> None:
+        """Before proxy.start there is no instance, so the lookup itself must
+        report invalid_state rather than the read tools dereferencing None."""
+        backend = ProxyBackend()
+        with pytest.raises(ProxyError) as flow_info:
+            backend.flow_get("never-started", "x", tmp_path)
+        assert flow_info.value.code == "invalid_state"
+        with pytest.raises(ProxyError) as replay_info:
+            backend.replay("never-started", "x")
+        assert replay_info.value.code == "invalid_state"
