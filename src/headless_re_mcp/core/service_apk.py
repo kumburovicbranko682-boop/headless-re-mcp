@@ -202,7 +202,12 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_export_sources(
-        self, session_id: str, timeout: float = 300.0, no_imports: bool = False
+        self,
+        session_id: str,
+        timeout: float = 300.0,
+        no_imports: bool = False,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -217,7 +222,14 @@ class ApkAnalysisMixin:
             binary = self._apk_binary(session_id)
             client = JadxClient(getattr(self.settings, "jadx", None))
             out_dir = self._jadx_out_dir(session_id)
-            data = client.export_sources(binary, out_dir, timeout=timeout, no_imports=no_imports)
+            data = client.export_sources(
+                binary,
+                out_dir,
+                timeout=timeout,
+                no_imports=no_imports,
+                offset=offset,
+                limit=limit,
+            )
             _refuse_oversized_tree(out_dir, kind="jadx", error_type=JadxError)
             try:
                 session = self.registry.get(session_id)

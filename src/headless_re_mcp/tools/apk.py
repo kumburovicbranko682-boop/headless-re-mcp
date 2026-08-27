@@ -215,15 +215,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
         no_imports: bool = False,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 2000,
     ) -> dict[str, Any]:
         """Decompile the whole APK to a Java source tree via jadx.
 
-        Answers with output_dir, sources_dir, java_file_count and java_files,
-        plus has_more when the listed files were cut at the buffer. There is
+        Answers with output_dir, sources_dir, java_file_count (the full count),
+        and java_files, one sorted offset/limit page of the tree, plus count,
+        offset, and has_more so a filled page is not read as every class. Page
+        with offset/limit to reach files past the first page; each call re-runs
+        jadx, and the tree is deterministic so the pages stay stable. There is
         no files or sources field.
         """
         return _dump(
-            analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
+            analysis.apk_export_sources(
+                session_id,
+                timeout=timeout,
+                no_imports=no_imports,
+                offset=offset,
+                limit=limit,
+            )
         )
 
     return tools.bindings

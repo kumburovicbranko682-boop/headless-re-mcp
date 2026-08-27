@@ -124,6 +124,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（`apk.export_sources` 分页可达性）
+
+- `apk.export_sources`（jadx 反编译整棵 Java 源树）过去只返回前 `_MAX_LISTED_FILES`（2000）个
+  文件名并置 `has_more=True`，却**不带 `offset`**——大 APK 反编译出几万个 `.java` 时,
+  头一页之后的文件名根本取不到。而且它是「先按遍历顺序留前 2000,再对这 2000 排序」,
+  所以那一页并不是字典序最前的 2000 个,只是任意子集的排序视图。现改成与
+  `apk.classes`/`methods`/`strings`、`js.unpack_bundle` 同款的分页读:整棵树先收齐(仍以
+  `_MAX_COUNTED_FILES` 封顶)再排序后切片,返回 `offset`/`count` 并让 `java_files` 成为稳定、
+  连续、不重叠的一页;`java_file_count` 仍是总数。schema 上 `offset` 声明 `ge=0`、`limit`
+  声明 `ge=1,le=2000`。每次调用仍会重跑 jadx,但产物确定,翻页保持稳定。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、
