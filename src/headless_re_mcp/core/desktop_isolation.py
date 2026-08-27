@@ -166,6 +166,13 @@ def hide_input_desktop_windows_for_pids(pids: Iterable[int]) -> list[int]:
     ``MB_SERVICE_NOTIFICATION`` uses. Windows on the hidden desktop are not
     enumerated here. Hide only; do not dismiss, so an anti-debug MessageBox
     does not continue as if the operator clicked OK.
+
+    The returned list is only the windows this call actually hid, not every
+    window it tried to. A hwnd can be enumerated and then be gone by the time
+    we act on it, and a window owned by a higher-integrity process is one UIPI
+    forbids us to touch -- that unhideable dialog is the very leak this guards
+    against, so reporting it as hidden would claim the input desktop was cleared
+    when the operator can still see it.
     """
     if os.name != "nt":
         return []
@@ -177,7 +184,12 @@ def hide_input_desktop_windows_for_pids(pids: Iterable[int]) -> list[int]:
     flags = _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_HIDEWINDOW
     for row in list_windows_for_pids(sorted(allowed)):
         hwnd = int(row["hwnd"])
+        # Attempt both on every window, then trust SetWindowPos as the ground
+        # truth. ShowWindow returns the prior visibility (0 for an already
+        # hidden window), so it cannot tell a failed hide from a redundant one;
+        # SetWindowPos carries SWP_HIDEWINDOW and returns nonzero only when it
+        # actually placed the window into the hidden state.
         user32.ShowWindow(hwnd, _SW_HIDE)
-        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, flags)
-        hidden.append(hwnd)
+        if user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, flags):
+            hidden.append(hwnd)
     return hidden
