@@ -425,6 +425,10 @@ _PT_GNU_STACK = 0x6474E551
 _PF_X = 0x1
 _DF_BIND_NOW = 0x08
 _DF_1_NOW = 0x01
+# Stack-protector ("canary") detection: the guard symbols a -fstack-protector
+# build references. They live in the dynamic string table, so their presence
+# there is the same signal checksec greps for and radare2's `iI` canary reports.
+_ELF_CANARY_SYMBOLS = (b"__stack_chk_fail", b"__stack_chk_guard")
 _ELF_MAX_NEEDED = 512
 _ELF_MAX_STRTAB = 4 * 1024 * 1024
 # The GNU build-id (a PT_NOTE record) uniquely identifies a build and is how a
@@ -1943,13 +1947,15 @@ def _elf_layout_facts(
         facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
         if program["has_dynamic"]:
             pie = _elf_dynamic_pie(stream, order, bits, program["dyn_off"], program["dyn_sz"])
-            needed, soname = _elf_dynamic_names(
+            needed, soname, canary = _elf_dynamic_names(
                 stream, order, bits, program["dyn_off"], program["dyn_sz"], program["loads"]
             )
             if needed is not None:
                 facts["needed"] = needed
             if soname is not None:
                 facts["soname"] = soname
+            if canary is not None:
+                facts["canary"] = canary
         else:
             pie = False
         if pie is not None:
@@ -2117,24 +2123,27 @@ def _elf_dynamic_names(
     dyn_off: int,
     dyn_sz: int,
     loads: list[tuple[int, int, int]],
-) -> tuple[list[str] | None, str | None]:
-    """``(needed, soname)`` from the dynamic table and its string table.
+) -> tuple[list[str] | None, str | None, bool | None]:
+    """``(needed, soname, canary)`` from the dynamic table and its string table.
 
     Walks the dynamic array for the DT_NEEDED string offsets, the DT_SONAME
     offset and the DT_STRTAB address, maps that address to a file offset through
     the PT_LOAD segments, and reads the names out of the dynamic string table.
+    ``canary`` is whether that string table names a stack-guard symbol -- the
+    same read costs nothing extra and answers the fourth checksec question.
     Bounded at every step: the entry count, the name count and the string-table
-    read are all capped, so a corrupt table yields ``(None, None)`` (dynamic but
-    undetermined) rather than a large read; a dynamic image that names nothing
-    yields ``([], None)``. DT_SONAME is present only on a shared object.
+    read are all capped, so a corrupt table yields ``(None, None, None)``
+    (dynamic but undetermined) rather than a large read; a dynamic image that
+    names nothing yields ``([], None, False)``. DT_SONAME is present only on a
+    shared object.
     """
     if dyn_off <= 0 or dyn_sz <= 0 or not loads:
-        return None, None
+        return None, None, None
     entsize = 16 if bits == 64 else 8
     vsize = entsize // 2
     count = min(dyn_sz // entsize, _ELF_MAX_DYN)
     if count <= 0:
-        return None, None
+        return None, None, None
     stream.seek(dyn_off)
     table = stream.read(entsize * count)
     needed_offsets: list[int] = []
@@ -2159,10 +2168,10 @@ def _elf_dynamic_names(
         elif tag == _DT_STRSZ:
             strsz = val
     if strtab_va is None:
-        return None, None
+        return None, None, None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
     if str_off is None:
-        return None, None
+        return None, None, None
     cap = strsz if strsz is not None and 0 < strsz <= _ELF_MAX_STRTAB else _ELF_MAX_STRTAB
     stream.seek(str_off)
     blob = stream.read(cap)
@@ -2177,7 +2186,8 @@ def _elf_dynamic_names(
 
     needed = [name for off in needed_offsets if (name := read_name(off))]
     soname = read_name(soname_off) if soname_off is not None else None
-    return needed, soname
+    canary = any(sym in blob for sym in _ELF_CANARY_SYMBOLS)
+    return needed, soname, canary
 
 
 def _elf_build_id(

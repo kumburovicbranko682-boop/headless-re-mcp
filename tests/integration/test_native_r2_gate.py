@@ -26,6 +26,7 @@ _MACHO_MARKER = "headless-macho-fixture"
 # radare2 `iI` prints one mitigation per line, e.g. "nx    true" / "relro  full".
 _R2_NX_RE = re.compile(r"^nx\s+(true|false)\s*$", re.MULTILINE)
 _R2_RELRO_RE = re.compile(r"^relro\s+(\S+)\s*$", re.MULTILINE)
+_R2_CANARY_RE = re.compile(r"^canary\s+(true|false)\s*$", re.MULTILINE)
 # r2 spells "no RELRO" as "no"; the stdlib reader spells it "none".
 _R2_RELRO = {"full": "full", "partial": "partial", "no": "none"}
 
@@ -92,6 +93,13 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         assert native["nx"] is (nx_match.group(1) == "true")
         assert relro_match, iI
         assert native["relro"] == _R2_RELRO[relro_match.group(1)]
+        # Canary reads from the dynamic string table's guard symbol. That table
+        # exists on any dynamic ELF, so when our binary is dynamic the reader
+        # surfaces the fact and it must match r2's own canary line.
+        canary_match = _R2_CANARY_RE.search(iI)
+        assert canary_match, iI
+        if native["linking"] == "dynamic":
+            assert native["canary"] is (canary_match.group(1) == "true")
 
         funcs = service.r2_functions(session_id, timeout=60.0)
         assert funcs.ok, funcs.error

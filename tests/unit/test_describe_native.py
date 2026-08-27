@@ -352,6 +352,29 @@ def _elf64_relro(*, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0
     return ehdr + program + dyn
 
 
+def _elf64_dynamic_with_strtab(strtab: bytes) -> bytes:
+    """A dynamic ELF whose DT_STRTAB points at ``strtab``.
+
+    A PT_LOAD with vaddr == offset == 0 makes DT_STRTAB's virtual address map
+    straight to its file offset, the same trick the DT_NEEDED builder uses, so
+    the reader resolves the string table exactly as it does on a real image.
+    """
+    dyn = b"".join(
+        tag.to_bytes(8, "little") + val.to_bytes(8, "little")
+        for tag, val in (
+            (5, 176),  # DT_STRTAB (vaddr == file offset of the string table)
+            (10, len(strtab)),  # DT_STRSZ
+            (0, 0),  # DT_NULL
+        )
+    )
+    ph_off = 64
+    strtab_off = ph_off + 56 * 2  # == 176, matching DT_STRTAB above
+    dyn_off = strtab_off + len(strtab)
+    program = _phdr64(1, p_offset=0, p_filesz=0x10000, p_vaddr=0) + _phdr64(2, dyn_off, len(dyn))
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
+    return ehdr + program + strtab + dyn
+
+
 def _write(tmp_path: Path, name: str, data: bytes) -> Path:
     path = tmp_path / name
     path.write_bytes(data)
@@ -415,6 +438,21 @@ def test_dynamic_needed_libraries_from_the_dynamic_string_table(tmp_path: Path) 
     assert facts["linking"] == "dynamic"
     # The ELF analogue of Mach-O's dylibs: DT_NEEDED resolved through DT_STRTAB.
     assert facts["needed"] == ["libc.so.6", "libm.so.6"]
+    # This string table names no stack-guard symbol, so canary reads False.
+    assert facts["canary"] is False
+
+
+def test_stack_canary_detected_from_the_dynamic_symbol_names(tmp_path: Path) -> None:
+    # A -fstack-protector build references a guard symbol; its name lands in the
+    # dynamic string table, which is exactly what checksec greps and r2 reports.
+    guarded = describe_native(
+        _write(tmp_path, "y.bin", _elf64_dynamic_with_strtab(b"\x00puts\x00__stack_chk_fail\x00"))
+    )["native"]
+    assert guarded["canary"] is True
+    unguarded = describe_native(
+        _write(tmp_path, "n.bin", _elf64_dynamic_with_strtab(b"\x00puts\x00malloc\x00"))
+    )["native"]
+    assert unguarded["canary"] is False
 
 
 def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:
@@ -439,6 +477,9 @@ def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     assert "needed" not in facts
     assert "soname" not in facts
     assert "build_id" not in facts
+    # Canary comes from the dynamic string table; a static image has none, so
+    # the fact is omitted rather than guessed False.
+    assert "canary" not in facts
 
 
 def test_nx_reflects_the_gnu_stack_permissions(tmp_path: Path) -> None:
@@ -516,6 +557,9 @@ def test_real_elf_pie_versus_shared_object() -> None:
     # the shape a real toolchain produces.
     assert ls_facts["nx"] is True
     assert ls_facts["relro"] in {"partial", "full"}
+    # Both are built with the stack protector, so the guard symbol is present.
+    assert ls_facts["canary"] is True
+    assert libc_facts["canary"] is True
     # A real executable always names where execution starts.
     assert ls_facts["entry"] > 0
     # A real dynamic executable names libc among its DT_NEEDED libraries.
