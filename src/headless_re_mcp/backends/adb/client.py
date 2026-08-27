@@ -82,6 +82,29 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
+    """Validate an adb forward endpoint, port range included.
+
+    The patterns already block shell metacharacters, but ``\\d{1,5}`` also admits
+    ``tcp:70000`` -- five digits that are not a port. ``connect`` already refuses
+    a port outside 1..65535; this makes ``forward`` say the same thing at the
+    boundary instead of handing adb a bind request it can only reject with an
+    opaque error. Port 0 is kept: adb reads it as "allocate a free local port".
+    """
+    tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
+    if tcp is not None:
+        if not 0 <= int(tcp.group(1)) <= 65535:
+            raise AdbError(
+                "invalid_params", f"{side} tcp port must be 0..65535", **{side: spec}
+            )
+        return
+    if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
+        return
+    if allow_jdwp and re.match(r"^jdwp:\d+$", spec or ""):
+        return
+    raise AdbError("invalid_params", f"invalid {side} forward spec", **{side: spec})
+
+
 def _is_timeout(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     return "timeout" in name or "timed out" in str(exc).lower()
@@ -740,10 +763,8 @@ class AdbBackend:
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
-            raise AdbError("invalid_params", "invalid local forward spec", local=local)
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
-            raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
+        _check_forward_spec(local, side="local")
+        _check_forward_spec(remote, side="remote", allow_jdwp=True)
         serial_id = _check_serial(serial)
         key = (serial_id, local)
         # Resolve the device before occupying a slot: a failed lookup used to
