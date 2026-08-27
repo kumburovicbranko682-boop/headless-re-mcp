@@ -152,6 +152,46 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with the browser extra
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Web capture gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_web_capture_live_gate.py \
+            -rs --tb=short --junitxml=web-capture-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("web-capture-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # chromium was just installed, so a skip here means the gate could not
+          # launch or drive it -- the false-green "skip != pass" warns about. This
+          # is the only test that runs the network/script/console capture pipeline
+          # end to end over a real page.
+          if not cases:
+              sys.exit("no web-capture gate was collected")
+          if skipped:
+              sys.exit(f"web-capture gate skipped despite an installed chromium: {skipped}")
+          print(f"web-capture gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Web 抓取主流程首次有了真实执行覆盖。此前浏览器生命周期 gate 只证明会话能开能关，而 Web 线真正
+的目的——抓取页面行为——没有任何 live 覆盖：没有测试断言过 `network_list` 记录真实导航发出的
+请求、`network_get` 经 CDP 读回响应体、`scripts` 能看到外部脚本且 `script_source` 返回其真实
+源码、`console` 捕获页面日志。这四项（外加 `dom_snapshot`）就是 Web 逆向的取数管线，却一直只对
+着 mock 跑。新增 `tests/integration/test_web_capture_live_gate.py`：用一个一次性的 localhost
+HTTP 服务作 fixture（页面加载外部脚本并发 fetch），整条抓取在无外网的情况下真跑，再经后端把网络
+请求、响应体（含标记 `GATE_DATA_7`）、外部脚本源码（含函数名 `secretAdder`）、控制台日志、DOM
+标题逐一读回校验。新增 `linux-web-capture` CI job：装 browser extra 与 chromium、跑该 gate 并
+解析 junitxml，chromium 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
