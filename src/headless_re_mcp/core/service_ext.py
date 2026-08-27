@@ -119,11 +119,20 @@ def _register_capture(
     for, and retention only collects what the repository knows about, so an
     unattended capture grows the artifact root with files nothing can reclaim.
 
-    Registering must not fail the capture -- the file exists either way -- so a
-    failure travels in the payload rather than as an exception.
+    Registering must not fail the capture, so its outcome travels in the payload
+    rather than as an exception. That outcome is one of exactly three, each said
+    out loud: the file registered (``artifact_id``), the file exists but the
+    repository refused it (``artifact_error``), or the capture named a path it
+    never left on disk (``artifact_missing`` with ``artifact_path``).
     """
     if not path.is_file():
-        return payload
+        # The capture reported success but the promised file is not on disk: a
+        # backend that returned a path while writing nothing, or writing it
+        # elsewhere. Returning the payload bare made that indistinguishable from
+        # an ordinary capture minus its id -- the caller finds no artifact_id and
+        # is told nothing about why. Disclose the absence, mirroring the
+        # artifact_error the registration-failure branch below reports.
+        return {**payload, "artifact_missing": True, "artifact_path": str(path)}
     try:
         artifact = _record_artifact(
             service,
