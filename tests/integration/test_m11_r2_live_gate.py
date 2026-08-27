@@ -102,9 +102,12 @@ def test_m11_r2_live_elf_disassembly_parses_despite_bracket_operands(
     assert va is not None, "no function va to disassemble"
 
     dis = client.disasm(elf_fixture, va, count=32, timeout=60.0)
-    # The bracket is present in the raw payload (memory operands), and the parse
-    # still produced opcode items -- the whole point of the parse_r2_json fix.
-    assert "[" in str(dis.get("raw") or ""), "expected a bracketed memory operand"
+    # More than one '[': the root JSON array contributes one, so a second means
+    # a bracket lives inside an opcode string -- the pathological shape that made
+    # the old rfind('[') slice from an operand and miss the array. The parse
+    # still produced opcode items, which is the whole point of parse_r2_json.
+    raw = str(dis.get("raw") or "")
+    assert raw.count("[") >= 2, "expected a bracketed memory operand inside the disasm"
     assert dis.get("parsed") is True
     assert dis.get("count", 0) >= 1
     mapped = [item for item in dis["items"] if isinstance(item.get("address"), dict)]
