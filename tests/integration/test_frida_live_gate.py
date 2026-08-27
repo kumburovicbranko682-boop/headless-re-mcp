@@ -95,3 +95,54 @@ def test_frida_local_attach_read_surface(target_process: subprocess.Popen[bytes]
     with pytest.raises(FridaError) as denied_modules:
         client.modules(other, allowed_pid=pid)
     assert denied_modules.value.code == "permission_denied"
+
+
+@pytest.mark.integration
+def test_frida_device_path_authorization_and_local_hook(
+    target_process: subprocess.Popen[bytes],
+) -> None:
+    """The device-aware path: enumerate_devices, the allow-SET gate, a local hook.
+
+    The local ops above go through _require (a single allowed pid); the
+    device-aware ops (java_enumerate / hook_template_device) go through a
+    different gate, _authorize, which takes a per-session allow-SET, and through
+    _resolve_device. Real Android usage hits that path, yet it had no live
+    coverage. The noop template needs no ART, so it loads against the local
+    device as a stand-in -- enough to drive _resolve_device('local'), the real
+    device.attach, and the allow-set boundary (pid not in the set, and an empty
+    set, both refused before any attach; an unknown template refused as
+    invalid_params). frida absent, or the attach disallowed, it skips.
+    """
+    client = FridaClient()
+    if not client.available:
+        pytest.skip("frida module not installed — frida device Gate not run (skip != pass)")
+    pid = target_process.pid
+
+    # The local device is always present in a frida install.
+    devices = client.enumerate_devices()
+    assert devices["count"] >= 1
+    assert any(d["id"] == "local" for d in devices["devices"])
+
+    # The allow-SET boundary and template validation all resolve before any
+    # attach, so they hold even where ptrace would block the attach itself.
+    with pytest.raises(FridaError) as not_in_set:
+        client.hook_template_device("local", pid, "noop", allowed_pids={pid + 1}, timeout=5.0)
+    assert not_in_set.value.code == "permission_denied"
+    with pytest.raises(FridaError) as empty_set:
+        client.hook_template_device("local", pid, "noop", allowed_pids=set(), timeout=5.0)
+    assert empty_set.value.code == "permission_denied"
+    with pytest.raises(FridaError) as bad_template:
+        client.hook_template_device(
+            "local", pid, "no_such_template", allowed_pids={pid}, timeout=5.0
+        )
+    assert bad_template.value.code == "invalid_params"
+
+    # The authorized, real device-path hook needs an attach; skip if the machine
+    # forbids it, otherwise assert it loads and honestly reports non-persistence.
+    try:
+        hooked = client.hook_template_device("local", pid, "noop", allowed_pids={pid}, timeout=30.0)
+    except FridaError as exc:
+        pytest.skip(f"frida cannot attach on this machine ({exc.code}) — skip != pass")
+    assert hooked["loaded"] is True
+    assert hooked["persisted"] is False
+    assert hooked["device"] == "local"

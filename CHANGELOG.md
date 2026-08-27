@@ -87,6 +87,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一个不等于 allowed_pid 的 pid 必得 `permission_denied`。frida 缺席或本机 ptrace 不允许 attach 时明确
   skip(skip != pass)。CI 侧 frida 已在 `[android]` extra 里,该 gate 在 linux-integration 上真跑。
 
+### 新增（frida 设备路径实测 gate：enumerate_devices、_authorize 授权集闸、本地设备 hook）
+
+- **上面那条 gate 只覆盖本地单 pid 路径(`_require`),而真实 Android 用的是设备路径**：
+  `java_enumerate` / `hook_template_device` 走的是另一套授权闸 `_authorize`(接收会话级 pid **集合**)与
+  `_resolve_device`,此前没有真 frida 覆盖。新增 `test_frida_device_path_authorization_and_local_hook`:
+  断言 `enumerate_devices` 至少含 `local` 设备;`noop` 模板不需要 ART,遂用 `local` 设备当替身把
+  `hook_template_device("local", pid, "noop", allowed_pids={pid})` 真加载出来,驱动 `_resolve_device('local')`、
+  真 `device.attach` 与脚本加载,并断言 `persisted=False`。授权集边界与模板校验都在任何 attach **之前**
+  裁决,因而与 ptrace 是否放行无关:pid 不在集合内、集合为空都必得 `permission_denied`,未知模板名必得
+  `invalid_params`。frida 缺席或本机不允许 attach 时明确 skip(skip != pass)。
+
 ### 新增（apksigner 签名路径拿到真机 gate：签名重打包 APK 并独立验签，Android 面自此全覆盖）
 
 - **`apk.sign` 的 apksigner 路径此前也没有真后端覆盖**。它最要紧的一环——密码经环境变量交给 apksigner
