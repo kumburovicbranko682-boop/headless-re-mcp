@@ -87,6 +87,43 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_device_control_of_a_missing_device_is_structured_not_internal() -> None:
+    """Every serial-taking ADB op must fail structured when no device is there.
+
+    An unattended agent routinely pokes a device that is offline or was never
+    attached. Whether adb is missing (capability_unavailable) or present with
+    no device (a transport backend_error), the envelope must be a deliberate
+    code -- never internal_error, which files a property of the environment as
+    a server defect and mints an incident. Only device_list was guarded before;
+    the serial ops, the ones an agent actually drives, were not.
+    """
+    service = AnalysisService()
+    bogus = "no-such-device:5555"
+    try:
+        ops = (
+            ("device_info", lambda: service.device_info(bogus)),
+            ("device_properties", lambda: service.device_properties(bogus)),
+            ("device_packages", lambda: service.device_packages(bogus)),
+            ("device_current_activity", lambda: service.device_current_activity(bogus)),
+            ("device_logcat", lambda: service.device_logcat(bogus)),
+            ("device_launch", lambda: service.device_launch(bogus, "com.example.app")),
+            ("device_force_stop", lambda: service.device_force_stop(bogus, "com.example.app")),
+            ("device_uninstall", lambda: service.device_uninstall(bogus, "com.example.app")),
+            ("device_screenshot", lambda: service.device_screenshot(bogus)),
+            ("device_pull", lambda: service.device_pull(bogus, "/data/local/tmp/x")),
+        )
+        for name, call in ops:
+            result = call()
+            assert result.ok is False, f"{name} unexpectedly succeeded against a missing device"
+            assert result.error is not None
+            assert result.error.code != "internal_error", (
+                f"{name} filed a missing device as an internal incident: {result.error.message}"
+            )
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
     apk = _build_synthetic_apk(tmp_path / "sample.apk")
     service = AnalysisService()
