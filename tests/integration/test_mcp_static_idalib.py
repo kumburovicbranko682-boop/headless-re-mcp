@@ -26,7 +26,15 @@ def test_mcp_static_idalib_session_round_trip() -> None:
     if not binary:
         pytest.skip("HEADLESS_RE_IDA_GATE_BINARY is not configured")
 
-    service = AnalysisService(Settings.load())
+    settings = Settings.load()
+    if settings.ida_home is None:
+        # The conftest bridges this env var from the built PE fixture, so a
+        # machine with fixtures but no IDA arrives here with the binary set and
+        # static.open then fails backend_unavailable. That is an error, not the
+        # honest skip the sibling IDA gates report (skip != pass, error != skip).
+        pytest.skip("IDA home is not configured")
+
+    service = AnalysisService(settings)
     created = service.create_session(binary)
     assert created.ok, created.model_dump(mode="json")
     session_id = _session_id(created.data)
@@ -66,6 +74,12 @@ async def test_mcp_stdio_protocol_round_trip() -> None:
     binary = os.environ.get("HEADLESS_RE_IDA_GATE_BINARY")
     if not binary:
         pytest.skip("HEADLESS_RE_IDA_GATE_BINARY is not configured")
+
+    if Settings.load().ida_home is None:
+        # Same fixtures-present/IDA-absent shape as the round-trip above: the
+        # stdio server would answer static.open with backend_unavailable, so
+        # skip rather than fail on a machine that simply has no IDA.
+        pytest.skip("IDA home is not configured")
 
     project_root = Path(__file__).resolve().parents[2]
     parameters = StdioServerParameters(
