@@ -22,6 +22,11 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# apk.api_usage scans every method's call edges; the collect cap bounds the
+# rows returned and the edge budget bounds the work done when few edges match,
+# so a large app can never make the scan run unbounded.
+_MAX_API_USAGE_COLLECT = 5000
+_MAX_XREF_EDGES = 500_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -449,6 +454,89 @@ class ApkClient:
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,
+        }
+
+    def api_usage(
+        self,
+        path: Path,
+        prefix: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Find internal methods that call into a class or package prefix.
+
+        A forward call-graph query by callee: where apk.xrefs lists the callers
+        of one exact method name and apk.callees the outgoing calls of one
+        method, this scans the whole app for calls landing on any class under a
+        prefix -- the way to answer "where is javax.crypto used", "who calls
+        android.telephony" or "is java.lang.reflect touched at all". The prefix
+        matches the callee's smali class name by startswith; a dotted prefix is
+        accepted and normalised (javax.crypto -> Ljavax/crypto), or pass the
+        Lsmali/ form directly. Each row is caller_class, caller_method,
+        callee_class and callee_method. External callers are skipped. Rows are
+        deduped and sorted by (callee_class, callee_method, caller_class,
+        caller_method). total is the number of call sites collected, capped at
+        5000; scan_capped is also set if the edge budget (500000 call edges
+        examined) was hit first, and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        target = prefix.strip()
+        if not target:
+            raise ApkError("invalid_params", "prefix is required")
+        norm = target if target.startswith("L") else "L" + target.replace(".", "/")
+        rows: list[JsonObject] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        edges = 0
+        scan_more = False
+        for method in parsed.analysis.get_methods():
+            if method.is_external():
+                continue
+            caller_class = str(method.class_name)
+            caller_method = str(method.name)
+            for _, callee, _ in method.get_xref_to():
+                edges += 1
+                if edges > _MAX_XREF_EDGES:
+                    scan_more = True
+                    break
+                callee_class = str(callee.class_name)
+                if not callee_class.startswith(norm):
+                    continue
+                key = (caller_class, caller_method, callee_class, str(callee.name))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    {
+                        "caller_class": caller_class,
+                        "caller_method": caller_method,
+                        "callee_class": callee_class,
+                        "callee_method": str(callee.name),
+                    }
+                )
+                if len(rows) >= _MAX_API_USAGE_COLLECT:
+                    scan_more = True
+                    break
+            if scan_more:
+                break
+        rows.sort(
+            key=lambda row: (
+                row["callee_class"],
+                row["callee_method"],
+                row["caller_class"],
+                row["caller_method"],
+            )
+        )
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_XREFS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "prefix": norm,
+            "usage": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
         }
 
 

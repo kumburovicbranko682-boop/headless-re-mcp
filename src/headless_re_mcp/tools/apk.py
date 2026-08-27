@@ -97,6 +97,31 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.api_usage")
+    def apk_api_usage(
+        session_id: str,
+        prefix: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find internal methods that call into a class or package prefix.
+
+        A forward call-graph query by callee: where apk.xrefs lists the callers
+        of one exact method name, this scans the whole app for calls landing on
+        any class under a prefix -- the way to answer "where is javax.crypto
+        used", "who calls android.telephony" or "is java.lang.reflect touched at
+        all". The prefix matches the callee's smali class name by startswith; a
+        dotted prefix is accepted and normalised (javax.crypto -> Ljavax/crypto),
+        or pass the Lsmali/ form directly. Each row is caller_class,
+        caller_method, callee_class and callee_method; external callers are
+        skipped. Answers with prefix (normalised), usage, count, total, offset
+        and has_more so a filled page is not read as every call site. total is
+        the call sites collected, capped at 5000; scan_capped is also set when
+        the 500000-edge budget was hit first. Rows are deduped and sorted by
+        (callee_class, callee_method, caller_class, caller_method).
+        """
+        return _dump(analysis.apk_api_usage(session_id, prefix, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

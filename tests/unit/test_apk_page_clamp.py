@@ -169,6 +169,48 @@ def test_strings_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None
     assert payload["has_more"] is False
 
 
+class _FakeApiCallee:
+    def __init__(self, class_name: str, name: str) -> None:
+        self.class_name = class_name
+        self.name = name
+
+
+class _FakeApiMethod:
+    def __init__(self, index: int, callee_class: str) -> None:
+        self.class_name = f"Lcom/example/Caller{index};"
+        self.name = "call"
+        self._callee = _FakeApiCallee(callee_class, "target")
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_to(self) -> list[tuple[object, _FakeApiCallee, int]]:
+        return [(None, self._callee, 0)]
+
+
+class _FakeApiParsed:
+    def __init__(self, methods: list[_FakeApiMethod]) -> None:
+        self.analysis = self
+        self._methods = methods
+
+    def get_methods(self) -> list[_FakeApiMethod]:
+        return self._methods
+
+
+def test_api_usage_limit_is_capped_at_the_schema_maximum(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    methods = [
+        _FakeApiMethod(index, "Ljavax/crypto/Cipher;")
+        for index in range(_MAX_XREFS_PAGE + 15)
+    ]
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeApiParsed(methods))
+    client = ApkClient()
+    payload = client.api_usage(tmp_path / "app.apk", "javax.crypto", offset=0, limit=10**9)
+    assert payload["count"] == _MAX_XREFS_PAGE
+    assert payload["has_more"] is True
+
+
 class _FakeXrefCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
@@ -231,3 +273,4 @@ def test_client_page_caps_match_the_tool_schema_maxima() -> None:
     assert _limit_schema("apk.methods")["maximum"] == _MAX_METHODS_PAGE
     assert _limit_schema("apk.strings")["maximum"] == _MAX_STRINGS_PAGE
     assert _limit_schema("apk.xrefs")["maximum"] == _MAX_XREFS_PAGE
+    assert _limit_schema("apk.api_usage")["maximum"] == _MAX_XREFS_PAGE
