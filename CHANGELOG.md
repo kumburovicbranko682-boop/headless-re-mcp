@@ -50,6 +50,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   夹具把 `"H3adl3ss"` 藏在 `\x` 转义的字符串数组里、经 `["split"]`/`["push"]` 计算成员访问调用方法；
   gate 要求还原出的字符串出现、且计算成员访问被简化成点号（`.split(` 在、`["split"]` 不在），这是
   webcrack 的核心反混淆，纯重排打印过不了。
+- 新增 `.github/linux-gates-constraints.txt` 并在工作流以 `pip install -c` 应用：把 pip 解析的 RE
+  后端（frida、androguard、adbutils、mitmproxy、playwright）钉到本 gate 验证过的确切版本，避免定时跑
+  时悄悄拉到改了后端 API 的上游新版（正是 frida 17 删掉 `Memory.readByteArray` 那类漂移）。只钉叶子
+  后端、不钉共享传递依赖（pydantic、typing-extensions 等），让解析器仍收敛到验证过的组合（pydantic
+  2.11.10 配同时满足 mitmproxy `typing-extensions<=4.14` 的 4.14）；只经 CI 的 `-c` 生效，pyproject
+  的浮动下限不动，生产/运行时消费者不受影响（在 ubuntu-24.04 / CPython 3.12 实测 `pip check` 干净）。
 
 ### 新增（监控台工作台）
 

@@ -58,9 +58,15 @@ jobs:
         run: npm install -g "webcrack@${WEBCRACK_VERSION}"
 
       - name: Install package with the non-PE extras
+        # -c pins the pip-resolved RE backends (frida, androguard, adbutils,
+        # mitmproxy, playwright) to the exact versions this gate was validated
+        # against, so a scheduled run can't silently pick up an upstream release
+        # that changes a backend API mid-schedule. pyproject keeps the flexible
+        # floors; only CI is frozen. See .github/linux-gates-constraints.txt.
         run: |
           python -m pip install -U pip
-          python -m pip install -e ".[test,dev,web,browser,proxy,android]"
+          python -m pip install -c .github/linux-gates-constraints.txt \
+            -e ".[test,dev,web,browser,proxy,android]"
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium

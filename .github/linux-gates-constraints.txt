@@ -1,0 +1,25 @@
+# CI-only version pins for the linux-integration `nonpe-gates` job.
+#
+# These freeze the reverse-engineering backends that otherwise float within
+# their pyproject floors (e.g. android's frida>=16.5), so a scheduled gate run
+# is reproducible and an upstream release cannot silently change the API a gate
+# exercises -- the exact drift that removed Memory.readByteArray in frida 17 and
+# broke frida.memory_read until the client moved to ptr().readByteArray.
+#
+# Applied only through `pip install -c` in the workflow, never in pyproject, so
+# production/runtime consumers keep the flexible floors and only CI is frozen.
+#
+# Only the leaf backends are pinned, never their shared transitive deps
+# (pydantic, typing-extensions, ...). The resolver still settles those to the
+# consistent set the job was validated against -- pydantic 2.11.10 with the
+# typing-extensions 4.14 that also satisfies mitmproxy's typing-extensions<=4.14
+# -- so pinning here does not disturb that balance (verified: `pip check` clean
+# with these pins on ubuntu-24.04 / CPython 3.12).
+#
+# Bump deliberately, like the OS/node/webcrack pins, after re-running the gates
+# against the new versions.
+adbutils==2.12.0
+androguard==4.1.4
+frida==17.17.0
+mitmproxy==12.2.3
+playwright==1.62.0
