@@ -67,9 +67,12 @@ function Write-ArtifactHash([string]$Path) {
 
 function Copy-AppTree([string]$Destination, [switch]$IncludeDocs) {
     Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $Destination "src\headless_re_mcp")
+    # THIRD_PARTY_NOTICES.md was folded into README/upstream.lock.json when the
+    # public docs shrank; with $ErrorActionPreference = Stop, keeping it in this
+    # list made every portable build throw on the missing file.
     Copy-Item @(
         "pyproject.toml", "setup.py", "start_web.py", "README.md", "LICENSE",
-        "THIRD_PARTY_NOTICES.md", "upstream.lock.json"
+        "upstream.lock.json"
     ) $Destination
     if ($IncludeDocs) {
         Copy-Item -Recurse "docs" (Join-Path $Destination "docs")
@@ -208,7 +211,7 @@ function Build-Deps {
         }
     }
 
-    Copy-Item "THIRD_PARTY_NOTICES.md", "upstream.lock.json", "LICENSE" $stage
+    Copy-Item "upstream.lock.json", "LICENSE" $stage
     $manifest = [ordered]@{
         schema_version = 1
         name = $name
@@ -224,7 +227,7 @@ function Build-Deps {
 Headless RE-MCP dependency bundle (NO IDA)
 ================================================
 Extracted and configured automatically by: python setup.py
-Manual activation is unnecessary. See MANIFEST.json and THIRD_PARTY_NOTICES.md.
+Manual activation is unnecessary. See MANIFEST.json and upstream.lock.json.
 "@ | Set-Content -LiteralPath (Join-Path $stage "FIRST_RUN.txt") -Encoding ASCII
 
     if (-not $SkipZip) {
