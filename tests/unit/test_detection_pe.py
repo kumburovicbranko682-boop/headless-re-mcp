@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import tracemalloc
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -509,6 +510,36 @@ def test_scan_reads_only_one_byte_beyond_the_configured_limit(
 
     assert scan_pe(path, max_file_size=len(payload)).size == len(payload)
     assert requested == [len(payload) + 1]
+
+
+def test_scan_allocation_tracks_file_size_not_the_configured_limit(
+    tmp_path: Path,
+) -> None:
+    """A tiny input must not cost the whole budget in transient heap.
+
+    ``_read_pe_bytes`` reads up to ``max_file_size + 1`` bytes, but a buffered
+    ``read(n)`` allocates all ``n`` bytes before shrinking. The old single-call
+    ``read(max_file_size + 1)`` therefore spiked the full budget -- 256 MiB at
+    the default cap -- on every scan, whatever the file's real size, and scan_pe
+    runs on every binary and twice per .NET enumeration. Chunking keeps the
+    allocation proportional to what is actually there; pin that so nobody
+    reintroduces the one-shot read.
+    """
+    path = tmp_path / "tiny.exe"
+    path.write_bytes(_sample("x64", imports=False, tls=False, dotnet=False))
+    assert path.stat().st_size < 64 * 1024
+
+    tracemalloc.start()
+    try:
+        report = scan_pe(path)  # default max_file_size is 256 MiB
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert report.size == path.stat().st_size
+    # The pre-fix peak was the full 256 MiB budget; anything near that means the
+    # scanner is again allocating the cap rather than the file.
+    assert peak < 8 * 1024 * 1024, f"scan of a {report.size}-byte file peaked at {peak} bytes"
 
 
 def test_entry_point_at_section_end_is_not_executable(tmp_path: Path) -> None:
