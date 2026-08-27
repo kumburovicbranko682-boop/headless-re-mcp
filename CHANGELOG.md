@@ -49,6 +49,41 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（合并回归：CLI 正常退出后遗漏 detached 子进程）
+
+- **die / exeinfope / upx 的 `_capture_process` 正常退出后不再泄漏被 detach 的子进程**。
+  「读者自持自闭管道」的收敛（`654280e6`）与「成功启动后回收残留」（`a1ef105f`）是两条并行开发的
+  分支,合并时保留了前者重写后的 `_capture_process` 主体,却把后者在 die/exeinfope/upx 里插入的
+  `terminate_leftover_process_tree(process, wait_s=1.0)` 调用、以及它依赖的 `collect_process_tree` /
+  `terminate_leftover_process_tree` 两个 `process_tree` 辅助函数一起丢了(de4dot 因走的是自己的内联
+  分组回收而未受影响)。后果:一个 CLI 派生 helper 后自己干净退出——不走超时击杀路径——那个被 init
+  收养的 helper 就活过整次调用,ppid 遍历看不到它,而组长 pid 一旦被 reap,受组长存活保护的
+  `killpg` 也够不着。重新引入这两个辅助函数,并让 `terminate_leftover_process_tree` 在组长已 reap 时
+  额外按会话组逐成员击杀(`terminate_process_group`),die/exeinfope/upx 三者在 join 读取线程后、关闭
+  管道前统一调用它;干净且无残留的常见情形只多付一次有界扫描。回归由既有
+  `test_unattended_resource_bounds.py::TestATimeoutBindsWhatTheToolStarted::
+  test_successful_cli_adapters_reap_detached_helpers[die|exeinfope|upx]` 固定,合并前它们已随源码丢失
+  而转红。
+
+### 修复（合并回归：UI 截屏/OCR 的会话 id 校验先于平台门）
+
+- **`ui.screenshot` / `ui.ocr` 对非法 `session_id` 在任何平台都先回 `invalid_request`**,不再被
+  Windows-only 平台门遮住。此前两者先判 `os.name != "nt"` 才校验 `session_id`:在 Linux 上一个带
+  `..` 的会话 id 会先撞上 `unsupported_on_platform` 而拿不到承诺的路径穿越拒绝(该次调用不落盘,所以
+  不是可利用漏洞,但契约随平台漂移)。`e5a5ff38「Block UI capture path traversal before validation」`
+  的本意正是让路径守卫最先执行;把 `session_id` 校验挪到平台判断之前,契约在 Windows 与 Linux 上
+  一致。回归由既有 `test_ui_capture_path_safety.py` 固定(两参数均在 Linux 收集时转红)。
+
+### 修复（守卫与源码漂移:README / 能力目录 / 配置生成 / 监控台取文件）
+
+- 四处每次运行强制的一致性守卫在多 PR 合并后与源码脱节,Linux CI 的 unit job 会照实转红。均系
+  守卫过期而非产品回归,按其各自「改了就同步守卫」的自述对齐:README 工具总数句(`收成 N 个…`
+  被 Linux 支持那次改写掉了「收成」二字)重新钉到现行措辞,数字 265 仍与 catalog 相符;
+  `capabilities_catalog` 的 `ui.win32` 已被显式赋予真实 `win32_ui` doctor 探针(honest 平台上报),
+  测试不再假设它「没有探针即恒 ready」,并单列一条直测 `status_probe is None` 恒 ready 分支;
+  `config generate` 的 doctor 夹具补上 Linux 支持引入的 `platform` 必需探针(否则 `ready` 恒假);
+  监控台取文件的路由早已从裸 `os.name` 改判 `is_windows_host()`,测试改打这个谓词。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
