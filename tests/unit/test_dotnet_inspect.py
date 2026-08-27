@@ -135,6 +135,9 @@ def test_inspect_verified_cor20_bsjb(tmp_path: Path) -> None:
     # This synthetic image carries no TargetFrameworkAttribute; the fact is
     # None rather than invented -- pre-4.0 and hand-built assemblies are real.
     assert report.target_framework is None
+    # And no #~ tables at all: the entry token exists but nothing can back a
+    # name for it, so the resolved fact stays None rather than fabricated.
+    assert report.entry_point_name is None
 
 
 def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
@@ -185,6 +188,11 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     # the right blob and derived the token the way the CLR does.
     assert report.public_key_token == "b77a5c561934e089"
     assert report.to_dict()["public_key_token"] == "b77a5c561934e089"
+    # The entry point resolved to a name: token 0x06000002 is MethodDef row 2
+    # (Run), owned by the TypeDef whose MethodList span covers it (Sample) --
+    # the same Sample::Run monodis marks with .entrypoint in the gate.
+    assert report.entry_point_name == "Sample::Run"
+    assert report.to_dict()["entry_point_name"] == "Sample::Run"
 
 
 def test_inspect_without_a_public_key_reports_no_token(tmp_path: Path) -> None:
@@ -196,6 +204,72 @@ def test_inspect_without_a_public_key_reports_no_token(tmp_path: Path) -> None:
     report = inspect_dotnet(path)
     assert report.public_key_token is None
     assert report.to_dict()["public_key_token"] is None
+
+
+def _cor20_offset(raw: bytes) -> int:
+    """File offset of the fixture's COR20 header, located from its own PE.
+
+    The CLI directory names the COR20's RVA; the fixture is a single-section
+    PE mapping RVA 0x2000 to file 0x200, the same arithmetic
+    ``_rowcount_offset`` uses, so mutation tests survive fixture regeneration.
+    """
+    e_lfanew = struct.unpack_from("<I", raw, 0x3C)[0]
+    optional = e_lfanew + 24
+    magic = struct.unpack_from("<H", raw, optional)[0]
+    directories = optional + (112 if magic == 0x20B else 96)
+    cli_rva = struct.unpack_from("<I", raw, directories + 14 * 8)[0]
+    return cli_rva - 0x2000 + 0x200
+
+
+def test_a_file_token_entry_point_resolves_no_local_name(tmp_path: Path) -> None:
+    # A multi-module assembly can point its entry at another module through a
+    # File token (0x26). There is no local MethodDef to name, so the resolved
+    # fact stays None while the raw token is still reported for triage.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _cor20_offset(bytes(raw)) + 20, 0x26000001)
+    path = tmp_path / "file_entry.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.entry_point_token == 0x26000001
+    assert report.entry_point_name is None
+
+
+def test_an_out_of_range_entry_row_resolves_no_name(tmp_path: Path) -> None:
+    # A MethodDef token whose row the table does not have (row 99 of 2) names
+    # nothing; the walk must not read past the table or borrow a neighbour's
+    # name, and everything else still parses.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _cor20_offset(bytes(raw)) + 20, 0x06000063)
+    path = tmp_path / "liar_entry.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.entry_point_token == 0x06000063
+    assert report.entry_point_name is None
+    assert report.assembly_name == "MyAssembly"
+
+
+def test_a_zero_entry_token_is_a_library_not_a_name(tmp_path: Path) -> None:
+    # Libraries carry EntryPointToken 0. Row 0 of any table is not a thing in
+    # ECMA-335 (indices are 1-based); no name may be fabricated from it.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _cor20_offset(bytes(raw)) + 20, 0)
+    path = tmp_path / "library.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.entry_point_token == 0
+    assert report.entry_point_name is None
 
 
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:

@@ -16,6 +16,7 @@ from headless_re_mcp.dotnet.tables import (
     MEMBER_REF_PARENT_TABLES,
     RESOLUTION_SCOPE_TABLES,
     coded_index_size,
+    simple_index_size,
     table_row_size,
 )
 
@@ -54,6 +55,13 @@ _FLAG_32BITPREFERRED = 0x00020000
 # Assembly row's PublicKey blob the same way ECMA-335 II.6.3 / every runtime
 # does: the low 8 bytes of the key's SHA-1, in reverse order.
 _PUBLIC_KEY_TOKEN_BYTES = 8
+# The COR20 EntryPointToken's table byte when it names a managed method: the
+# MethodDef table (a File token, 0x26, points at another module instead and
+# resolves to no local name). Resolving the row through MethodDef.Name and the
+# owning TypeDef's MethodList range names where execution starts -- the managed
+# analogue of a WASM start function's resolved name or an APK's launcher
+# activity, where the raw token is just a number.
+_TOKEN_TABLE_METHODDEF = 0x06
 
 
 class DotnetKind(StrEnum):
@@ -138,6 +146,12 @@ class DotnetInspectReport:
     # build). This is the "who signed it" of the managed world, alongside the
     # STRONGNAMESIGNED COR20 flag which says whether it was actually signed.
     public_key_token: str | None = None
+    # The entry point resolved to a name ("Namespace.Type::Method"): where
+    # execution starts, the way ildasm/monodis mark it with .entrypoint --
+    # entry_point_token is just the number this resolves. None for a library
+    # (token 0), a File-token entry point in another module, or a token the
+    # tables cannot back.
+    entry_point_name: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -162,6 +176,7 @@ class DotnetInspectReport:
             "module_refs": list(self.module_refs),
             "target_framework": self.target_framework,
             "public_key_token": self.public_key_token,
+            "entry_point_name": self.entry_point_name,
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
             ),
@@ -258,6 +273,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     module_refs: tuple[str, ...] = ()
     target_framework: str | None = None
     public_key_token: str | None = None
+    entry_point_name: str | None = None
     metadata_stats: MetadataStats | None = None
     verified = False
     note = "COR20 present"
@@ -279,8 +295,9 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     module_refs,
                     target_framework,
                     public_key_token,
+                    entry_point_name,
                     metadata_stats,
-                ) = _parse_metadata_root(meta)
+                ) = _parse_metadata_root(meta, entry_token)
                 note = "verified COR20 + BSJB metadata"
             else:
                 note = "COR20 MetaData RVA does not point at BSJB"
@@ -310,6 +327,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         module_refs=module_refs,
         target_framework=target_framework,
         public_key_token=public_key_token,
+        entry_point_name=entry_point_name,
         note=note,
         metadata_stats=metadata_stats,
     )
@@ -348,6 +366,7 @@ def _decode_flags(flags: int) -> tuple[str, ...]:
 
 def _parse_metadata_root(
     meta: bytes,
+    entry_token: int,
 ) -> tuple[
     str | None,
     list[str],
@@ -359,20 +378,21 @@ def _parse_metadata_root(
     tuple[str, ...],
     str | None,
     str | None,
+    str | None,
     MetadataStats | None,
 ]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None, None, (), (), None, None, None
+        return None, [], None, None, None, None, (), (), None, None, None, None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None, None, (), (), None, None, None
+        return None, [], None, None, None, None, (), (), None, None, None, None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None, None, (), (), None, None, None
+        return version, [], None, None, None, None, (), (), None, None, None, None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -401,6 +421,7 @@ def _parse_metadata_root(
     mod_refs: tuple[str, ...] = ()
     framework: str | None = None
     public_key_token: str | None = None
+    entry_name: str | None = None
     stats: MetadataStats | None = None
     try:
         (
@@ -412,8 +433,9 @@ def _parse_metadata_root(
             mod_refs,
             framework,
             public_key_token,
+            entry_name,
             stats,
-        ) = _parse_tables_and_names(meta, stream_map)
+        ) = _parse_tables_and_names(meta, stream_map, entry_token)
     except Exception:
         module_name = None
         assembly_name = None
@@ -423,6 +445,7 @@ def _parse_metadata_root(
         mod_refs = ()
         framework = None
         public_key_token = None
+        entry_name = None
         stats = None
     return (
         version,
@@ -435,6 +458,7 @@ def _parse_metadata_root(
         mod_refs,
         framework,
         public_key_token,
+        entry_name,
         stats,
     )
 
@@ -488,6 +512,7 @@ def _custom_attr_fixed_string(blob: bytes) -> str | None:
 def _parse_tables_and_names(
     meta: bytes,
     stream_map: dict[str, tuple[int, int]],
+    entry_token: int,
 ) -> tuple[
     str | None,
     str | None,
@@ -497,17 +522,19 @@ def _parse_tables_and_names(
     tuple[str, ...],
     str | None,
     str | None,
+    str | None,
     MetadataStats | None,
 ]:
     """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
 
     Returns ``(module_name, assembly_name, assembly_version, mvid,
-    assembly_refs, module_refs, target_framework, public_key_token, stats)``.
+    assembly_refs, module_refs, target_framework, public_key_token,
+    entry_point_name, stats)``.
     """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None, None, (), (), None, None, None
+        return None, None, None, None, (), (), None, None, None, None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -526,7 +553,7 @@ def _parse_tables_and_names(
         blob_heap = meta[b_off : b_off + b_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None, None, (), (), None, None, None
+        return None, None, None, None, (), (), None, None, None, None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -535,7 +562,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None, None, (), (), None, None, None
+                return None, None, None, None, (), (), None, None, None, None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
     # A row count is a number out of the assembly; a claim that could not fit
@@ -615,8 +642,17 @@ def _parse_tables_and_names(
     tfa_typerefs: set[int] = set()
     tfa_ctors: set[int] = set()
     target_framework: str | None = None
+    # The entry-point walk: TypeDef rows (0x02) record (Name, Namespace,
+    # MethodList) so the owning type of any method row is known, then the
+    # MethodDef row (0x06) the token names yields the method name -- again in
+    # exactly the table order the tables stream comes up in.
+    entry_row = entry_token & 0x00FFFFFF
+    wanted_method = entry_row if (entry_token >> 24) == _TOKEN_TABLE_METHODDEF else 0
+    typedef_spans: list[tuple[int, int, int]] = []  # (methodlist, name_idx, ns_idx)
+    entry_method: str | None = None
+    entry_point_name: str | None = None
     if not strings:
-        return None, None, None, None, (), (), None, None, stats
+        return None, None, None, None, (), (), None, None, None, stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -644,6 +680,29 @@ def _parse_tables_and_names(
                 ns_idx, _ = read_string_index(tables, at + advance)
                 if string_at(name_idx) == _TFA_NAME and string_at(ns_idx) == _TFA_NAMESPACE:
                     tfa_typerefs.add(i + 1)
+        elif bit == 0x02 and wanted_method:  # TypeDef: Flags, Name, Namespace, ...
+            # ... Extends(coded), FieldList, MethodList. Each row's MethodList
+            # is the first MethodDef it owns; the spans locate any method's
+            # declaring type. The scan is bounded by the (clamped) row count
+            # and stops at a truncated row, like every other walk here.
+            extends_size = coded_index_size(row_counts, (0x02, 0x01, 0x1B), 2)
+            field_list_size = simple_index_size(row_counts, 0x04)
+            mlist_at = 4 + string_index_size * 2 + extends_size + field_list_size
+            mlist_size = simple_index_size(row_counts, 0x06)
+            for i in range(rows):
+                at = offset + i * row_size
+                if at + row_size > len(tables):
+                    break
+                name_idx, advance = read_string_index(tables, at + 4)
+                ns_idx, _ = read_string_index(tables, at + 4 + advance)
+                mlist = int.from_bytes(tables[at + mlist_at : at + mlist_at + mlist_size], "little")
+                typedef_spans.append((mlist, name_idx, ns_idx))
+        elif bit == 0x06 and wanted_method:  # MethodDef: RVA(4), ImplFlags(2), Flags(2), Name...
+            if wanted_method <= rows:
+                at = offset + (wanted_method - 1) * row_size
+                if at + row_size <= len(tables):
+                    name_idx, _ = read_string_index(tables, at + 8)
+                    entry_method = string_at(name_idx)
         elif bit == 0x0A and tfa_typerefs:  # MemberRef: Class(coded), Name(str), Sig(blob)
             parent_size = coded_index_size(row_counts, MEMBER_REF_PARENT_TABLES, 3)
             for i in range(min(rows, _MAX_TFA_SCAN_ROWS)):
@@ -724,6 +783,22 @@ def _parse_tables_and_names(
                     }
                 )
         offset += row_size * rows
+    if entry_method:
+        # The owning type is the last TypeDef whose MethodList starts at or
+        # before the entry row (II.22.37: each row owns the methods from its
+        # MethodList up to the next row's). Rendered the way ildasm/monodis
+        # spell it: Namespace.Type::Method, namespace omitted when empty.
+        owner: tuple[int, int] | None = None
+        for mlist, name_idx, ns_idx in typedef_spans:
+            if 1 <= mlist <= wanted_method:
+                owner = (name_idx, ns_idx)
+        entry_point_name = entry_method
+        if owner is not None:
+            type_name = string_at(owner[0])
+            namespace = string_at(owner[1])
+            if type_name:
+                qualified = f"{namespace}.{type_name}" if namespace else type_name
+                entry_point_name = f"{qualified}::{entry_method}"
     return (
         module_name,
         assembly_name,
@@ -733,5 +808,6 @@ def _parse_tables_and_names(
         tuple(module_refs),
         target_framework,
         public_key_token,
+        entry_point_name,
         stats,
     )

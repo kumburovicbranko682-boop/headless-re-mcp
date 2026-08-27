@@ -9,7 +9,8 @@ something only our reader accepts. This gate closes that loop with an
 independent parser: Mono's ``monodis`` must parse the same file and agree on
 every identity fact the reader surfaces -- assembly name and version, module
 name, MVID, the dependency lists, the target framework, the strong-name
-public-key token, and the type list. It is the .NET analogue of the native
+public-key token, the type list, and the resolved entry point (the method
+monodis marks ``.entrypoint``). It is the .NET analogue of the native
 gate cross-checking the entry point against radare2 and Ghidra, and the proxy
 gate cross-checking the HAR reader against real mitmproxy output.
 
@@ -55,6 +56,10 @@ _TFA_CA_RE = re.compile(
 # each "0x........: bb bb bb ...". These lines carry the raw key bytes Mono
 # reads from the same file -- the ground truth for what the token derives from.
 _PUBKEY_DUMP_RE = re.compile(r"^0x[0-9a-fA-F]+:\s+((?:[0-9a-fA-F]{2}\s+)+)$", re.MULTILINE)
+# Full disassembly closes every method block with "} // end of method
+# Type::Name"; the block carrying the ".entrypoint" directive is where Mono
+# says execution starts.
+_METHOD_END_RE = re.compile(r"//\s*end of method\s+(\S+)")
 
 
 def _monodis_public_key(assembly_dump: str) -> bytes:
@@ -77,9 +82,9 @@ def _monodis(*args: str) -> str:
         text=True,
         timeout=60,
     )
-    # monodis exits 0 and writes the dump to stdout; stderr carries only the
-    # signature-parse warnings our minimal method blobs trigger, which this gate
-    # does not read.
+    # monodis exits 0 and writes the dump to stdout. The fixture carries real
+    # member signature blobs (monodis asserts on malformed ones), so even the
+    # no-argument full disassembly parses it end to end.
     assert result.returncode == 0, result.stderr or result.stdout
     return result.stdout
 
@@ -200,5 +205,46 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
         assert enumerated.ok, enumerated.error
         reader_types = {t["name"] for t in enumerated.data["items"] if t["name"] != "<Module>"}
         assert reader_types == mono_types
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_entry_point_name_agrees_with_monodis_entrypoint(tmp_path: Path) -> None:
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    # Independent ground truth: Mono's full disassembly resolves the COR20
+    # EntryPointToken itself and marks that one method body with .entrypoint.
+    # The enclosing block's end comment names it Type::Method -- exactly the
+    # rendering the reader's entry_point_name uses.
+    full_dump = _monodis()
+    assert full_dump.count(".entrypoint") == 1, full_dump
+    mono_entry: str | None = None
+    seen_entrypoint = False
+    for line in full_dump.splitlines():
+        if line.strip() == ".entrypoint":
+            seen_entrypoint = True
+        elif seen_entrypoint:
+            match = _METHOD_END_RE.search(line)
+            if match:
+                mono_entry = match.group(1)
+                break
+    assert mono_entry, full_dump
+
+    service = _service(tmp_path)
+    try:
+        session_id = service.create_session(str(_FIXTURE)).data["session"]["id"]
+        report = service.dotnet_inspect(session_id, require_verified=True)
+        assert report.ok, report.error
+        # The reader resolves the same token through MethodDef.Name and the
+        # owning TypeDef's MethodList span; both spell where execution starts
+        # identically -- the managed analogue of the WASM start-function name.
+        assert report.data["entry_point_name"] == mono_entry == "Sample::Run"
     finally:
         service.close_all()

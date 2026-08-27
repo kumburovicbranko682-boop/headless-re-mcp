@@ -98,6 +98,9 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # Mono's own decode of the same key; the value is the published token
         # of the ECMA key the fixture is signed with.
         assert report["public_key_token"] == "b77a5c561934e089"
+        # The entry point resolved to a name, not just a token -- the method
+        # monodis marks .entrypoint, which its gate cross-checks.
+        assert report["entry_point_name"] == "Sample::Run"
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2

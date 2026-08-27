@@ -10,9 +10,12 @@ smallest one that carries real metadata: a #~ tables stream with Module,
 TypeRef, TypeDef, Field, MethodDef, MemberRef, CustomAttribute, ModuleRef,
 Assembly and AssemblyRef rows, a #Strings heap, a #Blob heap carrying a real
 custom-attribute value (the TargetFrameworkAttribute every compiler stamps on
-an assembly) and the assembly's strong-name public key, and two method bodies
-with actual CIL. No compiler is required; the output is deterministic and
-committed as ``minimal_assembly.exe`` next to this file.
+an assembly), the assembly's strong-name public key and genuine member
+signatures (monodis asserts on malformed ones, so real blobs are what let it
+fully disassemble the fixture and mark the .entrypoint the entrypoint gate
+cross-checks), and two method bodies with actual CIL. No compiler is required;
+the output is deterministic and committed as ``minimal_assembly.exe`` next to
+this file.
 
 Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 """
@@ -36,6 +39,13 @@ FIELD_NAME = "Secret"
 METHOD_ADD = "Add"
 METHOD_RUN = "Run"
 MEMBERREF_NAME = "WriteLine"
+# WriteLine's declaring type, resolved through a TypeRef into mscorlib the way
+# every real call into the runtime library is. Giving the MemberRef a genuine
+# parent (and every member a genuine signature blob below) is what lets monodis
+# fully disassemble the fixture -- it asserts on malformed signatures -- so the
+# entrypoint gate can cross-check the .entrypoint directive in its output.
+CONSOLE_TYPE_NAME = "Console"
+CONSOLE_NAMESPACE = "System"
 # The unmanaged DLL a P/Invoke targets: the ModuleRef table (0x1A) names it.
 # Its row sits between MemberRef (0x0A) and Assembly (0x20) in the walk, so it
 # is another table the AssemblyRef/resource reads must step over correctly.
@@ -121,6 +131,8 @@ def build() -> bytes:
     i_tfa = add_string(TFA_TYPE_NAME)
     i_tfa_ns = add_string(TFA_NAMESPACE)
     i_ctor = add_string(".ctor")
+    i_console = add_string(CONSOLE_TYPE_NAME)
+    i_console_ns = add_string(CONSOLE_NAMESPACE)
     i_ns = 0
     strings_heap = _pad4(bytes(strings))
 
@@ -136,6 +148,12 @@ def build() -> bytes:
 
     # .ctor(string) signature: HASTHIS, 1 parameter, returns void, param string.
     b_ctor_sig = add_blob(bytes([0x20, 0x01, 0x01, 0x0E]))
+    # Real member signatures (II.23.2), which monodis decodes -- and asserts
+    # on -- when disassembling: a static int32 Add(), a static void Run(), an
+    # int32 field, and Console.WriteLine()'s static void ().
+    b_add_sig = add_blob(bytes([0x00, 0x00, 0x08]))  # DEFAULT, 0 params, ret I4
+    b_void_sig = add_blob(bytes([0x00, 0x00, 0x01]))  # DEFAULT, 0 params, ret VOID
+    b_field_sig = add_blob(bytes([0x06, 0x08]))  # FIELD, I4
     # Custom-attribute value (II.23.3): prolog 0x0001, one SerString fixed
     # argument (packed length + UTF-8), zero named arguments.
     tfa_utf8 = TARGET_FRAMEWORK.encode("utf-8")
@@ -176,7 +194,7 @@ def build() -> bytes:
         | (1 << 0x28)  # ManifestResource
     )
     row_counts = {
-        0x00: 1, 0x01: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 2, 0x0C: 1,
+        0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 2, 0x0C: 1,
         0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1,
     }
 
@@ -192,21 +210,24 @@ def build() -> bytes:
             tables += _u32(row_counts[bit])
     # Module: Generation Name Mvid EncId EncBaseId (Mvid -> #GUID row 1)
     tables += _u16(0) + _u16(i_module) + _u16(1) + _u16(0) + _u16(0)
-    # TypeRef: ResolutionScope Name Namespace -- TargetFrameworkAttribute
-    # resolved from the mscorlib AssemblyRef (ResolutionScope tag 2, row 1).
+    # TypeRef x2: ResolutionScope Name Namespace -- TargetFrameworkAttribute
+    # and System.Console, both resolved from the mscorlib AssemblyRef
+    # (ResolutionScope tag 2, row 1), the way every runtime-library type is.
     tables += _u16((1 << 2) | 2) + _u16(i_tfa) + _u16(i_tfa_ns)
+    tables += _u16((1 << 2) | 2) + _u16(i_console) + _u16(i_console_ns)
     # TypeDef x2: Flags Name Namespace Extends FieldList MethodList
     tables += _u32(0) + _u16(i_type_module) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
     tables += _u32(0x00100001) + _u16(i_type_sample) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
     # Field: Flags Name Signature
-    tables += _u16(0x0016) + _u16(i_field) + _u16(0)
+    tables += _u16(0x0016) + _u16(i_field) + _u16(b_field_sig)
     # MethodDef x2: RVA ImplFlags Flags Name Signature ParamList
-    tables += _u32(rva_add) + _u16(0) + _u16(0x0016) + _u16(i_add) + _u16(0) + _u16(1)
-    tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(0) + _u16(1)
-    # MemberRef x2: Class Name Signature. Row 1 is the WriteLine call target;
+    tables += _u32(rva_add) + _u16(0) + _u16(0x0016) + _u16(i_add) + _u16(b_add_sig) + _u16(1)
+    tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(b_void_sig) + _u16(1)
+    # MemberRef x2: Class Name Signature. Row 1 is the WriteLine call target,
+    # its Class the System.Console TypeRef (MemberRefParent tag 1, row 2);
     # row 2 is TargetFrameworkAttribute::.ctor(string), its Class the TypeRef
     # above (MemberRefParent tag 1, row 1).
-    tables += _u16(0) + _u16(i_memberref) + _u16(0)
+    tables += _u16((2 << 3) | 1) + _u16(i_memberref) + _u16(b_void_sig)
     tables += _u16((1 << 3) | 1) + _u16(i_ctor) + _u16(b_ctor_sig)
     # CustomAttribute: Parent Type Value -- the TargetFramework stamp on the
     # manifest assembly: Parent is Assembly row 1 (HasCustomAttribute tag 14),
