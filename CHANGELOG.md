@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 proxy.flow_get 的制品登记与登记失败降级契约）
+
+- `proxy.flow_get` 会把请求/响应体各自 spill 到磁盘并登记为独立 kind 的制品(`proxy_flow_request_body` /
+  `proxy_flow_response_body`),两者 id 互不覆盖、都可回读与回收;而登记是 best-effort——文件已在磁盘上,登记失败
+  只应在该 part 上以 `artifact_error` 返回、整个读取仍 `ok`。这条降级分支此前无测试覆盖。
+- `tests/unit/test_proxy_flow_get_artifact.py` 新增两例:成功路径下两个 body 各自登记到不同 kind、id 互异且可
+  `describe_artifact` 回读;登记抛错时两个 part 各自带上 `artifact_error`、不带 `artifact_id`,且 `flow_get`
+  不崩、仍返回 `ok` 与完整流数据。(纯测试新增,无行为变更。)
+
 ### 加固（device.connect 在触碰 adb 客户端之前先校验 port/endpoint，畸形端口不再被 capability_unavailable 盖过）
 
 - `device.connect` 过去先 `self._client()`——它在 adbutils 未安装时抛 `capability_unavailable`——再校验 `port`
