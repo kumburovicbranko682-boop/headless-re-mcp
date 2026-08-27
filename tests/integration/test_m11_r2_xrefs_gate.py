@@ -122,3 +122,77 @@ def test_m11_r2_xrefs_to_narrows_to_the_single_caller() -> None:
             x.get("from") for x in to_main.get("items", []) if x.get("type") == "CALL"
         ]
         assert check_va not in main_call_sites, main_call_sites
+
+
+@pytest.mark.integration
+def test_m11_r2_xrefs_from_lists_the_functions_call_targets() -> None:
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip != pass)")
+    if _compiler() is None:
+        pytest.skip("no C compiler (cc/gcc) — cannot build the ELF fixture (skip != pass)")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        binary = _build_elf(Path(tmp))
+
+        funcs = client.run(binary, ["aa", "aflj"], timeout=60.0)
+        assert funcs.get("parsed") is True
+        by_name = {str(f.get("name")): f for f in funcs["items"]}
+        check = next((f for n, f in by_name.items() if "check_password" in n), None)
+        main = next((f for n, f in by_name.items() if n == "main" or n.endswith(".main")), None)
+        assert check is not None and main is not None, list(by_name)
+        check_va = check["offset"]
+        main_va = main["offset"]
+
+        # Outbound: axffj walks the whole function body. check_password calls
+        # strcmp and puts and loads its literal, so those targets appear by name.
+        frm = client.xrefs_from(binary, check_va, timeout=60.0)
+        assert frm.get("parsed") is True
+        assert frm.get("count", 0) >= 3, frm.get("count")
+        assert frm.get("address_va") == check_va
+        names = [str(i.get("name")) for i in frm["items"]]
+        calls = {
+            str(i.get("name"))
+            for i in frm["items"]
+            if str(i.get("type")) == "CALL"
+        }
+        assert any("strcmp" in n for n in calls), names
+        assert any("puts" in n for n in calls), names
+        # The string constant the code compares against is referenced as data.
+        assert any(
+            "secret_marker" in str(i.get("name")) and str(i.get("type")) == "DATA"
+            for i in frm["items"]
+        ), names
+        # Each edge maps both endpoints: the referencing site and the target.
+        for item in frm["items"]:
+            assert isinstance(item.get("at_address"), dict), item
+            assert isinstance(item.get("ref_address"), dict), item
+
+        # The per-instruction axfj would be empty at a function entry; axffj is
+        # what makes the outbound list non-trivial. (Contract, not just count.)
+        assert frm["commands"][-1] == f"axffj @ {check_va}"
+
+        # Bidirectional consistency: main's outbound set contains the CALL into
+        # check_password, and that same edge is what xrefs_to(check_password)
+        # reports inbound -- the two directions describe one call edge.
+        frm_main = client.xrefs_from(binary, main_va, timeout=60.0)
+        call_to_check = [
+            i
+            for i in frm_main.get("items", [])
+            if str(i.get("type")) == "CALL" and i.get("ref") == check_va
+        ]
+        assert call_to_check, [
+            (str(i.get("name")), i.get("type"), i.get("ref")) for i in frm_main.get("items", [])
+        ]
+        assert "check_password" in str(call_to_check[0].get("name")), call_to_check[0]
+
+        to_check = client.xrefs_to(binary, check_va, timeout=60.0)
+        inbound_sites = {
+            i.get("from") for i in to_check.get("items", []) if i.get("type") == "CALL"
+        }
+        # The call site main uses to reach check_password (axffj "at") is the
+        # same address axtj reports as the inbound edge's "from".
+        assert call_to_check[0].get("at") in inbound_sites, (
+            call_to_check[0].get("at"),
+            inbound_sites,
+        )

@@ -169,13 +169,15 @@ def enrich_r2_payload(
             item = dict(entry)
             va = _item_va(
                 entry,
-                ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
+                ("offset", "vaddr", "addr", "from", "to", "ref", "at", "plt", "paddr"),
             )
             mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
             if mapped is not None:
                 item["address"] = mapped
-            # Named endpoints for xrefs
-            for edge_key in ("from", "to"):
+            # Named endpoints for xrefs. axj/axtj phrase edges as from/to; axffj
+            # (references *from* a function) phrases them as at (the referencing
+            # site) and ref (the target), so both vocabularies are mapped.
+            for edge_key in ("from", "to", "at", "ref"):
                 edge_va = _item_va(entry, (edge_key,))
                 edge_mapped = address_dict(
                     edge_va, module=module, image_base=image_base, architecture=arch

@@ -148,4 +148,23 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address, xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs_to(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.xrefs_from")
+    def r2_xrefs_from(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """References made from the function at address (radare2 axffj), outbound.
+
+        The complement of r2.xrefs_to: it answers "what does this function call
+        and touch", walking the whole function body (not the single instruction
+        axfj reads). Items name the target in name and type and carry the
+        referencing site at (mapped to at_address) and the target ref (mapped to
+        ref_address, and to the item's address), plus address (va/rva/module)
+        and address_va (the integer that was asked). Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096). There
+        is no integer address, xrefs, truncated or has_more field.
+        """
+        return _dump(analysis.r2_xrefs_from(session_id, address, timeout=timeout))
     return tools.bindings

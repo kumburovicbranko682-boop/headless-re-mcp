@@ -32,6 +32,7 @@ _ALLOWED = frozenset(
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXTJ_COMMAND = re.compile(r"axtj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_AXFFJ_COMMAND = re.compile(r"axffj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -51,6 +52,8 @@ def _require_allowed_command(command: str) -> None:
     if _AXJ_COMMAND.fullmatch(command) is not None:
         return
     if _AXTJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AXFFJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -130,6 +133,32 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axtj @ {address}"
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = dict(data)
+        data["address"] = address
+        return enrich_r2_payload(data, binary=binary)
+
+    def xrefs_from(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """References made *from* the function containing ``address`` (``axffj``).
+
+        The outbound complement of ``xrefs_to``: it answers "what does this
+        function call and touch". ``axffj`` walks the whole function body, so a
+        function entry returns its calls, string loads and internal jumps in one
+        list -- unlike the per-instruction ``axfj``, which is empty at an entry
+        because the first instruction references nothing. Each item names the
+        target in ``name``/``type`` and carries the referencing site ``at``
+        (mapped to ``at_address``) and the target ``ref`` (mapped to
+        ``ref_address``, and to the item's ``address``).
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"axffj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

@@ -144,6 +144,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "r2.disasm",
         "r2.xrefs",
         "r2.xrefs_to",
+        "r2.xrefs_from",
         "ghidra.analyze",
         "ghidra.functions",
         "ghidra.symbols",
