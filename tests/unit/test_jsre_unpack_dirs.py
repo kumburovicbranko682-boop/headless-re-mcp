@@ -113,6 +113,37 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_forces_webcrack_past_the_directory_it_just_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack aborts on an existing output dir unless -f is passed.
+
+    unpack_bundle creates out_dir (the service hands it a fresh per-uuid path)
+    and then runs webcrack -o out_dir, so without -f every real unpack fails
+    with "output directory already exists" -- reproduced on webcrack 2.16.0.
+    The other unpack tests mock _run and simulate the output, so none of them
+    saw it; CI has no webcrack to catch it live either. Pin the flag here.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        seen["cmd"] = list(cmd)
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+    client.unpack_bundle(bundle, tmp_path / "out", offset=0, limit=10)
+
+    assert "-f" in seen["cmd"], f"webcrack must be forced past its own output dir: {seen['cmd']}"
+    assert "-o" in seen["cmd"], f"webcrack must still be told the output dir: {seen['cmd']}"
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],

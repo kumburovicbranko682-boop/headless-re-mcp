@@ -147,8 +147,12 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack aborts with "output directory already exists" unless -f is
+        # given, and this method just created out_dir (the service hands it a
+        # fresh per-uuid path), so without -f every unpack fails. -f overwrites
+        # that empty dir and still creates one when absent.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"], timeout=timeout
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
