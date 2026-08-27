@@ -126,6 +126,19 @@ class _FakeWebBackend:
         spill.write_text("var a=1;" * 100, encoding="utf-8")
         return {"scriptId": script_id, "source_path": str(spill), "truncated": True}
 
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> dict:  # type: ignore[type-arg]
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        spill = artifact_dir / "dom-abc.html"
+        spill.write_text("<html><body>" + "x" * 4096 + "</body></html>", encoding="utf-8")
+        return {
+            "url": "https://example.com/app",
+            "title": "app",
+            "html": "<html><body>x",
+            "bytes": spill.stat().st_size,
+            "truncated": True,
+            "html_path": str(spill),
+        }
+
     def close(self, session_id: str) -> dict:  # type: ignore[type-arg]
         return {"closed": False}
 
@@ -163,8 +176,9 @@ class TestCapturesAreReachableAndReclaimable:
             shot = service.web_screenshot(session_id)
             har = service.web_har_export(session_id)
             source = service.web_script_source(session_id, "42")
+            dom = service.web_dom_snapshot(session_id)
 
-            for result in (shot, har, source):
+            for result in (shot, har, source, dom):
                 assert result.ok, result.error
                 assert result.data is not None
                 assert "artifact_error" not in result.data
@@ -172,7 +186,12 @@ class TestCapturesAreReachableAndReclaimable:
 
             listed = service.repository.list_artifacts(session_id)
             kinds = {item["kind"] for item in listed["artifacts"]}
-            assert kinds == {"web_screenshot", "web_har", "web_script_source"}
+            assert kinds == {
+                "web_screenshot",
+                "web_har",
+                "web_script_source",
+                "web_dom_snapshot",
+            }
 
             # Reachable: the id resolves to bytes the agent can actually read.
             read = service.artifacts_read(str(shot.data["artifact_id"]), offset=0, limit=8)
