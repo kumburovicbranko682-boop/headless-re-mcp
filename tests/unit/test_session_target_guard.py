@@ -34,7 +34,7 @@ def test_require_pe_accepts_a_pe_session_and_returns_its_binary(tmp_path: Path) 
     assert session.require_target(TargetKind.PE) == binary
 
 
-@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB])
+@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB, TargetKind.NATIVE])
 def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     wrong: TargetKind, tmp_path: Path
 ) -> None:
@@ -58,10 +58,11 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE or an APK is the thing that would have a local file.
+    # A PE, an APK or a native ELF/Mach-O is what would have a local file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.APK.value,
+        TargetKind.NATIVE.value,
     }
 
 

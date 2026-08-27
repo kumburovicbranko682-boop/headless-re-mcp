@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -122,6 +122,9 @@ class SessionRegistry:
                 architecture = detect_pe_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
+            elif kind is TargetKind.NATIVE:
+                metadata = describe_native(path)
+                architecture = native_architecture(metadata)
             session = Session(
                 target=kind,
                 binary=path,
@@ -361,6 +364,16 @@ _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".ha
 _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
+_ELF_MAGIC = b"\x7fELF"
+# Thin Mach-O only. A fat/universal binary begins 0xCAFEBABE, which is also the
+# first four bytes of a Java ``.class`` file; treating that as a macOS binary
+# would misread class files, so fat binaries fall through rather than guess.
+_MACHO_MAGICS = (
+    b"\xcf\xfa\xed\xfe",  # 64-bit, little-endian (0xFEEDFACF)
+    b"\xfe\xed\xfa\xcf",  # 64-bit, big-endian
+    b"\xce\xfa\xed\xfe",  # 32-bit, little-endian (0xFEEDFACE)
+    b"\xfe\xed\xfa\xce",  # 32-bit, big-endian
+)
 
 
 def is_http_url(reference: str) -> bool:
@@ -395,6 +408,11 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
+    if magic.startswith(_ELF_MAGIC) or magic.startswith(_MACHO_MAGICS):
+        # An ELF/Mach-O used to fall through to PE here and then be rejected by
+        # detect_pe_architecture as "not a PE file", so radare2/Ghidra could not
+        # open a session for the very format Linux and macOS ship. It is native.
+        return TargetKind.NATIVE
     return TargetKind.PE
 
 
@@ -457,3 +475,111 @@ def detect_pe_architecture(path: Path) -> Architecture:
     if machine == 0x8664:
         return Architecture.X64
     raise ValueError(f"unsupported PE machine 0x{machine:04x}: {path}")
+
+
+# ELF e_machine -> a human arch string. Only the two the Architecture enum
+# knows (x86/x86-64) become a session machine type; the rest are recorded for
+# display but leave session.architecture unset (r2/Ghidra still read them fine).
+_ELF_MACHINES = {
+    0x02: "sparc",
+    0x03: "x86",
+    0x08: "mips",
+    0x14: "ppc",
+    0x15: "ppc64",
+    0x28: "arm",
+    0x2B: "sparcv9",
+    0x3E: "x86-64",
+    0xB7: "aarch64",
+    0xF3: "riscv",
+}
+_ELF_TYPES = {1: "object", 2: "executable", 3: "shared-object", 4: "core"}
+# Mach-O cputype; the 0x01000000 bit is CPU_ARCH_ABI64 (a 64-bit variant).
+_MACHO_CPUS = {
+    0x00000007: "x86",
+    0x01000007: "x86-64",
+    0x0000000C: "arm",
+    0x0100000C: "aarch64",
+    0x00000012: "ppc",
+    0x01000012: "ppc64",
+}
+_MACHO_TYPES = {1: "object", 2: "executable", 4: "core", 6: "dylib", 8: "bundle"}
+# magic (start of file) -> (bits, byte order). Both come from the magic itself.
+_MACHO_LAYOUT: dict[bytes, tuple[int, Literal["little", "big"]]] = {
+    b"\xcf\xfa\xed\xfe": (64, "little"),
+    b"\xfe\xed\xfa\xcf": (64, "big"),
+    b"\xce\xfa\xed\xfe": (32, "little"),
+    b"\xfe\xed\xfa\xce": (32, "big"),
+}
+_NATIVE_ARCHITECTURE = {"x86": Architecture.X86, "x86-64": Architecture.X64}
+
+
+def describe_native(path: Path) -> dict[str, Any]:
+    """Read cheap identity facts from an ELF/Mach-O header, stdlib-only.
+
+    Mirror of describe_apk: opening a native session must not depend on radare2
+    or Ghidra being installed, so ``{format, bits, endian, type, arch}`` comes
+    from the first 64 bytes. A truncated file still reports the format its magic
+    disclosed rather than leaving the session blank.
+    """
+
+    with path.open("rb") as stream:
+        head = stream.read(64)
+    if head.startswith(_ELF_MAGIC):
+        return {"native": _describe_elf(head)}
+    if head.startswith(_MACHO_MAGICS):
+        return {"native": _describe_macho(head)}
+    raise ValueError(f"not an ELF or Mach-O binary: {path}")
+
+
+def _describe_elf(head: bytes) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "format": "elf",
+        "bits": None,
+        "endian": None,
+        "type": None,
+        "arch": None,
+    }
+    if len(head) < 6:
+        return info
+    info["bits"] = {1: 32, 2: 64}.get(head[4])
+    order: Literal["little", "big"]
+    if head[5] == 1:
+        order = "little"
+    elif head[5] == 2:
+        order = "big"
+    else:
+        return info
+    info["endian"] = order
+    if len(head) < 20:
+        return info
+    info["type"] = _ELF_TYPES.get(int.from_bytes(head[16:18], order))
+    info["arch"] = _ELF_MACHINES.get(int.from_bytes(head[18:20], order))
+    return info
+
+
+def _describe_macho(head: bytes) -> dict[str, Any]:
+    bits, order = _MACHO_LAYOUT[head[:4]]
+    info: dict[str, Any] = {
+        "format": "macho",
+        "bits": bits,
+        "endian": order,
+        "type": None,
+        "arch": None,
+    }
+    if len(head) >= 16:
+        info["arch"] = _MACHO_CPUS.get(int.from_bytes(head[4:8], order))
+        info["type"] = _MACHO_TYPES.get(int.from_bytes(head[12:16], order))
+    return info
+
+
+def native_architecture(metadata: Mapping[str, Any]) -> Architecture | None:
+    """The Architecture enum for a describe_native payload, when it maps.
+
+    Only x86/x86-64 have an Architecture; an ARM or MIPS native stays None so
+    the session records "opened, arch known for display" without claiming a PE
+    machine type it does not have.
+    """
+
+    native = metadata.get("native")
+    arch = native.get("arch") if isinstance(native, Mapping) else None
+    return _NATIVE_ARCHITECTURE.get(arch) if isinstance(arch, str) else None

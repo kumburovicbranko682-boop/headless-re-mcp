@@ -45,11 +45,18 @@ class TargetKind(StrEnum):
     Android and browser targets share the session lifecycle, artifacts and
     knowledge store but cannot answer PE questions, so every tool that needs a
     PE says so explicitly rather than failing deep inside a backend.
+
+    ``NATIVE`` is a local ELF or Mach-O: a binary the portable analysers
+    (radare2, Ghidra) can read on the platforms Linux and macOS actually ship,
+    but that the PE machinery cannot. It behaves like a PE for the
+    format-agnostic tools (it is backed by a file) and is refused by the
+    PE-only ones, so an ELF is no longer misclassified as a broken PE.
     """
 
     PE = "pe"
     APK = "apk"
     WEB = "web"
+    NATIVE = "native"
 
 
 class TargetMismatch(RuntimeError):
@@ -181,7 +188,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.APK, TargetKind.NATIVE),
                 actual=self.target,
             )
         return self.binary
