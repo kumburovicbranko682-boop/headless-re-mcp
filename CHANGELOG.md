@@ -295,7 +295,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   才能让 CDP 把响应体原样交回,跨源无 CORS 会拿到 opaque 空体),轮询到录制器收下该请求后断言它列出
   真实 `status=200`/`application/json`、`web.network.get` 按 requestId 读回**源站发的确切字节**
   (`base64_encoded=false`、未截断、无 `body_error`),再钉死未知 requestId 得结构化 `not_found`。
-  仅当 Playwright/Chromium 缺失时 skip。
+  同一 Gate 再取一个 `application/octet-stream` 二进制体走 CDP 的 base64 分支:断言
+  `web.network.get` `base64_encoded=true`、内联 `body` 为空、`body_bytes` 等于原长,且溢写到产物
+  文件的**是解码后的真实字节而非 base64 文本**(读回逐字节比对)——正好覆盖上游新加的二进制
+  解码/按真实大小溢写路径。仅当 Playwright/Chromium 缺失时 skip。
 - `web.wasm.list` 补活体覆盖(此前 inspect Gate 只见 JS 脚本)。页面 `WebAssembly.instantiate` 一枚
   手工编码的 `add(i32,i32)` 模块(免 wabt),轮询到 `Debugger.scriptParsed` 后断言 Chromium 把它
   报成 `language=WebAssembly` 且 URL 以 `wasm://` 开头,整条 WASM 发现路径端到端验证。仅当

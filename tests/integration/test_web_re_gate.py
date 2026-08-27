@@ -237,15 +237,19 @@ def test_web_cdp_screenshot_navigate_source_and_har(tmp_path: Path) -> None:
 
 _NET_PAGE = (
     b"<html><head><title>net-gate</title></head><body>"
-    b"<script>fetch('/data.json').then(r => r.json());</script>"
+    b"<script>fetch('/data.json').then(r => r.json());"
+    b"fetch('/blob.bin').then(r => r.arrayBuffer());</script>"
     b"</body></html>"
 )
 _NET_JSON = b'{"marker":"web-net-capture-42"}'
+# All 256 byte values so it is unambiguously binary: CDP returns it base64,
+# exercising web.network.get's decode-and-spill-bytes path.
+_NET_BLOB = bytes(range(256)) * 4
 
 
 @contextmanager
 def _fetch_origin_server() -> Iterator[int]:
-    """A local origin whose page fetches a same-origin JSON subresource.
+    """A local origin whose page fetches same-origin JSON and binary subresources.
 
     Same-origin keeps the response body readable over CDP (a cross-origin,
     non-CORS body comes back opaque), so web.network.get can return it verbatim.
@@ -256,6 +260,8 @@ def _fetch_origin_server() -> Iterator[int]:
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
             if self.path.startswith("/data.json"):
                 body, ctype = _NET_JSON, "application/json"
+            elif self.path.startswith("/blob.bin"):
+                body, ctype = _NET_BLOB, "application/octet-stream"
             else:
                 body, ctype = _NET_PAGE, "text/html; charset=utf-8"
             self.send_response(200)
@@ -276,6 +282,21 @@ def _fetch_origin_server() -> Iterator[int]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5.0)
+
+
+def _await_recorded(
+    service: AnalysisService, session_id: str, needle: str, *, deadline_s: float = 15.0
+) -> dict[str, object] | None:
+    """Poll web.network.list until a request whose url contains needle has a status."""
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        listed = service.web_network_list(session_id)
+        assert listed.ok, listed.error
+        for candidate in listed.data["requests"]:
+            if needle in str(candidate.get("url")) and candidate.get("status") is not None:
+                return dict(candidate)
+        time.sleep(0.1)
+    return None
 
 
 @pytest.mark.integration
@@ -306,21 +327,10 @@ def test_web_cdp_captures_a_network_request(tmp_path: Path) -> None:
                     f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
                 )
             try:
-                # The fetch is async; poll until the recorder has the response.
-                entry = None
-                deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline:
-                    listed = service.web_network_list(session_id)
-                    assert listed.ok, listed.error
-                    for candidate in listed.data["requests"]:
-                        url = str(candidate.get("url"))
-                        if "/data.json" in url and candidate.get("status") is not None:
-                            entry = candidate
-                            break
-                    if entry is not None:
-                        break
-                    time.sleep(0.1)
-                assert entry is not None, "recorder never saw the same-origin fetch"
+                # The text fetch is recorded with its real status and read back
+                # verbatim (same-origin keeps the body readable over CDP).
+                entry = _await_recorded(service, session_id, "/data.json")
+                assert entry is not None, "recorder never saw the JSON fetch"
                 assert entry["method"] == "GET"
                 assert entry["status"] == 200
                 assert "application/json" in str(entry["mimeType"])
@@ -331,6 +341,20 @@ def test_web_cdp_captures_a_network_request(tmp_path: Path) -> None:
                 assert got.data["base64_encoded"] is False
                 assert got.data["body_truncated"] is False
                 assert "body_error" not in got.data
+
+                # A binary body comes back base64 from CDP; web.network.get must
+                # decode it, spill the real bytes (not the base64 text), and
+                # report body_bytes -- never inline it as a string.
+                blob = _await_recorded(service, session_id, "/blob.bin")
+                assert blob is not None, "recorder never saw the binary fetch"
+                blob_got = service.web_network_get(session_id, str(blob["requestId"]))
+                assert blob_got.ok, blob_got.error
+                assert blob_got.data["base64_encoded"] is True
+                assert blob_got.data["body"] == ""
+                assert blob_got.data["body_bytes"] == len(_NET_BLOB)
+                spilled = Path(blob_got.data["body_path"])
+                assert spilled.is_file()
+                assert spilled.read_bytes() == _NET_BLOB
 
                 # An id the recorder never saw is a structured not_found, not a crash.
                 missing = service.web_network_get(session_id, "no-such-request")
