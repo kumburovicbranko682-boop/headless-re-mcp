@@ -66,3 +66,50 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+    assert "signature_scan_failed" in doc
+
+
+class _NoSignatureApk:
+    """androguard raising while reading v1 signatures on a hostile sample."""
+
+    def get_signature_names(self) -> list[str]:
+        raise ValueError("broken META-INF")
+
+    def get_certificates(self) -> list[_Cert]:
+        return []
+
+
+def test_apk_certificates_reports_v1_scan_failure_as_unknown_not_unsigned() -> None:
+    """A v1 signature scan that threw must not read as a clean 'unsigned'.
+
+    get_signature_names can raise on a malformed APK, and swallowing that to []
+    made v1_signed come back False -- a definite 'not v1-signed' for what was
+    really an unread signature. On a sample under analysis that is the wrong
+    call, so the failure is surfaced and v1_signed is null (unknown).
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _NoSignatureApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+
+    assert payload["v1_signed"] is None
+    assert payload["signature_scan_failed"] is True
+    assert "broken META-INF" in payload["error"]
+
+
+def test_apk_certificates_unsigned_stays_false_without_a_scan_failure() -> None:
+    """A genuinely empty signature list is still a definite v1_signed False."""
+
+    class _UnsignedApk:
+        def get_signature_names(self) -> list[str]:
+            return []
+
+        def get_certificates(self) -> list[_Cert]:
+            return []
+
+    client = ApkClient()
+    client._apk = lambda _path: _UnsignedApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+
+    assert payload["v1_signed"] is False
+    assert "signature_scan_failed" not in payload
+    assert "error" not in payload

@@ -134,6 +134,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`apk.certificates` 把「v1 签名扫描失败」当成「未签名」）
+
+- `apk.certificates` 读 v1 签名时 `apk.get_signature_names()` 抛异常（畸形 APK / 损坏的 META-INF，恰是待
+  分析样本的常态）会被吞成 `names=[]`，于是 `v1_signed=bool(names)` 回一个确定的 `False`——把「没读出来」
+  说成「确定没有 v1 签名」。对一个正在逆向的可疑样本，这两者是相反结论，而确定的 `False` 是安全判断里最
+  不该给出的那个。现在扫描抛错时 `v1_signed` 回 `null`（未知）并置 `signature_scan_failed=True`、附 `error`
+  说明原因，真正的空签名列表仍是确定的 `v1_signed=False`（不带失败标记）。`apk.certificates` 工具文档补上
+  该三态语义。补回归测试钉住：`get_signature_names` 抛错时 `v1_signed=None`、`signature_scan_failed=True`
+  且 `error` 含原始信息；真正未签名仍为 `False` 且不带失败标记。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
