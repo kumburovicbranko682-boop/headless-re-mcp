@@ -22,15 +22,18 @@ import pytest
 
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 
-_SOURCE = """
+_STRING_MARKER = "r2-elf-gate-marker"
+
+_SOURCE = f"""
 #include <stdio.h>
-int helper(int x) { return x * 3 + 1; }
-int compute(int n) {
+const char *BANNER = "{_STRING_MARKER}";
+int helper(int x) {{ return x * 3 + 1; }}
+int compute(int n) {{
     int total = 0;
     for (int i = 0; i < n; i++) total += helper(i);
     return total;
-}
-int main(void) { printf("%d\\n", compute(7)); return 0; }
+}}
+int main(void) {{ printf("%s %d\\n", BANNER, compute(7)); return 0; }}
 """
 
 
@@ -127,6 +130,51 @@ def test_r2_disasm_and_xrefs_run_against_a_real_function(tmp_path: Path) -> None
         edge = row.get("address")
         if edge is not None:
             assert isinstance(edge, dict) and isinstance(edge.get("va"), int)
+
+
+@pytest.mark.integration
+def test_r2_strings_imports_exports_map_on_a_real_elf(tmp_path: Path) -> None:
+    """The listing side of the r2 line (izj/iij/iEj) had no live ELF coverage.
+
+    r2_strings/imports/exports are separate service tools; the functions gate
+    only drives aflj. Prove each returns parsed items with the unified Address
+    mapping on a real binary: a known string we compiled in, a libc import, and
+    one of our own functions as an export.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    strings = client.run(binary, ["izj"], timeout=60.0)
+    assert strings["parsed"] is True
+    marker = next(
+        (s for s in strings["items"] if _STRING_MARKER in str(s.get("string", ""))),
+        None,
+    )
+    assert marker is not None, (
+        f"compiled-in string missing: {[s.get('string') for s in strings['items']]}"
+    )
+    assert isinstance(marker.get("address"), dict)
+    assert isinstance(marker["address"].get("va"), int)
+
+    imports = client.run(binary, ["iij"], timeout=60.0)
+    assert imports["parsed"] is True
+    assert imports.get("count", 0) >= 1
+    for item in imports["items"]:
+        assert isinstance(item.get("address"), dict), "import lacks a structured Address"
+    assert _named(imports["items"], "__libc_start_main") is not None, (
+        f"expected a libc import: {[i.get('name') for i in imports['items']]}"
+    )
+
+    exports = client.run(binary, ["iEj"], timeout=60.0)
+    assert exports["parsed"] is True
+    ours = _named(exports["items"], "main") or _named(exports["items"], "compute")
+    assert ours is not None, (
+        f"none of our functions were exported: {[e.get('name') for e in exports['items']]}"
+    )
+    assert isinstance(ours.get("address"), dict)
+    assert isinstance(ours["address"].get("va"), int)
 
 
 @pytest.mark.integration
