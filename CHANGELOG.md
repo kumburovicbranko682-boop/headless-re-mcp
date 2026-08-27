@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（run 事件 SSE 可能在终态事件送达前就结束，前端看到一个「永不收尾」的 run）
+
+- `/api/agent/runs/{id}/events` 的流以前是「读到 run 状态为终态且本轮没有新事件」就 `break`。可
+  orchestrator 把「状态翻成终态」与「追加终态事件（`run.completed`/`failed`/`cancelled`/
+  `rejected`）」写在两个独立事务里：读到状态已终态、但那条终态事件还没提交可见，恰好是完全可能的
+  中间态。此时流一 `break`，客户端就再也收不到这条终态事件——UI 会停在一个看似永不收尾的 run 上
+  （要等浏览器 EventSource 断线重连、按 `id:` 游标重放才补得回来）。现改为「流到终态事件真正送出
+  为止」才结束：只有 yield 过 `run.*` 终态事件才停；并保留一个有界兜底——状态已终态却迟迟没有终态
+  事件时，空轮询到上限也会停（避免某个没记终态事件的 run 把连接一直挂住，客户端可从
+  `/events/history` 对账）。顺带把这段循环抽成模块级 `_run_event_stream`（sleep 可注入），新增
+  确定性回归：脚本化 store 先让 run 读到 COMPLETED、事件晚两轮才出现，钉住这条终态事件必须被送达。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

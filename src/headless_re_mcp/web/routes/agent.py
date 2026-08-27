@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,68 @@ from headless_re_mcp.tools.catalog import (
 )
 
 JsonObject = dict[str, Any]
+
+# A run's terminal event (run.completed / failed / cancelled / rejected) is the
+# one thing the client is waiting for. The orchestrator commits the status flip
+# and that event in separate transactions, so an event stream that stopped the
+# instant the run read terminal could end a beat before the event was visible
+# and never send it -- leaving the UI on a run that never finishes until the
+# browser reconnects. Stream until the terminal event itself has been delivered;
+# fall back to a bounded number of empty polls after the status turns terminal
+# so a run that somehow recorded no terminal event cannot hold the socket open
+# forever (the client then reconciles from /events/history).
+_TERMINAL_RUN_EVENTS = frozenset(
+    {"run.completed", "run.failed", "run.cancelled", "run.rejected"}
+)
+_TERMINAL_EVENT_GRACE_POLLS = 8
+
+
+async def _run_event_stream(
+    store: AgentStore,
+    run_id: str,
+    after: int,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    poll_interval_s: float = 0.25,
+) -> AsyncIterator[bytes]:
+    """Server-sent run events from ``after``, ending only once the run's terminal
+    event has been delivered (or, as a backstop, the status has been terminal for
+    a bounded stretch with no event forthcoming)."""
+    cursor = after
+    idle = 0
+    terminal_polls = 0
+    while True:
+        batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
+        saw_terminal_event = False
+        for event in batch:
+            cursor = event.seq
+            payload = json.dumps(
+                event.dump(), ensure_ascii=False, separators=(",", ":"), default=str
+            )
+            yield f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n".encode()
+            if event.type in _TERMINAL_RUN_EVENTS:
+                saw_terminal_event = True
+        if saw_terminal_event:
+            break
+        run = await asyncio.to_thread(store.get_run, run_id)
+        if run is None:
+            break
+        if run.status in TERMINAL_RUN_STATUSES:
+            if batch:
+                terminal_polls = 0
+            else:
+                terminal_polls += 1
+                if terminal_polls >= _TERMINAL_EVENT_GRACE_POLLS:
+                    break
+        elif not batch:
+            idle += 1
+            if idle >= 10:
+                heartbeat = json.dumps({"run_id": run_id, "after": cursor})
+                yield f"event: heartbeat\ndata: {heartbeat}\n\n".encode()
+                idle = 0
+        else:
+            idle = 0
+        await sleep(poll_interval_s)
 
 
 def _attach_scheduler_lifespan(app: FastAPI, scheduler: MissionScheduler) -> None:
@@ -371,32 +433,11 @@ def register_agent_routes(
         authorize(authorization)
         if await asyncio.to_thread(store.get_run, run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-
-        async def generate() -> AsyncIterator[bytes]:
-            cursor = after
-            idle = 0
-            while True:
-                batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
-                for event in batch:
-                    cursor = event.seq
-                    payload = json.dumps(event.dump(), ensure_ascii=False, separators=(",", ":"), default=str)
-                    yield f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n".encode()
-                run = await asyncio.to_thread(store.get_run, run_id)
-                if run is None:
-                    break
-                if run.status in TERMINAL_RUN_STATUSES and not batch:
-                    break
-                if not batch:
-                    idle += 1
-                    if idle >= 10:
-                        heartbeat = json.dumps({"run_id": run_id, "after": cursor})
-                        yield f"event: heartbeat\ndata: {heartbeat}\n\n".encode()
-                        idle = 0
-                else:
-                    idle = 0
-                await asyncio.sleep(0.25)
-
-        return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            _run_event_stream(store, run_id, after),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/agent/runs/{run_id}/events/history")
     def event_history(
