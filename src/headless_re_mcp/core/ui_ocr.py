@@ -187,23 +187,27 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    # The worker prints its result as the last line, but its stdout is not a
-    # guaranteed-clean JSON channel: WinRT/pythonnet startup, a runtime warning,
-    # or any imported library can emit a stray line that lands last. Every other
-    # failure in this function is a structured backend_error; an unguarded parse
-    # here would instead let a JSONDecodeError escape as internal_error and mint
-    # an incident for a backend that merely returned malformed output.
-    try:
-        payload = json.loads(lines_out[-1])
-    except json.JSONDecodeError as exc:
-        raise UiPidBoundaryError(
-            "backend_error",
-            "Windows OCR returned unparseable output",
-            stdout=(completed.stdout or "")[:200],
-        ) from exc
-    if not isinstance(payload, dict):
-        raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
-    return payload
+    # The worker prints its result as its last action, but the subprocess's
+    # stdout is not a guaranteed-clean JSON channel: WinRT/pythonnet and other
+    # native libraries can emit a stray line, and on Windows a COM/WinRT message
+    # at interpreter shutdown lands *after* that print, so the real result is no
+    # longer the final line. Scan from the end for the last JSON object -- the
+    # same lenient idiom the IDA gate uses (_last_json_line) -- so trailing noise
+    # cannot turn a successful OCR into a failure. A parse that yields no object
+    # at all is a structured backend_error like every other failure here, never
+    # a JSONDecodeError escaping as an internal_error incident.
+    for line in reversed(lines_out):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise UiPidBoundaryError(
+        "backend_error",
+        "Windows OCR returned no JSON object",
+        stdout=(completed.stdout or "")[:200],
+    )
 
 
 def ocr_bmp_tesseract(path: str | Path, *, tesseract: Path | None = None) -> JsonObject:
