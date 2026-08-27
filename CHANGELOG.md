@@ -698,6 +698,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
 - **全表面资源策略有界**：全部 265 个工具的 `resource_policy` 都有有限且为正的超时与为正的
   输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
+- **Ghidra `xrefs`/`decompile` 的畸形地址会先空跑一整趟 analyzeHeadless**。`analyzeHeadless`
+  是先把样本导入并完整分析（数分钟、一个 2 GB 的 JVM）之后，`ExportJson.py` 才去读地址参数；
+  空串或带空白/控制字符/引号的垃圾地址会 `getAddress` 解析成 null，于是整趟分析白跑、只换回空
+  结果——无人值守时一个手滑的地址就是被占住的一核，而不是一个错误。现在在启动导入前先规范化
+  地址 token（裸十六进制、`0x` 前缀、分段 `1234:5678`、命名 `ram:0x401000` 皆放行；空白、控制
+  字节与引号拒绝并回 `invalid_params`），畸形地址在微秒级被拒，不再触发那趟导入。
 - **ScyllaHide 画像映射纯函数直测**：别名/节名规范化与其 fail-closed 拒绝(空串或未知名会连
   同白名单一起报出)、3 字符短 token(`vmp`/`tmd`)只按词边界匹配以免命中别的词内部、非壳类
   category 被忽略、更长的检测 token 胜出、按架构的白名单与 section 往返(armadillo 仅 x86)、

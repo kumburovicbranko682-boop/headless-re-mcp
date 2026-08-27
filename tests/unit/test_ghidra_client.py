@@ -239,6 +239,67 @@ def test_ghidra_refuses_an_oversized_export_json(
     assert caught.value.code == "too_large"
 
 
+def _address_call(
+    client: ghidra_client.GhidraClient,
+    mode: str,
+    binary: Path,
+    project: Path,
+    address: str,
+) -> dict[str, Any]:
+    if mode == "xrefs":
+        return client.xrefs(binary, project, address, limit=8)
+    return client.decompile(binary, project, address)
+
+
+@pytest.mark.parametrize("mode", ["xrefs", "decompile"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "",
+        "   ",
+        "0x10\n00",
+        "dead beef",
+        "0x1000; rm -rf /",
+        "'0x1000'",
+        "x" * 200,
+    ],
+)
+def test_ghidra_rejects_a_junk_address_before_a_headless_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, address: str
+) -> None:
+    """A malformed address must fail in microseconds, not after a full import.
+
+    analyzeHeadless imports and analyses the binary before ExportJson.py ever
+    reads the address, so a blank or junk value used to spend that whole minutes-
+    long pass to return nothing. The guard rejects it before run_bounded is ever
+    reached -- here, calls stays empty.
+    """
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        _address_call(client, mode, _binary(tmp_path), tmp_path / "project", address)
+
+    assert caught.value.code == "invalid_params"
+    assert calls == [], "no headless import should run for a rejected address"
+
+
+@pytest.mark.parametrize("mode", ["xrefs", "decompile"])
+@pytest.mark.parametrize("address", ["0x401000", "401000", "ram:0x401000", "1234:5678"])
+def test_ghidra_accepts_a_valid_address_and_passes_it_to_the_export_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, address: str
+) -> None:
+    """Bare hex, an 0x prefix, a named space and a segmented pair all still run."""
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+
+    result = _address_call(client, mode, _binary(tmp_path), tmp_path / "project", address)
+
+    assert len(calls) == 1
+    assert address in calls[0], "the validated address must reach the postScript argv"
+    assert result["export_path"]
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [
