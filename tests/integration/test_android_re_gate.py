@@ -50,11 +50,16 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # androguard opens a real APK. The synthetic archive is a valid zip with
+        # a deliberately invalid AndroidManifest.xml, and androguard's APK
+        # constructor is lenient -- it returns an object and only the manifest
+        # getters fail. That malformed input must read as a structured code, not
+        # an internal_error incident: backend_error when androguard is installed,
+        # capability_unavailable when it is not. Never a bare crash.
         opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        assert opened.ok is False
+        assert opened.error is not None
+        assert opened.error.code in {"backend_error", "capability_unavailable"}
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()

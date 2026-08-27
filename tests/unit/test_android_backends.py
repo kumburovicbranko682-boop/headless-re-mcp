@@ -406,6 +406,49 @@ class TestApkRequiredArgsAreCheckedBeforeParsing:
         assert info.value.code == "capability_unavailable"
 
 
+class TestApkMalformedInputIsStructured:
+    """A malformed-but-openable APK reads as backend_error, never internal_error.
+
+    androguard's ``APK`` constructor is lenient: on a file whose
+    AndroidManifest.xml is not valid AXML it logs the problem and still returns
+    an object, so the manifest getters are what fail -- ``get_package`` raises
+    ``KeyError``. A malformed APK is hostile input, not a server defect, so every
+    manifest-level read must surface a structured ``ApkError(backend_error)``
+    rather than letting a raw exception escape (which the service maps to an
+    ``internal_error`` incident). androguard must be present to reach the getters
+    at all, so this skips rather than passes when it is absent (skip != pass).
+    """
+
+    def test_open_on_a_bad_manifest_is_backend_error(self, tmp_path: Path) -> None:
+        pytest.importorskip("androguard")
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        apk = _apk(tmp_path / "app.apk")
+        client = ApkClient()
+        with pytest.raises(ApkError) as info:
+            client.open(apk)
+        assert info.value.code == "backend_error"
+
+    @pytest.mark.parametrize(
+        "op",
+        ["open", "manifest", "permissions", "certificates", "components", "native_libs"],
+    )
+    def test_manifest_reads_never_raise_unstructured(self, tmp_path: Path, op: str) -> None:
+        pytest.importorskip("androguard")
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        apk = _apk(tmp_path / "app.apk")
+        client = ApkClient()
+        # A raw (non-ApkError) exception would not be caught here and would fail
+        # the test loudly -- which is exactly the internal_error leak we forbid.
+        try:
+            result = getattr(client, op)(apk)
+        except ApkError as exc:
+            assert exc.code == "backend_error"
+        else:
+            assert isinstance(result, dict)
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
