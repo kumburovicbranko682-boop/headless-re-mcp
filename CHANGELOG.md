@@ -629,6 +629,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Scylla 探针超时仍报 READY**。GUI 起得来但从不退出，doctor 会把可选工具
   标成可用。超时现在是 `timeout_after_start` 且 `ok=False`。
 - **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
+- **`frida.spawn` 在会话关闭到一半时仍报成功并写回 pid**。`frida.device.connect` 与
+  `frida.server.ensure` 触碰设备后都会复查会话状态，唯独 spawn 少了这一步：一次 spawn 中途
+  关闭会话，仍会把刚 spawn 出来的 pid 写进（已关闭的）会话元数据并返回 ok=True，让一个已死
+  会话被记成持有一个活着的设备进程。现在 spawn/resume 之后也复查状态，关闭时改报 invalid_state
+  且不落 `frida_authorized`（设备侧进程无论如何已经起来，这里只保证不把它记到死会话名下）。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
@@ -862,6 +867,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.server.ensure` 在 su 命令返回后就报 `running: True`**，并不再看 ps。启动器
   成功而 frida-server 立刻退出时，调用方会以为钩子已经能连上。启动后再查一次进程表，
   看不见就如实回 `running: False`。
+- **`frida.server.ensure` 把 frida-server 绑到 `0.0.0.0`**，于是每次启动都把这条 root 级
+  控制通道（无鉴权）暴露给设备能路由到的所有接口——同网段任何主机都能连上做插桩。改为
+  默认绑回环 `127.0.0.1`：USB/adb 传输与 `adb forward` 照常可达（本机模拟器、USB 真机就是
+  这么驱动的），仅靠网络路由到设备的主机则连不上。确需按设备 IP 远程连接时显式传
+  `bind_host="0.0.0.0"` 才放开。该值会进入 `su -c '…'` 命令行，写进去前按严格主机字符集
+  校验，带冒号、空格或 shell 元字符一律拒绝而不是照跑。
 - **并发的 `proxy.start` / `web.open` 会各起一份实例**。检查「已经有了」和写入跟踪表
   不在同一把锁里，两个工作线程会各自绑定端口或拉起 Chromium，后写入的那份把先起来的
   弄丢，泄漏到进程退出。现在先在表里占位再启动，失败或中途被关则清掉占位并回收。
