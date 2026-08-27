@@ -186,6 +186,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 修复（`apk.decompile` 同名类含糊不再伪装成「类不存在」）
+
+- `apk.decompile` 先把 `class_name` 映射成精确源码路径,路径不存在时退回按简单名(`Widget` 而非
+  `com.a.Widget`)在反编译树里搜。此前唯一命中会采用、而**多处命中却和「真不存在」一样抛
+  `not_found`**——于是调用者按简单名点名一个在多个包下都被反编译出来的类时,被告知该类不存在,而它其实
+  被反编译了不止一次。这与相邻的「同名类返回错文件」修复(要求唯一命中)一脉相承:那次修好了「取树上第一个」,
+  这次修好了剩下的多命中分支。
+- 现在多命中报 `invalid_params`(含糊),回包带 `candidates`(相对 `sources` 的候选路径,排序、以
+  `_MAX_AMBIGUOUS_CANDIDATES` 为上限)与 `candidate_count`(真实总数,即便列表被截也能看出上限被触到),
+  调用者据此改用带包名的全限定名重发,而不是把它读成「类不存在」。真正缺失的类仍照旧抛 `not_found`,
+  唯一命中的退回路径保持不变。
+- 新增回归:多命中报 `invalid_params` 且候选齐备、真缺失仍报 `not_found`(不带 `candidates`)、
+  唯一命中仍取该文件、候选列表受 `_MAX_AMBIGUOUS_CANDIDATES` 约束而 `candidate_count` 报真实总数,
+  以及 `apk.decompile` 的描述点名 `ambiguous` / `candidates`。
+
 ### 修复（frida 设备解析卡死不再永占 worker）
 
 - **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
