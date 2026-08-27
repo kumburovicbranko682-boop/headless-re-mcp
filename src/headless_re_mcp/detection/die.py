@@ -294,6 +294,11 @@ def _capture_process(
             "diec process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes diec its own group leader, so the group id
+    # is its pid. Used to find and kill a wrapper's child reparented to init
+    # after diec exits, when the parent/child walk sees nothing.
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -355,6 +360,22 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # diec ended on its own; make sure it left nothing behind. A
+                # wrapper's child orphaned to init keeps the session group diec
+                # led but loses its parent link, so the shared reaper
+                # enumerates that group after the readers are given a chance to
+                # finish. A plain diec exits childless and this does nothing.
+                from headless_re_mcp.core.process_tree import reap_after_clean_exit
+
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
+                reap_after_clean_exit(
+                    process,
+                    group_id=group_id,
+                    readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
+                    terminate=_terminate_process,
+                )
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
         # truncate a short-lived process's final JSON bytes.

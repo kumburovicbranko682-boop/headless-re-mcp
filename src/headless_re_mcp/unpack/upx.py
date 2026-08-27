@@ -256,6 +256,11 @@ def _capture_process(
             "upx process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes upx its own group leader, so the group id
+    # is its pid. Used to find and kill a wrapper's child reparented to init
+    # after upx exits, when the parent/child walk sees nothing.
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -277,6 +282,7 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
+    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -292,11 +298,28 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
+            exited = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    if exited:
+        # upx ended on its own; make sure it left nothing behind. A wrapper's
+        # child orphaned to init keeps the session group upx led but loses its
+        # parent link, so the shared reaper enumerates that group. A plain upx
+        # exits childless and this does nothing. On timeout/cancel/limit the
+        # kill above already reached the group while upx still led it.
+        from headless_re_mcp.core.process_tree import reap_after_clean_exit
+
+        if reap_after_clean_exit(
+            process,
+            group_id=group_id,
+            readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
+            terminate=_terminate_process,
+        ):
+            stdout_thread.join(timeout=2.0)
+            stderr_thread.join(timeout=2.0)
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

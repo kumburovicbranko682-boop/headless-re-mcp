@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+from collections.abc import Callable
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -237,6 +238,50 @@ def terminate_process_group(pgid: int) -> list[int]:
             _kill_pid(pid)
             killed.append(pid)
     return killed
+
+
+def reap_after_clean_exit(
+    process: Any,
+    *,
+    group_id: int,
+    readers_blocked: bool,
+    terminate: Callable[[Any], None],
+) -> bool:
+    """After a bounded CLI tool exits on its own, kill anything it orphaned.
+
+    A tool given as an operator-supplied path is often a wrapper (``dotnet``, a
+    JVM launcher, a shell script) that starts a worker and returns. Killing the
+    wrapper on timeout already reaps that worker, but a *clean* exit takes no
+    kill path -- so a worker the wrapper left running keeps a core and a lock on
+    the sample after the call has returned. Timeouts were handled; the quiet
+    success path was not.
+
+    On Windows the Toolhelp descendant walk still sees that worker. On POSIX a
+    worker the wrapper orphaned to init loses its parent link but keeps the
+    session group the wrapper led (the tool is started with
+    ``start_new_session``), so enumerate that group and kill each survivor by
+    its own recorded group -- never by a bare ``killpg`` on a leader pid that
+    may already be reused. ``readers_blocked`` forces cleanup when a reader is
+    still draining after its join, which means a survivor is holding a pipe.
+
+    Returns True when it had to intervene. A tool that exits with no children
+    left behind -- the normal case -- enumerates an empty group and does
+    nothing, so this is free on every well-behaved run.
+    """
+    if os.name == "nt":
+        pid = getattr(process, "pid", None)
+        leftover = readers_blocked or bool(
+            isinstance(pid, int) and pid > 0 and collect_descendants(int(pid))
+        )
+        if leftover:
+            terminate(process)
+        return leftover
+    leftover = readers_blocked or bool(group_id and collect_process_group(group_id))
+    if leftover:
+        terminate(process)
+        if group_id:
+            terminate_process_group(group_id)
+    return leftover
 
 
 def _kill_own_process_group(pid: int) -> list[int]:

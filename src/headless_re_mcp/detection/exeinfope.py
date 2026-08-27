@@ -396,6 +396,11 @@ def _capture_process(
             "Exeinfo PE process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes the tool its own group leader, so the
+    # group id is its pid. Used to find and kill a wrapper's child reparented to
+    # init after the tool exits, when the parent/child walk sees nothing.
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+
     observed: set[str] = set()
     stop_monitor = Event()
     observer = window_observer or describe_process_windows
@@ -468,6 +473,21 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # Exeinfo PE ended on its own; make sure it left nothing behind.
+                # A wrapper's child orphaned to init keeps the session group the
+                # tool led but loses its parent link, so the shared reaper
+                # enumerates that group. A childless run does nothing here.
+                from headless_re_mcp.core.process_tree import reap_after_clean_exit
+
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
+                reap_after_clean_exit(
+                    process,
+                    group_id=group_id,
+                    readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
+                    terminate=_terminate_process,
+                )
         stop_monitor.set()
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
