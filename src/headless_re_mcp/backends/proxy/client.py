@@ -13,6 +13,7 @@ import concurrent.futures
 import contextlib
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -47,6 +48,14 @@ _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
+# A bind host is an IPv4 literal or a simple hostname. This deliberately mirrors
+# the frida-server bind_host set: it rejects the empty string (which asyncio
+# binds to every interface, the same silent exposure as 0.0.0.0) and anything
+# unresolvable, so a bad host is a precise invalid_params instead of tripping
+# the bind probe and being misreported as "port already in use". IPv6 literals
+# are out of scope: the endpoint is formatted as host:port without brackets, and
+# an AF_INET probe could never bind one, so they already failed here.
+_LISTEN_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 
 
 class ProxyError(RuntimeError):
@@ -566,6 +575,13 @@ class ProxyBackend:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        # Validate the bind host before the port probe. An unbindable host makes
+        # _port_bindable return False, which start() would otherwise report as
+        # "port already in use"; the empty string binds every interface. Reject
+        # both here so a bad host is a precise invalid_params, and a non-loopback
+        # host is at least a deliberate, well-formed choice.
+        if not isinstance(host, str) or not _LISTEN_HOST_RE.match(host):
+            raise ProxyError("invalid_params", "invalid host", host=host)
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")

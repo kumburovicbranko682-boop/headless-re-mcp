@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy.start 校验绑定 host，坏 host 不再谎报端口占用）
+
+- `proxy.start(host=…)` 是暴露给模型的参数，而 agent / OpenAI 桥这两条链路直接用模型给的
+  参数调用 handler、不走 MCP 的 schema 校验，`host` 却原样传给 mitmproxy。两个后果：一是
+  无法解析的 host 会让绑定探针 `_port_bindable` 里的 `socket.bind` 抛错、被吞成「不可绑定」，
+  于是 `start()` 反过来去怪一个根本没人占的端口（`port is already in use; stop the existing
+  listener first`）——把「host 无效」谎报成「端口占用」；二是空字符串会像 `0.0.0.0` 一样被
+  asyncio 绑到所有网卡，却读起来像没设的默认值，把 MITM 抓包代理静默暴露到网络。现在在后端
+  边界用严格集合（IPv4 字面量或简单主机名，和 frida-server `bind_host` 同一套）先校验 `host`：
+  坏 host 与空串一律精确报 `invalid_params: invalid host`，`127.0.0.1` 默认与显式 `0.0.0.0`
+  opt-in 暴露都保留；`proxy.start` 工具描述补上「默认只绑本机、`0.0.0.0` 才对外暴露」的说明，
+  与 frida-server 的措辞一致。新增 `tests/unit/test_proxy_start_host_validation.py` 钉住坏
+  host/空串/带 shell 元字符/带端口/IPv6 一律 `invalid_params`（且不再是端口占用），并用打桩的
+  实例 start 证明合法 host 能越过校验、无需真的拉起 mitmproxy。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

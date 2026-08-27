@@ -29,6 +29,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Start an HTTP(S) interception proxy bound to this session.
 
+        host is the interface the proxy listens on. It defaults to 127.0.0.1,
+        so only clients on this machine (or an ssh/adb forward) can route
+        through it. Pass 0.0.0.0 only to deliberately expose the interception
+        proxy on the network by this host's IP. host must be an IPv4 address or
+        a simple hostname; an invalid one is rejected rather than misreported
+        as a port conflict.
+
         Answers with running, host, port and endpoint. There is no ok,
         started or url field.
         """
