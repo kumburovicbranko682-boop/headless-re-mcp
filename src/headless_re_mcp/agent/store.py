@@ -929,35 +929,35 @@ class AgentStore:
             (thread_id, *done, keep),
         )
 
-    def _mark_runs_cancel_requested(
-        self,
-        con: sqlite3.Connection,
-        *,
-        thread_id: str | None = None,
-        run_id: str | None = None,
-    ) -> None:
+    def _mark_run_cancel_requested(self, con: sqlite3.Connection, run_id: str) -> None:
+        """Flag one non-terminal run for cancellation; terminal runs are left."""
         now = utc_now()
         done = tuple(status.value for status in TERMINAL_RUN_STATUSES)
         placeholders = ",".join("?" * len(done))
-        if thread_id is not None:
-            con.execute(
-                f"UPDATE runs SET cancel_requested=1,updated_at=? "
-                f"WHERE thread_id=? AND status NOT IN ({placeholders})",
-                (now, thread_id, *done),
-            )
-        if run_id is not None:
-            con.execute(
-                f"UPDATE runs SET cancel_requested=1,updated_at=? "
-                f"WHERE id=? AND status NOT IN ({placeholders})",
-                (now, run_id, *done),
-            )
+        con.execute(
+            f"UPDATE runs SET cancel_requested=1,updated_at=? "
+            f"WHERE id=? AND status NOT IN ({placeholders})",
+            (now, run_id, *done),
+        )
 
     def cancel_mission(self, mission_id: str) -> AgentMission:
-        """Stop the objective and every run still carrying it out.
+        """Stop the objective and the one run still carrying it out.
 
         Status alone is not enough: the orchestrator keys off
         ``cancel_requested``, and a PENDING row that is only flipped after a
         claim would let the next tick start another run.
+
+        Scoped to the mission's own ``last_run_id``, not every run on its
+        thread. A thread is not owned by one mission: the HTTP route accepts an
+        explicit ``thread_id``, so two missions can share a thread, and an
+        interactive run can be started directly on the same thread as a mission.
+        A thread-wide sweep flipped ``cancel_requested`` on those unrelated runs
+        too, cancelling a second mission's work or a user's live chat turn when
+        only the first mission was cancelled. The scheduler drives a mission's
+        runs strictly one at a time and records the active one in
+        ``last_run_id``, so that single run is the only one this cancellation
+        can legitimately reach; a not-yet-recorded run started microseconds
+        earlier is stopped by the scheduler's own post-start cancel check.
         """
         with self.transaction() as con:
             row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
@@ -970,11 +970,8 @@ class AgentStore:
                     "UPDATE missions SET status=?,error=?,updated_at=? WHERE id=?",
                     (MissionStatus.CANCELLED.value, "cancelled", now, mission_id),
                 )
-                self._mark_runs_cancel_requested(
-                    con,
-                    thread_id=str(row["thread_id"]),
-                    run_id=str(row["last_run_id"]) if row["last_run_id"] else None,
-                )
+                if row["last_run_id"]:
+                    self._mark_run_cancel_requested(con, str(row["last_run_id"]))
                 self._trim_terminal_missions(con, str(row["thread_id"]))
                 self._maybe_trim_finished_threads(con)
         mission = self.get_mission(mission_id)
