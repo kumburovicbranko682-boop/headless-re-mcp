@@ -298,6 +298,7 @@ jobs:
             tests/integration/test_m11_r2_exports_gate.py \
             tests/integration/test_m11_r2_xrefs_gate.py \
             tests/integration/test_m11_r2_stripped_xrefs_from_gate.py \
+            tests/integration/test_m11_r2_macho_fat_slice_select_gate.py \
             tests/integration/test_m11_elf_session_r2_e2e_gate.py \
             tests/integration/test_m11_elf_session_arm_arch_label_gate.py \
             tests/integration/test_m11_r2_arch_gate.py \
