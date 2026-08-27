@@ -11,6 +11,7 @@ every offset below is checkable by hand against ECMA-335 II.22/II.24.
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from headless_re_mcp.dotnet.metadata_enum import (
     _iter_strings_heap,
     _load_metadata_context,
     _MetaCtx,
+    _read_method_body,
     _string_at,
     _table_row_size,
     disassemble_method_il,
@@ -126,6 +128,7 @@ def _write_image(
     meta: bytes,
     *,
     body: bytes | None = None,
+    body_at: int = 0x1000,
     cor_dir: tuple[int, int] = (0x1100, 72),
     cor_meta_size: int | None = None,
 ) -> None:
@@ -161,7 +164,7 @@ def _write_image(
     image[0x400 : 0x400 + len(meta)] = meta
     if body is None:
         body = _tiny_body()
-    image[0x1000 : 0x1000 + len(body)] = body
+    image[body_at : body_at + len(body)] = body
     path.write_bytes(image)
 
 
@@ -172,10 +175,11 @@ def _write_assembly(
     method_rva: int = _METHOD_RVA,
     typedef_declared: int | None = None,
     body: bytes | None = None,
+    body_at: int = 0x1000,
 ) -> None:
     strings, at = _strings_heap()
     tables = _tables_stream(at, wide=wide, method_rva=method_rva, typedef_declared=typedef_declared)
-    _write_image(path, _metadata_root(tables, strings), body=body)
+    _write_image(path, _metadata_root(tables, strings), body=body, body_at=body_at)
 
 
 @pytest.fixture
@@ -362,6 +366,27 @@ def test_an_rva_outside_every_section_is_reported_not_mapped(tmp_path: Path) -> 
     _write_assembly(binary, method_rva=0x9000)
     with pytest.raises(DotnetInspectError, match="not mappable"):
         disassemble_method_il(binary, 0x06000001)
+
+
+def test_a_fat_header_cut_off_by_the_file_end_is_refused(tmp_path: Path) -> None:
+    # The body sits in the last four bytes of .text's raw data, so the RVA
+    # itself maps (size=1) but the twelve-byte fat header runs past the file.
+    binary = tmp_path / "fat_at_eof.exe"
+    _write_assembly(binary, method_rva=0x1FFC, body=b"\x03\x30\x08\x00", body_at=0x11FC)
+    with pytest.raises(DotnetInspectError, match="fat method header truncated"):
+        disassemble_method_il(binary, 0x06000001)
+
+
+def test_a_body_offset_beyond_the_loaded_bytes_is_refused(tmp_path: Path) -> None:
+    # scan_pe rejects files whose section raw data is truncated, so this guard
+    # cannot fire through the public path; it is defense in depth for a
+    # context whose bytes end before the mapped offset, checked directly.
+    binary = tmp_path / "surgery.exe"
+    _write_assembly(binary)
+    ctx = _load_metadata_context(binary)
+    cut = dataclasses.replace(ctx, pe_data=ctx.pe_data[:0x800])
+    with pytest.raises(DotnetInspectError, match="out of file"):
+        _read_method_body(cut, _METHOD_RVA, max_bytes=64)
 
 
 # ---------------------------------------------------------------------------
