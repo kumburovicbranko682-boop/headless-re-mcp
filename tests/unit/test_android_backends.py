@@ -386,6 +386,87 @@ def _axml_uses_library_manifest(
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
+def _axml_component_manifest(
+    components: list[tuple[str, str | None, bool | None, bool]],
+    *,
+    package: str = "com.example.comp",
+) -> bytes:
+    """A compiled manifest with an <application> of the given components.
+
+    Each component is ``(tag, name, exported, has_filter)`` where ``tag`` is
+    one of activity/activity-alias/service/receiver/provider, ``name`` the
+    android:name (None emits the component with no name at all), ``exported``
+    the explicit android:exported flag (None leaves it out), and
+    ``has_filter`` whether the component carries an <intent-filter>. Emits a
+    UTF-8 AXML the stdlib reader walks exactly as a real compiled manifest.
+    """
+    order: list[str] = []
+    index: dict[str, int] = {}
+
+    def intern(text: str) -> int:
+        if text not in index:
+            index[text] = len(order)
+            order.append(text)
+        return index[text]
+
+    for fixed in ("name", "exported", "package", "manifest", "application", "intent-filter"):
+        intern(fixed)
+    intern(package)
+    for tag, name, _exported, _has_filter in components:
+        intern(tag)
+        if name is not None:
+            intern(name)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for name_index, data_type, value in attrs:
+            raw = value if data_type == 0x03 else -1
+            body += struct.pack("<iiiHBBI", -1, name_index, raw, 8, 0, data_type, value)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    body = bytearray()
+    body += start(intern("manifest"), [(intern("package"), 0x03, intern(package))])
+    body += start(intern("application"), [])
+    for tag, name, exported, has_filter in components:
+        attrs: list[tuple[int, int, int]] = []
+        if name is not None:
+            attrs.append((intern("name"), 0x03, intern(name)))
+        if exported is not None:
+            attrs.append((intern("exported"), 0x12, 0xFFFFFFFF if exported else 0))
+        body += start(intern(tag), attrs)
+        if has_filter:
+            body += start(intern("intent-filter"), [])
+            body += end(intern("intent-filter"))
+        body += end(intern(tag))
+    body += end(intern("application"))
+    body += end(intern("manifest"))
+
+    data = bytearray()
+    offsets: list[int] = []
+    for text in order:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(order) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(order), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
 _MAIN = "android.intent.action.MAIN"
 _LAUNCHER = "android.intent.category.LAUNCHER"
 
@@ -428,6 +509,29 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["uses_libraries"] == [
             {"name": "org.apache.http.legacy", "required": True},
             {"name": "androidx.window.extensions", "required": False},
+        ]
+        # The exported attack surface, in declaration order: the launcher
+        # activity (exported implicitly through its MAIN/LAUNCHER filter), a
+        # service exported by an explicit true, and a provider exported
+        # explicitly -- the private receiver (explicit false, despite its
+        # intent-filter) is absent. The apktool/androguard gates cross-check
+        # this same set against their own decode of the manifest.
+        assert manifest["exported_components"] == [
+            {
+                "type": "activity",
+                "name": "com.example.headless.MainActivity",
+                "has_intent_filter": True,
+            },
+            {
+                "type": "service",
+                "name": "com.example.headless.ExportedService",
+                "has_intent_filter": False,
+            },
+            {
+                "type": "provider",
+                "name": "com.example.headless.SharedProvider",
+                "has_intent_filter": False,
+            },
         ]
 
     def test_reads_a_utf8_pool_and_resolves_stripped_names_by_resource_id(
@@ -606,6 +710,120 @@ class TestManifestFactsWithoutAndroguard:
             self._apk_with_manifest(tmp_path, "two.apk", manifest_bytes)
         )["apk"]["manifest"]
         assert manifest["launcher_activity"] == ".First"
+
+    def test_explicit_exported_true_is_reported_for_every_component_kind(
+        self, tmp_path: Path
+    ) -> None:
+        # android:exported="true" exports a component regardless of filters,
+        # and the reader carries each kind's own tag -- so a wrong tag or a
+        # dropped kind cannot pass.
+        manifest_bytes = _axml_component_manifest(
+            [
+                ("activity", ".A", True, False),
+                ("service", ".S", True, False),
+                ("receiver", ".R", True, False),
+                ("provider", ".P", True, False),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "exp.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == [
+            {"type": "activity", "name": ".A", "has_intent_filter": False},
+            {"type": "service", "name": ".S", "has_intent_filter": False},
+            {"type": "receiver", "name": ".R", "has_intent_filter": False},
+            {"type": "provider", "name": ".P", "has_intent_filter": False},
+        ]
+
+    def test_explicit_exported_false_closes_a_component_with_a_filter(
+        self, tmp_path: Path
+    ) -> None:
+        # The trap case: a component with an <intent-filter> but an explicit
+        # android:exported="false" is NOT reachable -- the explicit flag wins
+        # over the filter, so it must be absent from the surface.
+        manifest_bytes = _axml_component_manifest(
+            [("receiver", ".Guarded", False, True)]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "guarded.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == []
+
+    def test_an_intent_filter_exports_a_component_with_no_explicit_flag(
+        self, tmp_path: Path
+    ) -> None:
+        # No android:exported, but an <intent-filter>: the pre-Android-12
+        # implicit default makes it reachable, and the reader records that the
+        # export came with a filter.
+        manifest_bytes = _axml_component_manifest(
+            [("service", ".Listening", None, True)]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "implicit.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == [
+            {"type": "service", "name": ".Listening", "has_intent_filter": True}
+        ]
+
+    def test_a_component_with_no_flag_and_no_filter_is_private(
+        self, tmp_path: Path
+    ) -> None:
+        # The common default: neither android:exported nor an intent-filter
+        # means the component is internal, so it is not part of the surface.
+        manifest_bytes = _axml_component_manifest(
+            [("activity", ".Internal", None, False)]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "internal.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == []
+
+    def test_exported_component_without_a_name_is_skipped(self, tmp_path: Path) -> None:
+        # A nameless component names nothing to attack; the reader must skip it
+        # rather than report an empty-named entry, while still reading the
+        # well-formed sibling that follows.
+        manifest_bytes = _axml_component_manifest(
+            [
+                ("activity", None, True, False),
+                ("service", ".Real", True, False),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "nameless-comp.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == [
+            {"type": "service", "name": ".Real", "has_intent_filter": False}
+        ]
+
+    def test_no_exported_components_reads_as_an_empty_list(self, tmp_path: Path) -> None:
+        # An app that exposes nothing reports an empty surface, not a missing
+        # fact -- "none exported" is a real, reassuring answer.
+        manifest_bytes = _axml_component_manifest(
+            [("activity", ".Private", False, False)]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "closed.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == []
+
+    def test_a_filter_binds_to_its_own_component_not_the_next(
+        self, tmp_path: Path
+    ) -> None:
+        # Two adjacent implicit components: the first carries the intent-filter,
+        # the second does not. The reader must attribute the filter to the
+        # first only -- so the second (no flag, no filter) stays private.
+        manifest_bytes = _axml_component_manifest(
+            [
+                ("activity", ".WithFilter", None, True),
+                ("activity", ".WithoutFilter", None, False),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "adjacent.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["exported_components"] == [
+            {"type": "activity", "name": ".WithFilter", "has_intent_filter": True}
+        ]
 
     def test_manifest_is_present_but_empty_on_a_garbage_axml(self, tmp_path: Path) -> None:
         # _apk() writes a RES_XML header with no real chunks behind it; the walk

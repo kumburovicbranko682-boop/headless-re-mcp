@@ -13,6 +13,7 @@ pass: it skips only when androguard is not installed, and says so.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,8 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minimal.apk"
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+_COMPONENT_TAGS = {"activity", "activity-alias", "service", "receiver", "provider"}
 
 
 def _androguard_available() -> bool:
@@ -30,6 +33,34 @@ def _androguard_available() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def _exported_from_manifest_xml(xml_text: str) -> set[tuple[str, str]]:
+    """The exported (type, name) set, computed off androguard's decoded XML.
+
+    androguard renders the binary AXML to text XML independently of the stdlib
+    reader; applying the export rule here (explicit android:exported wins,
+    otherwise an <intent-filter> exports) over that tree is a second, tool-based
+    decode of the same components -- so agreement proves the stdlib reader
+    walked the AXML the way androguard did, name for name and flag for flag.
+    """
+    root = ET.fromstring(xml_text)
+    app = root.find("application")
+    exported: set[tuple[str, str]] = set()
+    if app is None:
+        return exported
+    for element in list(app):
+        if element.tag not in _COMPONENT_TAGS:
+            continue
+        name = element.get(f"{{{_ANDROID_NS}}}name")
+        if not name:
+            continue
+        flag = element.get(f"{{{_ANDROID_NS}}}exported")
+        has_filter = element.find("intent-filter") is not None
+        is_exported = (flag == "true") if flag is not None else has_filter
+        if is_exported:
+            exported.add((element.tag, name))
+    return exported
 
 
 @pytest.mark.integration
@@ -100,6 +131,19 @@ def test_android_apk_static_happy_path() -> None:
         assert manifest.ok, manifest.error
         assert manifest.data["package"] == "com.example.headless"
         assert "android.permission.INTERNET" in manifest.data["manifest_xml"]
+        # The exported attack surface the stdlib reader found must be exactly
+        # the set derived from androguard's own decode of the manifest -- the
+        # implicit-via-filter launcher, the explicit-true service and provider,
+        # with the explicit-false receiver (despite its filter) excluded.
+        reader_surface = {
+            (comp["type"], comp["name"]) for comp in tool_free["exported_components"]
+        }
+        assert reader_surface == _exported_from_manifest_xml(manifest.data["manifest_xml"])
+        assert reader_surface == {
+            ("activity", "com.example.headless.MainActivity"),
+            ("service", "com.example.headless.ExportedService"),
+            ("provider", "com.example.headless.SharedProvider"),
+        }
 
         perms = service.apk_permissions(session_id)
         assert perms.ok, perms.error
@@ -108,6 +152,9 @@ def test_android_apk_static_happy_path() -> None:
         components = service.apk_components(session_id)
         assert components.ok, components.error
         assert components.data["activities"] == ["com.example.headless.MainActivity"]
+        assert components.data["services"] == ["com.example.headless.ExportedService"]
+        assert components.data["receivers"] == ["com.example.headless.PrivateReceiver"]
+        assert components.data["providers"] == ["com.example.headless.SharedProvider"]
         assert components.data["main_activity"] == "com.example.headless.MainActivity"
 
         certs = service.apk_certificates(session_id)

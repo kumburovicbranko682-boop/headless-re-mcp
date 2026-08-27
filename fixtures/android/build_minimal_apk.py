@@ -6,7 +6,9 @@ purpose-built encoders:
 
 * the manifest as compiled binary XML (AXML) -- enough for androguard to read
   the package, versions, SDK levels, one permission, two shared-library
-  dependencies (<uses-library>), and one launcher activity;
+  dependencies (<uses-library>), one launcher activity, and a mix of exported
+  and private components (an exported service, a private receiver, an exported
+  provider) that exercise every export rule;
 * ``classes.dex`` as a valid DEX carrying one class
   (``com.example.headless.Sample``) with one static method (``getSecret``) that
   returns the string ``flag{headless-re}`` -- enough for androguard's full
@@ -59,6 +61,17 @@ PERMISSION = "android.permission.INTERNET"
 # exercised and cross-checkable against apktool/androguard.
 USES_LIBRARY_REQUIRED = "org.apache.http.legacy"
 USES_LIBRARY_OPTIONAL = "androidx.window.extensions"
+# Extra components exercising every export rule the reader applies, so the
+# apktool/androguard gate cross-checks a non-trivial attack surface: a service
+# exported by an explicit android:exported="true" (no intent-filter), a
+# receiver an explicit "false" closes despite carrying an intent-filter, and a
+# provider exported explicitly. Together with the launcher activity (exported
+# implicitly through its MAIN/LAUNCHER filter) that is one of each kind.
+EXPORTED_SERVICE = "com.example.headless.ExportedService"
+PRIVATE_RECEIVER = "com.example.headless.PrivateReceiver"
+EXPORTED_PROVIDER = "com.example.headless.SharedProvider"
+PROVIDER_AUTHORITY = "com.example.headless.provider"
+CUSTOM_ACTION = "com.example.headless.action.PING"
 
 # Framework attribute resource ids for the android:* attributes we emit. The
 # string-pool entries for these names must lead the pool so their indices line
@@ -74,6 +87,8 @@ ATTR_RES_IDS = {
     "allowBackup": 0x01010280,
     "usesCleartextTraffic": 0x010104EC,
     "required": 0x0101028E,
+    "exported": 0x01010010,
+    "authorities": 0x01010018,
 }
 ATTR_NAMES = list(ATTR_RES_IDS)
 
@@ -198,6 +213,9 @@ def build_manifest() -> bytes:
         "uses-library",
         "application",
         "activity",
+        "service",
+        "receiver",
+        "provider",
         "intent-filter",
         "action",
         "category",
@@ -210,6 +228,11 @@ def build_manifest() -> bytes:
         "Headless",
         USES_LIBRARY_REQUIRED,
         USES_LIBRARY_OPTIONAL,
+        EXPORTED_SERVICE,
+        PRIVATE_RECEIVER,
+        EXPORTED_PROVIDER,
+        PROVIDER_AUTHORITY,
+        CUSTOM_ACTION,
     ):
         pool.add(value)
 
@@ -257,6 +280,30 @@ def build_manifest() -> bytes:
     body += _end_element(pool, "category")
     body += _end_element(pool, "intent-filter")
     body += _end_element(pool, "activity")
+    # A service exported by an explicit android:exported="true", no filter.
+    body += _start_element(pool, "service", [
+        Attr(ANDROID_NS, "name", EXPORTED_SERVICE),
+        Attr(ANDROID_NS, "exported", True, is_bool=True),
+    ])
+    body += _end_element(pool, "service")
+    # A receiver an explicit "false" keeps private even though it carries an
+    # intent-filter -- the case the reader must not mistake for exported.
+    body += _start_element(pool, "receiver", [
+        Attr(ANDROID_NS, "name", PRIVATE_RECEIVER),
+        Attr(ANDROID_NS, "exported", False, is_bool=True),
+    ])
+    body += _start_element(pool, "intent-filter", [])
+    body += _start_element(pool, "action", [Attr(ANDROID_NS, "name", CUSTOM_ACTION)])
+    body += _end_element(pool, "action")
+    body += _end_element(pool, "intent-filter")
+    body += _end_element(pool, "receiver")
+    # A content provider exported explicitly (authorities is required by aapt).
+    body += _start_element(pool, "provider", [
+        Attr(ANDROID_NS, "name", EXPORTED_PROVIDER),
+        Attr(ANDROID_NS, "authorities", PROVIDER_AUTHORITY),
+        Attr(ANDROID_NS, "exported", True, is_bool=True),
+    ])
+    body += _end_element(pool, "provider")
     body += _end_element(pool, "application")
     body += _end_element(pool, "manifest")
     body += _namespace(pool, RES_XML_END_NAMESPACE_TYPE)

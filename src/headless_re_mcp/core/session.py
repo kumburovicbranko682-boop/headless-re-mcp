@@ -642,6 +642,10 @@ _AXML_ATTR_BY_RES_ID = {
     # blocks install (default true) or is optional. Its id, so a stripped
     # required attribute still resolves alongside the library's name.
     0x0101028E: "required",
+    # android:exported on a component (activity/service/receiver/provider):
+    # whether another app can reach it -- the component's export status, read
+    # by id so it resolves even when aapt2 keeps only the resource map.
+    0x01010010: "exported",
 }
 # A shared library the app declares it needs on the device (<uses-library>),
 # the Android analogue of a native DT_NEEDED / a managed AssemblyRef; capped
@@ -652,6 +656,16 @@ _AXML_MAX_USES_LIBRARIES = 4096
 # An activity is launchable when one intent-filter carries both.
 _ANDROID_ACTION_MAIN = "android.intent.action.MAIN"
 _ANDROID_CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
+# The four component kinds another app can reach -- the app's exported attack
+# surface, the mobile analogue of an ELF's exported dynamic symbols. A
+# component is exported when android:exported="true", or (when the attribute
+# is absent) when it declares an <intent-filter>; an explicit "false" closes
+# it regardless. Bounded so a manifest with thousands of components cannot
+# make the fact list unbounded.
+_AXML_COMPONENT_TAGS = frozenset(
+    {"activity", "activity-alias", "service", "receiver", "provider"}
+)
+_AXML_MAX_COMPONENTS = 4096
 
 # A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
 # strings) and format version are at known offsets, so how much code an APK
@@ -1254,6 +1268,35 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     current_activity: str | None = None
     filter_main = False
     filter_launcher = False
+    # Exported-component tracking: a component's export status depends on its
+    # <intent-filter> children, which appear after its start element, so the
+    # open component is only finalized when the next component starts or the
+    # walk ends. ``exported`` is the explicit android:exported (None = absent);
+    # ``has_filter`` records whether any intent-filter was seen for it.
+    exported_components: list[dict[str, Any]] = []
+    comp_type: str | None = None
+    comp_name: str | None = None
+    comp_exported: bool | None = None
+    comp_has_filter = False
+
+    def flush_component() -> None:
+        nonlocal comp_type, comp_name, comp_exported, comp_has_filter
+        if comp_type is not None and comp_name:
+            # Explicit exported wins; otherwise an intent-filter makes it
+            # reachable (the pre-Android-12 implicit default triage assumes).
+            is_exported = comp_exported if comp_exported is not None else comp_has_filter
+            if is_exported and len(exported_components) < _AXML_MAX_COMPONENTS:
+                exported_components.append(
+                    {
+                        "type": comp_type,
+                        "name": comp_name,
+                        "has_intent_filter": comp_has_filter,
+                    }
+                )
+        comp_type = comp_name = None
+        comp_exported = None
+        comp_has_filter = False
+
     pos = 8
     chunks = 0
     while pos + 8 <= limit and chunks < _AXML_MAX_CHUNKS:
@@ -1298,12 +1341,19 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                     allow_backup = _axml_bool(attrs, "allowBackup")
                 if uses_cleartext is None:
                     uses_cleartext = _axml_bool(attrs, "usesCleartextTraffic")
-            elif name in ("activity", "activity-alias"):
-                # A new activity subtree: its own android:name is the launchable
-                # component (for an alias too -- that is what gets launched).
-                current_activity = _axml_str(attrs, "name")
+            elif name in _AXML_COMPONENT_TAGS:
+                # A new component subtree closes the previous one (components do
+                # not nest), then opens this one. Its android:name is the
+                # reachable component (an alias too -- that is what gets
+                # launched), and android:exported its explicit export status.
+                flush_component()
+                comp_type = name
+                comp_name = _axml_str(attrs, "name")
+                comp_exported = _axml_bool(attrs, "exported")
+                current_activity = comp_name if name in ("activity", "activity-alias") else None
                 filter_main = filter_launcher = False
             elif name == "intent-filter":
+                comp_has_filter = True
                 filter_main = filter_launcher = False
             elif name == "action":
                 if _axml_str(attrs, "name") == _ANDROID_ACTION_MAIN:
@@ -1314,6 +1364,8 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
             if launcher_activity is None and current_activity and filter_main and filter_launcher:
                 launcher_activity = current_activity
         pos += csize
+    # The last component subtree has no following start element to close it.
+    flush_component()
     facts: dict[str, Any] = {
         "package": package,
         "version_code": version_code,
@@ -1328,6 +1380,11 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         # The launchable activity (entry point), reported as declared in the
         # manifest -- None for a library/service-only APK with no launcher.
         "launcher_activity": launcher_activity,
+        # The exported components other apps can reach -- the app's attack
+        # surface, in declaration order. Each carries its type, declared name
+        # and whether the export comes with an intent-filter. Empty for an app
+        # that exposes nothing.
+        "exported_components": exported_components,
     }
     # Security-posture flags are reported only when the manifest declares them:
     # their framework defaults are version-dependent, so an explicit value is a

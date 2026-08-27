@@ -33,6 +33,7 @@ _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minim
 _ANDROID_NS = "http://schemas.android.com/apk/res/android"
 _ACTION_MAIN = "android.intent.action.MAIN"
 _CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
+_COMPONENT_TAGS = {"activity", "activity-alias", "service", "receiver", "provider"}
 
 
 def _apktool_manifest_text(apktool: Path, apk: Path, tmp_path: Path) -> str:
@@ -74,6 +75,35 @@ def _apktool_uses_libraries(manifest_xml: str) -> list[dict[str, object]]:
                 {"name": name, "required": element.get(required_attr, "true") == "true"}
             )
     return libraries
+
+
+def _apktool_exported_components(manifest_xml: str) -> set[tuple[str, str]]:
+    """The exported (type, name) set in apktool's text manifest.
+
+    Parsed with a real XML parser, applying the same export rule the tool-free
+    reader does -- an explicit android:exported wins, otherwise an
+    <intent-filter> exports -- so apktool's independent AXML decode is the
+    ground truth for the reader's attack-surface fact.
+    """
+    root = ET.fromstring(manifest_xml)
+    app = root.find("application")
+    name_attr = f"{{{_ANDROID_NS}}}name"
+    exported_attr = f"{{{_ANDROID_NS}}}exported"
+    exported: set[tuple[str, str]] = set()
+    if app is None:
+        return exported
+    for element in list(app):
+        if element.tag not in _COMPONENT_TAGS:
+            continue
+        name = element.get(name_attr)
+        if not name:
+            continue
+        flag = element.get(exported_attr)
+        has_filter = element.find("intent-filter") is not None
+        is_exported = (flag == "true") if flag is not None else has_filter
+        if is_exported:
+            exported.add((element.tag, name))
+    return exported
 
 
 def _apktool_launcher_activity(manifest_xml: str) -> str | None:
@@ -185,6 +215,20 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
             {"name": "org.apache.http.legacy", "required": True},
             {"name": "androidx.window.extensions", "required": False},
         ]
+        # The exported attack surface, cross-checked component for component
+        # against apktool's decode: the implicit-via-filter launcher activity,
+        # the explicit-true service and provider, with the explicit-false
+        # receiver (despite its intent-filter) held back -- the mobile analogue
+        # of cross-checking exported symbols against an independent tool.
+        reader_surface = {
+            (comp["type"], comp["name"]) for comp in reader_flags["exported_components"]
+        }
+        assert reader_surface == _apktool_exported_components(manifest_xml)
+        assert reader_surface == {
+            ("activity", "com.example.headless.MainActivity"),
+            ("service", "com.example.headless.ExportedService"),
+            ("provider", "com.example.headless.SharedProvider"),
+        }
 
         # apktool's own baksmali must have disassembled the fixture's class: the
         # method and the string it returns have to survive DEX -> smali.
