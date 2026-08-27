@@ -60,6 +60,36 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（抓包后端 mitmproxy 12.x）
+
+- 内嵌抓包代理在 mitmproxy 12.x 上不再泄漏端口或在启动时自杀。`DumpMaster` 默认装的是
+  给 `mitmdump` CLI 用的插件:`errorcheck` 会在启动期任何一条错误日志上 `sys.exit(1)`,
+  `keepserving` 的 `running` 钩子读 `options.rfile`(readfile 插件注册的选项)并记一条错误,
+  恰好被 `errorcheck` 升级成致命;`readfile`/`readfilestdin` 还会在启动时从磁盘/stdin 读
+  flow。启动前先剥掉这四个插件。此外 `master.shutdown()` 只置 `should_exit`、从不关闭
+  `Proxyserver` 监听套接字,12.x 上端口在事件循环退出后仍占用,导致下一次同端口抓包无法
+  绑定;停止时改为在 master 自己的事件循环上逐个 `server.stop()`(仅当循环仍在运行)再
+  shutdown,端口才真正释放。
+
+### 新增（Android/Web/可移植线的 CI 真机 Gate）
+
+- 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
+  webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
+  与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
+  不装任何后端,这几条 beyond-PE 线的真机 Gate 从不在 CI 执行,成熟度只靠单元测试背书;
+  Windows-only Gate 经 conftest 自行 skip,任何新增的 Linux 可跑 Gate 会被自动纳入。
+- 新增 `tests/integration/test_r2_portable_elf_gate.py`:可移植静态后端(radare2)此前在 Linux
+  上没有任何**活体**覆盖——r2 单测全部 mock `run_bounded`,唯一的活体 Gate 只针对预编译 PE
+  夹具而在别处一律 skip。新 Gate 用系统 C 编译器现编一个小 ELF,真机跑 open/aflj/pdj/axj,
+  并断言在没有 PE ImageBase 时地址映射回退到裸 `va`(而非 rva/module)。仅当 radare2 或 C
+  编译器确实缺失时 skip。
+- `test_agent_browser_smoke.py` 改为跨平台并对齐现行本地化 UI:改用 Playwright 自带
+  chromium(不再钉死 Windows 系统 Chrome 路径,和 `WebBackend.open` 的启动方式一致),
+  locator 与断言全部指向中文工作台(落地页、消息框、发送/设置/审批卡),设置弹窗保存后不再
+  自动关闭故先等服务端确认再手动关闭;并在测试内强制 fail-closed autonomy,让 `workflow.cancel`
+  真正停下等人批(默认加壳 PE 预设会自动批 `state_change` 而跳过审批 UI)。中途 reload 后转而
+  断言持久信号(审批卡被消费、Events 页出现 `run.completed` / `run.rejected`)而非易失的流式文本。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

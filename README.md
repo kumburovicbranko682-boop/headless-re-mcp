@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
+**Android 与 Web 两个目标域是新加的，成熟度仍低于 PE 那条链路，但差距在收窄**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，且真机 Gate 现在也由 GitHub 托管的 `linux-integration` CI 作业在每次 push/PR 上跑——该作业装好 radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，实测浏览器 CDP 驱动、抓包起停与端口释放、androguard 进程内解析 APK、radare2 活体分析 ELF（`tests/integration/test_r2_portable_elf_gate.py`）等活路径，而不再只在开发者本机手动跑过。仍未进 CI 的是 Java 工具链（jadx/apktool/apksigner）与真机设备，缺它们时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
@@ -419,9 +419,11 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` 负责桥接），所以配置好的机器不会因为"没设环境变量"而假跳过。**skip 仍然不等于 pass**：换一台缺后端的机器，对应 Gate 会如实跳过。
 
 无人值守的机制已经具备（自动批准策略、持久目标与调度、进程守护、看门狗、隔离钩子、provider 退避），
-但这不等于本项目替你承担了 SLA。仍然成立的限制：真机 Gate 只在配好后端的机器上手动跑过，
-自建 runner 的那条 CI 从未绿过；单维护者、公开历史短；IDA idalib 与 x64dbg headless 本身都不是
-为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺可用性数字，这三条得先自己解决。
+但这不等于本项目替你承担了 SLA。仍然成立的限制：Android/Web/可移植静态这几条的真机 Gate 已进
+GitHub 托管 CI（`linux-integration`）每次跑，但 PE/动态那条链路（x64dbg headless / IDA idalib）的真机
+Gate 仍只在配好后端的机器上手动跑过，自建 runner 的那条 CI 从未绿过；单维护者、公开历史短；
+IDA idalib 与 x64dbg headless 本身都不是为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺
+可用性数字，这三条得先自己解决。
 
 不适合：在 Linux 上要求 x64dbg/WinDbg/Win32 UI/MSI，或把可用性责任外包给上游的场景。  
 适合：已有 Windows + IDA 9.x 的完整 PE 工作流；或在 Linux x86_64 上使用 MCP 核心、纯静态检测、Web/Android/Ghidra/radare2 等可移植能力。
