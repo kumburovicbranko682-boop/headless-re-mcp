@@ -123,6 +123,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
+- `proxy.start` 先校验入参再探测 mitmproxy：越界端口以前在没装 mitmproxy 的机器上被
+  `_check_available` 抢先报成 `capability_unavailable`,同一调用在装了的机器上才报
+  `invalid_params`——错误码取决于环境。现把端口校验挪到可用性探测之前,坏端口在任何机器上都确定地
+  报 `invalid_params`;对应回归测试也不再因为缺 mitmproxy 而跳过(quality job 的 `.[test,dev,web]`
+  不含 `proxy` 附加项),从而在 CI 上真正钉死这个顺序。
 
 ### 新增（会话目标类型）
 

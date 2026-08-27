@@ -239,11 +239,10 @@ class TestProxyScoping:
         assert ProxyBackend().stop("no-such-session")["stopped"] is False
 
     def test_start_rejects_an_out_of_range_port(self) -> None:
+        # Port validation must precede the mitmproxy availability probe, so a bad
+        # port earns a deterministic invalid_params on every host -- installed or
+        # not -- rather than capability_unavailable where mitmproxy is absent.
         backend = ProxyBackend()
-        try:
-            backend._check_available()
-        except ProxyError:
-            pytest.skip("mitmproxy not installed — port validation not reached (skip != pass)")
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"

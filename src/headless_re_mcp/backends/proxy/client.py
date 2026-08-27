@@ -434,9 +434,13 @@ class ProxyBackend:
         return inst
 
     def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
-        self._check_available()
+        # Validate caller input before probing for the optional backend: a bad
+        # port is the caller's mistake regardless of environment, so it must earn
+        # a deterministic invalid_params rather than capability_unavailable on a
+        # host that merely lacks mitmproxy.
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        self._check_available()
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")
