@@ -16,7 +16,9 @@ x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/
 
 CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。
 
-新增 `linux-portable-gates` CI 车道：装好全部可从公开源获取的后端（androguard/mitmproxy/Playwright+Chromium/webcrack/wabt/radare2/UPX，PE 夹具用 mingw-w64 交叉编译），在跑 Gate 前先断言这些工具确实在 PATH 上，再真跑 Android/Web/proxy/agent 工作台/r2/UPX 各 Gate。此前这些 Gate 只在人工配好的机器上跑过，裸 runner 上会静默 skip——`main` 上因此长期藏着"抓包端口停止后不释放"和"浏览器 Gate 写死 Windows 路径根本跑不起来"两个真 bug 而 CI 全绿。同车道还固定了"有夹具但没装 IDA 时 idalib Gate 必须如实 skip 而非抛 `RuntimeError`"这条契约（skip≠pass，但 error≠skip）。
+新增 `linux-portable-gates` CI 车道：装好全部可从公开源获取的后端（androguard/mitmproxy/Playwright+Chromium/webcrack/wabt/radare2/UPX，PE 夹具用 mingw-w64 交叉编译），在跑 Gate 前先断言这些工具确实在 PATH 上，再真跑 Android/Web/proxy/agent 工作台/r2/UPX 各 Gate。此前这些 Gate 只在人工配好的机器上跑过，裸 runner 上会静默 skip——`main` 上因此长期藏着"抓包端口停止后不释放"和"浏览器 Gate 写死 Windows 路径根本跑不起来"两个真 bug 而 CI 全绿。同车道还固定了"有夹具但没装 IDA 时 idalib Gate 必须如实 skip 而非抛 `RuntimeError`"这条契约（skip≠pass，但 error≠skip）；`test_mcp_static_idalib` 的两条 round-trip 此前正是这种"有夹具、无 IDA"形状下硬失败，已一并改为如实 skip 并纳入该车道守护。
+
+Android 静态那条补上了正路径覆盖：此前所有 Android 断言都只验证畸形 APK 下的降级，androguard 真正解析合法 APK 的路径没有任何可移植测试。新 Gate 现场用可读代码合成一个合法的二进制 AXML 清单（遵循 `ResourceTypes.h` 的 chunk 布局：字符串池、资源映射、命名空间、起止标签）打进 APK，不落任何二进制夹具、不依赖 Android SDK，据此实测 `apk.open/manifest/permissions/components/native_libs` 能解析出包名、`android.permission.INTERNET`、activity 与 arm64/x86_64 两个 ABI。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
