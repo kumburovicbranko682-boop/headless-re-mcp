@@ -24,6 +24,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（js.unpack_bundle 预建输出目录导致 webcrack 全数失败）
+
+- webcrack 2.x 拒绝一个已经存在的输出目录（"output directory already exists"，退出码 1）。
+  `unpack_bundle` 在调用 webcrack 之前先用 `mkdir(exist_ok=True)` 建好了 `out_dir`，于是任意现代
+  webcrack 上每一次 `js.unpack_bundle` 都以 `backend_error` 收场——bundle 拆包这条能力实际上是死的。
+  现只保证父目录存在、把叶子目录交给 webcrack 自建。单元 fake 同步改成模拟 webcrack 自建目录
+  （它们此前依赖客户端建目录），并新增一条无需装 webcrack 的回归测试：钉住客户端在调用 webcrack 时
+  叶子目录不存在、父目录存在，防止再次退化。
+
+### 新增（JS 静态 Gate 在 Linux 真跑）
+
+- Web 静态那条线此前只有 `test_web_re_gate.py` 里一条 `js.deobfuscate` 检查，且只断言“code 是非空
+  字符串”——纯格式化也能满足，既没证明反混淆真的发生，也从不碰 `js.beautify` 与 `js.unpack_bundle`。
+  新增 `tests/integration/test_js_static_gate.py`：把 webcrack 支撑的这条面穿过 `AnalysisService` 打向
+  提交进仓的夹具——obfuscator.io 风格样本的隐藏串 `H3adl3ss` 在字符串数组内联后必须重现（证明真的解了），
+  `js.beautify` 回出可读源码，新增的经典 webpack bundle 夹具 `fixtures/web/webpack_bundle.js` 必须被
+  `js.unpack_bundle` 拆回 `index.js`/`1.js`/`2.js` 落盘且分页正确，`js.deobfuscate` 缺文件返回
+  `not_found`。这条 Gate 同时是上面输出目录修复的可执行回归。webcrack 缺失时如实跳过（skip 不等于
+  pass），本轮在 webcrack 2.16.0 / Node 22 上通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

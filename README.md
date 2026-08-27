@@ -390,11 +390,19 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
-  隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
-- 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
-  wabt（1）、以及 2 个有文档说明的故意跳过
+- 集成 Gate 83 passed / 8 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  JS 静态（webcrack 反混淆/bundle 拆包端到端）、隐藏桌面隔离、连接掉线自愈、crackme 端到端、
+  浏览器 CDP、抓包起停与端口释放、浏览器生命周期、浏览器跨线程驱动、
+  关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+- 8 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 wabt（1）、
+  以及 2 个有文档说明的故意跳过
+- Web 静态那条线本轮补了真跑证据并修了一个真 bug：装上 webcrack 2.16.0（Node 22）后，
+  `js.deobfuscate` 把 obfuscator.io 风格样本的字符串数组内联还原（隐藏串 `H3adl3ss` 重新出现）、
+  `js.beautify` 回出可读源码、`js.unpack_bundle` 把提交进仓的经典 webpack bundle 拆回
+  `index.js`/`1.js`/`2.js` 落盘且分页正确；`js.deobfuscate` 缺文件返回 `not_found`。修复点：
+  客户端此前用 `mkdir(exist_ok=True)` 预建输出目录，而 webcrack 2.x 拒绝已存在的输出目录
+  （"output directory already exists"，exit 1），导致 bundle 拆包在任意现代 webcrack 上全数失败；
+  现只保证父目录存在、把叶子目录交给 webcrack 自建，并加了一条无需 webcrack 的单元回归钉住
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
