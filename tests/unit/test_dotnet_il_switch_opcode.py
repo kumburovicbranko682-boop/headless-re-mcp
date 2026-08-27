@@ -116,3 +116,60 @@ def test_short_form_var_index_stays_unsigned() -> None:
     instructions, _ = _disassemble_il(b"\x0e\xff", max_insns=MAX_IL_INSNS)
     assert instructions[0]["mnemonic"] == "ldarg.s"
     assert instructions[0]["operand"] == 255
+
+
+def test_conditional_branches_consume_their_target_and_do_not_desync() -> None:
+    """beq.s (1-byte) and bne.un (4-byte) skip their whole displacement.
+
+    The comparison branches back every loop and `if`, yet only br/brfalse/brtrue
+    were in the table. A `beq.s` fell to the unknown-opcode branch, which
+    advanced one byte and read the displacement as the next opcode; the four-byte
+    forms desynced by four. Here the short branch's displacement byte is 0x2A, so
+    a one-byte advance would surface a phantom ``ret`` inside the operand.
+    """
+    # beq.s +0x2A; bne.un +5; ret  -- neither displacement may read as an opcode.
+    il = b"\x2e\x2a" + b"\x40" + struct.pack("<i", 5) + b"\x2a"
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["beq.s", "bne.un", "ret"]
+    assert instructions[0]["operand"] == 0x2A
+    assert instructions[1]["operand"] == 5
+    # The ret is the real trailing one, reached in step after both branches.
+    assert instructions[2]["ip"] == len(il) - 1
+    assert partial is False
+
+
+def test_conditional_branch_displacements_are_signed() -> None:
+    """A backward comparison branch is a negative displacement, not a huge uint.
+
+    ``bge.s 0xFB`` is a jump back five bytes; read unsigned it would be 251, and
+    the long ``beq`` form would surface its two's-complement bit pattern instead
+    of -10 -- exactly the control-flow misread the signed-operand set prevents.
+    """
+    short, _ = _disassemble_il(b"\x2f\xfb", max_insns=MAX_IL_INSNS)
+    assert short[0]["mnemonic"] == "bge.s"
+    assert short[0]["operand"] == -5
+
+    long_form, _ = _disassemble_il(b"\x3b" + struct.pack("<i", -10), max_insns=MAX_IL_INSNS)
+    assert long_form[0]["mnemonic"] == "beq"
+    assert long_form[0]["operand"] == -10
+
+
+def test_leave_and_leave_s_consume_their_signed_displacement() -> None:
+    """leave/leave.s exit a try region; their signed target must be skipped whole.
+
+    Every method with exception handling ends a guarded block with a leave. Both
+    forms were missing, so the byte(s) of the handler displacement were decoded
+    as instructions and the tail of the try body came back shifted.
+    """
+    # leave.s +0x2A; ret -- the displacement byte 0x2A must not read as ret.
+    short, partial = _disassemble_il(b"\xde\x2a\x2a", max_insns=MAX_IL_INSNS)
+    assert [insn["mnemonic"] for insn in short] == ["leave.s", "ret"]
+    assert short[0]["operand"] == 0x2A
+    assert short[1]["ip"] == 2
+    assert partial is False
+
+    # leave -3 (long form) decodes its four-byte displacement as signed.
+    long_form, _ = _disassemble_il(b"\xdd" + struct.pack("<i", -3), max_insns=MAX_IL_INSNS)
+    assert long_form[0]["mnemonic"] == "leave"
+    assert long_form[0]["operand"] == -3

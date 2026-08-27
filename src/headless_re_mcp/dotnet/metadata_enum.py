@@ -74,26 +74,72 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x2B: ("br.s", 1),
     0x2C: ("brfalse.s", 1),
     0x2D: ("brtrue.s", 1),
+    # The comparison branches (beq/bge/bgt/ble/blt plus their unsigned .un
+    # variants) fill the rest of the short-form range 0x2E-0x37 and the
+    # long-form range 0x3B-0x44. They are the bread and butter of every loop
+    # and `if`, and each carries a signed branch displacement -- one byte for
+    # the short forms, four for the long. Only br/brfalse/brtrue were listed, so
+    # a plain `if (a == b)` (a `beq.s`) fell to the unknown-opcode branch, which
+    # advanced one byte and then read the displacement as the next opcode: the
+    # same one- or four-byte desync the load/store short forms caused, on
+    # instructions that appear far more often.
+    0x2E: ("beq.s", 1),
+    0x2F: ("bge.s", 1),
+    0x30: ("bgt.s", 1),
+    0x31: ("ble.s", 1),
+    0x32: ("blt.s", 1),
+    0x33: ("bne.un.s", 1),
+    0x34: ("bge.un.s", 1),
+    0x35: ("bgt.un.s", 1),
+    0x36: ("ble.un.s", 1),
+    0x37: ("blt.un.s", 1),
     0x38: ("br", 4),
     0x39: ("brfalse", 4),
     0x3A: ("brtrue", 4),
+    0x3B: ("beq", 4),
+    0x3C: ("bge", 4),
+    0x3D: ("bgt", 4),
+    0x3E: ("ble", 4),
+    0x3F: ("blt", 4),
+    0x40: ("bne.un", 4),
+    0x41: ("bge.un", 4),
+    0x42: ("bgt.un", 4),
+    0x43: ("ble.un", 4),
+    0x44: ("blt.un", 4),
     0x6F: ("callvirt", 4),
     0x72: ("ldstr", 4),
     0x73: ("newobj", 4),
     0x7B: ("ldfld", 4),
     0x7D: ("stfld", 4),
     0x8C: ("box", 4),
+    # leave/leave.s exit a protected (try/catch/finally) region; every method
+    # with exception handling ends its guarded blocks with one. Like the
+    # branches they carry a signed displacement -- four bytes, one for .s -- to
+    # the end of the region, so omitting them desynced the tail of any try body.
+    0xDD: ("leave", 4),
+    0xDE: ("leave.s", 1),
 }
 
-# Branch targets (both the short 1-byte and long 4-byte forms) and the ldc.i4
-# constants (both ldc.i4 and the one-byte ldc.i4.s) carry signed operands; every
-# other opcode with an operand here carries an unsigned value -- a metadata token
-# or, for the short-form ldarg.s/ldloc.s/etc, an unsigned slot index. Only the
-# short branches were read as signed, so a long backward branch or a negative
-# constant came back as its two's-complement bit pattern -- br -10 printed as
-# 4294967286 -- which misreads the control flow the disassembly exists to show.
+# Every branch target -- unconditional, conditional, short (1-byte) and long
+# (4-byte) -- is a signed displacement from the instruction that follows the
+# branch, as is leave's displacement to the end of a protected region. The two
+# ldc.i4 constant forms are the only non-branch signed operands; every other
+# opcode with an operand here carries an unsigned value -- a metadata token or,
+# for the short-form ldarg.s/ldloc.s/etc, an unsigned slot index. Reading a
+# signed operand as unsigned turns a backward branch into its two's-complement
+# bit pattern -- br -10 printed as 4294967286 -- which misreads the control flow
+# the disassembly exists to show.
 _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
-    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4", "ldc.i4.s"}
+    {
+        "br.s", "brfalse.s", "brtrue.s",
+        "beq.s", "bge.s", "bgt.s", "ble.s", "blt.s",
+        "bne.un.s", "bge.un.s", "bgt.un.s", "ble.un.s", "blt.un.s",
+        "br", "brfalse", "brtrue",
+        "beq", "bge", "bgt", "ble", "blt",
+        "bne.un", "bge.un", "bgt.un", "ble.un", "blt.un",
+        "leave", "leave.s",
+        "ldc.i4", "ldc.i4.s",
+    }
 )
 
 
