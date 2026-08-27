@@ -101,6 +101,32 @@ def test_radare2_probe_falls_back_to_path(
     assert probe.status == ProbeStatus.DETECTED
 
 
+def test_radare2_probe_detects_the_long_binary_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor's radare2 probe must accept the long ``radare2`` name too.
+
+    ``R2Client._discover`` and ``Settings.load`` both recognize
+    ``("r2", "rizin", "radare2")``; the doctor call site listed only r2/rizin, so
+    a host carrying just the long-named binary (no r2/rizin alias) reported
+    radare2 MISSING while the backend worked. This drives run_doctor through the
+    real call site with only ``radare2`` on PATH.
+    """
+    on_path = tmp_path / "radare2"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd == "radare2" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "radare2")
+    assert probe.status == ProbeStatus.DETECTED
+
+
 def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
