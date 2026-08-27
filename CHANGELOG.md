@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 清理（删除 service_device 里已成死代码的 prune_device_artifacts：真正的清扫早已换成 prune_capped_dir）
+
+- `device.screenshot` / `device.pull` 的目录清扫早已改用 `prune_capped_dir(max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES=32,\
+  max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES=64 MiB)`——它按条数**和**字节双重封顶、永远保留最新一个、mtime 排序、遇\
+  OSError 静默降级——严格覆盖了老的 `prune_device_artifacts(keep=32)`(只按条数封顶)。后者及常量 `_MAX_DEVICE_ARTIFACTS`\
+  在生产代码里已无任何调用点,纯属换实现时留下的死代码;更糟的是,还有 4 个单测(1 个在 `test_device_artifacts.py`、\
+  3 个降级守卫在 `test_device_service_envelopes.py`)直接测这个没人调用的函数,给出\"设备抓取清扫已被测到\"的**虚假**\
+  信心——而真正跑的 `prune_capped_dir` 早在 `test_core_limits_eviction.py` 里被完整钉住(非目录空跑、不可读目录、\
+  条数/字节驱逐、保留最新、跳过 stat 失败的子项、删除持续失败时终止、子目录计量)。删除死函数与死常量,把仍有价值\
+  的端到端抓取回环测试(经 `device_screenshot` 真实走 `prune_capped_dir`)改引用 `UNREGISTERED_CAPTURE_MAX_ENTRIES`,\
+  并修正模块注释指向真实机制。行为不变(生产路径本就没用过被删的函数),失去的只是对死代码的虚假覆盖。
+
 ### 测试（钉住 APK 工具在非 APK 会话上报 target_mismatch 而非 capability_unavailable：别叫人去装其实用不上的依赖）
 
 - 已有 `TestPeOnlyToolsRefuseApkSessions` 钉住了 PE→APK 方向(在 APK 会话上调 detect/dotnet/unpack/static/dynamic\

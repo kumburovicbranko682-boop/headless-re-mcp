@@ -6,16 +6,14 @@ still untouched: the pure-read passthroughs (list/properties/packages/
 current_activity), _adb_wrap's `except BaseException` catch-all, the _backend()
 fallback that constructs an AdbBackend when the service owns none, the
 AdbError arm of device.connect (which skips the connected-check downgrade), the
-capture-failed branch that skips the oversize check, device.pull's oversize
-refusal, and the two OSError guards plus the not-full early return in
-prune_device_artifacts. A fake AdbBackend stands in so the service wiring is
-what is exercised, without adbutils or a device.
+capture-failed branch that skips the oversize check, and device.pull's oversize
+refusal. (The directory sweep itself is prune_capped_dir, pinned in
+test_core_limits_eviction.py.) A fake AdbBackend stands in so the service wiring
+is what is exercised, without adbutils or a device.
 """
 
 from __future__ import annotations
 
-import os
-import pathlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +24,7 @@ from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.core.service_device import DeviceAnalysisMixin, prune_device_artifacts
+from headless_re_mcp.core.service_device import DeviceAnalysisMixin
 
 JsonObject = dict[str, Any]
 
@@ -231,43 +229,3 @@ def test_device_pull_over_the_cap_is_refused_and_audited_as_too_large(
         assert pull_rows and pull_rows[0]["result_summary"] == {"code": "output_too_large"}
     finally:
         service.close_all()
-
-
-def test_prune_returns_on_a_non_directory(tmp_path: Path) -> None:
-    """iterdir on a file raises OSError; the pruner must swallow it and return."""
-    not_a_dir = tmp_path / "regular-file"
-    not_a_dir.write_text("x", encoding="utf-8")
-    prune_device_artifacts(not_a_dir)
-
-
-def test_prune_is_a_no_op_when_the_directory_is_not_full(tmp_path: Path) -> None:
-    directory = tmp_path / "device"
-    directory.mkdir()
-    for index in range(3):
-        (directory / f"screenshot-{index}.png").write_bytes(b"x")
-
-    prune_device_artifacts(directory, keep=32)
-
-    assert len(os.listdir(directory)) == 3
-
-
-def test_prune_survives_stat_failures_while_ordering(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If a capture vanishes between the is_file filter and the mtime sort, its
-    stat raises; _mtime treats that as age 0 so the sweep still trims to keep."""
-    directory = tmp_path / "device"
-    directory.mkdir()
-    for index in range(3):
-        (directory / f"screenshot-{index}.png").write_bytes(b"x")
-
-    monkeypatch.setattr(pathlib.Path, "is_file", lambda self: self.name.endswith(".png"))
-
-    def _stat_is_down(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        raise OSError("stat is down")
-
-    monkeypatch.setattr(pathlib.Path, "stat", _stat_is_down)
-
-    prune_device_artifacts(directory, keep=1)
-
-    assert len(os.listdir(directory)) == 1

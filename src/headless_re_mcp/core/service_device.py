@@ -29,9 +29,12 @@ JsonObject = dict[str, Any]
 
 # device.screenshot / device.pull write under artifact_root/device/ and never
 # register the file: those tools key by serial, and the artifact table needs a
-# session_id. Retention therefore never sees them. Measured: 80 screenshots of
-# 256 KiB left 20.0 MiB that nothing could reclaim.
-_MAX_DEVICE_ARTIFACTS = 32
+# session_id. Retention therefore never sees them, so the directory itself has
+# to be the bound -- device_screenshot / device_pull sweep it with
+# prune_capped_dir under the shared UNREGISTERED_CAPTURE_MAX_ENTRIES (32) /
+# UNREGISTERED_CAPTURE_MAX_BYTES (64 MiB) caps, which is what enforces both the
+# count and the byte ceiling. Measured: 80 screenshots of 256 KiB left 20.0 MiB
+# that nothing could reclaim.
 
 
 def _safe_pull_suffix(remote_path: str) -> str:
@@ -46,28 +49,6 @@ def _safe_pull_suffix(remote_path: str) -> str:
     ):
         return suffix
     return ".bin"
-
-
-def prune_device_artifacts(directory: Path, *, keep: int = _MAX_DEVICE_ARTIFACTS) -> None:
-    """Drop the oldest device captures once the directory is full."""
-    try:
-        files = [path for path in directory.iterdir() if path.is_file()]
-    except OSError:
-        return
-    extra = len(files) - max(0, keep)
-    if extra <= 0:
-        return
-
-    def _mtime(path: Path) -> int:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
-    files.sort(key=_mtime)
-    for stale in files[:extra]:
-        with suppress(OSError):
-            stale.unlink()
 
 
 def refuse_oversized_device_file(
