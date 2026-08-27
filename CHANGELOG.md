@@ -855,6 +855,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.server.ensure` 在 su 命令返回后就报 `running: True`**，并不再看 ps。启动器
   成功而 frida-server 立刻退出时，调用方会以为钩子已经能连上。启动后再查一次进程表，
   看不见就如实回 `running: False`。
+- **同一次 ps 复查又把主机错误读成「不在场」**。adbutils 会把 adb 主机自己的 `error:` /
+  `adb:` 行当作 stdout 返回（`device.properties` / `packages` / `logcat` 和 `pm path` 已各自
+  防到），于是掉线设备回 ps 的那行里当然没有 `frida-server`，`_frida_server_visible` 便据此
+  回 `False`——对一台根本没连上的设备咬定「没在跑」，`ensure` 也就回 `running: False`「不在
+  ps 里」。现要求两次 ps 至少有一次是真实进程表，缺 `frida-server` 才算「没在跑」；两次都是
+  主机错误行则回 `None`（无法判定），`ensure` 随之回 `running: null` 而非 `False`，note 点明
+  是「设备没答进程表探测」。这正是 install/uninstall/force_stop 那条「核不上就 null」在
+  frida-server 兄弟路径上漏掉的一处；单侧错误、另一侧是真实且不含 frida-server 的进程表时，
+  仍如实回 `False`。
 - **并发的 `proxy.start` / `web.open` 会各起一份实例**。检查「已经有了」和写入跟踪表
   不在同一把锁里，两个工作线程会各自绑定端口或拉起 Chromium，后写入的那份把先起来的
   弄丢，泄漏到进程退出。现在先在表里占位再启动，失败或中途被关则清掉占位并回收。

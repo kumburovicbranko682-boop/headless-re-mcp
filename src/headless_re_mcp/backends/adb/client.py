@@ -184,11 +184,28 @@ def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) 
 
 
 def _frida_server_visible(dev: Any) -> bool | None:
+    """Whether frida-server shows in the device's process list, or None if unknown.
+
+    adbutils hands back the adb host's own "error:" / "adb:" line as stdout
+    rather than raising -- the same behaviour device.properties / packages /
+    logcat and pm path already guard against -- so an offline device answers ps
+    with a host-error line that of course does not contain "frida-server". Read
+    naively that is a confident "not running" for a device we never reached.
+    Absence only means "not running" when at least one ps read was a real
+    listing; when both reads are host-error lines the device never answered, so
+    the honest result is None ("could not determine"), which ensure_frida_server
+    reports as an unverifiable running rather than a definitive False.
+    """
     try:
-        text = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
-        if "frida-server" in text:
+        primary = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
+        if "frida-server" in primary:
             return True
-        return "frida-server" in _device_shell(dev, "ps", timeout=_ADB_PROBE_TIMEOUT_S)
+        secondary = _device_shell(dev, "ps", timeout=_ADB_PROBE_TIMEOUT_S)
+        if "frida-server" in secondary:
+            return True
+        if _is_host_error_output(primary) and _is_host_error_output(secondary):
+            return None
+        return False
     except Exception:  # noqa: BLE001
         return None
 
@@ -796,11 +813,17 @@ class AdbBackend:
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": pushed, "port": port}
+        note = (
+            "launch command returned; could not verify frida-server "
+            "(device did not answer the process-list probe)"
+            if visible is None
+            else "launch command returned; frida-server not visible in ps"
+        )
         return {
             "running": visible,
             "pushed": pushed,
             "port": port,
-            "note": "launch command returned; frida-server not visible in ps",
+            "note": note,
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
