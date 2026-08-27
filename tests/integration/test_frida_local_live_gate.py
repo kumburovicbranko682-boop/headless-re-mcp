@@ -18,6 +18,7 @@ import time
 import pytest
 
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+from headless_re_mcp.core.service import AnalysisService
 
 
 def _spawn_child() -> subprocess.Popen[bytes]:
@@ -91,3 +92,36 @@ def test_frida_local_attach_modules_exports_read() -> None:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+@pytest.mark.integration
+def test_frida_devices_lists_the_local_device() -> None:
+    """frida.devices enumerates through the service, and the local device is real.
+
+    enumerate_devices is a different frida entry point than attach -- it reads
+    each Device's id/name/type, attributes frida can rename between majors -- and
+    only ran as a bare envelope check that a bool came back (which an error also
+    satisfies). Drive it through the service and assert the always-present local
+    device is there with the id and type the client maps, so a device-object drift
+    fails instead of passing as an empty-but-ok list.
+    """
+    if not FridaClient().available:
+        pytest.skip("frida Python module not installed — devices Gate not run (skip≠pass)")
+    service = AnalysisService()
+    try:
+        result = service.frida_devices()
+        assert result.ok, result.error
+        devices = result.data["devices"]
+        assert result.data["count"] == len(devices)
+        assert devices, "frida reported no devices, not even the local one"
+        for row in devices:
+            assert isinstance(row.get("id"), str) and row["id"]
+            assert isinstance(row.get("name"), str)
+            assert isinstance(row.get("type"), str)
+        # The local device is always present and is how a caller attaches to a
+        # process on this machine; its id and type are the stable contract.
+        local = [d for d in devices if d["id"] == "local"]
+        assert local, "the local frida device was not enumerated"
+        assert local[0]["type"] == "local"
+    finally:
+        service.close_all()
