@@ -12,7 +12,11 @@ from __future__ import annotations
 from typing import Any
 
 from headless_re_mcp.backends.adb import AdbBackend, AdbError
-from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+from headless_re_mcp.backends.frida.client import (
+    FridaClient,
+    FridaError,
+    require_android_package,
+)
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState
@@ -169,9 +173,10 @@ class FridaDeviceMixin:
     def frida_attach_app(self, session_id: str, package: str) -> Result[JsonObject]:
         try:
             auth = self._frida_auth(session_id)
-            pkg = package.strip()
-            if not pkg:
-                raise FridaError("invalid_params", "package is required")
+            # Reject a path or bare name up front with the same contract as
+            # frida.spawn, before spending a device enumeration on input that
+            # can never name a running package.
+            pkg = require_android_package(package)
             device_id = auth.get("device_id")
             listing = FridaClient().applications(device_id, limit=_MAX_APP_SCAN)
             pid = _running_pid_for(listing, pkg)

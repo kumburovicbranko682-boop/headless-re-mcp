@@ -14,6 +14,26 @@ from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 JsonObject = dict[str, Any]
 T = TypeVar("T")
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+
+
+def require_android_package(package: str) -> str:
+    """Strip and validate an Android package id, or raise FridaError.
+
+    The single source of truth for the package contract shared by spawn (the
+    backend) and attach.app (the service): both must reject a path or a bare
+    name as invalid_params up front, rather than one refusing it and the other
+    reporting it as merely "not running".
+    """
+    if not isinstance(package, str) or not package.strip():
+        raise FridaError("invalid_params", "package is required")
+    pkg = package.strip()
+    if not _ANDROID_PACKAGE_RE.match(pkg):
+        raise FridaError(
+            "invalid_params",
+            "package must be an Android package id",
+            package=pkg,
+        )
+    return pkg
 # attach / spawn / Java.perform can block forever on a paused debuggee or a
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
 # slow USB spawn, short enough that a wedged probe cannot keep a worker.
@@ -571,15 +591,7 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         device = self._resolve_device(device_id)
-        if not isinstance(package, str) or not package.strip():
-            raise FridaError("invalid_params", "package is required")
-        pkg = package.strip()
-        if not _ANDROID_PACKAGE_RE.match(pkg):
-            raise FridaError(
-                "invalid_params",
-                "package must be an Android package id",
-                package=pkg,
-            )
+        pkg = require_android_package(package)
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
 

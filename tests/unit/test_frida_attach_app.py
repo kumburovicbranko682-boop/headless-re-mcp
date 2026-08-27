@@ -172,6 +172,27 @@ def test_a_blank_package_is_rejected_before_scanning(monkeypatch: Any) -> None:
     assert fake.calls == []
 
 
+def test_a_malformed_package_is_rejected_like_spawn(monkeypatch: Any) -> None:
+    """A path or bare name is invalid_params up front, not a 'not running' scan.
+
+    attach shares frida.spawn's package contract, so an agent that hands it a
+    pulled file path gets the same "must be an Android package id" refusal
+    instead of a misleading suggestion to launch or spawn it -- and no device
+    enumeration is spent on input that can never name a running package.
+    """
+    for bad in (r"C:\Windows\notepad.exe", "/system/bin/sh", "notapackage"):
+        service, session_id, fake = _connected_service(
+            monkeypatch,
+            [{"identifier": "com.example.app", "name": "Example", "pid": 5678}],
+        )
+        result = service.frida_attach_app(session_id, bad)
+        assert not result.ok, bad
+        assert result.error is not None
+        assert result.error.code == "invalid_params", bad
+        assert "Android package id" in result.error.message
+        assert fake.calls == [], bad
+
+
 def test_the_tool_docstring_names_the_returned_fields() -> None:
     doc = _tool_docstring("frida.attach.app")
     assert "Answers with package, pid and device" in doc

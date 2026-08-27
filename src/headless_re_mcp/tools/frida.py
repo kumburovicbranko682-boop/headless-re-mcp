@@ -159,8 +159,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         application list and adds it to this session's authorized set so
         frida.java.* and frida.hook.template can target it.
         Answers with package, pid and device. There is no spawned, attached or
-        session field. A package that is installed but not running answers
-        invalid_state; launch it (device.launch) or use frida.spawn instead.
+        session field. package must be an Android package id, the same contract
+        as frida.spawn; a path or bare name answers invalid_params. A valid
+        package that is installed but not running answers invalid_state; launch
+        it (device.launch) or use frida.spawn instead.
         """
         return _dump(analysis.frida_attach_app(session_id, package))
 
