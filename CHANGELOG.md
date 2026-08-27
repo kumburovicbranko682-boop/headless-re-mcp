@@ -497,6 +497,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   越界端口(local/remote)、`tcp:0` 两侧拒绝、边界 `1`/`65535`、`localabstract`/`jdwp`、jdwp 只在 remote 有效、以及
   畸形规格一律拒绝。
 
+### 修复（adb pull 传输后复核护栏对无 stat 设备形同虚设的盲点）
+
+- `device.pull` 传输前会尝试 `sync.stat` 预探，据此拒绝目录或超限文件——但该探测裹在裸 `except` 里，
+  设备一旦不应答（老 adbutils、受限 shell）就整段跳过，于是传输在毫无前置校验下跑完，只剩三条传输后
+  复核挡在调用方与谎报之间：`is_dir` 拒收并 `rmtree` 掉被拉下来的整棵目录树、`not exists` 把「干净退出却
+  没落盘」（远端路径不存在时 adb sync 可能不报错）判成 `not_found` 而非 `size:0` 的假空文件、以及
+  `capped_file_size` 拿实际落盘字节复核容量上限（预探报的尺寸可能偏小或压根没跑）。既有 pull 测试的
+  `stat` 全都正常、`pull` 全都写一个小文件，前置探测一律命中或走幸福路径，这三条复核从不执行——正是
+  同质夹具令判别逻辑失效的典型盲点。新增回归：注入一个 `stat` 抛异常（逼停前置探测）、`pull` 分别
+  「什么都不写 / 写一棵目录 / 写超限字节」的设备,逐条验证 `not_found` / `invalid_params`(并已 `rmtree`)
+  / `too_large`,并验证探测静默时正常小文件仍能落盘并回报字节数;每条护栏禁用后各由且仅由一条测试捕获。
+
 ### 修复（apk 包名读取会整体解压 manifest）
 
 - `device.install` 回读 APK 包名做校验时,`_apk_package_name` 用
