@@ -37,6 +37,9 @@ _MAX_HEADERS = 300
 _MAX_HEADER_VALUE = 8 * 1024
 _MAX_BODY_TEXT = 64 * 1024
 _MAX_POST_PARAMS = 512
+# Chrome DevTools' HAR WebSocket extension: bound how many frames one entry
+# carries so a chatty socket cannot bloat the log.
+_MAX_WS_MESSAGES = 500
 
 
 def creator() -> JsonObject:
@@ -420,6 +423,33 @@ def response_entry(
     }
 
 
+def websocket_messages(frames: list[JsonObject]) -> list[JsonObject]:
+    """Chrome DevTools' ``_webSocketMessages`` from internal frame records.
+
+    Each frame becomes ``{type, time, opcode, data}``: ``type`` is send/receive
+    (DevTools' names, not the capture's sent/received), ``time`` is epoch
+    seconds, ``opcode`` is the RFC 6455 number, and ``data`` is the payload the
+    capture already bounded (text preview, or base64 for a binary frame). A
+    frame whose timestamp is not a real number is emitted with time 0 rather
+    than an invented instant, and the list is capped like the rest of the HAR.
+    """
+    out: list[JsonObject] = []
+    for frame in frames[:_MAX_WS_MESSAGES]:
+        opcode = frame.get("opcode")
+        if not isinstance(opcode, int):
+            opcode = 0x1 if frame.get("type") == "text" else 0x2
+        ts = frame.get("ts")
+        out.append(
+            {
+                "type": "send" if frame.get("direction") == "sent" else "receive",
+                "time": float(ts) if isinstance(ts, int | float) else 0.0,
+                "opcode": opcode,
+                "data": str(frame.get("payload", "")),
+            }
+        )
+    return out
+
+
 def entry(
     *,
     started: float | None,
@@ -427,8 +457,9 @@ def entry(
     request: JsonObject,
     response: JsonObject,
     timings_obj: JsonObject | None = None,
+    extras: JsonObject | None = None,
 ) -> JsonObject:
-    return {
+    out: JsonObject = {
         "startedDateTime": iso8601(started),
         "time": time_ms if time_ms is not None else 0.0,
         "request": request,
@@ -436,3 +467,9 @@ def entry(
         "cache": {},
         "timings": timings_obj if timings_obj is not None else timings(-1.0, -1.0, -1.0),
     }
+    # Non-standard "_"-prefixed fields (e.g. DevTools' _resourceType /
+    # _webSocketMessages) are explicitly allowed by the HAR spec and ignored by
+    # consumers that do not understand them, so they never break a plain reader.
+    if extras:
+        out.update(extras)
+    return out

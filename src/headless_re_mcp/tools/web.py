@@ -221,10 +221,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         events, and request/response cookies are parsed into the HAR cookies
         arrays. Form request bodies (URL-encoded and multipart) are parsed into
         postData.params. Each hop of a redirect chain is kept as its own entry
-        (the prior response is not overwritten by the redirect target).
-        Response bodies are not inlined (fetch them with
-        web.network.get); a field CDP never reported stays -1 (not observed)
-        rather than invented.
+        (the prior response is not overwritten by the redirect target). A
+        WebSocket connection becomes its own entry carrying the frames as
+        DevTools' _webSocketMessages (with _resourceType websocket), so a
+        captured socket re-imports into DevTools. Response bodies are not
+        inlined (fetch them with web.network.get); a field CDP never reported
+        stays -1 (not observed) rather than invented.
         """
         return _dump(analysis.web_har_export(session_id))
 

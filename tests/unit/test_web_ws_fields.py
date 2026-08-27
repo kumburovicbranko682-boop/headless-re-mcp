@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -24,6 +25,7 @@ from headless_re_mcp.backends.web.client import (
     _MAX_WS_PAYLOAD,
     WebBackend,
     WebError,
+    _ws_entry_to_har,
 )
 from headless_re_mcp.tools.web import build_web_tools
 
@@ -208,6 +210,68 @@ def test_ws_list_and_frames_paginate(monkeypatch: Any) -> None:
     assert fpage["offset"] == 3
     assert fpage["count"] == 2
     assert fpage["has_more"] is False
+
+
+def test_ws_entry_to_har_rebases_frame_times_and_carries_messages() -> None:
+    handle = _Handle()
+    h = _wired(handle)
+    h["Network.webSocketCreated"]({"requestId": "w1", "url": "ws://x/ws"})
+    h["Network.webSocketWillSendHandshakeRequest"](
+        {
+            "requestId": "w1",
+            "wallTime": 1_700_000_000.0,
+            "timestamp": 1000.0,
+            "request": {"headers": {"Upgrade": "websocket", "Cookie": "sid=abc"}},
+        }
+    )
+    h["Network.webSocketHandshakeResponseReceived"](
+        {
+            "requestId": "w1",
+            "response": {
+                "status": 101,
+                "statusText": "Switching Protocols",
+                "headers": {"Set-Cookie": "t=1; Path=/"},
+            },
+        }
+    )
+    h["Network.webSocketFrameSent"](
+        {"requestId": "w1", "timestamp": 1000.5, "response": {"opcode": 1, "payloadData": "hi"}}
+    )
+    h["Network.webSocketFrameReceived"](
+        {"requestId": "w1", "timestamp": 1001.0, "response": {"opcode": 2, "payloadData": "AAE="}}
+    )
+
+    ent = _ws_entry_to_har(handle.websockets["w1"])
+    assert ent["_resourceType"] == "websocket"
+    assert ent["request"]["method"] == "GET"
+    assert ent["request"]["url"] == "ws://x/ws"
+    assert ent["response"]["status"] == 101
+    assert any(c["name"] == "sid" for c in ent["request"]["cookies"])
+    assert any(c["name"] == "t" for c in ent["response"]["cookies"])
+    # The handshake wall time anchors the entry (not the 1970 epoch fallback).
+    assert datetime.fromisoformat(ent["startedDateTime"]).year == 2023
+
+    messages = ent["_webSocketMessages"]
+    send = next(m for m in messages if m["type"] == "send")
+    # Monotonic frame ts rebased onto epoch: wall + (frame_ts - handshake_ts).
+    assert send["time"] == 1_700_000_000.5
+    assert send["data"] == "hi"
+    receive = next(m for m in messages if m["type"] == "receive")
+    assert receive["opcode"] == 2
+    assert receive["time"] == 1_700_000_001.0
+
+
+def test_ws_list_row_hides_internal_har_meta(monkeypatch: Any) -> None:
+    handle = _Handle()
+    h = _wired(handle)
+    h["Network.webSocketCreated"]({"requestId": "w1", "url": "ws://x/ws"})
+    h["Network.webSocketWillSendHandshakeRequest"](
+        {"requestId": "w1", "wallTime": 1.0, "timestamp": 2.0, "request": {"headers": {"a": "b"}}}
+    )
+    backend = _backend_for(handle, monkeypatch)
+    row = backend.ws_list("s")["websockets"][0]
+    assert "_har" not in row
+    assert "_frames" not in row
 
 
 def test_ws_tool_descriptions_name_the_payload_fields() -> None:

@@ -105,7 +105,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response headers, query string, request/response cookies (parsed from
         the Cookie and Set-Cookie headers), form postData.params (URL-encoded
         and multipart request bodies), a bounded body preview, status and
-        real timings for every flow still retained.
+        real timings for every flow still retained. A WebSocket flow's frames
+        ride along as DevTools' _webSocketMessages (with _resourceType
+        websocket), so a captured socket re-imports into DevTools.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

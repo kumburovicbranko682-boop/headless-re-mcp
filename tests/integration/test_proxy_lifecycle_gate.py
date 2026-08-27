@@ -723,5 +723,26 @@ def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
             assert any(
                 base64.b64decode(f["payload"]) == _WS_BINARY_REPLY for f in recv_binary
             ), recv_binary
+
+            # The HAR export carries the socket as DevTools _webSocketMessages,
+            # so the captured frames re-import into DevTools.
+            har_path = tmp_path / "ws.har"
+            backend.export_har("ws", har_path)
+            log = json.loads(har_path.read_text(encoding="utf-8"))["log"]
+            ws_entries = [e for e in log["entries"] if e.get("_resourceType") == "websocket"]
+            assert ws_entries, [e.get("_resourceType") for e in log["entries"]]
+            messages = ws_entries[0]["_webSocketMessages"]
+            assert any(
+                m["type"] == "send" and m["data"] == _WS_CLIENT_TEXT for m in messages
+            ), messages
+            assert any(
+                m["type"] == "receive" and m["data"] == _WS_TEXT_REPLY for m in messages
+            ), messages
+            assert any(
+                m["type"] == "receive"
+                and m["opcode"] == 2
+                and base64.b64decode(m["data"]) == _WS_BINARY_REPLY
+                for m in messages
+            ), messages
     finally:
         backend.close_all()

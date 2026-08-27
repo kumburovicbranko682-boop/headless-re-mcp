@@ -267,3 +267,70 @@ class TestProxyFlowEntry:
         assert entry["response"]["status"] == 200
         assert entry["request"]["headers"] == []
         assert entry["timings"] == {"send": -1.0, "wait": -1.0, "receive": -1.0}
+
+
+class TestWebSocketMessages:
+    def test_frames_become_devtools_send_receive_records(self) -> None:
+        frames = [
+            {"direction": "sent", "opcode": 1, "type": "text", "payload": "hi", "ts": 1000.5},
+            {
+                "direction": "received",
+                "opcode": 2,
+                "type": "binary",
+                "payload": "AAE=",
+                "ts": 1001.0,
+            },
+        ]
+        out = har.websocket_messages(frames)
+        assert out[0] == {"type": "send", "time": 1000.5, "opcode": 1, "data": "hi"}
+        assert out[1] == {"type": "receive", "time": 1001.0, "opcode": 2, "data": "AAE="}
+
+    def test_opcode_defaults_from_type_and_bad_time_is_zero(self) -> None:
+        frames = [{"direction": "received", "type": "text", "payload": "x", "ts": None}]
+        out = har.websocket_messages(frames)
+        assert out[0]["opcode"] == 0x1
+        assert out[0]["time"] == 0.0
+
+    def test_message_list_is_capped(self) -> None:
+        frames = [
+            {"direction": "sent", "type": "text", "payload": str(i), "ts": float(i)}
+            for i in range(har._MAX_WS_MESSAGES + 50)
+        ]
+        assert len(har.websocket_messages(frames)) == har._MAX_WS_MESSAGES
+
+    def test_entry_extras_attach_websocket_fields(self) -> None:
+        ent = har.entry(
+            started=1000.0,
+            time_ms=0.0,
+            request=har.request_entry(method="GET", url="ws://h/ws"),
+            response=har.response_entry(status=101),
+            extras={"_resourceType": "websocket", "_webSocketMessages": [{"type": "send"}]},
+        )
+        _assert_valid_har(har.document([ent]))
+        assert ent["_resourceType"] == "websocket"
+        assert ent["_webSocketMessages"] == [{"type": "send"}]
+
+
+class TestProxyWebSocketFlowExport:
+    def test_a_websocket_flow_carries_devtools_messages(self) -> None:
+        request = SimpleNamespace(
+            method="GET", pretty_url="http://h/ws", host="h", headers={"upgrade": "websocket"}
+        )
+        response = SimpleNamespace(status_code=101, reason="Switching Protocols", headers={})
+        messages = [
+            SimpleNamespace(from_client=True, content=b"ping", type=1, timestamp=1000.0),
+            SimpleNamespace(from_client=False, content=b"\x00\x01", type=2, timestamp=1000.2),
+        ]
+        websocket = SimpleNamespace(messages=messages, timestamp_end=1001.0, close_code=1000)
+        flow = SimpleNamespace(
+            id="w1", request=request, response=response, websocket=websocket
+        )
+        summary = {"id": "w1", "method": "GET", "url": "http://h/ws", "status": 101}
+        entry = _flow_to_har_entry(summary, flow)
+        _assert_valid_har(har.document([entry]))
+        assert entry["_resourceType"] == "websocket"
+        msgs = entry["_webSocketMessages"]
+        assert msgs[0] == {"type": "send", "time": 1000.0, "opcode": 1, "data": "ping"}
+        assert msgs[1]["type"] == "receive"
+        assert msgs[1]["opcode"] == 2
+        assert base64.b64decode(msgs[1]["data"]) == b"\x00\x01"

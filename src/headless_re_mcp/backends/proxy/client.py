@@ -376,12 +376,20 @@ def _flow_to_har_entry(summary: JsonObject, flow: Any) -> JsonObject:
         body_size=_content_len(resp) if resp is not None else -1,
         cookies=har.response_cookies(_header_all(resp, "set-cookie")),
     )
+    extras: JsonObject | None = None
+    ws_view = _ws_messages_view(flow) if flow is not None else None
+    if ws_view is not None:
+        extras = {
+            "_resourceType": "websocket",
+            "_webSocketMessages": har.websocket_messages(ws_view["messages"]),
+        }
     return har.entry(
         started=req_start,
         time_ms=har.total_time(send, wait, receive),
         request=request,
         response=response,
         timings_obj=har.timings(send, wait, receive),
+        extras=extras,
     )
 
 

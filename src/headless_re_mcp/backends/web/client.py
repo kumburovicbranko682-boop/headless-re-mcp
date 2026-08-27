@@ -93,13 +93,17 @@ _WS_OPCODES = {
 }
 
 
-def _ws_summary(entry: JsonObject) -> JsonObject:
-    """A WebSocket connection row without its internal frame ring (``_frames``).
+_WS_INTERNAL_KEYS = frozenset({"_frames", "_har"})
 
-    ``_frames`` is a deque -- not JSON-serialisable and potentially large -- so
-    the list view projects it out and callers page the frames with ws.frames.
+
+def _ws_summary(entry: JsonObject) -> JsonObject:
+    """A WebSocket connection row without its internal fields.
+
+    ``_frames`` is a deque (not JSON-serialisable, potentially large) and
+    ``_har`` holds handshake headers kept only for the HAR export; the list view
+    projects both out and callers page the frames with ws.frames.
     """
-    return {key: value for key, value in entry.items() if key != "_frames"}
+    return {key: value for key, value in entry.items() if key not in _WS_INTERNAL_KEYS}
 
 
 def _bounded_header_map(headers: Any) -> dict[str, str]:
@@ -293,6 +297,60 @@ def _cdp_entry_to_har(entry: JsonObject) -> JsonObject:
     # resourceType is not a HAR field; keep it as a HAR-legal custom extension.
     ent["_resourceType"] = entry.get("resourceType")
     return ent
+
+
+def _ws_entry_to_har(conn: JsonObject) -> JsonObject:
+    """Build a HAR entry for one WebSocket connection (handshake + frames).
+
+    The handshake is a real GET/101 exchange CDP reports, so it becomes a normal
+    entry; the frames ride along as DevTools' ``_webSocketMessages``. Frame
+    timestamps are CDP's monotonic clock, so they are rebased onto epoch using
+    the wallTime/timestamp pairing captured at the handshake -- a frame that
+    cannot be rebased is emitted with time 0 rather than a fabricated instant.
+    """
+    har_meta = conn.get("_har") or {}
+    frames = list(conn.get("_frames") or [])
+    wall_time = har_meta.get("wall_time")
+    request_time = har_meta.get("request_time")
+
+    def _epoch(ts: Any) -> float | None:
+        if (
+            isinstance(ts, int | float)
+            and isinstance(wall_time, int | float)
+            and isinstance(request_time, int | float)
+        ):
+            return float(wall_time) + (float(ts) - float(request_time))
+        return None
+
+    rebased = [{**frame, "ts": _epoch(frame.get("ts"))} for frame in frames]
+    request_headers = har_meta.get("request_headers")
+    response_headers = har_meta.get("response_headers")
+    request = har_builder.request_entry(
+        method="GET",
+        url=conn.get("url"),
+        headers=request_headers,
+        mime=_map_header(request_headers, "content-type"),
+        body_size=-1,
+        cookies=har_builder.request_cookies(_map_header(request_headers, "cookie")),
+    )
+    response = har_builder.response_entry(
+        status=conn.get("status") or 0,
+        status_text=har_meta.get("status_text") or "",
+        headers=response_headers,
+        redirect_url=_map_header(response_headers, "location"),
+        body_size=-1,
+        cookies=har_builder.response_cookies(_map_header(response_headers, "set-cookie")),
+    )
+    return har_builder.entry(
+        started=wall_time,
+        time_ms=0.0,
+        request=request,
+        response=response,
+        extras={
+            "_resourceType": "websocket",
+            "_webSocketMessages": har_builder.websocket_messages(rebased),
+        },
+    )
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -866,12 +924,28 @@ class WebBackend:
                     handle.websockets.popitem(last=False)
                     handle.websockets_dropped += 1
 
+        def on_ws_will_send_handshake(params: JsonObject) -> None:
+            # The handshake request carries the epoch/monotonic clock pairing
+            # (wallTime/timestamp) plus the request headers; both are kept only
+            # for the HAR export, so they live under the internal ``_har`` key.
+            request = params.get("request") or {}
+            with handle.lock:
+                entry = handle.websockets.get(str(params.get("requestId")))
+                if entry is not None:
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["request_headers"] = _bounded_header_map(request.get("headers"))
+                    har_meta["wall_time"] = params.get("wallTime")
+                    har_meta["request_time"] = params.get("timestamp")
+
         def on_ws_handshake(params: JsonObject) -> None:
             resp = params.get("response") or {}
             with handle.lock:
                 entry = handle.websockets.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["response_headers"] = _bounded_header_map(resp.get("headers"))
+                    har_meta["status_text"] = resp.get("statusText")
 
         def _record_frame(params: JsonObject, direction: str) -> None:
             # Sent and received frames arrive under the same ``response`` shape
@@ -931,6 +1005,7 @@ class WebBackend:
         cdp.on("Network.responseReceivedExtraInfo", on_response_extra_info)
         cdp.on("Network.loadingFinished", on_loading_finished)
         cdp.on("Network.webSocketCreated", on_ws_created)
+        cdp.on("Network.webSocketWillSendHandshakeRequest", on_ws_will_send_handshake)
         cdp.on("Network.webSocketHandshakeResponseReceived", on_ws_handshake)
         cdp.on("Network.webSocketFrameSent", on_ws_frame_sent)
         cdp.on("Network.webSocketFrameReceived", on_ws_frame_received)
@@ -1231,6 +1306,7 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entries = [_cdp_entry_to_har(e) for e in handle.requests.values()]
+            entries.extend(_ws_entry_to_har(c) for c in handle.websockets.values())
         import json
 
         har = har_builder.document(entries)

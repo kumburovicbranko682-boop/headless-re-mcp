@@ -668,6 +668,30 @@ def test_web_cdp_captures_websocket_frames() -> None:
                 assert any(
                     base64.b64decode(f["payload"]) == _WS_BINARY_REPLY for f in recv_binary
                 ), recv_binary
+
+                # The HAR export carries the socket too: a websocket entry whose
+                # DevTools _webSocketMessages hold the same frames, so a captured
+                # socket re-imports into DevTools rather than being lost.
+                exported = service.web_har_export(session_id)
+                assert exported.ok, exported.error
+                log = json.loads(
+                    Path(exported.data["path"]).read_text(encoding="utf-8")
+                )["log"]
+                ws_entries = [e for e in log["entries"] if e.get("_resourceType") == "websocket"]
+                assert ws_entries, [e.get("_resourceType") for e in log["entries"]]
+                messages = ws_entries[0]["_webSocketMessages"]
+                assert any(
+                    m["type"] == "send" and m["data"] == _WS_CLIENT_TEXT for m in messages
+                ), messages
+                assert any(
+                    m["type"] == "receive" and m["data"] == _WS_TEXT_REPLY for m in messages
+                ), messages
+                assert any(
+                    m["type"] == "receive"
+                    and m["opcode"] == 2
+                    and base64.b64decode(m["data"]) == _WS_BINARY_REPLY
+                    for m in messages
+                ), messages
             finally:
                 service.web_close(session_id)
         finally:

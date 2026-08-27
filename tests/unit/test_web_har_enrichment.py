@@ -44,6 +44,8 @@ class _Handle:
         self.scripts_dropped = 0
         self.console: list[dict[str, Any]] = []
         self.console_dropped = 0
+        self.websockets: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.websockets_dropped = 0
         self.cdp = _Cdp()
 
 
