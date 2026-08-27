@@ -7,12 +7,14 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, WasmClient
 from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -77,8 +79,66 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # Prove webcrack actually deobfuscated rather than echoing the input:
+        # the fixture hides "H3adl3ss" as the escape sequence \x48\x33..., which
+        # only reads back decoded if the string array was resolved, and rewrites
+        # bracket-notation member access like ["push"] to plain .push.
+        assert "H3adl3ss" in code
+        assert "\\x48" not in code
+        assert '["push"]' not in code
+    finally:
+        service.close_all()
+
+
+# A hand-rolled webpack runtime with two modules: the entry logs the result of
+# calling the second module's exported greeter. webcrack recognises the runtime
+# and splits it back into per-module files.
+_WEBPACK_BUNDLE = """(function (modules) {
+  var installedModules = {};
+  function __webpack_require__(moduleId) {
+    if (installedModules[moduleId]) return installedModules[moduleId].exports;
+    var module = (installedModules[moduleId] = { i: moduleId, l: false, exports: {} });
+    modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+    module.l = true;
+    return module.exports;
+  }
+  return __webpack_require__(0);
+})([
+  function (module, exports, __webpack_require__) {
+    var greet = __webpack_require__(1);
+    console.log(greet("world"));
+  },
+  function (module, exports) {
+    module.exports = function (name) {
+      return "hello " + name;
+    };
+  },
+]);
+"""
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_splits_a_webpack_bundle(tmp_path: Path) -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS bundle Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    bundle.write_text(_WEBPACK_BUNDLE, encoding="utf-8")
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        # This is the leg that regressed: the client pre-creates the output dir,
+        # and without --force webcrack 2.x refuses it and the call fails.
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 2
+        out_dir = Path(result.data["output_dir"])
+        carriers = [
+            path for path in out_dir.rglob("*.js") if "hello " in path.read_text(encoding="utf-8")
+        ]
+        assert carriers, "no unpacked module carried the bundled function body"
     finally:
         service.close_all()
 
