@@ -229,6 +229,33 @@ def test_invalid_response_frame_boundary_is_rejected(response_size: int) -> None
     assert exc_info.value.code == "rpc_protocol_error"
 
 
+class NestedBodyTransport(ScriptedTransport):
+    """Answers every request with a length-valid but deeply nested JSON body."""
+
+    def write_all(self, data: bytes, *, timeout: float) -> None:
+        del timeout
+        request = json.loads(data[4:])
+        self.requests.append(request)
+        body = b"[" * 20_000
+        self._reads.extend((len(body).to_bytes(4, "little"), body))
+
+
+def test_deeply_nested_response_body_is_a_protocol_error() -> None:
+    """A length-valid body nested thousands deep must refuse cleanly.
+
+    20k '[' is well under the 8 MiB frame cap, so it passes the length checks
+    and reaches json.loads, whose C decoder recurses per bracket and raises
+    RecursionError -- not JSONDecodeError. That was outside the caught set, so
+    it escaped _request as an uncaught RecursionError where a malformed body is
+    otherwise a clean rpc_protocol_error.
+    """
+    client = _client(NestedBodyTransport())
+
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client._request("debug.state", {}, timeout=1)
+    assert exc_info.value.code == "rpc_protocol_error"
+
+
 def test_wrong_response_id_is_rejected() -> None:
     client = _client(
         ScriptedTransport(
