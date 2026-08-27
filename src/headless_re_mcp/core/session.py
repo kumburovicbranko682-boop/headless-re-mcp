@@ -396,12 +396,23 @@ _ELF_MAX_PHNUM = 1024
 _ELF_MAX_SHNUM = 4096
 _ELF_MAX_DYN = 4096
 _ELF_MAX_INTERP = 4096
+# DT_NEEDED names the shared libraries the loader must pull in -- the ELF
+# analogue of Mach-O's LC_LOAD_DYLIB list -- so a native session reports what it
+# depends on, not just its interpreter. The names live in the dynamic string
+# table (DT_STRTAB), whose virtual address maps to a file offset through the
+# PT_LOAD segments; the count and table size are bounded before either is read.
+_PT_LOAD = 1
 _PT_DYNAMIC = 2
 _PT_INTERP = 3
 _SHT_SYMTAB = 2
 _DT_NULL = 0
+_DT_NEEDED = 1
+_DT_STRTAB = 5
+_DT_STRSZ = 10
 _DT_FLAGS_1 = 0x6FFFFFFB
 _DF_1_PIE = 0x08000000
+_ELF_MAX_NEEDED = 512
+_ELF_MAX_STRTAB = 4 * 1024 * 1024
 _ELF_TYPES = {1: "rel", 2: "exec", 3: "dyn", 4: "core"}
 _ELF_MACHINES = {
     2: "sparc",
@@ -1833,6 +1844,11 @@ def _elf_layout_facts(
         facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
         if program["has_dynamic"]:
             pie = _elf_dynamic_pie(stream, order, bits, program["dyn_off"], program["dyn_sz"])
+            needed = _elf_needed(
+                stream, order, bits, program["dyn_off"], program["dyn_sz"], program["loads"]
+            )
+            if needed is not None:
+                facts["needed"] = needed
         else:
             pie = False
         if pie is not None:
@@ -1856,6 +1872,7 @@ def _elf_program_headers(
     has_interp = has_dynamic = False
     interp: str | None = None
     dyn_off = dyn_sz = 0
+    loads: list[tuple[int, int, int]] = []
     for i in range(phnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
@@ -1863,11 +1880,15 @@ def _elf_program_headers(
         p_type = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
         if bits == 64:
             p_offset = int.from_bytes(entry[8:16], order)  # type: ignore[arg-type]
+            p_vaddr = int.from_bytes(entry[16:24], order)  # type: ignore[arg-type]
             p_filesz = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
         else:
             p_offset = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
+            p_vaddr = int.from_bytes(entry[8:12], order)  # type: ignore[arg-type]
             p_filesz = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
-        if p_type == _PT_DYNAMIC:
+        if p_type == _PT_LOAD and p_filesz > 0:
+            loads.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == _PT_DYNAMIC:
             has_dynamic = True
             dyn_off, dyn_sz = p_offset, p_filesz
         elif p_type == _PT_INTERP and 0 < p_filesz <= _ELF_MAX_INTERP and p_offset > 0:
@@ -1880,6 +1901,7 @@ def _elf_program_headers(
         "interp": interp,
         "dyn_off": dyn_off,
         "dyn_sz": dyn_sz,
+        "loads": loads,
     }
 
 
@@ -1912,6 +1934,80 @@ def _elf_dynamic_pie(
         if tag == _DT_FLAGS_1:
             return bool(val & _DF_1_PIE)
     return False
+
+
+def _elf_vaddr_to_off(vaddr: int, loads: list[tuple[int, int, int]]) -> int | None:
+    """Map a virtual address to its file offset through the PT_LOAD segments."""
+    for seg_vaddr, seg_off, seg_filesz in loads:
+        if seg_vaddr <= vaddr < seg_vaddr + seg_filesz:
+            return seg_off + (vaddr - seg_vaddr)
+    return None
+
+
+def _elf_needed(
+    stream: BinaryIO,
+    order: str,
+    bits: int,
+    dyn_off: int,
+    dyn_sz: int,
+    loads: list[tuple[int, int, int]],
+) -> list[str] | None:
+    """DT_NEEDED shared-library names, or None when the table cannot be read.
+
+    Walks the dynamic array for the DT_NEEDED string offsets and the DT_STRTAB
+    address, maps that address to a file offset through the PT_LOAD segments,
+    and reads each name out of the dynamic string table. Bounded at every step:
+    the entry count, the name count and the string-table read are all capped, so
+    a corrupt table yields None (dynamic but undetermined) rather than a large
+    read; a dynamic image that names nothing yields an empty list.
+    """
+    if dyn_off <= 0 or dyn_sz <= 0 or not loads:
+        return None
+    entsize = 16 if bits == 64 else 8
+    vsize = entsize // 2
+    count = min(dyn_sz // entsize, _ELF_MAX_DYN)
+    if count <= 0:
+        return None
+    stream.seek(dyn_off)
+    table = stream.read(entsize * count)
+    needed_offsets: list[int] = []
+    strtab_va: int | None = None
+    strsz: int | None = None
+    for i in range(count):
+        entry = table[i * entsize : (i + 1) * entsize]
+        if len(entry) < entsize:
+            break
+        tag = int.from_bytes(entry[0:vsize], order)  # type: ignore[arg-type]
+        val = int.from_bytes(entry[vsize:entsize], order)  # type: ignore[arg-type]
+        if tag == _DT_NULL:
+            break
+        if tag == _DT_NEEDED:
+            if len(needed_offsets) < _ELF_MAX_NEEDED:
+                needed_offsets.append(val)
+        elif tag == _DT_STRTAB:
+            strtab_va = val
+        elif tag == _DT_STRSZ:
+            strsz = val
+    if strtab_va is None:
+        return None
+    if not needed_offsets:
+        return []
+    str_off = _elf_vaddr_to_off(strtab_va, loads)
+    if str_off is None:
+        return None
+    cap = strsz if strsz is not None and 0 < strsz <= _ELF_MAX_STRTAB else _ELF_MAX_STRTAB
+    stream.seek(str_off)
+    blob = stream.read(cap)
+    names: list[str] = []
+    for offset in needed_offsets:
+        if 0 <= offset < len(blob):
+            end = blob.find(b"\x00", offset)
+            if end == -1:
+                end = len(blob)
+            name = blob[offset:end].decode("utf-8", errors="replace")
+            if name:
+                names.append(name)
+    return names
 
 
 def _elf_is_stripped(

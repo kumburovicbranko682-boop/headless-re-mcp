@@ -97,10 +97,11 @@ def _java_class() -> bytes:
     return b"\xca\xfe\xba\xbe" + (0).to_bytes(2, "big") + (52).to_bytes(2, "big") + b"\x00" * 8
 
 
-def _phdr64(p_type: int, p_offset: int = 0, p_filesz: int = 0) -> bytes:
+def _phdr64(p_type: int, p_offset: int = 0, p_filesz: int = 0, p_vaddr: int = 0) -> bytes:
     entry = bytearray(56)
     entry[0:4] = p_type.to_bytes(4, "little")
     entry[8:16] = p_offset.to_bytes(8, "little")
+    entry[16:24] = p_vaddr.to_bytes(8, "little")
     entry[32:40] = p_filesz.to_bytes(8, "little")
     return bytes(entry)
 
@@ -142,6 +143,34 @@ def _elf64_dynamic_pie() -> bytes:
     program = _phdr64(3, interp_off, len(interp)) + _phdr64(2, dyn_off, len(dyn))
     ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
     return ehdr + program + interp + dyn
+
+
+def _elf64_dynamic_with_needed() -> bytes:
+    """A dynamic ELF whose DT_NEEDED names two shared libraries.
+
+    A PT_LOAD segment with vaddr == offset == 0 makes the DT_STRTAB virtual
+    address map straight to its file offset, so the reader resolves the name
+    offsets the same way it does on a real image.
+    """
+    strtab = b"\x00libc.so.6\x00libm.so.6\x00"  # names at offsets 1 and 11
+    dyn = b"".join(
+        tag.to_bytes(8, "little") + val.to_bytes(8, "little")
+        for tag, val in (
+            (1, 1),  # DT_NEEDED -> "libc.so.6"
+            (1, 11),  # DT_NEEDED -> "libm.so.6"
+            (5, 176),  # DT_STRTAB (vaddr == file offset of the string table)
+            (10, len(strtab)),  # DT_STRSZ
+            (0, 0),  # DT_NULL
+        )
+    )
+    ph_off = 64
+    strtab_off = ph_off + 56 * 2  # == 176, matching DT_STRTAB above
+    dyn_off = strtab_off + len(strtab)
+    program = _phdr64(1, p_offset=0, p_filesz=0x10000, p_vaddr=0) + _phdr64(  # PT_LOAD
+        2, dyn_off, len(dyn)  # PT_DYNAMIC
+    )
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
+    return ehdr + program + strtab + dyn
 
 
 def _elf64_static_with_symtab() -> bytes:
@@ -206,6 +235,14 @@ def test_dynamic_pie_facts_from_program_headers(tmp_path: Path) -> None:
     assert facts["interpreter"] == "/lib64/ld.so.1"
 
 
+def test_dynamic_needed_libraries_from_the_dynamic_string_table(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_needed())
+    facts = describe_native(path)["native"]
+    assert facts["linking"] == "dynamic"
+    # The ELF analogue of Mach-O's dylibs: DT_NEEDED resolved through DT_STRTAB.
+    assert facts["needed"] == ["libc.so.6", "libm.so.6"]
+
+
 def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
     facts = describe_native(path)["native"]
@@ -214,6 +251,8 @@ def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     assert facts["pie"] is False
     assert "interpreter" not in facts
     assert facts["stripped"] is False  # a SHT_SYMTAB section is present
+    # A static image depends on nothing, so it carries no needed list.
+    assert "needed" not in facts
 
 
 def test_real_elf_pie_versus_shared_object() -> None:
@@ -238,6 +277,8 @@ def test_real_elf_pie_versus_shared_object() -> None:
     assert ls_facts["pie"] is True
     assert ls_facts["linking"] == "dynamic"
     assert ls_facts["interpreter"].startswith("/lib")
+    # A real dynamic executable names libc among its DT_NEEDED libraries.
+    assert any("libc.so" in name for name in ls_facts["needed"])
     assert libc_facts["pie"] is False
     assert libc_facts["linking"] == "dynamic"
 

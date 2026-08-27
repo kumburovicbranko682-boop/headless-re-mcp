@@ -51,6 +51,11 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         # The stdlib reader also answers the triage questions before r2 runs.
         assert native["linking"] in {"dynamic", "static"}
         assert isinstance(native["pie"], bool)
+        # DT_NEEDED is the stdlib mirror of what r2's imports resolve against: a
+        # dynamic ELF names the shared libraries it links, each a real name.
+        needed = native.get("needed")
+        if native["linking"] == "dynamic" and needed:
+            assert all(isinstance(name, str) and name for name in needed)
         session_id = str(session["id"])
 
         opened = service.r2_open(session_id, timeout=60.0)
