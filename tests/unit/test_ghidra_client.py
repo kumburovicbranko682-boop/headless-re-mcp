@@ -268,3 +268,119 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert caught.value.code == "backend_error"
     assert caught.value.message == "export JSON invalid"
     assert error_type in str(caught.value.details["error"])
+
+
+def test_find_analyze_headless_prefers_the_host_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both launchers ship together; the Windows .bat must not win on POSIX.
+
+    A Ghidra tree carries support/analyzeHeadless (POSIX) and
+    support/analyzeHeadless.bat (Windows) side by side. Discovering the .bat
+    first left Linux/macOS handing Popen a non-executable batch file, which died
+    as a "Permission denied" backend_error on every Ghidra call. Pin that the
+    host's own launcher wins.
+    """
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless"
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless.bat"
+
+
+def test_find_analyze_headless_falls_back_to_the_other_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tree carrying only one launcher still resolves (partial fake homes)."""
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless.bat"
+
+
+def test_ghidra_reports_a_swallowed_post_script_failure_as_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyzeHeadless exits 0 when the export .py never loaded; say why.
+
+    On Ghidra >= 11.3 a ``.py`` post-script is claimed by PyGhidra, which
+    headless does not start unless launched through it, so the import succeeds,
+    no JSON is written, and the process still returns 0. The old code reported a
+    blank "export JSON missing" -- measured here is that the analyzer's own
+    reason is surfaced as capability_unavailable so the caller blames the
+    runtime, not the binary.
+    """
+    log = (
+        "INFO  REPORT: Analysis succeeded for file: file:///bin/ls (HeadlessAnalyzer)\n"
+        "ERROR REPORT SCRIPT ERROR: ExportJson.py : Ghidra was not started with "
+        "PyGhidra. Python is not available (HeadlessAnalyzer) "
+        "ghidra.app.script.GhidraScriptLoadException: Ghidra was not started with "
+        "PyGhidra. Python is not available\n"
+        "INFO  REPORT: Import succeeded (HeadlessAnalyzer)\n"
+    )
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        # Deliberately does not write the export JSON: the script never ran.
+        return Completed(0, log.encode("utf-8"), b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "capability_unavailable"
+    lowered = caught.value.message.casefold()
+    assert "pyghidra" in lowered
+    assert "export" in lowered
+    # The analyzer's own SCRIPT ERROR line is quoted back to the caller.
+    assert "GhidraScriptLoadException" in caught.value.message
+
+
+def test_ghidra_missing_json_without_a_script_error_stays_a_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No JSON and no script-failure marker keeps the generic backend_error path."""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        return Completed(0, b"INFO  REPORT: Import succeeded (HeadlessAnalyzer)", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "export JSON missing after postScript"
+
+
+def test_ghidra_nonzero_exit_without_json_reports_export_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash with no JSON and no script marker is analyzeHeadless failing."""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        return Completed(1, b"boom", b"stack trace")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "analyzeHeadless export failed"
+    assert caught.value.details.get("exit_code") == 1

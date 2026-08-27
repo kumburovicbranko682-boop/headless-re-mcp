@@ -217,15 +217,35 @@ class GhidraClient:
             max_heap=max_heap,
             delete_project=True,
         )
-        if code != 0 and not out_path.is_file():
-            raise GhidraError(
-                "backend_error",
-                "analyzeHeadless export failed",
-                exit_code=code,
-                stderr=stderr[:4000],
-                stdout_excerpt=stdout[-4000:],
-            )
         if not out_path.is_file():
+            reason = _script_runtime_failure(stdout, stderr)
+            if reason is not None:
+                # analyzeHeadless imports the binary, runs the post-script, and
+                # exits 0 even when the script never loaded: on Ghidra >= 11.3 a
+                # ``.py`` script is claimed by PyGhidra, which headless does not
+                # start unless it was launched through it, so the import
+                # "succeeds" and no JSON is written. Reporting a blank "missing
+                # JSON" there sent the caller hunting the binary; surface the
+                # analyzer's own reason so the runtime gap is the visible cause.
+                raise GhidraError(
+                    "capability_unavailable",
+                    (
+                        "Ghidra imported the binary but could not run the JSON "
+                        "export script; enable a Python runtime for "
+                        "analyzeHeadless (PyGhidra, or the Jython extension on "
+                        f"Ghidra <= 11.2). analyzer reported: {reason}"
+                    ),
+                    exit_code=code,
+                    stderr=stderr[:2000],
+                )
+            if code != 0:
+                raise GhidraError(
+                    "backend_error",
+                    "analyzeHeadless export failed",
+                    exit_code=code,
+                    stderr=stderr[:4000],
+                    stdout_excerpt=stdout[-4000:],
+                )
             raise GhidraError(
                 "backend_error",
                 "export JSON missing after postScript",
@@ -313,6 +333,32 @@ class GhidraClient:
         return stdout, stderr, int(completed.returncode)
 
 
+_SCRIPT_FAILURE_MARKERS = (
+    "GhidraScriptLoadException",
+    "SCRIPT ERROR",
+    "Unable to run script",
+    "Unable to load script",
+)
+
+
+def _script_runtime_failure(stdout: str, stderr: str) -> str | None:
+    """Extract the analyzer's reason when a post-script failed but exit was 0.
+
+    HeadlessAnalyzer logs a post-script load/run failure and still returns 0, so
+    the only signal that the export never happened is in the captured output.
+    Return the offending line (bounded) when a failure marker is present, else
+    ``None`` so the caller keeps its generic missing-JSON path.
+    """
+    haystack = f"{stdout}\n{stderr}"
+    lowered = haystack.casefold()
+    if not any(marker.casefold() in lowered for marker in _SCRIPT_FAILURE_MARKERS):
+        return None
+    for line in haystack.splitlines():
+        if "SCRIPT ERROR" in line or "GhidraScriptLoadException" in line:
+            return line.strip()[:500]
+    return "the analyzeHeadless post-script failed to execute"
+
+
 def _which(name: str) -> Path | None:
     found = shutil.which(name)
     return Path(found) if found else None
@@ -321,13 +367,21 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # Every Ghidra distribution ships both launchers side by side: the Windows
+    # ``analyzeHeadless.bat`` and the POSIX ``analyzeHeadless`` shell script.
+    # Trying the .bat first unconditionally meant Linux/macOS discovered the
+    # non-executable batch file and every call died with a confusing "Permission
+    # denied" from Popen -- prefer the launcher that matches the host, and only
+    # fall back to the other so a partial tree (as in the fake-home tests) still
+    # resolves.
+    names = (
+        ("analyzeHeadless.bat", "analyzeHeadless")
+        if os.name == "nt"
+        else ("analyzeHeadless", "analyzeHeadless.bat")
+    )
+    for parent in (home / "support", home):
+        for name in names:
+            candidate = parent / name
+            if candidate.is_file():
+                return candidate
     return None
