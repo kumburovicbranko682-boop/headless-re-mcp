@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 JsonObject = dict[str, Any]
 
 
-def _detection_timeout(timeout: float) -> float:
-    from headless_re_mcp.core.service import _detection_timeout as real
+def _external_tool_timeout(timeout: float) -> float:
+    from headless_re_mcp.core.service import _external_tool_timeout as real
 
     return real(timeout)
 
@@ -140,7 +140,7 @@ class DotnetAnalysisMixin:
                 session.require_pe(),
                 out_path,
                 input_sha256=session.sha256,
-                timeout=_detection_timeout(timeout),
+                timeout=_external_tool_timeout(timeout),
             )
             session = self.registry.get(session_id)
             if session.state in {
@@ -264,7 +264,7 @@ class DotnetAnalysisMixin:
                 session.require_pe(),
                 out_path,
                 input_sha256=session.sha256,
-                timeout=_detection_timeout(timeout),
+                timeout=_external_tool_timeout(timeout),
             )
             session = self.registry.get(session_id)
             if session.state in {
