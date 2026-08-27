@@ -218,7 +218,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
-- **`web.open`/`web.navigate` 对导航 URL 的 scheme 不设限，能把浏览器变成本地文件读取器**。二者把
+- **HAR 导出的 `request.queryString` 恒为空，明明 URL 里就带着查询参数**。`proxy.export_har` /
+  `web.har.export` 走同一套 `har_entry`，每条 entry 的 `queryString` 一律发空数组——可这正是逆向者
+  打开 HAR 最想看的请求参数，而数据本就在同一条 entry 的 `url` 里（HAR 是 spec-valid 的，只是这个必填
+  成员没填实）。现在 `har_entry` 用新加的 `query_string(url)` 从 URL 的查询段解析出 name/value（`urlsplit`
+  分离掉 fragment、`keep_blank_values` 保留 `?a=1&b=&c` 里的空值、百分号解码），两个导出器同样受益；
+  解析失败退化成空数组不影响整份导出，参数数量上限 512 防止畸形超密查询撑大单条 entry。数据来自本就
+  保留的 URL，不是凭空编造。
   URL 原样交给 `page.goto`：`file:///etc/passwd` 直接读任意磁盘内容、`chrome://` 与 `view-source:` /
   `filesystem:` 暴露浏览器内部页，读到的东西再经 `web.dom.snapshot` / `web.script.source` 就能被 agent
   取回——这条 web 面本就为同一类风险刻意不提供任意 JS `evaluate`，导航目标却没有对应约束。且 Agent

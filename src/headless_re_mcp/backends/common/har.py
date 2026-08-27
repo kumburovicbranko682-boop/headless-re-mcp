@@ -7,21 +7,51 @@ A HAR ``entry`` has required members well beyond method/url/status:
 object, and ``timings``. The proxy and web exporters used to emit only
 method/url/status/mimeType, which Chrome DevTools and other HAR tools reject as
 malformed -- a file that opens nowhere is not an export. These builders fill
-every required field, using the real capture timestamp when one was recorded
-and honest "unknown" sentinels (``-1`` sizes, empty arrays) where the capture
-did not retain that detail, so the document loads while never claiming data it
-does not have.
+every required field, using the real capture timestamp when one was recorded,
+the request parameters recovered from the URL for ``queryString``, and honest
+"unknown" sentinels (``-1`` sizes, empty arrays) where the capture did not
+retain that detail, so the document loads while never claiming data it does not
+have.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 JsonObject = dict[str, Any]
 
 # The receiver keys off `entries`, not the creator, but the field is required.
 _CREATOR: JsonObject = {"name": "headless-re-mcp"}
+
+# A captured URL is already length-bounded upstream, but cap the parsed list so
+# a pathologically parameter-dense query cannot bloat a single entry.
+_MAX_QUERY_PARAMS = 512
+
+
+def query_string(url: str | None) -> list[JsonObject]:
+    """The URL's query parsed into HAR ``queryString`` name/value objects.
+
+    ``queryString`` is a required request member and it is exactly the request
+    parameters a reverse-engineer opens a HAR to read, yet it was always emitted
+    empty even though the whole URL -- query included -- is already in the entry.
+    The data is therefore surfaced from the URL that is already retained, not
+    invented: the query is split off (the fragment, which ``urlsplit`` separates,
+    is excluded) and percent-decoded with blank values kept, so ``?a=1&b=&c``
+    round-trips honestly. A malformed URL degrades to an empty list rather than
+    breaking the whole export.
+    """
+    if not url:
+        return []
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        return []
+    if not query:
+        return []
+    pairs = parse_qsl(query, keep_blank_values=True)
+    return [{"name": name, "value": value} for name, value in pairs[:_MAX_QUERY_PARAMS]]
 
 
 def iso8601(epoch: float | None) -> str:
@@ -50,7 +80,8 @@ def har_entry(
 
     Only method/url/status/mimeType and an optional start time are known here;
     every other required member is emitted with a valid empty/unknown value so
-    the entry is well-formed. ``extra`` carries custom ``_``-prefixed fields
+    the entry is well-formed, except ``queryString``, which is recovered from the
+    URL (see ``query_string``). ``extra`` carries custom ``_``-prefixed fields
     (e.g. the web capture's resource type), which HAR permits.
     """
     entry: JsonObject = {
@@ -64,7 +95,7 @@ def har_entry(
             "httpVersion": http_version,
             "cookies": [],
             "headers": [],
-            "queryString": [],
+            "queryString": query_string(url),
             "headersSize": -1,
             "bodySize": -1,
         },

@@ -15,7 +15,12 @@ from threading import Lock
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.common.har import har_document, har_entry, iso8601
+from headless_re_mcp.backends.common.har import (
+    har_document,
+    har_entry,
+    iso8601,
+    query_string,
+)
 from headless_re_mcp.backends.proxy.client import ProxyBackend
 from headless_re_mcp.backends.web.client import WebBackend
 
@@ -70,6 +75,45 @@ def test_har_entry_fills_every_required_member() -> None:
     assert entry["_resourceType"] == "XHR"
 
 
+def test_query_string_recovers_request_parameters_from_the_url() -> None:
+    """The parameters an analyst opens a HAR to read come off the URL itself."""
+    params = query_string("https://api.example/search?q=hello+world&page=2&flag")
+    assert params == [
+        {"name": "q", "value": "hello world"},
+        {"name": "page", "value": "2"},
+        # keep_blank_values keeps a bare key with an empty value.
+        {"name": "flag", "value": ""},
+    ]
+
+
+def test_query_string_is_empty_without_a_query() -> None:
+    assert query_string("https://x/a") == []
+    assert query_string("") == []
+    assert query_string(None) == []
+    # The fragment is not the query and must not leak into the parameters.
+    assert query_string("https://x/a#q=notaparam") == []
+
+
+def test_query_string_is_capped() -> None:
+    dense = "https://x/a?" + "&".join(f"k{i}=v{i}" for i in range(1000))
+    assert len(query_string(dense)) == 512
+
+
+def test_har_entry_populates_query_string_from_the_url() -> None:
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="GET",
+        url="https://api.example/login?user=alice&next=%2Fhome",
+        status=200,
+        mime_type="application/json",
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["queryString"] == [
+        {"name": "user", "value": "alice"},
+        {"name": "next", "value": "/home"},
+    ]
+
+
 def test_har_document_wraps_entries_in_the_log_envelope() -> None:
     doc = har_document([har_entry(
         started_at=None, method="GET", url="https://x", status=0, mime_type="",
@@ -82,7 +126,7 @@ def test_har_document_wraps_entries_in_the_log_envelope() -> None:
 def _proxy_flow(started: float) -> SimpleNamespace:
     request = SimpleNamespace(
         method="GET",
-        pretty_url="https://x/a",
+        pretty_url="https://x/a?token=abc&id=7",
         host="x",
         headers={},
         raw_content=b"",
@@ -110,7 +154,12 @@ def test_proxy_export_har_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> Non
     _assert_entry_is_spec_valid(entry)
     # The captured wire start time reached the export, not the export instant.
     assert datetime.fromisoformat(entry["startedDateTime"]).year == 2023
-    assert entry["request"]["url"] == "https://x/a"
+    assert entry["request"]["url"] == "https://x/a?token=abc&id=7"
+    # The query parameters reached the export off the captured URL.
+    assert entry["request"]["queryString"] == [
+        {"name": "token", "value": "abc"},
+        {"name": "id", "value": "7"},
+    ]
 
 
 class _WebHandle:

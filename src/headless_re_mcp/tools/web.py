@@ -207,10 +207,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         The file is a spec-valid HAR 1.2 log that standard viewers (Chrome
         DevTools, HAR analyzers) can open; each entry carries the required
-        request/response, timings and startedDateTime members, with unknown
-        fields left as empty/`-1` rather than omitted. Answers with path and
-        entry_count, plus artifact_id when the HAR was registered. There is no
-        har, entries or artifact field.
+        request/response, timings and startedDateTime members, its queryString
+        recovered from the request URL, with unknown fields left as empty/`-1`
+        rather than omitted. Answers with path and entry_count, plus artifact_id
+        when the HAR was registered. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 
