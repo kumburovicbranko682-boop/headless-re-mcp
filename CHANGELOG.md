@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（运维首触 CLI Gate）
+
+- 新集成 Gate `tests/integration/test_operator_cli_gate.py`（纯 Python,任何平台可跑)钉住新
+  操作员最先运行的两条命令的真实 CLI 契约,此前只有函数级单测:
+  - `doctor --json`:平台支持级别如实上报(Linux `core` / Windows `full`),required 探针集
+    按平台正确(Linux 仅 `platform`+`python`);非 Windows 宿主上所有 Windows-only 后端
+    (x64dbg/windbg/Win32 UI/hidden desktop/Exeinfo/Scylla/XVLKC/VMP dumper 等 11 项)一律
+    报 `unsupported_on_platform` 且不计 required——既不谎报 ready,也不误报 missing 引人去装
+    装不上的东西;`--strict` 在 required 就绪的机器上退出码 0。
+  - `config generate`:产物无密钥(server env 仅含 `HEADLESS_RE_CONFIG` 指针),stdio 块把
+    默认 config 路径钉进 argv 与 env,`--config-path`/`--no-examples` 按约生效;最强断言是
+    **按产物照抄的 command+args 真的拉起了 MCP 服务器**——经 stdio 完成 initialize/list_tools
+    握手并列出 100+ 工具,证明操作员贴进 Cursor 的配置确实可跑,而非只是形状正确。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
