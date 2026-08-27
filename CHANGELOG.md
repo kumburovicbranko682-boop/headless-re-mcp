@@ -288,6 +288,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
   里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
 
+### 修复（proxy.stop 不再把仍存活的代理线程谎报为已停止）
+
+- `proxy.stop` 过去在 `join(timeout=10s)` 之后一律回 `{"stopped": True}`,从不检查 mitmproxy 线程是否
+  真的退出。线程若卡死在 mitmproxy 里,它仍占着监听端口,但实例已从 `_instances` 弹出——于是
+  `status` 说没在跑、`stop` 说已停,而端口被一个「僵尸」线程占着,下一次同端口 capture 再也 bind
+  不上。现 `_ProxyInstance.stop()` 返回线程是否真的死亡;`ProxyBackend.stop()` 据此回报:仍存活时
+  回 `stopped=False` 加 `note`/`host`/`port`,并把实例重新登记,让重试、`close_all` 与同端口 start
+  的占用检查都能看到它。干净停止仍回 `{"stopped": True}` 并注销实例。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
