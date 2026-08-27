@@ -234,6 +234,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `apk.repack` 再重建出（未签名）APK；新增 gate 驱动整条往返：decode 断言产出 smali 目录与命名 package
   的文本清单，repack 断言落盘一个未签名 APK。无 apktool 时干净跳过（skip != pass），apktool 在场时
   已验证通过。签名需 apksigner（Android build-tools），仍由既有降级单测覆盖。
+- **`js.unpack_bundle` 一直是坏的：webcrack 拒绝客户端刚建好的输出目录**。`unpack_bundle` 先
+  `out_dir.mkdir()` 再跑 `webcrack -o out_dir`，而 webcrack 不给 `-f` 就对已存在的输出目录直接
+  报错退出（`output directory already exists`，webcrack 2.16.0 复现）；服务每次都递一个全新的
+  per-uuid 目录、客户端又把它建出来，于是每一次真实拆包都失败。`deobfuscate` 没有输出目录所以不受影响，
+  加之拆包单测都 mock 掉 `_run`、托管 CI 也不装 webcrack，这个缺陷一直没被发现。现在传 `-f` 让 webcrack
+  覆盖那个空目录（目录不存在时照样新建）。新增一个捕获 argv、钉住 `-f` 的单测（CI 无需 webcrack 即可守护），
+  并提交一个 3 模块的 webpack bundle 夹具 + gate：webcrack 在场时把它拆成多个文件，缺席时干净跳过
+  （skip != pass）。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
