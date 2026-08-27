@@ -1050,6 +1050,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
+  崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
+  非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
+  归一化恢复而不是让 hydration 崩掉;store 源本身抛异常或返回非 Mapping 行时启动照常。
+  注册表护栏直测:同态迁移是无副作用的 no-op(不更新 `updated_at`)、CLOSING/CLOSED
+  会话拒绝挂 backend、`remove_closed` 拒删活会话、重启后 adopt 进来的 closed 行可被
+  正常退休。目标分类直面伪造文件:PK 魔数但 zip 损坏回落 PE、无扩展名时按 wasm/带
+  manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
+  伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
+  远程 URL 不碰磁盘。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
