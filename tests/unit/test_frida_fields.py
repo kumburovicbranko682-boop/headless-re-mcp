@@ -459,6 +459,113 @@ def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() ->
     assert payload["has_more"] is False
 
 
+def test_frida_java_methods_without_a_class_name_is_invalid_params() -> None:
+    """methods mode has to name a class; the empty request is a caller error.
+
+    The mode is chosen and the target attached, but with no class_name there is
+    nothing to enumerate. Returning an empty methods list here would read as a
+    real class that declares nothing, so the refusal must be invalid_params --
+    a caller mistake -- not backend_error or a silent empty answer. Raised from
+    inside the worker, it still has to arrive with its own code intact rather
+    than being reclassified by the outer catch.
+    """
+    client = _java_client_returning(_JavaApi())
+    with pytest.raises(FridaError) as info:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="methods")
+    assert info.value.code == "invalid_params"
+    assert "class_name" in info.value.message
+
+
+def test_frida_java_rejects_an_unknown_mode() -> None:
+    """Only classes and methods exist; anything else is a caller error.
+
+    A typo'd mode reaches the worker (device attached, script loaded) and then
+    matches neither branch. It must be refused as invalid_params naming the two
+    modes, not swallowed as an empty result that would look like a target with
+    no classes and no methods.
+    """
+    client = _java_client_returning(_JavaApi())
+    with pytest.raises(FridaError) as info:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="everything")
+    assert info.value.code == "invalid_params"
+    assert "classes or methods" in info.value.message
+
+
+class _AttachFailsDevice:
+    def attach(self, pid: int) -> Any:
+        raise RuntimeError("device offline")
+
+
+def _java_client_with_device(device: object) -> FridaClient:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: device  # type: ignore[method-assign]
+    return client
+
+
+def test_frida_java_attach_failure_is_backend_error_naming_the_pid() -> None:
+    """A frida error from attach is a target outcome, not an internal fault.
+
+    When ``device.attach(pid)`` raises, the raw frida exception would otherwise
+    reach the failure handler and be minted as an internal_error incident for
+    what is a normal condition -- the pid exited, or the process refuses
+    injection. java_enumerate classifies it as backend_error and carries the
+    pid so the caller knows which target could not be reached. No session was
+    opened, so there is nothing to leak.
+    """
+    client = _java_client_with_device(_AttachFailsDevice())
+    with pytest.raises(FridaError) as info:
+        client.java_enumerate(None, 7, allowed_pids={7}, mode="classes")
+    assert info.value.code == "backend_error"
+    assert "attach failed" in info.value.message
+    assert info.value.details.get("pid") == 7
+
+
+class _LoadFailsScript:
+    exports_sync = _JavaApi()
+
+    def load(self) -> None:
+        raise RuntimeError("script would not compile")
+
+
+class _LoadFailsSession:
+    def __init__(self) -> None:
+        self.detached = 0
+
+    def create_script(self, source: str) -> Any:
+        return _LoadFailsScript()
+
+    def detach(self) -> None:
+        self.detached += 1
+
+
+class _LoadFailsDevice:
+    def __init__(self) -> None:
+        self.session = _LoadFailsSession()
+
+    def attach(self, pid: int) -> Any:
+        return self.session
+
+
+def test_frida_java_script_failure_detaches_the_session_and_is_backend_error() -> None:
+    """A script that will not load must not strand the attached session.
+
+    Once attach succeeds the session is live; if ``script.load()`` then raises,
+    the worker's finally has to detach it before the error leaves -- otherwise
+    every failed enumeration leaks a frida session against the target. The
+    failure itself is a backend outcome (a script this runtime rejects), so it
+    surfaces as backend_error, not an internal_error incident.
+    """
+    device = _LoadFailsDevice()
+    client = _java_client_with_device(device)
+    with pytest.raises(FridaError) as info:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="classes")
+    assert info.value.code == "backend_error"
+    assert "java enumeration failed" in info.value.message
+    assert device.session.detached >= 1
+
+
 class _SpawnDevice:
     def spawn(self, argv: list[str]) -> int:
         return 4242
