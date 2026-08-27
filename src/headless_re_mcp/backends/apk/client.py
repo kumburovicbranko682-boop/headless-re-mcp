@@ -12,8 +12,20 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
+from xml.etree import ElementTree as ET
 
 JsonObject = dict[str, Any]
+
+# The manifest namespace every android:* attribute lives under; ElementTree
+# reports those attributes as {uri}name once the doc's xmlns:android is parsed.
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+# The manifest tags that declare an app entry point.
+_COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
+# A deep link is a VIEW intent-filter exposing a URI scheme; BROWSABLE means a
+# web page can fire it, not just another app.
+_ACTION_VIEW = "android.intent.action.VIEW"
+_CATEGORY_BROWSABLE = "android.intent.category.BROWSABLE"
+_MAX_URI_VALUES = 64
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -302,6 +314,67 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
+    def deep_links(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List the URI entry points the app registers (VIEW intent-filters).
+
+        Deep links are how a web page or another app hands a URL to this app, so
+        they are a first-look attack surface: the scheme/host/path an attacker
+        can drive. This finds every intent-filter carrying the VIEW action and at
+        least one <data> scheme, across all components. Each row is one such
+        filter: type, name (raw android:name), class (resolved against the
+        package), browsable (the BROWSABLE category is present, so a web page --
+        not only another app -- can trigger it), auto_verify (android:autoVerify,
+        i.e. an Android App Link verified against the host), and the filter's
+        schemes, hosts, paths (path / pathPrefix / pathPattern / pathSuffix
+        merged), and mime_types. uris is the scheme x host cross-product as
+        scheme://host for a quick glance; Android also crosses paths, so treat
+        uris as identities, not exhaustive URLs. Inner lists are deduped, sorted
+        and capped (values_truncated when any was cut). Parsed from the manifest,
+        so no DEX analysis. Rows sort by (type, class); total is the filter count
+        capped at 256 with scan_capped when more may exist.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        try:
+            xml = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise ApkError("backend_error", f"failed to parse manifest: {exc}") from exc
+        application = root.find("application")
+        rows: list[JsonObject] = []
+        scan_more = False
+        if application is not None:
+            for elem in application:
+                if elem.tag not in _COMPONENT_TAGS:
+                    continue
+                if scan_more:
+                    break
+                for child in elem:
+                    if child.tag != "intent-filter":
+                        continue
+                    row = _deep_link_row(elem, child, package)
+                    if row is None:
+                        continue
+                    if len(rows) >= _MAX_COMPONENT_NAMES:
+                        scan_more = True
+                        break
+                    rows.append(row)
+        rows.sort(key=lambda r: (r["type"], r["class"], r["name"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENT_NAMES)
+        window = rows[start : start + cap]
+        return {
+            "package": package,
+            "deep_links": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
@@ -457,3 +530,87 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _android_attr(elem: ET.Element, name: str) -> str | None:
+    return elem.get(f"{{{_ANDROID_NS}}}{name}")
+
+
+def _resolve_component(name: str, package: str) -> str:
+    """Resolve a manifest android:name to a fully qualified class.
+
+    Manifest names are relative to the package: a leading '.' or a bare name
+    with no dot both mean "under the package", while an already-dotted name is
+    absolute. Resolving here means callers can feed the result straight to
+    apk.methods / apk.xrefs without re-implementing the rule.
+    """
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return f"{package}.{name}" if package else name
+    return name
+
+
+def _cap_sorted(values: set[str]) -> tuple[list[str], bool]:
+    ordered = sorted(values)
+    return ordered[:_MAX_URI_VALUES], len(ordered) > _MAX_URI_VALUES
+
+
+def _deep_link_row(
+    component: ET.Element, intent_filter: ET.Element, package: str
+) -> JsonObject | None:
+    """Build one deep-link row, or None when the filter is not a URI VIEW filter."""
+    actions = {_android_attr(a, "name") for a in intent_filter.findall("action")}
+    if _ACTION_VIEW not in actions:
+        return None
+    schemes: set[str] = set()
+    hosts: set[str] = set()
+    paths: set[str] = set()
+    mime_types: set[str] = set()
+    for data in intent_filter.findall("data"):
+        scheme = _android_attr(data, "scheme")
+        if scheme:
+            schemes.add(scheme)
+        host = _android_attr(data, "host")
+        if host:
+            hosts.add(host)
+        mime = _android_attr(data, "mimeType")
+        if mime:
+            mime_types.add(mime)
+        for kind in ("path", "pathPrefix", "pathPattern", "pathSuffix"):
+            value = _android_attr(data, kind)
+            if value:
+                paths.add(value)
+    # A VIEW filter with no scheme is a MIME/type handler, not a URI deep link.
+    if not schemes:
+        return None
+    categories = {_android_attr(c, "name") for c in intent_filter.findall("category")}
+    scheme_list, s_more = _cap_sorted(schemes)
+    host_list, h_more = _cap_sorted(hosts)
+    path_list, p_more = _cap_sorted(paths)
+    mime_list, m_more = _cap_sorted(mime_types)
+    uris: set[str] = set()
+    for scheme in schemes:
+        if hosts:
+            for host in hosts:
+                uris.add(f"{scheme}://{host}")
+        else:
+            uris.add(f"{scheme}://")
+    uri_list, u_more = _cap_sorted(uris)
+    name = _android_attr(component, "name") or ""
+    auto_verify = (_android_attr(intent_filter, "autoVerify") or "").strip().lower()
+    return {
+        "type": component.tag,
+        "name": name,
+        "class": _resolve_component(name, package),
+        "browsable": _CATEGORY_BROWSABLE in categories,
+        "auto_verify": auto_verify == "true",
+        "schemes": scheme_list,
+        "hosts": host_list,
+        "paths": path_list,
+        "mime_types": mime_list,
+        "uris": uri_list,
+        "values_truncated": s_more or h_more or p_more or m_more or u_more,
+    }

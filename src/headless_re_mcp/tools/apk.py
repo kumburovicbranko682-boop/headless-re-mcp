@@ -71,6 +71,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.deep_links")
+    def apk_deep_links(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
+    ) -> dict[str, Any]:
+        """List the URI entry points the app registers (VIEW intent-filters).
+
+        Deep links are how a web page or another app hands a URL to this app, so
+        the scheme/host/path they expose is a first-look attack surface. Finds
+        every intent-filter with the VIEW action and at least one <data> scheme,
+        across all components. Each row is one filter: type, name, class
+        (resolved against the package), browsable (a web page can trigger it, not
+        only another app), auto_verify (an Android App Link verified against the
+        host), and the filter's schemes, hosts, paths (path / pathPrefix /
+        pathPattern / pathSuffix merged), mime_types, and uris (the scheme x host
+        cross-product as scheme://host -- identities for a glance, not exhaustive
+        URLs). Inner lists are deduped/sorted/capped with values_truncated.
+        Parsed from the manifest, so no DEX analysis. Answers with deep_links,
+        package, count, total, offset, and has_more; total is the filter count
+        capped at 256 with scan_capped when more may exist.
+        """
+        return _dump(
+            analysis.apk_deep_links(session_id, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.

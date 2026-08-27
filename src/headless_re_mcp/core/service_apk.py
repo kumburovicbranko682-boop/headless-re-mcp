@@ -113,6 +113,18 @@ class ApkAnalysisMixin:
     def apk_components(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "components")
 
+    def apk_deep_links(
+        self, session_id: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        try:
+            binary = self._apk_binary(session_id)
+            data = ApkClient().deep_links(binary, offset=offset, limit=limit)
+            return _success(data, session_id=session_id, backend="apk")
+        except ApkError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
 
