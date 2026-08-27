@@ -138,6 +138,73 @@ class _MixedNetworkHandle:
         self.requests_dropped = dropped
 
 
+class _ConsoleHandle:
+    """A session handle whose console ring holds the given entries in order."""
+
+    def __init__(self, entries: list[dict[str, Any]], *, dropped: int = 0) -> None:
+        self.lock = Lock()
+        self.console = deque(entries)
+        self.console_dropped = dropped
+
+
+def test_web_console_filters_by_level_and_text(monkeypatch: Any) -> None:
+    """A page flooding the console must be narrowable to the errors that matter.
+
+    Load a ring of log/info/warning/error entries plus an uncaught exception
+    (type error, source exception), then assert level keeps only the matching
+    severity (and error picks up the exception), contains matches message text,
+    the two combine, filtered/unfiltered_total are reported, and an unfiltered
+    call adds neither key.
+    """
+    entries = [
+        {"type": "log", "text": "boot sequence started"},
+        {"type": "info", "text": "user alice signed in"},
+        {"type": "warning", "text": "deprecated API used"},
+        {"type": "error", "text": "TypeError: x is not a function"},
+        {"type": "error", "text": "Uncaught boom", "source": "exception"},
+        {"type": "log", "text": "boot sequence finished"},
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _ConsoleHandle(entries, dropped=3))
+
+    # level is exact and case-insensitive; error also picks up the exception.
+    errors = backend.console("s", level="ERROR")
+    assert [e["text"] for e in errors["console"]] == [
+        "TypeError: x is not a function",
+        "Uncaught boom",
+    ]
+    assert errors["filtered"] is True
+    assert errors["unfiltered_total"] == 6
+    assert errors["dropped"] == 3  # whole-ring count, not the filtered count
+
+    # contains matches the message text, across severities.
+    boot = backend.console("s", contains="BOOT sequence")
+    assert [e["text"] for e in boot["console"]] == [
+        "boot sequence started",
+        "boot sequence finished",
+    ]
+
+    # The two combine: only error entries whose text matches.
+    typed = backend.console("s", level="error", contains="typeerror")
+    assert [e["text"] for e in typed["console"]] == ["TypeError: x is not a function"]
+
+    # A matched page still respects the tail limit and flags has_more.
+    warns = backend.console("s", level="log", limit=1)
+    assert warns["count"] == 1
+    assert warns["console"][0]["text"] == "boot sequence finished"  # most recent match
+    assert warns["has_more"] is True
+
+    # An unfiltered call names no filter.
+    plain = backend.console("s")
+    assert "filtered" not in plain
+    assert "unfiltered_total" not in plain
+
+    doc = _tool_docstring("web.console")
+    assert "level" in doc
+    assert "contains" in doc
+    assert "unfiltered_total" in doc
+
+
 def test_web_network_list_filters_narrow_the_capture(monkeypatch: Any) -> None:
     """A capture of mixed traffic must narrow by method/url/status/type/failed.
 

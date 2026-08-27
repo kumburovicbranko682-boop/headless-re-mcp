@@ -711,6 +711,34 @@ def test_web_cdp_captures_uncaught_exceptions() -> None:
                 for e in service.web_console(session_id, limit=200).data["console"]
             ]
             assert any("before-throw" in t for t in texts), "ordinary console.log was lost"
+
+            # Server-side filtering must narrow the same live console: level=error
+            # surfaces the uncaught exception while excluding the console.log
+            # lines, so hunting the error on a noisy page does not mean paging
+            # everything. Compare against the full buffer to prove it is a subset.
+            full = service.web_console(session_id, limit=200)
+            assert full.ok, full.error
+            full_total = len(full.data["console"])
+
+            errors = service.web_console(session_id, level="error", limit=200)
+            assert errors.ok, errors.error
+            assert errors.data["filtered"] is True
+            assert errors.data["unfiltered_total"] == full_total
+            error_texts = [str(e.get("text", "")) for e in errors.data["console"]]
+            assert any("gate-uncaught-boom" in t for t in error_texts), (
+                "level=error did not surface the uncaught exception"
+            )
+            assert all(str(e.get("type")) == "error" for e in errors.data["console"])
+            assert not any("before-throw" in t for t in error_texts), (
+                "a console.log leaked into a level=error filter"
+            )
+
+            # contains matches message text regardless of severity.
+            boom = service.web_console(session_id, contains="uncaught-boom")
+            assert boom.ok, boom.error
+            assert boom.data["filtered"] is True
+            assert boom.data["console"], "contains=uncaught-boom matched nothing"
+            assert all("uncaught-boom" in str(e.get("text", "")) for e in boom.data["console"])
         finally:
             service.close_all()
 

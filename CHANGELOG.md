@@ -368,6 +368,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   折叠大小写并锁定该调用、`resource_type` 按 CDP 实际标注的类型收窄且非该类型的请求被排除，并核对 `filtered`/
   `unfiltered_total`（缺浏览器时 skip≠pass）；单测覆盖五种过滤器与组合、`total` 报命中数、`dropped` 留全量、以及
   无过滤器不多出字段。
+- **`web.console` 也只能整页翻——页面把 console 刷满 debug 行时，那一条报错就淹了**。控制台缓冲此前只有分页，要在成千
+  上万条日志里找报错只能一页页翻。给 `web.console` 加两个可选过滤器：`level`（对条目 `type` 的精确、大小写不敏感匹配，
+  log/info/warning/error/debug…；`level=error` 连未捕获异常一并选中，因为异常也带 `type` error）与 `contains`（消息文本
+  的大小写不敏感子串）。过滤在取尾页之前施加，故 `console` 是最近的命中、`count`/`has_more` 描述命中子集；设了任一时另回
+  `filtered` 为真与 `unfiltered_total`（整个环的规模），免得一小撮命中被读成近乎空的控制台；`dropped` 仍按整环淘汰量计。
+  无过滤器时行为与字段完全不变，工具计数与读写归类不变。活体门用会在顶层抛异常且前后各有一条 `console.log` 的本地页面，
+  断言 `level=error` 捞到未捕获异常、排除 `console.log`、回 `filtered`/`unfiltered_total`，且 `contains` 按文本命中该异常
+  （缺浏览器时 skip≠pass）；单测覆盖 level 精确匹配（含异常）、contains 文本匹配、二者组合、尾页 limit 与 `has_more`、
+  以及无过滤器不多出字段。
 - **过滤之前，得先知道抓包里到底有什么——但 `web.network.list` 只能整页翻着看**。与代理线的 `proxy.stats` 对齐，新增
   只读的 `web.network.stats`：把整条请求环折叠一次成三角摘要，一眼看清该往哪过滤。回 `total`、`by_method`（每个 HTTP
   方法一个计数）、`by_status_class`（每个 2xx/3xx/4xx/5xx 一个计数；尚无状态的请求不计入这里，改计入 `no_status`）、

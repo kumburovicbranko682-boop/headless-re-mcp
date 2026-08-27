@@ -161,7 +161,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.console")
     def web_console(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        level: str | None = None,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
@@ -178,8 +181,22 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         one: url, line, column (all 1-based, matching DevTools), and the
         enclosing function. This pins a log line or exception to the exact
         script site instead of leaving only the message text.
+
+        Pass level to keep only one severity -- an exact, case-insensitive
+        match on the entry's type (log/info/warning/error/debug/...); level=
+        error also selects uncaught exceptions, since they carry type error.
+        Pass contains to keep only messages whose text holds a case-insensitive
+        substring. Filters are applied before the tail is taken, so console is
+        the most recent matches and count/has_more describe the matched subset;
+        when either is set the reply also carries filtered true and
+        unfiltered_total (the whole ring's size) so a handful of matches is not
+        read as a near-empty console. dropped stays the whole-ring eviction
+        count. This turns a page flooding the console with debug lines into a
+        readable error view without paging everything.
         """
-        return _dump(analysis.web_console(session_id, limit=limit))
+        return _dump(
+            analysis.web_console(session_id, limit=limit, level=level, contains=contains)
+        )
 
     @tools.tool(name="web.cookies")
     def web_cookies(session_id: str) -> dict[str, Any]:

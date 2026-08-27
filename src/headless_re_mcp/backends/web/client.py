@@ -118,6 +118,19 @@ def _request_matches(
     return failed is None or bool(entry.get("failed")) is failed
 
 
+def _console_matches(entry: JsonObject, level: str | None, contains: str | None) -> bool:
+    """Whether a console entry passes the (already-non-None) filters.
+
+    level is an exact, case-insensitive match on the entry's CDP type
+    (log/info/warning/error/debug/...); an uncaught exception carries type
+    error, so level=error selects it too. contains is a case-insensitive
+    substring of the message text.
+    """
+    if level is not None and str(entry.get("type", "")).casefold() != level.casefold():
+        return False
+    return contains is None or contains.casefold() in str(entry.get("text", "")).casefold()
+
+
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     payload = text.encode("utf-8", errors="replace")
@@ -1038,19 +1051,42 @@ class WebBackend:
                 result["request_body_error"] = str(exc)
         return result
 
-    def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
+    def console(
+        self,
+        session_id: str,
+        *,
+        limit: int = 200,
+        level: str | None = None,
+        contains: str | None = None,
+    ) -> JsonObject:
         handle = self._get(session_id)
         capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
+        # dropped is the whole-ring eviction count, measured before any filter
+        # narrows the view, so a filtered page cannot misreport lost history.
+        unfiltered_total = len(held)
+        filtered = level is not None or contains is not None
+        if filtered:
+            # Narrow before taking the tail so the page is the most recent
+            # matches -- hunting the one error in thousands of debug lines
+            # otherwise meant paging the whole ring by hand.
+            held = [entry for entry in held if _console_matches(entry, level, contains)]
         page = held[-capped:]
-        return {
+        result: JsonObject = {
             "console": page,
             "count": len(page),
             "has_more": len(held) > capped,
             "dropped": dropped,
         }
+        if filtered:
+            # has_more/count describe the matched subset; unfiltered_total keeps
+            # the whole ring's size visible so a small match is not read as a
+            # small console.
+            result["filtered"] = True
+            result["unfiltered_total"] = unfiltered_total
+        return result
 
     def cookies(self, session_id: str) -> JsonObject:
         handle = self._get(session_id)
