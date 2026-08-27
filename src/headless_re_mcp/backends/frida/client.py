@@ -122,7 +122,13 @@ rpc.exports = {
     // "TypeError: not a function" and frida.memory.read failed on every modern
     // runtime. The pointer method has existed since frida 12, so this works on
     // the whole >=16.5 range the android extra pins.
-    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
+    // readByteArray returns null when the range is not fully mapped; turn that
+    // into an empty result rather than letting it read back as a page of zeros.
+    var buf = ptr(address).readByteArray(size);
+    if (buf === null) {
+      return [];
+    }
+    return Array.from(new Uint8Array(buf));
   }
 };
 """
@@ -415,12 +421,22 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            result: JsonObject = {
                 "address": address,
                 "size": size,
+                "bytes": len(data),
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            if len(data) < size:
+                # Memory.readByteArray returns null for a range that is not
+                # fully mapped -- a guard page partway through yields a short
+                # read -- and that arrives here as fewer bytes than asked. Say
+                # so, so `size` (the request) is never read as the length of
+                # `data` (what actually came back); empty data with a nonzero
+                # size then reads as unreadable, not as a page of zeros.
+                result["truncated"] = True
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

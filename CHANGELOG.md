@@ -296,7 +296,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
-### 修复（`..` 绕过产物归属守卫）
+### 修复（`frida.memory.read` 读到的字节数不再谎报）
+
+- `frida.memory.read` 此前回包里的 `size` 是**请求**的字节数,而 `data` 是实际读回的十六进制。
+  Frida 的 `Memory.readByteArray` 对未完整映射的区间返回 `null`——脚本把它变成空数组——于是一次
+  读不到的调用回来是 `size=256`、`data=""`:与「读到 256 字节全为空」逐字节一致。无人值守的 agent
+  据此会把「这段地址没映射」误读成「这里是一页零」,或把落在守卫页前的短读当成完整读。
+- 现在回包新增 `bytes`(实际读回的字节数);`bytes < size` 时置 `truncated=true`。据此,`data` 为空
+  而 `size` 非零明确读作「区间不可读」,而非一页零;短读也据实报告实际拿到多少。完整读时 `bytes==size`
+  且不出 `truncated`,老行为不变。枚举脚本的 `read` 顺带显式处理 `readByteArray` 返回 `null` 的情形。
+- 新增回归:完整读 `bytes==size` 且无 `truncated`、不可读区间 `bytes=0`/`data=""`/`truncated=true`、
+  短读据实报 `bytes` 且标 `truncated`、探针会话照旧 detach,以及 `frida.memory.read` 描述点名
+  `bytes` / `truncated`。
 
 - 全仓沿用 `not session_id or Path(session_id).name != session_id` 作「单路径段」判据,但
   `Path("..").name == ".."`,故 `..` 能溜过。用在 `_session_artifact_roots` 时后果最重:每个
