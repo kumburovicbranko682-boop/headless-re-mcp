@@ -92,9 +92,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with objdump holding that text, not a sections list, plus
         truncated when the text was cut at the buffer, and exit_code /
         tool_failed / stderr when wasm-objdump exits non-zero but still
-        emitted text. An input over 16 MiB is refused as too_large, and a
-        file that is not a WebAssembly module as invalid_params, rather than
-        handed to wasm-objdump.
+        emitted text. An input over 16 MiB is refused as too_large, and a file
+        that is not a WebAssembly module as invalid_params, rather than handed
+        to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
