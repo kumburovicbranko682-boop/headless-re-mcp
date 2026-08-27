@@ -218,6 +218,36 @@ def test_uninstall_reports_false_when_the_package_survives() -> None:
     assert "note" in payload
 
 
+@pytest.mark.parametrize("method", ["uninstall", "launch", "force_stop"])
+@pytest.mark.parametrize("bad", ["", "   ", "bad package", "com.example;rm -rf /", "nodot"])
+def test_package_ops_reject_a_bad_package_before_resolving_the_device(
+    method: str, bad: str
+) -> None:
+    """A malformed package must fail as invalid_params before any device work.
+
+    install(), push() and forward() all validate their operation-specific input
+    before _device (which reaches the adb server); these three used to resolve
+    the device first and check the package after, so a bad package id on an
+    unreachable server surfaced as a device error rather than the parameter
+    mistake it is. The check now runs first: _device is never reached, proven by
+    a resolver that records every call and must stay empty.
+    """
+    resolved: list[str] = []
+
+    def _recording_device(serial: str) -> _FakeDev:
+        resolved.append(serial)
+        return _FakeDev()
+
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = _recording_device  # type: ignore[method-assign]
+
+    with pytest.raises(AdbError) as excinfo:
+        getattr(backend, method)("emulator-5554", bad)
+    assert excinfo.value.code == "invalid_params"
+    assert resolved == [], f"{method} reached _device for package {bad!r}"
+
+
 def test_pull_refuses_a_directory(tmp_path: Path) -> None:
     """A remote directory is refused before any bytes move."""
     sync = _Sync(stat_result=_StatResult(mode=stat.S_IFDIR | 0o755, size=0))

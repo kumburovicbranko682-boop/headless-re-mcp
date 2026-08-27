@@ -583,8 +583,12 @@ class AdbBackend:
         return result
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Validate the package before resolving the device, matching install()
+        # and forward(): a bad package id is a cheap local fact that should fail
+        # fast as invalid_params, not be masked by a device error when the adb
+        # server or device is also unreachable.
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _call(dev.uninstall, pkg, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -605,8 +609,8 @@ class AdbBackend:
         return result
 
     def launch(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(
                 dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
@@ -631,8 +635,8 @@ class AdbBackend:
         }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(dev, ["am", "force-stop", pkg])
         except AdbError:

@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（device 的 uninstall/launch/force_stop 在解析设备前先校验 package，与 install/push/forward 看齐）
+
+- adb 后端里 `install` / `push` 先做便宜的本地校验(apk 存在且是 zip / 本地文件存在且不超限)再 `_device`
+  (触达 adb server),`forward` 也先 `_check_forward_spec` 再 `_device`——三处都带注释,把"畸形本地输入应
+  fail-fast 成精确错误、别被 server 或设备不可达的错误盖过"立为惯例。
+- 但 `uninstall` / `launch` / `force_stop` 是例外:先 `_device(serial)` 再 `_check_package(package)`,于是一个
+  畸形/空 package 在 adb server 或设备不可达时会被设备错误盖过,而不是它应得的 `invalid_params`,还白付一次
+  它用不上的设备解析代价。
+- 现把 `_check_package` 移到 `_device` 之前,三处与 `install` / `push` / `forward` 的 fail-fast 次序一致。
+  `_check_package` 是纯本地校验(strip + 包名 regex),无设备依赖,移动零风险。
+- `tests/unit/test_adb_transfer_and_lifecycle.py` 新增参数化用例(3 方法 × 5 种畸形 package):畸形 package 在
+  `_device` 被调用前即以 `invalid_params` 拒掉(记录式 resolver 全程保持空)。
+
 ### 加固（frida.spawn 在解析设备前先校验 package，与 java_enumerate 的 fail-fast 次序看齐）
 
 - `frida.spawn` 过去先 `_resolve_device` 再校验 `package`;而兄弟 `java_enumerate` 明确把便宜的本地字符串校验
