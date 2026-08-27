@@ -196,6 +196,47 @@ def test_packer_classify_reports_candidates_with_scanner_disclosure(tmp_path: Pa
     assert any(s["name"] == "diec" for s in classified.data["scanners"])
 
 
+def test_unpack_recommend_flags_inconclusive_detection(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    # diec not configured: classify is inconclusive, so a route of "none" must
+    # not read as a confirmed clean sample.
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _session_id(service.create_session(str(binary)))
+
+    result = service.unpack_recommend(session_id)
+
+    assert result.ok and result.data is not None
+    assert result.data["detection_conclusion"] == "inconclusive"
+    assert result.data["detection_inconclusive"] is True
+    assert result.data["signature_scan_completed"] is False
+    assert result.data["recommendation"]["route"] == "none"
+    assert "note" in result.data
+    assert "inconclusive" in result.data["note"]
+    assert any(s["name"] == "diec" for s in result.data["scanners"])
+
+
+def test_unpack_recommend_clean_scan_is_not_flagged(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    diec = tmp_path / "diec.exe"
+    diec.write_bytes(b"placeholder")
+    service = AnalysisService(
+        _settings(tmp_path, diec),
+        die_scanner=lambda executable, path, *, mode, timeout: _die_result_clean(path),
+    )
+    session_id = _session_id(service.create_session(str(binary)))
+
+    result = service.unpack_recommend(session_id)
+
+    assert result.ok and result.data is not None
+    assert result.data["detection_conclusion"] == "none_detected"
+    assert result.data["detection_inconclusive"] is False
+    assert result.data["signature_scan_completed"] is True
+    assert result.data["recommendation"]["route"] == "none"
+    assert "note" not in result.data
+
+
 def test_detection_service_uses_builtin_fallback_when_die_is_missing(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_pe(binary)
