@@ -71,6 +71,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`web.network.list` 把失败的请求和还在飞的请求混为一谈）
+
+- Web 抓包只挂了 `Network.requestWillBeSent` 与 `Network.responseReceived`,**没挂**
+  `Network.loadingFailed`。可一条请求真正失败时(DNS 解析不了、连接被拒、TLS 握手失败、被
+  CSP / 混合内容拦截),CDP 发的是 `loadingFailed` 而**不是** `responseReceived`——于是这条请求
+  永远停在 `requestWillBeSent` 建好的那份摘要上:`status` 是 `null`、`mimeType` 是 `null`、没有任何
+  失败标记。`web.network.list` 里它和一条**还在飞**的请求(同样 `status=null`)长得一模一样,调用方
+  无从区分「这台主机拒了握手」和「这条还没回来」——而前者往往正是逆向会话最想要的发现。Proxy 侧
+  早已用 `error`/`error_msg` 把 mitmproxy 跑不完的流补了回来(「此前被整条丢弃」),Web 侧却一直漏着。
+- 现在 `_wire_events` 挂上 `Network.loadingFailed`,按 proxy recorder 同一套约定给对应摘要打上
+  `error=true` 与 `error_msg`(取自 CDP 的 `errorText`;`errorText` 为空时并入 `blockedReason`,
+  再退到 `canceled` / `request failed`),`status` 保持 `null`——于是三态清清楚楚:数字 `status`=已完成、
+  `status=null` 且 `error=true`=失败、`status=null` 且无 `error`=在途。`error_msg` 与其它摘要字段一样
+  过 `_bounded_metadata` 封顶,超限并入 `metadata_truncated`;`loadingFailed` 若指向一条已被环淘汰
+  的请求(查无摘要)则安静跳过,绝不凭空造条目。`web.network.list` 描述点名 error/error_msg 三态。
+- 新增回归:失败请求回 `error=true`、`error_msg="net::ERR_NAME_NOT_RESOLVED"`、`status=null`,同批的
+  已完成请求 `status=200` 且无 `error`;空 `errorText`+`blockedReason=csp` 的 `error_msg` 含
+  `blocked: csp`;超长 `errorText` 被封顶且置 `metadata_truncated`;指向未记录 id 的 `loadingFailed`
+  不抛错也不建条目;并断言描述里点名 error=true 与 error_msg。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
