@@ -1289,6 +1289,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   实机 gate(`test_web_re_gate.py`)让 app.js 在真实 http 源写入 localStorage/sessionStorage,经真实 chromium 用 `web.storage` 读回两枚令牌并按 http 源归类——opaque 源的 data: URL
   永远做不到,以此证明走的是真实 DOMStorage 路径。
 
+- **`proxy.export_har` 导出的 HAR 只有请求行与状态码,漏了头、体、时序——对任何 HAR 消费方几乎没用。** 之前每条 entry 仅 `request{method,url}` 与
+  `response{status,content{mimeType}}`,既没有请求/响应头,也没有 body,更缺 HAR 1.2 必需的 `startedDateTime`/`timings`/`httpVersion`/`cookies`/`queryString` 等字段,
+  导出的文件无法被浏览器或 Charles 等工具重新加载分析。改为从 recorder 仍保留的完整 flow 对象(与 `flow_get` 同源)重建每条 entry:请求/响应头(`items(multi=True)` 保留重复
+  头如多条 Set-Cookie)、`queryString`、请求体(`postData.text`,二进制走 base64 且标 `encoding`)、响应体(`content.text`+`size`+`mimeType`,二进制同样 base64)、状态与
+  `statusText`/`httpVersion`、`startedDateTime`(由 `timestamp_start` 转 ISO-8601 UTC)、`time` 与 `timings`(把总耗时记入 receive,使 timings 之和等于 time,符合规范)。
+  因写的是文件、不受 262144 结果预算约束,故 body 完整导出(体量本就由 recorder 的保留上限 `_MAX_RETAINED_BYTES` 兜住)。body 被逐出或超保留上限的 flow 没有原始对象,则回退成
+  一条带 `comment`(头/体未保留)的精简但合规 entry,绝不静默丢弃任何已捕获 flow。工具描述改述 HAR 为完整记录并说明精简回退。单测(`test_proxy_har_export.py`):头/体/时序齐全、
+  POST 的 postData 与二进制响应体 base64 往返、queryString 解析、body 未保留时两条精简 entry 不丢流。实机 gate(`test_proxy_lifecycle_gate.py`)对真实 mitmproxy 捕获的 POST
+  读回 HAR,断言其请求头、postData 正文与源站响应体都在——证明富 HAR 来自真实 flow 而非摘要。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

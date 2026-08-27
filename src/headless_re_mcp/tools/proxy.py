@@ -99,11 +99,17 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.export_har")
     def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a HAR artifact.
+        """Export captured flows to a HAR 1.2 artifact.
 
         Answers with path and entry_count. There is no har, output or
         artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        export reads as a missing capture. Each entry is a complete HAR record
+        -- request/response headers, query string, bodies (a binary body is
+        base64 with content.encoding "base64"), status, timings and
+        startedDateTime -- so the file is usable by other HAR tools, not just a
+        request line. A flow whose body was evicted or exceeded the retention
+        cap still exports as a lean entry carrying a comment that its headers
+        and body were not retained, so no captured flow is silently dropped.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

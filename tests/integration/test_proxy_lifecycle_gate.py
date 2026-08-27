@@ -264,8 +264,27 @@ def test_proxy_captures_a_real_request_and_reads_it_back(tmp_path: Path) -> None
         assert post_detail["request"]["size"] == len(payload_sent)
         assert post_detail["request"].get("body") == payload_sent.decode()
 
-        har = backend.export_har(session, tmp_path / "capture.har")
-        assert har["entry_count"] >= 1
+        har_path = tmp_path / "capture.har"
+        har = backend.export_har(session, har_path)
+        assert har["entry_count"] >= 2, har
+        # Read the HAR back and prove it is a real one, not a request line: the
+        # POST entry must carry its request headers, its sent body as postData,
+        # and the origin's response body -- all from the retained mitmproxy flow.
+        import json as _json
+
+        log = _json.loads(har_path.read_text(encoding="utf-8"))["log"]
+        assert log["version"] == "1.2", log
+        post_entry = next(
+            (e for e in log["entries"] if e["request"]["method"] == "POST"), None
+        )
+        assert post_entry is not None, log["entries"]
+        assert post_entry["request"]["headers"], post_entry
+        assert post_entry["request"]["postData"]["text"] == payload_sent.decode(), post_entry
+        assert post_entry["response"]["status"] == 200, post_entry
+        assert post_entry["response"]["content"]["text"] == _OriginHandler._BODY.decode(), (
+            post_entry
+        )
+        assert post_entry["startedDateTime"], post_entry
     finally:
         backend.stop(session)
         origin.shutdown()

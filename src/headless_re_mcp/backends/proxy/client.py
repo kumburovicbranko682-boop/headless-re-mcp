@@ -12,6 +12,8 @@ import asyncio
 import base64
 import concurrent.futures
 import contextlib
+import datetime
+import json
 import logging
 import os
 import socket
@@ -20,6 +22,7 @@ import time
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
@@ -275,6 +278,195 @@ def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
         pairs.append([_coerce_header(key), bounded_value])
     kept, _dropped, list_cut = fit_json_list(pairs, budget=_MAX_HEADERS_ENCODED, reserve=0)
     return {k: v for k, v in kept}, truncated or list_cut
+
+
+def _har_str(value: object) -> str:
+    """JSON-safe str for a HAR field, decoding bytes rather than crashing dumps."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return "" if value is None else str(value)
+
+
+def _har_iso(ts: object) -> str:
+    """HAR ``startedDateTime`` (ISO-8601, UTC) from a mitmproxy epoch timestamp."""
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return ""
+    try:
+        return datetime.datetime.fromtimestamp(ts, tz=datetime.UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _har_headers(headers: Any) -> list[dict[str, str]]:
+    """HAR header array ``[{name, value}]`` from mitmproxy Headers, duplicates kept.
+
+    mitmproxy folds repeated headers, so ``items(multi=True)`` is what preserves a
+    second Set-Cookie or a repeated Via -- exactly the detail a HAR consumer needs.
+    Falls back to a plain ``items()`` for any mapping that lacks the multi form.
+    """
+    pairs: list[tuple[Any, Any]] = []
+    if headers is not None:
+        try:
+            pairs = list(headers.items(multi=True))
+        except Exception:  # noqa: BLE001 - not a mitmproxy Headers / no multi form
+            try:
+                pairs = list(headers.items())
+            except Exception:  # noqa: BLE001 - not a mapping at all
+                pairs = []
+    return [{"name": _har_str(name), "value": _har_str(value)} for name, value in pairs]
+
+
+def _har_query(url: str) -> list[dict[str, str]]:
+    """HAR ``queryString`` array parsed from the request URL."""
+    try:
+        query = urlsplit(url).query
+    except Exception:  # noqa: BLE001 - odd url
+        return []
+    return [
+        {"name": name, "value": value}
+        for name, value in parse_qsl(query, keep_blank_values=True)
+    ]
+
+
+def _har_body(part: Any) -> tuple[str, str | None, int]:
+    """``(text, encoding, size)`` for a HAR content/postData from a flow part.
+
+    Decodes utf-8 when it can; otherwise base64s the exact bytes and reports
+    ``encoding="base64"`` (the HAR convention), so a binary body round-trips
+    instead of being mangled into mojibake.
+    """
+    raw = b""
+    if part is not None:
+        try:
+            raw = part.raw_content or b""
+        except Exception:  # noqa: BLE001 - undecryptable/undecompressible body
+            raw = b""
+    if not raw:
+        return "", None, 0
+    try:
+        return raw.decode("utf-8"), None, len(raw)
+    except UnicodeDecodeError:
+        return base64.b64encode(raw).decode("ascii"), "base64", len(raw)
+
+
+def _har_header_value(part: Any, name: str) -> str:
+    """One header value off a flow request/response, or empty when absent."""
+    if part is None:
+        return ""
+    try:
+        return _har_str(part.headers.get(name, ""))
+    except Exception:  # noqa: BLE001 - headers shape varies
+        return ""
+
+
+def _har_entry_from_flow(flow: Any) -> JsonObject:
+    """A HAR 1.2 entry with headers, bodies and timings from a retained flow."""
+    req = getattr(flow, "request", None)
+    resp = getattr(flow, "response", None)
+    url = _har_str(getattr(req, "pretty_url", "") if req else "")
+    req_text, req_enc, req_size = _har_body(req)
+    resp_text, resp_enc, resp_size = _har_body(resp)
+    start = getattr(req, "timestamp_start", None) if req else None
+    end = getattr(resp, "timestamp_end", None) if resp else None
+    total_ms = 0.0
+    if (
+        isinstance(start, (int, float))
+        and isinstance(end, (int, float))
+        and not isinstance(start, bool)
+        and not isinstance(end, bool)
+        and end >= start
+    ):
+        total_ms = (end - start) * 1000.0
+    request: JsonObject = {
+        "method": _har_str(getattr(req, "method", "") if req else ""),
+        "url": url,
+        "httpVersion": _har_str(getattr(req, "http_version", "") if req else ""),
+        "cookies": [],
+        "headers": _har_headers(getattr(req, "headers", None) if req else None),
+        "queryString": _har_query(url),
+        "headersSize": -1,
+        "bodySize": req_size,
+    }
+    if req_size:
+        post: JsonObject = {
+            "mimeType": _har_header_value(req, "content-type") or "application/octet-stream",
+            "text": req_text,
+        }
+        if req_enc:
+            post["encoding"] = req_enc
+        request["postData"] = post
+    content: JsonObject = {
+        "size": resp_size,
+        "mimeType": _har_header_value(resp, "content-type"),
+    }
+    if resp_size:
+        content["text"] = resp_text
+        if resp_enc:
+            content["encoding"] = resp_enc
+    response: JsonObject = {
+        "status": int(getattr(resp, "status_code", 0) or 0) if resp else 0,
+        "statusText": _har_str(getattr(resp, "reason", "") if resp else ""),
+        "httpVersion": _har_str(getattr(resp, "http_version", "") if resp else ""),
+        "cookies": [],
+        "headers": _har_headers(getattr(resp, "headers", None) if resp else None),
+        "content": content,
+        "redirectURL": _har_header_value(resp, "location"),
+        "headersSize": -1,
+        "bodySize": resp_size,
+    }
+    return {
+        "startedDateTime": _har_iso(start),
+        "time": total_ms,
+        "request": request,
+        "response": response,
+        "cache": {},
+        # send/wait unknown from a finished-flow snapshot; put the whole elapsed in
+        # receive so the timings sum equals time, as the HAR spec requires.
+        "timings": {"send": 0, "wait": 0, "receive": total_ms},
+    }
+
+
+def _har_entry_from_summary(summary: JsonObject) -> JsonObject:
+    """A lean HAR entry for a flow whose body/headers were not retained.
+
+    The summary still has the request line, status and content-type, so the entry
+    stays a valid HAR record; a comment marks that headers and body are absent
+    (the flow was evicted or its body exceeded the retention cap).
+    """
+    url = _har_str(summary.get("url"))
+    request: JsonObject = {
+        "method": _har_str(summary.get("method")),
+        "url": url,
+        "httpVersion": "",
+        "cookies": [],
+        "headers": [],
+        "queryString": _har_query(url),
+        "headersSize": -1,
+        "bodySize": -1,
+    }
+    status_raw = summary.get("status")
+    response: JsonObject = {
+        "status": int(status_raw) if isinstance(status_raw, int) else 0,
+        "statusText": "",
+        "httpVersion": "",
+        "cookies": [],
+        "headers": [],
+        "content": {"size": 0, "mimeType": _har_str(summary.get("content_type"))},
+        "redirectURL": "",
+        "headersSize": -1,
+        "bodySize": -1,
+    }
+    return {
+        "startedDateTime": "",
+        "time": 0,
+        "request": request,
+        "response": response,
+        "cache": {},
+        "timings": {"send": 0, "wait": 0, "receive": 0},
+        "comment": "headers and body were not retained for this flow",
+    }
 
 
 class _FlowRecorder:
@@ -775,20 +967,27 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
-        import json
-
-        entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
-            for f in inst.recorder.snapshot()
-        ]
+        # Build each entry from the retained flow object (full headers, bodies,
+        # timings) rather than the lean summary, so the HAR is actually usable by
+        # another tool instead of a request line and a status. A flow whose body
+        # was evicted or exceeded the retention cap has no raw object; fall back
+        # to a valid-but-lean entry so the export never silently drops a flow.
+        # This writes to a file, so it is not bound by the result-size budget the
+        # inline read tools are -- a HAR is meant to be complete.
+        entries: list[JsonObject] = []
+        for summary in inst.recorder.snapshot():
+            flow_id = str(summary.get("id"))
+            raw = inst.recorder.raw(flow_id)
+            if raw is not None and raw is not _OMITTED_BODY:
+                entries.append(_har_entry_from_flow(raw))
+            else:
+                entries.append(_har_entry_from_summary(summary))
         har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
+            "log": {
+                "version": "1.2",
+                "creator": {"name": "headless-re-mcp"},
+                "entries": entries,
+            }
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
