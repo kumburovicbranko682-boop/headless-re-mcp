@@ -10,6 +10,8 @@ This gate drives a real Chromium at a real page that opens a WebSocket to a
 `websockets` echo origin (which answers "echo:"+msg) and exchanges two messages.
 It asserts the socket now appears in web.network.list as a WebSocket row with
 frame counters, and that web.network.get returns the frames both directions.
+The page then closes the socket, and the gate asserts the row picks up
+ws_closed=true -- a socket the server kicked must not read as still streaming.
 Guarding the guard: the origin transforms each message, so seeing the client's
 "hello" and the origin's distinct "echo:hello" proves both directions were
 captured, not one side reflected. skip != pass: it skips only when Chromium or
@@ -113,7 +115,9 @@ def _page(ws_port: int) -> Iterator[str]:
         "<html><head><title>ws-gate</title><script>\n"
         f'var ws = new WebSocket("ws://127.0.0.1:{ws_port}/live");\n'
         'ws.onopen = function () { ws.send("hello"); };\n'
-        "ws.onmessage = function (e) { window.__got = e.data; };\n"
+        # Close only after the round trip landed, so the frame capture is done
+        # before the close event the gate also asserts on.
+        "ws.onmessage = function (e) { window.__got = e.data; ws.close(); };\n"
         "</script></head><body>ws gate</body></html>"
     ).encode()
 
@@ -204,6 +208,29 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 texts = {(m["from_client"], m.get("text")) for m in data["websocket_messages"]}
                 assert (True, "hello") in texts, texts
                 assert (False, "echo:hello") in texts, texts
+
+                # The page closed the socket right after the echo; the closed
+                # flag lands via Network.webSocketClosed a beat later, so poll
+                # for it separately. A closed socket must not read as live.
+                deadline = time.monotonic() + 20.0
+                closed_row: dict | None = None
+                while time.monotonic() < deadline:
+                    listed = service.web_network_list(session_id, limit=200)
+                    assert listed.ok, listed.error
+                    row = next(
+                        (
+                            r
+                            for r in listed.data["requests"]
+                            if str(r.get("url", "")).endswith("/live")
+                        ),
+                        None,
+                    )
+                    if row is not None and row.get("ws_closed"):
+                        closed_row = row
+                        break
+                    time.sleep(0.25)
+                assert closed_row is not None, "the socket's close was never captured"
+                assert closed_row["ws_closed"] is True
 
                 # The exported HAR must carry the frames, not just a 101 entry:
                 # Chrome DevTools reads them from the _webSocketMessages array.

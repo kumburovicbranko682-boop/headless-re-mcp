@@ -340,6 +340,21 @@ class _Runner:
             self._wedged = True
             raise WebError("timeout", f"browser did not respond within {timeout:g}s") from exc
 
+    def try_call(self, work: Callable[[], Any], *, wait: float) -> None:
+        """Best-effort call: run ``work`` on the runner thread, wait at most ``wait``.
+
+        Unlike ``call``, a slow result does not wedge the session. This exists
+        for the event pump before telemetry reads: a runner busy with a
+        legitimate long call (a navigation) is not broken, and the queued pump
+        still runs when the queue drains, freshening the next read instead.
+        """
+        if self._closed or self._wedged:
+            return
+        future: Future[Any] = Future()
+        self._queue.put((work, future))
+        with contextlib.suppress(Exception):
+            future.result(timeout=wait)
+
     def shutdown(self) -> None:
         self._closed = True
         with contextlib.suppress(Exception):
@@ -643,12 +658,23 @@ class WebBackend:
                     entry["ws_messages"] = int(entry.get("ws_messages") or 0) + 1
                     entry["ws_bytes"] = int(entry.get("ws_bytes") or 0) + size
 
+        def on_ws_closed(params: JsonObject) -> None:
+            # A socket the server kicked right after the handshake and one that
+            # is still streaming looked identical -- the row stayed open-looking
+            # forever. CDP's webSocketClosed carries no close code (unlike the
+            # proxy's mitmproxy capture), so this is a flag, not a diagnosis.
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["ws_closed"] = True
+
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
         cdp.on("Network.webSocketCreated", on_ws_created)
         cdp.on("Network.webSocketHandshakeResponseReceived", on_ws_handshake)
         cdp.on("Network.webSocketFrameSent", lambda p: on_ws_frame(p, from_client=True))
         cdp.on("Network.webSocketFrameReceived", lambda p: on_ws_frame(p, from_client=False))
+        cdp.on("Network.webSocketClosed", on_ws_closed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -709,8 +735,27 @@ class WebBackend:
         runner.shutdown()
         return {"closed": True, "clean": clean}
 
+    def _pump_events(self, handle: _WebSession) -> None:
+        """Dispatch CDP events queued since the last Playwright call.
+
+        Sync Playwright only delivers events while some call is pumping its
+        greenlet loop; between tool calls the runner thread is idle and events
+        (a late response, a WebSocket frame, the close) sit on the transport
+        undelivered -- measured: a page's socket close never became visible to
+        a caller polling network.list, because listing read dicts and made no
+        Playwright call. One 1 ms wait on the runner drains everything queued.
+        Best-effort by design: a runner mid-navigation is already pumping, so
+        skipping the wait rather than blocking (or wedging) is correct, and a
+        handle without a runner (unit fixtures) needs no pump at all.
+        """
+        runner = getattr(handle, "runner", None)
+        if runner is None:
+            return
+        runner.try_call(lambda: handle.page.wait_for_timeout(1), wait=5.0)
+
     def network_list(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         handle = self._get(session_id)
+        self._pump_events(handle)
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
@@ -728,6 +773,7 @@ class WebBackend:
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
+        self._pump_events(handle)
         with handle.lock:
             entry = handle.requests.get(request_id)
             if entry is None:
@@ -810,6 +856,7 @@ class WebBackend:
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
+        self._pump_events(handle)
         capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
             held = list(handle.console)
@@ -837,6 +884,7 @@ class WebBackend:
         limit: int = 100,
     ) -> JsonObject:
         handle = self._get(session_id)
+        self._pump_events(handle)
         with handle.lock:
             values = list(handle.scripts.values())
         if wasm_only:
@@ -940,6 +988,7 @@ class WebBackend:
 
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
+        self._pump_events(handle)
         with handle.lock:
             ws_by_request: dict[str, list[JsonObject]] = {}
             for request_id, frame in handle.ws_frames:

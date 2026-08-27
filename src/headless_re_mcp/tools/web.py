@@ -77,12 +77,17 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with requests (url, method, status, resourceType), count,
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. A WebSocket the page opened is listed too (resourceType
+        visible. The view is live: browser events queued since the last
+        call are dispatched before reading, so polling this tool observes
+        traffic as it happens. A WebSocket the page opened is listed too (resourceType
         WebSocket, status 101) with websocket=true plus ws_messages (frame
         count) and ws_bytes (decoded frame bytes); it used to be absent
-        entirely because a socket is not a normal request. Read its frames with
-        web.network.get. metadata_truncated marks bounded oversized request
-        fields. There is no type field.
+        entirely because a socket is not a normal request. Once the socket
+        closes its row carries ws_closed=true, so a connection the server
+        kicked is not read as still streaming (CDP reports no close code, so
+        there is none to give). Read its frames with web.network.get.
+        metadata_truncated marks bounded oversized request fields. There is
+        no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -104,7 +109,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         and size, plus text for a short UTF-8 frame or omitted binary/too_large
         otherwise), websocket_message_count (the true total seen), and
         websocket_truncated when fewer frames survived the retain budget than
-        that total; there is no body to fetch for a socket.
+        that total; there is no body to fetch for a socket. ws_closed=true
+        rides along once the socket has closed.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

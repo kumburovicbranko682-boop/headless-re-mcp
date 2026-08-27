@@ -88,6 +88,51 @@ def test_websocket_is_listed_with_frame_counters(monkeypatch: pytest.MonkeyPatch
     assert row["ws_bytes"] == len(b"hello") + len(b"echo:hello")
 
 
+def test_telemetry_reads_pump_the_playwright_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Sync Playwright only dispatches queued CDP events while some call pumps
+    # its loop, so a read that touches only Python dicts shows a frozen view --
+    # a socket's close (or a late frame) queued after the last call never
+    # arrived. Regression: the telemetry reads must give the runner a beat.
+    backend, handle, cdp = _wired()
+    fire = cdp.handlers
+    fire["Network.webSocketCreated"]({"requestId": "9", "url": "ws://x/live"})
+
+    pumped: list[bool] = []
+
+    class _Runner:
+        wedged = False
+
+        def try_call(self, work: object, *, wait: float) -> None:
+            pumped.append(True)
+
+    handle.runner = _Runner()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    backend.network_list("s")
+    assert pumped, "network_list must pump queued events before reading"
+
+
+def test_a_closed_socket_is_marked_and_a_live_one_is_not(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backend, handle, cdp = _wired()
+    fire = cdp.handlers
+
+    fire["Network.webSocketCreated"]({"requestId": "9", "url": "ws://x/live"})
+    fire["Network.webSocketCreated"]({"requestId": "10", "url": "ws://x/feed"})
+    fire["Network.webSocketFrameSent"](_text_frame("9", "bye"))
+    # CDP's webSocketClosed carries only the requestId and a timestamp.
+    fire["Network.webSocketClosed"]({"requestId": "9", "timestamp": 123.0})
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    rows = {r["url"]: r for r in backend.network_list("s")["requests"]}
+    assert rows["ws://x/live"]["ws_closed"] is True
+    assert "ws_closed" not in rows["ws://x/feed"]
+
+    # network.get spreads the row, so the flag rides along there too.
+    detail = backend.network_get("s", "9", tmp_path)
+    assert detail["ws_closed"] is True
+
+
 def test_network_get_returns_frames_with_text_and_binary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
