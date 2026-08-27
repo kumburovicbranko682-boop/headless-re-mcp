@@ -292,6 +292,19 @@ class WasmClient:
 
         return extract_wasm_sections(path)
 
+    def functions(self, path: Path, *, contains: str | None = None) -> JsonObject:
+        """The module's function table with resolved signatures (pure Python).
+
+        Needs no wabt tool: the type, import and function sections are joined
+        directly (and the name section attached when present), so the
+        imported-vs-defined split and each function's param/result signature --
+        the JS/WASM ABI -- are available even when wasm2wat/wasm-objdump are not
+        configured.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import list_wasm_functions
+
+        return list_wasm_functions(path, contains=contains)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

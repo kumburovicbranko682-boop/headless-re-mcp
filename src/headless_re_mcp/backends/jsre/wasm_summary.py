@@ -17,6 +17,7 @@ than crash, matching the other jsre adapters.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,20 @@ from headless_re_mcp.backends.jsre.client import JsReError, _require_existing_fi
 JsonObject = dict[str, Any]
 
 _WASM_MAGIC = b"\x00asm"
+# The value types a function signature is built from. The number encoding is
+# the one-byte form used in the type section: the four numeric types, the two
+# reference types, and v128. An unknown byte (a type from a newer proposal) is
+# reported verbatim as "type 0x<n>" rather than guessed at, mirroring how the
+# import/export decoder reports an unknown external kind.
+_VALTYPE = {
+    0x7F: "i32",
+    0x7E: "i64",
+    0x7D: "f32",
+    0x7C: "f64",
+    0x7B: "v128",
+    0x70: "funcref",
+    0x6F: "externref",
+}
 # func/table/memory/global -- the four external kinds an import or export can
 # name. Anything else means the module is malformed or from a newer proposal we
 # do not claim to understand, so it is reported verbatim as "kind <n>".
@@ -578,3 +593,262 @@ def extract_wasm_sections(path: Path) -> JsonObject:
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return extract_wasm_sections_bytes(data)
+
+
+def _valtype(cursor: _Cursor) -> str:
+    """One value type byte, decoded to its name (unknown bytes reported verbatim)."""
+    byte = cursor.byte()
+    return _VALTYPE.get(byte, f"type 0x{byte:02x}")
+
+
+def _parse_functypes(body: _Cursor) -> list[tuple[list[str], list[str]] | None]:
+    """Type section (id 1): each functype's (params, results) by type index.
+
+    Only functypes (form byte 0x60) are decoded. A non-0x60 form is a struct/
+    array type from the GC proposal whose body we cannot length-skip, so decoding
+    stops there: a ``None`` placeholder keeps earlier indices valid and any
+    function whose type index lands past it is reported ``signature_unknown``
+    rather than mis-decoded. The body is sliced to its own bounds, so a bad
+    length cannot read past the section.
+    """
+    total = body.uleb()
+    types: list[tuple[list[str], list[str]] | None] = []
+    for _ in range(total):
+        form = body.byte()
+        if form != 0x60:
+            types.append(None)
+            break
+        params = [_valtype(body) for _ in range(body.uleb())]
+        results = [_valtype(body) for _ in range(body.uleb())]
+        types.append((params, results))
+    return types
+
+
+def _parse_import_funcs(body: _Cursor) -> tuple[list[tuple[str, str, int]], int]:
+    """Import section (id 2): (collected imported funcs, total imported funcs).
+
+    Imported functions occupy the low function-index space, before the module's
+    own defined functions, so they must be walked to keep the global function
+    index aligned with the name section. Each non-func import's descriptor is
+    consumed by kind so the cursor stays aligned; only funcs are collected, as
+    (module, field, type_index), capped at ``_MAX_ITEMS`` while the true count
+    is still returned.
+    """
+    total = body.uleb()
+    collected: list[tuple[str, str, int]] = []
+    func_total = 0
+    for _ in range(total):
+        module = body.name()
+        field = body.name()
+        kind_byte = body.byte()
+        if kind_byte == 0:
+            type_index = body.uleb()
+            func_total += 1
+            if len(collected) < _MAX_ITEMS:
+                collected.append((module, field, type_index))
+        elif kind_byte == 1:
+            body.byte()  # reftype
+            _read_limits(body)
+        elif kind_byte == 2:
+            _read_limits(body)
+        elif kind_byte == 3:
+            body.byte()  # value type
+            body.byte()  # mutability
+        else:
+            raise JsReError("invalid_params", "wasm import has an unknown external kind")
+    return collected, func_total
+
+
+def _parse_function_section(body: _Cursor, cap: int) -> tuple[list[int], int]:
+    """Function section (id 3): (type indices of defined funcs, total defined).
+
+    The list is capped at ``cap`` (only the emitted head is needed), but every
+    entry is still consumed so a lying count runs out of the bounded body and
+    raises rather than silently under-reporting.
+    """
+    total = body.uleb()
+    indices: list[int] = []
+    for index in range(total):
+        value = body.uleb()
+        if index < cap:
+            indices.append(value)
+    return indices, total
+
+
+def _function_name_map(data: bytes) -> dict[int, str]:
+    """Global function index -> name from the ``name`` custom section (best effort).
+
+    Reuses the same name-section locator as wasm.names; only the function-names
+    subsection (id 1) is read. A stripped or corrupt name section yields an
+    empty map -- the signatures are the primary data, names are a bonus -- so a
+    bad name section never sinks the function listing.
+    """
+    names: dict[int, str] = {}
+    name_body = _find_name_section(data)
+    if name_body is None:
+        return names
+    while not name_body.eof:
+        sub_id = name_body.byte()
+        sub_len = name_body.uleb()
+        sub = _Cursor(name_body.take(sub_len))
+        if sub_id == 1:  # function names: a namemap of (index, name)
+            count = sub.uleb()
+            for _ in range(count):
+                index = sub.uleb()
+                fname = sub.name()
+                names.setdefault(index, fname)
+            break
+    return names
+
+
+def _function_entry(
+    index: int,
+    kind: str,
+    type_index: int,
+    types: list[tuple[list[str], list[str]] | None],
+    names: dict[int, str],
+    *,
+    module: str | None = None,
+    import_name: str | None = None,
+) -> JsonObject:
+    """One function's record: index, kind, resolved signature, and any name."""
+    entry: JsonObject = {"index": index, "kind": kind, "type_index": type_index}
+    signature = types[type_index] if 0 <= type_index < len(types) else None
+    if signature is None:
+        entry["params"] = []
+        entry["results"] = []
+        entry["signature_unknown"] = True
+    else:
+        entry["params"] = list(signature[0])
+        entry["results"] = list(signature[1])
+    name = names.get(index)
+    if name is not None:
+        entry["name"] = name
+    if module is not None:
+        entry["module"] = module
+    if import_name is not None:
+        entry["import_name"] = import_name
+    return entry
+
+
+def _function_matches(entry: JsonObject, needle: str | None) -> bool:
+    """Case-insensitive substring match over a function's name/module fields."""
+    if needle is None:
+        return True
+    haystack = " ".join(
+        str(entry.get(key, ""))
+        for key in ("name", "import_name", "module")
+    ).casefold()
+    return needle in haystack
+
+
+def list_wasm_functions_bytes(data: bytes, *, contains: str | None = None) -> JsonObject:
+    """List a module's functions with resolved signatures (imported and defined).
+
+    wasm.summary only counts functions and wasm.names only maps an index to a
+    name; neither tells you a function's signature or which functions are
+    imported from the host versus defined in the module. This joins the type
+    section (the param/result value types), the import section (the imported
+    functions, which occupy the low index space) and the function section (the
+    module's own functions) into one addressed table, then attaches the name
+    from the ``name`` custom section when present. It is the WASM parallel of a
+    native function/symbol table with signatures, parsed in pure Python.
+
+    Each entry carries index (the global function index, imports first), kind
+    (imported/defined), type_index, params and results (value-type names),
+    plus name when the name section has one and, for an imported function,
+    module and import_name. signature_unknown is set when the type index cannot
+    be resolved (a truncated type section or a GC type this parser stops at).
+    Only the type/import/function/name sections are read; every other section is
+    skipped by its declared length.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    needle = contains.casefold() if contains else None
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    types: list[tuple[list[str], list[str]] | None] = []
+    imported: list[tuple[str, str, int]] = []
+    imported_total = 0
+    defined_indices: list[int] = []
+    defined_total = 0
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 1:  # type
+            types = _parse_functypes(body)
+        elif section_id == 2:  # import
+            imported, imported_total = _parse_import_funcs(body)
+        elif section_id == 3:  # function
+            defined_indices, defined_total = _parse_function_section(body, _MAX_ITEMS)
+        # Every other section is skipped by its declared length.
+
+    # The name section is a bonus join; a corrupt one must not fail the listing.
+    names: dict[int, str] = {}
+    with contextlib.suppress(JsReError):
+        names = _function_name_map(data)
+
+    functions: list[JsonObject] = []
+    matched = 0
+    emission_capped = False
+
+    def _consider(entry: JsonObject) -> None:
+        nonlocal matched, emission_capped
+        if not _function_matches(entry, needle):
+            return
+        matched += 1
+        if len(functions) >= _MAX_ITEMS:
+            emission_capped = True
+            return
+        functions.append(entry)
+
+    for position, (module, field, type_index) in enumerate(imported):
+        _consider(
+            _function_entry(
+                position, "imported", type_index, types, names,
+                module=module, import_name=field,
+            )
+        )
+    for offset, type_index in enumerate(defined_indices):
+        _consider(
+            _function_entry(imported_total + offset, "defined", type_index, types, names)
+        )
+
+    # The import/function sections are collected only up to the cap, so a module
+    # with more functions than the cap was not fully scanned. Unfiltered, every
+    # function matches, so total is the structural count and scan_capped means it
+    # ran past the cap. Filtered, total is the matches actually seen, and
+    # scan_capped also fires when functions past the cap could not be examined.
+    structural_total = imported_total + defined_total
+    not_all_scanned = (len(imported) + len(defined_indices)) < structural_total
+    if needle is None:
+        total = structural_total
+        scan_capped = structural_total > len(functions)
+    else:
+        total = matched
+        scan_capped = emission_capped or not_all_scanned
+
+    result: JsonObject = {
+        "functions": functions,
+        "count": len(functions),
+        "total": total,
+        "imported_count": imported_total,
+        "defined_count": defined_total,
+        "scan_capped": scan_capped,
+    }
+    if needle is not None:
+        result["filtered"] = True
+        result["query"] = contains
+    return result
+
+
+def list_wasm_functions(path: Path, *, contains: str | None = None) -> JsonObject:
+    """List the functions of the module at ``path`` (applies the shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return list_wasm_functions_bytes(data, contains=contains)

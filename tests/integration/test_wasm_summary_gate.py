@@ -398,6 +398,127 @@ def test_wasm_strings_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _module_with_functions() -> bytes:
+    """A module with two types, an imported func + memory, and two defined funcs."""
+    magic = b"\x00asm\x01\x00\x00\x00"
+    type_sec = _section(1, _vec([b"\x60\x00\x00", b"\x60\x01\x7f\x01\x7f"]))
+    import_sec = _section(
+        2,
+        _vec(
+            [
+                _name("env") + _name("log") + b"\x00" + _leb128(1),  # func, type1
+                _name("env") + _name("mem") + b"\x02" + b"\x00" + _leb128(1),  # memory
+            ]
+        ),
+    )
+    func_sec = _section(3, _vec([_leb128(0), _leb128(1)]))  # defined: type0, type1
+    name_body = _name("name") + _function_names_sub([(1, "run"), (2, "helper")])
+    name_sec = _section(0, name_body)
+    return magic + type_sec + import_sec + func_sec + name_sec
+
+
+@pytest.mark.integration
+def test_wasm_functions_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.functions must build the signature table through the real service.
+
+    Build a module with an imported func (of an (i32)->(i32) type), an imported
+    memory that must not consume a function index, and two defined funcs named
+    in the name section, then drive AnalysisService.wasm_functions end to end:
+    the imported/defined split, the resolved signatures, and the name-by-index
+    join must all come back, a contains filter must narrow to matches, and a
+    non-module must come back as an invalid_params envelope, not an internal
+    error.
+    """
+    module = tmp_path / "functions.wasm"
+    module.write_bytes(_module_with_functions())
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_functions(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["imported_count"] == 1
+        assert data["defined_count"] == 2
+        assert data["total"] == data["count"] == 3
+
+        imported = _find(data["functions"], index=0, kind="imported")
+        assert imported is not None
+        assert imported["module"] == "env"
+        assert imported["import_name"] == "log"
+        assert imported["params"] == ["i32"]
+        assert imported["results"] == ["i32"]
+
+        # The imported memory must not have shifted the defined function indices.
+        run = _find(data["functions"], index=1, kind="defined", name="run")
+        assert run is not None
+        assert run["params"] == [] and run["results"] == []
+        helper = _find(data["functions"], index=2, kind="defined", name="helper")
+        assert helper is not None
+        assert helper["params"] == ["i32"] and helper["results"] == ["i32"]
+
+        filtered = service.wasm_functions(str(module), contains="helper")
+        assert filtered.ok, filtered.error
+        assert [fn["name"] for fn in filtered.data["functions"]] == ["helper"]
+        assert filtered.data["filtered"] is True
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"PK\x03\x04 this is a zip, not wasm")
+        failed = service.wasm_functions(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_functions_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the function/signature join against a toolchain-built module."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "fns.wat"
+    wat.write_text(
+        "(module\n"
+        '  (import "env" "log" (func $log (param i32)))\n'
+        '  (func (export "run") (param i32 i32) (result i32) local.get 0)\n'
+        "  (func $init))\n",
+        encoding="utf-8",
+    )
+    module = tmp_path / "fns.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, "--debug-names", str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_functions(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        # One imported func (index 0), two defined funcs ($run, $init) after it.
+        assert data["imported_count"] == 1
+        assert data["defined_count"] == 2
+        imported = _find(data["functions"], index=0, kind="imported")
+        assert imported is not None
+        assert imported["module"] == "env" and imported["import_name"] == "log"
+        assert imported["params"] == ["i32"]
+        # $run takes (i32, i32) and returns i32 -- the signature the type/function
+        # sections encode, resolved without any wabt help.
+        run = _find(data["functions"], index=1, kind="defined")
+        assert run is not None
+        assert run["params"] == ["i32", "i32"]
+        assert run["results"] == ["i32"]
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_wasm_summary_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
     """Cross-check the parser against a module a real toolchain produced."""

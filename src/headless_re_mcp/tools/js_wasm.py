@@ -192,4 +192,32 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_sections(path))
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(path: str, contains: str | None = None) -> dict[str, Any]:
+        """The module's function table with resolved signatures (pure Python).
+
+        wasm.summary only counts functions and wasm.names only maps an index to
+        a name; neither gives a function's signature or says which functions are
+        imported from the host versus defined in the module. This joins the
+        type, import and function sections into one addressed table (and attaches
+        each name from the name section when present) -- the WASM parallel of a
+        native function/symbol table with signatures. Parsed directly in pure
+        Python, so it answers even when wasm2wat/wasm-objdump are absent.
+
+        Answers with functions, each carrying index (the global function index,
+        imported functions first), kind (imported/defined), type_index, params
+        and results (value-type names such as i32/i64/f32/f64/v128/funcref/
+        externref), plus name when the name section has one and, for an imported
+        function, module and import_name. signature_unknown is set when the type
+        index cannot be resolved (a truncated type section, or a GC type this
+        parser stops at). Also count, total, imported_count and defined_count
+        (the module's structural totals), and scan_capped (true when more than
+        4096 functions matched). Pass contains to keep only functions whose
+        name/module/import_name holds a case-insensitive substring; the filter
+        runs during assembly so the 4096 cap bounds matches, and the reply then
+        also carries filtered true and query. An input over 16 MiB is refused as
+        too_large and a non-module as invalid_params.
+        """
+        return _dump(analysis.wasm_functions(path, contains=contains))
+
     return tools.bindings

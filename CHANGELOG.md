@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **289（169 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **290（170 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -617,6 +617,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把夹具的 `<application>` 刻意设成高危（debuggable、不可备份、允许明文、带自定义 NSC 与 Application 类），断言每个标志按
   具体值原样还原、而非空值；单测另覆盖全未设→全 null 的三态、不可解析清单的降级、以及 docstring 形状。该工具计入读效果，
   工具面因此 288→289。
+- **WASM 线能数函数、能列名字，却看不到函数签名，也分不清哪些是宿主导入的**。`wasm.summary` 只给函数**计数**，
+  `wasm.names` 只把索引映射到名字——都答不出「这个函数的参数/返回是什么」或「它是从宿主 import 的还是模块自己定义的」，
+  而这两点正是理解 JS/WASM ABI、逆向模块行为的关键。新增只读的 `wasm.functions`：把类型段（各 functype 的
+  param/result 值类型）、导入段（导入函数占据低位函数索引空间）与函数段（模块自定义的函数）join 成一张带地址的函数表，
+  再在名字段存在时挂上每个函数的名字——纯 Python 解析（无需 wabt，wasm2wat/wasm-objdump 缺席也能答），是原生
+  函数/符号表带签名视图的 WASM 对应物。回 `functions`，每条带 `index`（全局函数索引，导入的排在前）、`kind`
+  （imported/defined）、`type_index`、`params` 与 `results`（值类型名，如 i32/i64/f32/f64/v128/funcref/externref），
+  名字段有名字时带 `name`，导入函数另带 `module` 与 `import_name`；类型索引无法解析时（类型段被截断，或遇到本解析器
+  在其处停住的 GC 类型）置 `signature_unknown`。外加 `count`、`total`、`imported_count`、`defined_count`（模块的结构性
+  总数）与 `scan_capped`（匹配超过 4096 时为真）。传 `contains` 可按名字/模块/导入名的大小写不敏感子串过滤，过滤在
+  组装当中施加，故 4096 上限约束的是命中数，回包另带 `filtered` 与 `query`。输入超 16 MiB 报 `too_large`、非模块报
+  `invalid_params`。活体门经真服务用手搓模块断言导入/自定义拆分、签名解析与按索引挂名（导入的 memory 不占函数索引），
+  并另有 `wat2wasm --debug-names` 交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、4096 截断、
+  损坏名字段降级与非模块拒绝。该工具计入读效果，工具面因此 289→290。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`
