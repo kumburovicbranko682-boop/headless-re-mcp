@@ -41,8 +41,12 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Functions Ghidra found.
 
-        Answers with items, each carrying name, entry and body_size, plus count
-        and has_more so a page that filled the limit is not read as the whole list.
+        Answers with items, each carrying name, entry, body_size and
+        entry_address -- a {module, rva, va, architecture} object, the same
+        coordinate shape the r2 tools attach, so the two engines join on
+        rva/module. Plus count and has_more so a page that filled the limit is
+        not read as the whole list. The payload also names module, image_base
+        and architecture once at the top level.
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
 
@@ -54,8 +58,11 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Symbols Ghidra recovered.
 
-        Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope.
+        Answers with items, each carrying name, address, type and
+        address_detail -- the structured {module, rva, va, architecture}
+        companion of the address string (the r2 coordinate shape); an address
+        outside the load image, like an EXTERNAL thunk, is va-only there. Plus
+        count and has_more. The listing does not include a containing scope.
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
@@ -69,7 +76,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to address, as Ghidra resolved them.
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed.
+        to, type, from_address and to_address -- each a {module, rva, va,
+        architecture} object in the same shape r2 emits for its edges. Plus
+        count and has_more. Outgoing refs are not listed.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
@@ -81,9 +90,12 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Ghidra's decompilation of the function at address.
 
-        Answers with decompiled, and truncated when the C was cut at the
-        buffer. A second reading of code IDA decompiled differently, or of
-        code it could not.
+        Answers with decompiled, truncated when the C was cut at the buffer,
+        and -- when a function contains address -- function, entry and
+        entry_address ({module, rva, va, architecture}, the same coordinate
+        object the listings carry). An empty decompiled with no function key
+        means no function there, not an empty body. A second reading of code
+        IDA decompiled differently, or of code it could not.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings
