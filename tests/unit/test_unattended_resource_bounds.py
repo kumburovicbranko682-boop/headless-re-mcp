@@ -3372,6 +3372,72 @@ class TestDeviceListsDiscloseTruncation:
         assert result["package"] == "com.example.app"
 
 
+class TestJadxDoesNotSucceedOnLeftoverSources:
+    """jadx exit 1 answered java_file_count if leftover .java existed.
+
+    Measured: export_sources into a directory that already held a stale
+    Leftover.java returned java_file_count=1 with no error even though the
+    run exited 1 and wrote nothing, so an unattended agent treated a failed
+    decompile as recovered sources. A non-zero exit now fails unless this run
+    wrote or changed a .java file.
+    """
+
+    def test_exit_1_with_only_leftovers_is_a_backend_error(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as mod
+        from headless_re_mcp.backends.jadx.client import JadxError
+
+        out = tmp_path / "out"
+        leftover = out / "sources" / "Leftover.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Leftover {}\n", encoding="utf-8")
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        stub = tmp_path / "jadx.bat"
+        stub.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(
+            mod,
+            "run_bounded",
+            lambda *args, **kwargs: Completed(returncode=1, stdout=b"", stderr=b"ERROR"),
+        )
+        client = mod.JadxClient(stub)
+        with pytest.raises(JadxError) as info:
+            client.export_sources(apk, out)
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+
+    def test_exit_1_that_wrote_this_run_still_succeeds(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as mod
+
+        out = tmp_path / "out"
+        leftover = out / "sources" / "Leftover.java"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("class Leftover {}\n", encoding="utf-8")
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK")
+        stub = tmp_path / "jadx.bat"
+        stub.write_text("x", encoding="utf-8")
+
+        def fake_run(*args: Any, **kwargs: Any) -> Any:
+            # jadx exits 1 on a partial decompile but still emits fresh sources.
+            (out / "sources" / "com" / "app").mkdir(parents=True, exist_ok=True)
+            (out / "sources" / "com" / "app" / "Fresh.java").write_text(
+                "package com.app; class Fresh {}", encoding="utf-8"
+            )
+            return Completed(returncode=1, stdout=b"", stderr=b"partial")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        client = mod.JadxClient(stub)
+        result = client.export_sources(apk, out)
+        assert result["java_file_count"] == 2
+        assert any(name.endswith("Fresh.java") for name in result["java_files"])
+
+
 class TestExportedFileListsDiscloseTruncation:
     def test_jadx_source_list_past_the_cap_says_so(
         self, tmp_path: Any, monkeypatch: Any

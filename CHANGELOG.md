@@ -504,6 +504,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
   `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
   `has_more`。
+- **jadx 非零退出却因上次导出遗留的 .java 被当成成功**。`_run` 过去只在磁盘上一个
+  `.java` 都没有时才报错；同一会话目录里若留着上次 `apk.export_sources` 的旧树，失败的
+  这次运行也会回 `java_file_count>=1`，无人值守的 agent 据此把失败的反编译当成恢复出的
+  源码。现在运行前后各取一次 `.java` 指纹（mtime + 大小），非零退出且这次没有写入或更新
+  任何文件才记为 `backend_error`；jadx 部分失败但确实写出新源码的情况仍算成功。
 - **`web.console` 默认只回最后 200 行，不说前面还有**。缓冲区本身有界，这一页再切一刀
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只

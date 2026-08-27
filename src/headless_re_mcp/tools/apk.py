@@ -220,7 +220,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
         plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field.
+        no files or sources field. A failed decompile is an error, not the
+        leftover sources of an earlier run.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
