@@ -20,11 +20,64 @@ _EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+# One extension install runs at a time: the destination is the shared Ghidra
+# install, not a per-project dir, so it cannot key off the project lock.
+_PLUGIN_INSTALL_LOCK = RLock()
 
 
 def _project_lock(project_dir: Path) -> Any:
     key = os.path.normcase(str(project_dir.expanduser().resolve()))
     return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
+
+
+def _install_extension(home: Path | None, plugin: Path | None) -> Path | None:
+    """Make a configured Ghidra extension discoverable by analyzeHeadless.
+
+    analyzeHeadless only loads extensions that live in a directory it scans --
+    chiefly ``<home>/Ghidra/Extensions/<name>``. A plugin the operator unpacked
+    somewhere else (``HEADLESS_RE_GHIDRA_WASM_PLUGIN`` points straight at the
+    extracted extension dir) is invisible until it sits there, which is why that
+    setting used to do nothing and the WASM-via-Ghidra path never engaged.
+
+    Copy it in once, idempotently and best-effort: an already-present or
+    already-in-place extension is left alone, and a read-only install (or any
+    OSError) simply degrades to "no plugin" -- exactly the prior behaviour --
+    rather than failing the analysis. Returns the install path when the
+    extension is (now) present, else ``None``.
+    """
+    if home is None or plugin is None:
+        return None
+    src = plugin.expanduser()
+    # Only an *extracted* extension is safe to drop in; a bare path or a zip is
+    # not something analyzeHeadless can load from Extensions/ as-is.
+    if not (src / "Module.manifest").is_file():
+        return None
+    ext_root = home.expanduser().resolve() / "Ghidra" / "Extensions"
+    dest = ext_root / src.name
+    try:
+        if src.resolve() == dest.resolve():
+            # Operator already pointed the setting at the install copy.
+            return dest
+    except OSError:
+        pass
+    with _PLUGIN_INSTALL_LOCK:
+        if dest.exists():
+            return dest
+        tmp = ext_root / f".{src.name}.tmp-{os.getpid()}"
+        try:
+            ext_root.mkdir(parents=True, exist_ok=True)
+            if tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(src, tmp)
+            try:
+                os.rename(tmp, dest)
+            except OSError:
+                # Lost the race or dest appeared underneath us; drop the temp.
+                shutil.rmtree(tmp, ignore_errors=True)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return None
+    return dest if dest.exists() else None
 
 
 class GhidraError(RuntimeError):
@@ -36,10 +89,19 @@ class GhidraError(RuntimeError):
 
 
 class GhidraClient:
-    def __init__(self, home: Path | None = None, java: Path | None = None) -> None:
+    def __init__(
+        self,
+        home: Path | None = None,
+        java: Path | None = None,
+        wasm_plugin: Path | None = None,
+    ) -> None:
         self.home = home
         self.java = java or _which("java")
         self.analyze = _find_analyze_headless(home)
+        # Extracted Ghidra extension dir (e.g. ghidra-wasm-plugin) that adds a
+        # loader for a non-native format. Installed lazily before the first
+        # headless run so construction stays side-effect-free.
+        self.wasm_plugin = wasm_plugin
 
     @property
     def available(self) -> bool:
@@ -273,6 +335,10 @@ class GhidraClient:
         delete_project: bool,
     ) -> tuple[str, str, int]:
         assert self.analyze is not None
+        # A configured extension has to be in place before the JVM starts, or
+        # the loader it provides (WASM, etc.) is not registered for the import.
+        if self.wasm_plugin is not None:
+            _install_extension(self.home, self.wasm_plugin)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.

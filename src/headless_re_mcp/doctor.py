@@ -1226,10 +1226,18 @@ def probe_ghidra(settings: Settings) -> Probe:
             {"home": str(home), "analyze_headless": str(analyze)},
             "Install a JRE and put java on PATH before treating Ghidra as ready.",
         )
+    details = {"home": str(home), "analyze_headless": str(analyze), "java": java}
+    # Surface the optional WASM loader so a configured-but-unusable plugin is
+    # visible here rather than only showing up as a failed .wasm import.
+    plugin = getattr(settings, "ghidra_wasm_plugin", None)
+    if plugin is not None:
+        plugin_path = Path(plugin).expanduser()
+        details["wasm_plugin"] = str(plugin_path)
+        details["wasm_plugin_valid"] = str((plugin_path / "Module.manifest").is_file())
     return Probe(
         "ghidra",
         ProbeStatus.READY,
         "Ghidra analyzeHeadless is available",
-        {"home": str(home), "analyze_headless": str(analyze), "java": java},
+        details,
         None,
     )

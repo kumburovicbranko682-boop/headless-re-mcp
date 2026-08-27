@@ -417,7 +417,10 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"ghidra.analyze cannot run in {session.state.value} state"
                 )
-            client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
+            client = GhidraClient(
+                home=getattr(self.settings, "ghidra_home", None),
+                wasm_plugin=getattr(self.settings, "ghidra_wasm_plugin", None),
+            )
             project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
             data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
             session = self.registry.get(session_id)
@@ -1135,7 +1138,10 @@ def _ghidra_export(
             raise InvalidStateTransition(
                 f"ghidra.{mode} cannot run in {session.state.value} state"
             )
-        client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
+        client = GhidraClient(
+            home=getattr(service.settings, "ghidra_home", None),
+            wasm_plugin=getattr(service.settings, "ghidra_wasm_plugin", None),
+        )
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
             data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)

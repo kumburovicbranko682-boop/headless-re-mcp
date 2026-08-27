@@ -25,6 +25,7 @@ from headless_re_mcp.config import Settings
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BUILT_FIXTURE = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
 _COMMITTED_FIXTURE = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
+_WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
 # analyzeHeadless does a full import + auto-analysis per call, and each export
 # tool re-imports, so give the JVM real headroom on a shared CI box.
 _TIMEOUT = 300.0
@@ -41,6 +42,21 @@ def _client() -> GhidraClient:
     client = GhidraClient(home=getattr(Settings.load(), "ghidra_home", None))
     if not client.available:
         pytest.skip("Ghidra analyzeHeadless not configured — live Gate not run (skip != pass)")
+    return client
+
+
+def _wasm_client() -> GhidraClient:
+    """Ghidra plus the configured WASM extension, or skip (skip != pass)."""
+    settings = Settings.load()
+    home = getattr(settings, "ghidra_home", None)
+    plugin = getattr(settings, "ghidra_wasm_plugin", None)
+    client = GhidraClient(home=home, wasm_plugin=plugin)
+    if not client.available:
+        pytest.skip("Ghidra analyzeHeadless not configured — WASM Gate not run (skip != pass)")
+    if plugin is None:
+        pytest.skip(
+            "ghidra_wasm_plugin not configured (HEADLESS_RE_GHIDRA_WASM_PLUGIN) — skip != pass"
+        )
     return client
 
 
@@ -192,3 +208,32 @@ def test_ghidra_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     assert xrefs.get("count", 0) >= 1, "expected the call from main to reference re_mcp_triple"
     for ref in xrefs["items"]:
         assert set(ref) >= {"from", "to", "type"}
+
+
+@pytest.mark.integration
+def test_ghidra_decompiles_a_wasm_module_via_the_configured_plugin(tmp_path: Path) -> None:
+    """WASM structural decompilation is the plugin's whole reason to exist.
+
+    ``HEADLESS_RE_GHIDRA_WASM_PLUGIN`` used to be a dead setting: nothing put the
+    extension where analyzeHeadless looks, so a .wasm imported with no
+    WebAssembly loader. With the client installing it, this drives the real path
+    end to end -- the committed add module exports one ``add`` function whose
+    decompiled C is a two-operand addition. Skips (never passes) when Ghidra or
+    the plugin is not configured.
+    """
+    client = _wasm_client()
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+
+    funcs = client.functions(_WASM_FIXTURE, tmp_path / "fn", limit=16, timeout=_TIMEOUT)
+    assert funcs.get("count", 0) >= 1, "WASM loader did not engage — no functions recovered"
+    names = {item["name"] for item in funcs.get("items", [])}
+    assert "add" in names, sorted(names)
+    entry = next(item["entry"] for item in funcs["items"] if item["name"] == "add")
+
+    decompiled = client.decompile(_WASM_FIXTURE, tmp_path / "dc", entry, timeout=_TIMEOUT)
+    assert decompiled.get("function") == "add"
+    assert decompiled.get("truncated") is False
+    body = decompiled.get("decompiled") or ""
+    # The module adds its two parameters; the exact parameter names vary, the
+    # addition does not.
+    assert "+" in body, body[:200]
