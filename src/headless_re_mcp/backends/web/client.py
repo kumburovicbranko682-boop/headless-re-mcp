@@ -42,6 +42,17 @@ _MAX_METADATA_BYTES = 1024
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
 _CALL_TIMEOUT = 60.0
+# web.open / web.navigate bound timeout at le=120.0 in the MCP schema, but the
+# agent transport calls handlers directly (catalog.invoke -> handler) with no
+# pydantic validation. Left unclamped, page.goto would wait timeout*1000 ms and
+# the runner future timeout+30 s, so an unattended navigation to a hanging page
+# could park a browser worker far past the schema ceiling. Worse, a non-positive
+# timeout -- which gt=0 forbids but the agent transport skips -- reaches
+# page.goto as timeout=0, which Playwright reads as "no timeout" (an unbounded
+# wait). Clamp to the schema ceiling and fall back to the schema default for a
+# non-positive value, the way the Frida and subprocess backends clamp.
+_MAX_NAV_TIMEOUT_S = 120.0
+_DEFAULT_NAV_TIMEOUT_S = 30.0
 _OPENING = object()
 
 
@@ -59,6 +70,14 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_nav_timeout(timeout: float) -> float:
+    """Cap a navigation timeout at the schema ceiling; see _MAX_NAV_TIMEOUT_S."""
+    value = float(timeout)
+    if value <= 0:
+        return _DEFAULT_NAV_TIMEOUT_S
+    return min(value, _MAX_NAV_TIMEOUT_S)
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -307,6 +326,7 @@ class WebBackend:
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
         self._check_available()
+        timeout = _bounded_nav_timeout(timeout)
 
         with self._lock:
             if session_id in self._sessions:
@@ -466,6 +486,7 @@ class WebBackend:
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)
+        timeout = _bounded_nav_timeout(timeout)
 
         def work() -> JsonObject:
             try:

@@ -754,6 +754,69 @@ class TestBrowserCallsAreThreadConfinedAndBounded:
             runner.shutdown()
 
 
+class TestWebNavigationTimeoutIsClamped:
+    """web.open/web.navigate bound timeout at le=120.0 only in the MCP schema.
+
+    The agent transport reaches these handlers through catalog.invoke ->
+    handler(**arguments) with no pydantic validation, so an oversized timeout
+    would make page.goto wait timeout*1000 ms and park a browser worker far past
+    the ceiling, and a non-positive timeout would reach page.goto as timeout=0,
+    which Playwright reads as "no timeout" -- an unbounded wait. The backend now
+    clamps to the schema ceiling and falls back to the default for non-positive.
+    """
+
+    def test_the_clamp_helper_bounds_and_normalises(self) -> None:
+        from headless_re_mcp.backends.web.client import (
+            _DEFAULT_NAV_TIMEOUT_S,
+            _MAX_NAV_TIMEOUT_S,
+            _bounded_nav_timeout,
+        )
+
+        assert _bounded_nav_timeout(10_000_000) == _MAX_NAV_TIMEOUT_S
+        assert _bounded_nav_timeout(45.0) == 45.0
+        assert _bounded_nav_timeout(0) == _DEFAULT_NAV_TIMEOUT_S
+        assert _bounded_nav_timeout(-5.0) == _DEFAULT_NAV_TIMEOUT_S
+
+    def test_navigate_caps_the_goto_deadline_at_the_schema_ceiling(self) -> None:
+        from headless_re_mcp.backends.web.client import (
+            _DEFAULT_NAV_TIMEOUT_S,
+            _MAX_NAV_TIMEOUT_S,
+            WebBackend,
+            _Runner,
+            _WebSession,
+        )
+
+        class _FakePage:
+            def __init__(self) -> None:
+                self.url = "https://example.com/"
+                self.goto_ms: list[float] = []
+
+            def goto(self, url: str, *, timeout: float, wait_until: str) -> None:
+                del url, wait_until
+                self.goto_ms.append(timeout)
+
+            def title(self) -> str:
+                return "t"
+
+        page = _FakePage()
+        handle = _WebSession(object(), object(), object(), page, object())
+        handle.runner = _Runner("test-nav-clamp")
+        backend = WebBackend()
+        backend._sessions["s"] = handle
+        try:
+            backend.navigate("s", "https://example.com/", timeout=10_000_000)
+            assert page.goto_ms[-1] == _MAX_NAV_TIMEOUT_S * 1000.0
+            # A non-positive value would otherwise disable goto's own timeout.
+            backend.navigate("s", "https://example.com/", timeout=0)
+            assert page.goto_ms[-1] == _DEFAULT_NAV_TIMEOUT_S * 1000.0
+            # A schema-valid value survives unchanged: this is a ceiling, not a rewrite.
+            backend.navigate("s", "https://example.com/", timeout=45.0)
+            assert page.goto_ms[-1] == 45.0 * 1000.0
+        finally:
+            assert handle.runner is not None
+            handle.runner.shutdown()
+
+
 class TestWebScriptBufferIsBounded:
     def test_parsed_scripts_do_not_grow_without_bound(self) -> None:
         handle = _WebSession(object(), object(), object(), object(), object())
