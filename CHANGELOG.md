@@ -215,6 +215,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 新增回归（`apk.native_libs` 只列 `lib/` 成员、ABI 取自目录树，由异构文件表直测固定）
+
+- `apk.native_libs` 遍历归档成员,只保留 `lib/` 下的,并从 `.so` 所在目录推出 ABI:
+  `if not text.startswith("lib/"): continue`;`parts = text.split("/")`;`if len(parts) >= 3: abis.add(parts[1])`;
+  收满 `_MAX_NATIVE_LIBS` 后 `has_more=True` 并 `continue`(不是 break)。三处都要紧且既有
+  `test_apk_native_libs_fields`(夹具是 300 个 `lib/arm64-v8a/*.so` 加一个 `classes.dex`,只断言
+  `count==256`/`has_more`/`abis==["arm64-v8a"]`)一处都不覆盖:一是 **`lib/` 过滤**——真实 APK 大半是
+  非原生成员(`AndroidManifest.xml`、`classes.dex`、`res/`、`META-INF/`、`assets/`),只有 `lib/` 才是原生库;
+  夹具里那个 `classes.dex` 证不了这点(它排在 `lib/` 前、计数又已被 256 夹住,过不过滤断言都不动),删掉
+  `startswith` 守卫每个 APK 的 manifest/dex 都会冒充「原生库」。二是 **ABI 是 `lib/<abi>/` 子目录的集合**——
+  上架应用带好几个(`arm64-v8a`/`armeabi-v7a`/`x86_64`),夹具只有一个,多 ABI 收敛从没被看到;而 `len(parts) >= 3`
+  专门挡住 `lib/` 顶层无 ABI 子目录的文件:它仍被列为成员,但其文件名不得被当成 ABI——松成 `>= 2`,一个
+  `lib/notice.txt` 就会凭空造出名为 `notice.txt` 的 ABI。三是 **列表被截断时 ABI 仍完整**——ABI 在 cap 判定
+  *之前*记录、且 cap 用 `continue` 不是 `break`,故 `.so` 落在 `_MAX_NATIVE_LIBS` 之后的 ABI 仍会上报;
+  改成 `break` 则截断页丢掉那些 ABI,调用者看到 `has_more` 却读到一份短了的 ABI 表当成全集。新增三例分别钉:
+  只回 `lib/` 成员、三种 ABI 全收且顶层文件不造假 ABI、以及 cap 之后出现的*第二个* ABI 仍要上报(`break` 会漏掉它)。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
