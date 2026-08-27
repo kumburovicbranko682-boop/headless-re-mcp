@@ -67,6 +67,10 @@ def test_m4_unpack_dump_scan_validate_rebuild(tmp_path: Path) -> None:
     assert scanned.ok and scanned.data is not None
     assert scanned.data["confirmed"] is False
     assert scanned.data["blind_selection"] is False
+    # Dedupe-cap disclosure is surfaced so candidates is not read as the full set.
+    assert scanned.data["candidates_truncated"] is False
+    assert scanned.data["merged_total"] == scanned.data["candidate_count"]
+    assert scanned.data["max_candidates"] == 8
 
     candidate = scanned.data["candidates"][0]
     validated = service.unpack_iat_validate(
