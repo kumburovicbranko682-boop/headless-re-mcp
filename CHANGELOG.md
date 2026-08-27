@@ -176,6 +176,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 测试（`frida.applications` 的 pid 派生与页大小下限）
+
+- 既有 `frida.applications` 测试把每个 app 都建成 `pid = 0` 且从不断言 pid 字段,于是派生
+  `int(getattr(app, "pid", 0) or 0)` 是惰性的:全零的同质夹具分不清「真实运行中的 pid 原样透传」
+  与「写死的 0」,既碰不到从未带 pid 属性的 app 所走的 `getattr` 默认值,也碰不到 pid 为 `None` 时
+  的 `or 0` 分支。frida 对**运行中**的应用报活 pid、对停止的报 0,agent 看到哪一个是有意义的。
+  新增回归:运行中 app 的 pid(4321)按 int 原样透传、停止 app 的 0 仍是 0;缺 pid 属性的 app 读作
+  0 而非 AttributeError 拖垮整轮枚举;pid 为 `None` 的 app 经 `or 0` 读作 0 而非 `int(None)` 崩溃。
+- 同一测试只传正数 limit,`max(1, min(int(limit), 1000))` 的下限从未触发。新增回归:limit 传 0 或负数
+  时仍返回至少一行(而不是 `apps[:0]` 的静默空页),`total`/`has_more` 照常反映完整列表。
+- 变异验证:删 `or 0`、把 `getattr` 默认换成直接读 `app.pid`、写死 `pid=0`、去掉 `max(1,...)` 下限,
+  均分别只被对应新测试逮住;源树零改动(仅新增测试与本条目)。
+
 ### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
 
 - close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
