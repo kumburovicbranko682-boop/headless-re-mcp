@@ -415,6 +415,22 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            if len(data) != size:
+                # readByteArray hands back null for a range it cannot read (the
+                # script turns that into an empty array), rather than always
+                # raising, and a partly-mapped range can come back short. Either
+                # way the reply used to carry the *requested* size with the
+                # missing bytes silently absent -- a read the agent reads as
+                # size bytes of data it never got. Surface the failed read
+                # instead of a success that did not deliver what was asked.
+                raise FridaError(
+                    "backend_error",
+                    f"memory read returned {len(data)} of {size} requested bytes; "
+                    "the range may be unmapped or only partly readable",
+                    address=address,
+                    requested=size,
+                    returned=len(data),
+                )
             return {
                 "address": address,
                 "size": size,

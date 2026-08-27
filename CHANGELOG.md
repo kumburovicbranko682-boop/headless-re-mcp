@@ -59,6 +59,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（frida.memory.read 短读被当成请求大小的成功回报）
+
+- `frida.memory.read` 通过注入脚本的 `readByteArray(size)` 取数。frida 对一段读不出的内存
+  返回 `null`（脚本侧变成空数组）而非一律抛错，一段只映射了一半的区间也可能回得比请求的短。
+  可返回体此前一律带**请求的** `size`，缺失的字节被静默抹掉——无人值守的 agent 会据此以为拿到了
+  size 字节、实际一个都没拿到（或只拿到前半段），把读不出的地址当成一段全是它以为的值的内存来分析。
+  现读回的字节数与请求不符即记 `backend_error`，并在 `details` 里带上 `requested` / `returned`，
+  与 `device.pull` 对「没落地文件」、ghidra 对「空导出」一样，不把没交付请求的读当成功。完整读
+  照常返回 hex。新增三条直测（完整读回 hex、短读抛错、空读抛错），用假 session 驱动、无需真 frida 运行时。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
