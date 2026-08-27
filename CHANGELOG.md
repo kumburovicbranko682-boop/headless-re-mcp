@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（事故日志脱敏关键字与结构化脱敏对齐）
+
+- `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
+  正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而
+  `redaction.py` 的结构化脱敏还把 `private_key`/`access_key`/`passwd`/`credential` 当作机密键。
+  于是一个在负载里会被抹掉的值,一旦出现在异常消息里(如 `access_key=AKIA…`、`private_key=…`)
+  就会明文落进事故日志与 500 响应——正是 SECURITY.md 列为漏洞的那类泄露。现补齐这四个关键字;
+  仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
+  相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
+
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
