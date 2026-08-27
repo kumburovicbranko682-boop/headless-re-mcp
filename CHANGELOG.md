@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 proxy.start/ca 的失败与竞态守卫钉进测试）
+
+- proxy 服务层是非 PE 各线里覆盖最低的一档(74%),其中最大的一段未测代码正是 `proxy.start` 的
+  防泄漏守卫:mitmproxy 绑定端口后会二次核对会话,若绑定期间有 close 抢先进来,就先停掉刚起的代理
+  再失败,免得一个已消失的会话遗下一个谁也 stop 不掉的在途端口。这段行为此前无任何测试触及,一次
+  重构就能把它悄悄改坏。
+- 新增 `tests/unit/test_proxy_service_lifecycle.py`,在服务层(而非各兄弟测试驱动的后端层)钉住:
+  `proxy.start` 成功记 backend+timeline、绑定中途会话消失时回滚(停代理、不留误导性 timeline 条目)、
+  ProxyError 映射成信封;`proxy.stop` 成功与失败都回信封;`proxy.ca.install_android` 在 CA 缺失、
+  会话入口即已关闭、以及推送中途会话消失(证书已上设备但拒绝记到已死会话、不留 timeline)三条
+  fail-closed 路径。纯补测、不改行为。
+
 ### 加固（README 把审计/时间线写进可观测面）
 
 - README「可观测」条此前只列 `meta.metrics`(聚合遥测),完全没提这一轮大量补齐的审计轨:`audit.list`
