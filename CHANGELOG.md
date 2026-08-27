@@ -24,6 +24,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 诚实（js.* / wasm.* 返回的服务端路径点明"不是已登记制品、artifacts.read 打不开"，与 device.screenshot / device.pull 的口径对齐）
+
+- `js.deobfuscate` / `js.beautify` / `wasm.wat` / `wasm.info` 溢出时回的 `code_path` / `wat_path` / `objdump_path`，\
+  以及 `js.unpack_bundle` 的 `output_dir` 与文件列表，都是 jsre 暂存区里的服务端文件、不入制品表——但文档没说，\
+  一个 agent 很容易拿 `code_path` 去 `artifacts.read` 然后把 `not_found` 读成 bug 而不是"用错了工具"。现在这些\
+  工具的描述像 `device.screenshot` / `device.pull` 那样明说"不是已登记制品、artifacts.read 打不开、暂存区按最旧\
+  先淘汰"，并新增文档断言把这条口径钉住。纯文档改动，不动行为。
+
 ### 完整性（js.deobfuscate / js.beautify / wasm.wat / wasm.info 超出内联上限时把完整输出落盘、回 `<key>_path`，别在 400 KiB 处把大段结果丢掉）
 
 - 这四个一次性读工具过去把输出裁到 400 KiB 内联上限、只回 `truncated=True`，超出部分无从取回——而\

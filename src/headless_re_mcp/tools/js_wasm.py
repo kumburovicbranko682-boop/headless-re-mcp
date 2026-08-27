@@ -30,10 +30,13 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with code and bytes, plus truncated when the inline code is
         only a prefix. When truncated, the whole output is written to a scratch
         file and its path returned as code_path, so a large deobfuscation is
-        recoverable rather than lost at the buffer. If webcrack exits non-zero
-        but still emitted code, that code is returned with exit_code,
-        tool_failed and stderr set so a partial run is not read as complete. An
-        input over 16 MiB is refused as too_large rather than handed to webcrack.
+        recoverable rather than lost at the buffer. code_path is a server-side
+        scratch file, not a registered artifact -- artifacts.read cannot open it
+        -- and the shared jsre scratch area is pruned oldest-first once it fills.
+        If webcrack exits non-zero but still emitted code, that code is returned
+        with exit_code, tool_failed and stderr set so a partial run is not read
+        as complete. An input over 16 MiB is refused as too_large rather than
+        handed to webcrack.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
@@ -46,8 +49,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Same payload as js.deobfuscate: Answers with code and bytes, plus
         truncated when the inline code is only a prefix (with code_path to the
         full output when that happens), and exit_code / tool_failed / stderr
-        when webcrack exits non-zero but still emitted code. An input over 16
-        MiB is refused as too_large rather than handed to webcrack.
+        when webcrack exits non-zero but still emitted code. code_path is a
+        server-side scratch file, not a registered artifact -- artifacts.read
+        cannot open it. An input over 16 MiB is refused as too_large rather than
+        handed to webcrack.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
@@ -62,10 +67,13 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with output_dir, file_count, files, count, total, offset and
         has_more. The file list is paged: read total and has_more rather than
-        assuming files is complete. If webcrack exits non-zero but still wrote
-        files, they are returned with exit_code, tool_failed and stderr set so
-        a partial unpack is not read as complete. An input over 16 MiB is
-        refused as too_large rather than handed to webcrack.
+        assuming files is complete. output_dir and the listed files live under
+        the shared jsre scratch area, not the artifact table -- artifacts.read
+        cannot open them -- and that area is pruned oldest-first once it fills.
+        If webcrack exits non-zero but still wrote files, they are returned with
+        exit_code, tool_failed and stderr set so a partial unpack is not read as
+        complete. An input over 16 MiB is refused as too_large rather than
+        handed to webcrack.
         """
         return _dump(
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
@@ -80,9 +88,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with wat and bytes, plus truncated when the inline wat is only
         a prefix (with wat_path to the full dump when that happens), and
         exit_code / tool_failed / stderr when wasm2wat exits non-zero but still
-        emitted text. An input over 16 MiB is refused as too_large, and a file
-        that is not a WebAssembly module as invalid_params, rather than handed
-        to wasm2wat.
+        emitted text. wat_path is a server-side scratch file, not a registered
+        artifact -- artifacts.read cannot open it. An input over 16 MiB is
+        refused as too_large, and a file that is not a WebAssembly module as
+        invalid_params, rather than handed to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -95,9 +104,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with objdump holding that text, not a sections list, plus
         truncated when the inline text is only a prefix (with objdump_path to
         the full dump when that happens), and exit_code / tool_failed / stderr
-        when wasm-objdump exits non-zero but still emitted text. An input over
-        16 MiB is refused as too_large, and a file that is not a WebAssembly
-        module as invalid_params, rather than handed to wasm-objdump.
+        when wasm-objdump exits non-zero but still emitted text. objdump_path is
+        a server-side scratch file, not a registered artifact -- artifacts.read
+        cannot open it. An input over 16 MiB is refused as too_large, and a file
+        that is not a WebAssembly module as invalid_params, rather than handed
+        to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 

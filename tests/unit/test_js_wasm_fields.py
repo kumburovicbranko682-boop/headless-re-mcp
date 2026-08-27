@@ -355,6 +355,21 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "objdump_path" in _tool_docstring("wasm.info")
 
 
+def test_jsre_path_outputs_disclose_they_are_not_registered_artifacts() -> None:
+    """A returned server path reads like something artifacts.read can open; it
+    cannot, because these tools key by a file path and register nothing. Each
+    one must say so, the way device.screenshot / device.pull do for their
+    unregistered captures, or an agent burns a call on artifacts.read(code_path)
+    and reads the not_found as a bug rather than the wrong tool.
+    """
+    for name in ("js.deobfuscate", "js.beautify", "wasm.wat", "wasm.info", "js.unpack_bundle"):
+        # Collapse the docstring's line wrapping so the phrase matches whether or
+        # not it happens to straddle a newline.
+        doc = " ".join(_tool_docstring(name).split())
+        assert "artifacts.read cannot open" in doc, name
+        assert "not a registered artifact" in doc or "not the artifact table" in doc, name
+
+
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     """The catalog named output_dir, file_count and files, and stopped there.
 
