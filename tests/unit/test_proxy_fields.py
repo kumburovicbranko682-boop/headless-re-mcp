@@ -250,6 +250,109 @@ def test_proxy_flow_get_bounds_a_decompression_bomb(tmp_path: Path, monkeypatch:
     assert result["size"] == 1024
 
 
+def _flow_get_full(monkeypatch: Any, tmp_path: Path, request: Any, response: Any) -> dict[str, Any]:
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    return backend.flow_get("s", "f1", tmp_path)
+
+
+def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """The POST payload -- the params traffic analysis is usually after -- was
+    unreachable when only the response body came back."""
+    text = '{"user":"alice","token":"secret"}'
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/login",
+        headers={"content-type": "application/json"},
+        raw_content=text.encode("utf-8"),
+    )
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+    assert payload["request"]["body"] == text
+    assert payload["request"]["size"] == len(text.encode("utf-8"))
+    assert payload["response"]["body"] == "ok"
+
+
+def test_proxy_flow_get_omits_the_body_for_a_bodyless_get(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    request = SimpleNamespace(method="GET", pretty_url="http://x/", headers={}, raw_content=b"")
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"hello")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+    assert "body" not in payload["request"]
+    assert "body_path" not in payload["request"]
+    assert payload["response"]["body"] == "hello"
+
+
+def test_proxy_flow_get_decodes_a_gzip_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    text = "field=value&" * 30
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/",
+        headers={"content-encoding": "gzip"},
+        raw_content=gzip.compress(text.encode("utf-8")),
+    )
+    response = SimpleNamespace(status_code=204, headers={}, raw_content=b"")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+    assert payload["request"]["body"] == text
+    assert payload["request"]["body_encoding"] == "gzip"
+    assert payload["request"]["body_decoded"] is True
+
+
+def test_proxy_flow_get_spills_a_large_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    blob = b"A" * 200_001
+    request = SimpleNamespace(
+        method="PUT", pretty_url="http://x/upload", headers={}, raw_content=blob
+    )
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+    assert "body" not in payload["request"]
+    spill = Path(str(payload["request"]["body_path"]))
+    assert spill.parent == tmp_path
+    assert spill.name.startswith("flow-req-") and spill.suffix == ".bin"
+    assert spill.read_bytes() == blob
+
+
+def test_proxy_flow_get_registers_both_spilled_bodies(tmp_path: Path, monkeypatch: Any) -> None:
+    """Both halves can spill; the service must record each so retention reclaims
+    them, and the request id must not overwrite the response id."""
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        req_body = tmp_path / "flow-req-x.bin"
+        resp_body = tmp_path / "flow-resp-y.bin"
+        req_body.write_bytes(b"q" * 10)
+        resp_body.write_bytes(b"r" * 10)
+        fake = {
+            "id": "f1",
+            "request": {"method": "POST", "body_path": str(req_body)},
+            "response": {"status": 200, "body_path": str(resp_body)},
+        }
+        service._proxy_backend.flow_get = (  # type: ignore[method-assign]
+            lambda session_id, flow_id, artifact_dir: fake
+        )
+        monkeypatch.setattr(service, "_proxy_artifact_dir", lambda session_id: tmp_path)
+        result = service.proxy_flow_get("s", "f1")
+        assert result.ok is True and result.data is not None
+        assert "artifact_id" in result.data
+        assert "request_artifact_id" in result.data
+        assert result.data["artifact_id"] != result.data["request_artifact_id"]
+        # Both files are known to retention, not orphaned on disk.
+        assert service.repository.list_artifacts()["total"] == 2
+    finally:
+        service.close_all()
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 

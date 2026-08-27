@@ -559,43 +559,56 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        raw = b""
-        try:
-            raw = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            raw = b""
-        body, encoding, decoded, truncated = _decode_body(resp, raw)
+        request: JsonObject = {
+            "method": req.method,
+            "url": req.pretty_url,
+            "headers": dict(req.headers),
+        }
         response: JsonObject = {
             "status": getattr(resp, "status_code", None),
             "headers": dict(resp.headers) if resp else {},
-            "size": len(body),
         }
+        # The request body carries the POST/PUT payload -- API params, tokens,
+        # the thing traffic analysis is usually after. A response-only view left
+        # it unreachable; decode both the same bounded way. Only attach a request
+        # body when there is one, so a plain GET stays method/url/headers.
+        self._attach_body(request, req, artifact_dir, name="req", always=False)
+        self._attach_body(response, resp, artifact_dir, name="resp", always=True)
+        return {"id": flow_id, "request": request, "response": response}
+
+    def _attach_body(
+        self, part: JsonObject, message: Any, artifact_dir: Path, *, name: str, always: bool
+    ) -> None:
+        """Decode a request/response body onto ``part``, inline or spilled.
+
+        Bodies over the inline cap spill to an artifact the service registers so
+        retention can reclaim them; smaller ones are returned inline. Content
+        encoding is surfaced (see ``_decode_body``): ``size`` is the decoded
+        length, ``encoded_size`` the on-wire length, ``body_decoded`` whether the
+        bytes were actually decoded.
+        """
+        raw = b""
+        try:
+            raw = (message.raw_content or b"") if message is not None else b""
+        except Exception:  # noqa: BLE001
+            raw = b""
+        if not raw and not always:
+            return
+        body, encoding, decoded, truncated = _decode_body(message, raw)
+        part["size"] = len(body)
         if encoding:
-            # Only when the wire body was content-encoded: name the encoding,
-            # say whether we actually decoded it, and keep the on-wire size so a
-            # caller is never left guessing why body and size disagree.
-            response["body_encoding"] = encoding
-            response["body_decoded"] = decoded
-            response["encoded_size"] = len(raw)
+            part["body_encoding"] = encoding
+            part["body_decoded"] = decoded
+            part["encoded_size"] = len(raw)
         if truncated:
-            response["body_truncated"] = True
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": response,
-        }
+            part["body_truncated"] = True
         if len(body) > 200_000:
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
+            out = artifact_dir / f"flow-{name}-{uuid4().hex}.bin"
             out.write_bytes(body)
-            response["body_path"] = str(out)
+            part["body_path"] = str(out)
         else:
-            response["body"] = body.decode("utf-8", errors="replace")
-        return result
+            part["body"] = body.decode("utf-8", errors="replace")
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)

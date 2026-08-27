@@ -342,6 +342,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字节」，而不是「压缩数据冒充文本」。响应体被内容编码过时，`response` 现在带 `body_encoding`（编码名）、
   `body_decoded`（是否真解开了）、`encoded_size`（链路上的字节数），而 `size` 报解码后的长度；未编码的
   响应（identity/无该头）行为不变。
+- **`proxy.flow.get` 只回响应体，请求体（POST/PUT 载荷）根本拿不到**。而抓包分析多半正是冲着请求
+  载荷去的——API 参数、鉴权 token、表单字段。此前 `request` 只有 method/url/headers，一个只看响应的视角
+  把最要紧的那半截藏了起来。现在请求体与响应体走同一套有界解码 `_decode_body`（gzip/deflate/zstd 在
+  `_MAX_DECODED_BODY` 内解、防解压炸弹，brotli/未知编码原样带回并标 `body_decoded=False`）：≤200000 字节
+  内联到 `request.body`，更大则外溢成 `flow-req-*.bin` 落到 `request.body_path`；没有请求体的 GET 则两者
+  皆无，不平白塞个空 `body`。服务层 `proxy_flow_get` 现在把请求、响应两边的外溢各自登记入册（请求体的
+  artifact id 落在自己的 `request_artifact_id`、不覆盖响应的 `artifact_id`），两个文件都被 retention 认领，
+  谁也不会变成没人回收的孤儿。`_register_capture` 为此加了个可选的 `key` 形参（默认 `artifact_id`，其余
+  调用方行为不变），让一个会外溢多个文件的工具能把每个 id 放进各自的字段。
 - **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`

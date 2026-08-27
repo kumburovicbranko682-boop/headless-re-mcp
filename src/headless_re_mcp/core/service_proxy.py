@@ -108,17 +108,23 @@ class ProxyAnalysisMixin:
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
-            spilled = data.get("response", {})
-            body_path = spilled.get("body_path") if isinstance(spilled, dict) else None
-            if isinstance(body_path, str) and body_path:
-                data = _register_capture(
-                    self,
-                    session_id,
-                    Path(body_path),
-                    kind="proxy_flow_body",
-                    source="proxy.flow.get",
-                    payload=data,
-                )
+            # Either half can spill: register both so retention can reclaim them.
+            # The request id lands in its own key so it never overwrites the
+            # response's, and both files are recorded regardless of the payload
+            # field, which is what actually binds them to pruning.
+            for section, field in (("response", "artifact_id"), ("request", "request_artifact_id")):
+                spilled = data.get(section)
+                body_path = spilled.get("body_path") if isinstance(spilled, dict) else None
+                if isinstance(body_path, str) and body_path:
+                    data = _register_capture(
+                        self,
+                        session_id,
+                        Path(body_path),
+                        kind="proxy_flow_body",
+                        source="proxy.flow.get",
+                        payload=data,
+                        key=field,
+                    )
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

@@ -111,6 +111,7 @@ def _register_capture(
     kind: str,
     source: str,
     payload: JsonObject,
+    key: str = "artifact_id",
 ) -> JsonObject:
     """Register a file a capture wrote, and return its id alongside the payload.
 
@@ -120,7 +121,10 @@ def _register_capture(
     unattended capture grows the artifact root with files nothing can reclaim.
 
     Registering must not fail the capture -- the file exists either way -- so a
-    failure travels in the payload rather than as an exception.
+    failure travels in the payload rather than as an exception. ``key`` names the
+    payload field the id lands in, so a tool that spills more than one file (a
+    request *and* a response body) can register each without the second id
+    overwriting the first.
     """
     if not path.is_file():
         return payload
@@ -136,7 +140,7 @@ def _register_capture(
         )
     except BaseException as exc:  # noqa: BLE001 - reported, never raised
         return {**payload, "artifact_error": str(exc)}
-    return {**payload, "artifact_id": artifact["id"]}
+    return {**payload, key: artifact["id"]}
 
 
 def _timeline_append(
