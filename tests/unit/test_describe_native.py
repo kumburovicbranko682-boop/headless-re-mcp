@@ -101,8 +101,23 @@ def _lc_filler(size: int) -> bytes:
     return bytes(cmd)
 
 
+def _lc_id_dylib(name: str) -> bytes:
+    raw = name.encode() + b"\x00"
+    total = (24 + len(raw) + 3) & ~3  # dylib_command is 24 bytes, then the name
+    cmd = bytearray(total)
+    cmd[0:4] = (0x0D).to_bytes(4, "little")  # LC_ID_DYLIB
+    cmd[4:8] = total.to_bytes(4, "little")
+    cmd[8:12] = (24).to_bytes(4, "little")  # name offset
+    cmd[24 : 24 + len(raw)] = raw
+    return bytes(cmd)
+
+
+def _lc_uuid_bytes(raw16: bytes) -> bytes:
+    return (0x1B).to_bytes(4, "little") + (24).to_bytes(4, "little") + raw16
+
+
 def _lc_uuid() -> bytes:
-    return (0x1B).to_bytes(4, "little") + (24).to_bytes(4, "little") + b"\x00" * 16
+    return _lc_uuid_bytes(b"\x00" * 16)
 
 
 def _macho_fat(*cputypes: int) -> bytes:
@@ -395,6 +410,7 @@ def test_macho_dylib_is_dynamic_but_not_pie(tmp_path: Path) -> None:
     assert facts["pie"] is False
     assert facts["linking"] == "dynamic"
     assert facts["dylibs"] == []  # a load command is present, but none are dylibs
+    assert facts["uuid"] == "00000000-0000-0000-0000-000000000000"  # LC_UUID was read
 
 
 def test_macho_static_executable_has_no_dylibs(tmp_path: Path) -> None:
@@ -420,6 +436,21 @@ def test_macho_records_its_dynamic_linker(tmp_path: Path) -> None:
     facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
     assert facts["interpreter"] == dyld
     assert facts["dylibs"] == [lib]
+
+
+def test_macho_records_uuid_and_install_name(tmp_path: Path) -> None:
+    # LC_ID_DYLIB is the Mach-O DT_SONAME and LC_UUID the Mach-O build-id, so a
+    # dylib reports both the way an ELF shared object reports soname/build_id.
+    install = "/usr/lib/libmylib.dylib"
+    data = _macho64_full(
+        filetype=6,  # MH_DYLIB
+        flags=0x4,  # MH_DYLDLINK
+        load_cmds=_lc_id_dylib(install) + _lc_uuid_bytes(bytes(range(16))),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.dylib", data))["native"]
+    assert facts["install_name"] == install
+    assert facts["uuid"] == "00010203-0405-0607-0809-0a0b0c0d0e0f"
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

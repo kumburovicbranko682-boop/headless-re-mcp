@@ -449,6 +449,8 @@ _MH_PIE = 0x00200000
 _MH_DYLDLINK = 0x00000004
 _LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, reexport
 _LC_LOAD_DYLINKER = 0x0E  # names the dynamic linker -- the Mach-O PT_INTERP
+_LC_ID_DYLIB = 0x0D  # a dylib's own install name -- the Mach-O DT_SONAME
+_LC_UUID = 0x1B  # the build's unique id -- the Mach-O GNU build-id
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
 # The header window read for identity facts is small, but a real image's load
@@ -2115,11 +2117,12 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         facts["linking"] = "dynamic" if flags & _MH_DYLDLINK else "static"
         cmd_off = 32 if bits == 64 else 28
         cmds = _macho_read_load_commands(stream, cmd_off, sizeofcmds, head)
-        dylibs, interpreter = _macho_load_commands(cmds, order, ncmds)
-        if dylibs is not None:
-            facts["dylibs"] = dylibs
-        if interpreter is not None:
-            facts["interpreter"] = interpreter
+        lc = _macho_load_commands(cmds, order, ncmds)
+        if lc["dylibs"] is not None:
+            facts["dylibs"] = lc["dylibs"]
+        for key in ("interpreter", "install_name", "uuid"):
+            if lc[key] is not None:
+                facts[key] = lc[key]
     return facts
 
 
@@ -2153,20 +2156,32 @@ def _macho_lc_str(cmds: bytes, pos: int, cmdsize: int, order: str) -> str | None
     return None
 
 
-def _macho_load_commands(
-    cmds: bytes, order: str, ncmds: int
-) -> tuple[list[str] | None, str | None]:
-    """Walk the load commands for the dylib list and the dynamic linker path.
+def _macho_uuid(raw: bytes) -> str:
+    """Format 16 LC_UUID bytes as the canonical 8-4-4-4-12 hex string."""
+    hexed = raw.hex()
+    return f"{hexed[0:8]}-{hexed[8:12]}-{hexed[12:16]}-{hexed[16:20]}-{hexed[20:32]}"
 
-    Returns ``(dylibs, interpreter)``. ``dylibs`` is None when the command count
-    is out of range (undetermined), else the list of LC_LOAD_DYLIB / weak /
-    reexport names. Bounded by the command count and the region already sized; a
-    command whose body runs past that region stops the walk.
+
+def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
+    """Walk the load commands for the image's identity and dependency facts.
+
+    Returns ``dylibs`` (the LC_LOAD_DYLIB / weak / reexport names, or None when
+    the command count is out of range), ``interpreter`` (LC_LOAD_DYLINKER),
+    ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue)
+    and ``uuid`` (LC_UUID, the build id). Bounded by the command count and the
+    region already sized; a command whose body runs past that region stops the
+    walk.
     """
+    result: dict[str, Any] = {
+        "dylibs": None,
+        "interpreter": None,
+        "install_name": None,
+        "uuid": None,
+    }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
-        return None, None
+        return result
     names: list[str] = []
-    interpreter: str | None = None
+    result["dylibs"] = names
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(cmds):
@@ -2179,10 +2194,14 @@ def _macho_load_commands(
             name = _macho_lc_str(cmds, pos, cmdsize, order)
             if name:
                 names.append(name)
-        elif cmd == _LC_LOAD_DYLINKER and interpreter is None:
-            interpreter = _macho_lc_str(cmds, pos, cmdsize, order)
+        elif cmd == _LC_LOAD_DYLINKER and result["interpreter"] is None:
+            result["interpreter"] = _macho_lc_str(cmds, pos, cmdsize, order)
+        elif cmd == _LC_ID_DYLIB and result["install_name"] is None:
+            result["install_name"] = _macho_lc_str(cmds, pos, cmdsize, order)
+        elif cmd == _LC_UUID and result["uuid"] is None and cmdsize >= 24:
+            result["uuid"] = _macho_uuid(cmds[pos + 8 : pos + 24])
         pos += cmdsize
-    return names, interpreter
+    return result
 
 
 def _macho_fat_facts(head: bytes) -> dict[str, Any]:
