@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（dynamic.registers.write 的 value 补上非负下界,与同类写工具一致)
+
+- `dynamic.registers.write` 的 `value` 过去是无界 `int`,而寄存器是无符号量、原生
+  `WriteRegister` 经 `ReadUnsigned` 会先拒掉负的 `raw`。姊妹工具 `threads.context.write`
+  早已用 `Field(ge=0)` 声明这一点,唯独它没有——AI 传负值时能过 schema、白占一次 worker
+  往返,直到后端才报 `参数越界`。现给它同样的 `ge=0` 下界,在 MCP 边界就用清晰的 schema 错误
+  快速拒绝,并与 `threads.context.write`、原生契约对齐(上界仍不设,与姊妹工具一致;≥2^63 因
+  jansson 线格式受限仍在后端拒收,属另一条已记录的限制)。扩展既有 schema 对照测试断言
+  `value` 的 `minimum == 0`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

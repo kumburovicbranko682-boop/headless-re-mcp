@@ -188,12 +188,14 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def dynamic_registers_write(
         session_id: str,
         name: Annotated[str, Field(min_length=1, max_length=16)],
-        value: int,
+        value: Annotated[int, Field(ge=0)],
     ) -> dict[str, Any]:
         """Write one allowlisted architecture register on a paused debuggee.
 
         Answers with name and value of the register that was written. There
-        is no written, ok or registers field.
+        is no written, ok or registers field. The value is an unsigned
+        register word, matching threads.context.write and the native
+        WriteRegister contract, which reject a negative value.
         """
         return _dump(analysis.dynamic_register_write(session_id, name, value))
 
