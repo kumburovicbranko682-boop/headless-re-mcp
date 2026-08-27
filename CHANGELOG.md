@@ -1019,6 +1019,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   要白搭一次设备往返，而当 adb server 恰好连不上时，真正的问题（文件不存在/超限）还会被设备
   错误盖掉。改为先判本地文件：路径不存在回 `not_found`、`push` 的超限文件回 `too_large`，都在
   连设备之前当场返回，合法输入才去连设备（与 `frida.spawn` 先判包名同一处理）。
+- **`device.push` / `device.forward` 把 adbutils 显式返回的 False 当成成功**。adbutils
+  成功时回字节数或 None，但被拒绝时会回 False，而回包仍是 `{local, remote}`，无人值守的
+  agent 便把没离开宿主机的文件当成已在设备上，或对着一个从没打开的端口通信。现在显式的
+  False 记为 `backend_error`（`pushed`/`forwarded` 为 False）；forward 还会把先前占下的
+  追踪槽释放，免得被拒的转发白占表位。None 仍算成功。
 - **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
