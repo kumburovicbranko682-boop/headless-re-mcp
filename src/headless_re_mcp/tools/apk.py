@@ -81,6 +81,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.native_methods")
+    def apk_native_methods(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List methods declared native -- the JNI entry points (paginated).
+
+        Where apk.native_libs names the bundled .so files, this names the Java
+        side of the boundary: every method whose access flags include native,
+        whose body therefore lives in native code reached over JNI. Read the two
+        together to see where managed code hands off to the shipped libraries.
+        Answers with native_methods (class_name, name, descriptor, access),
+        count, total, offset, and has_more so a page that filled the limit is
+        not read as every native method. total is the number collected, capped
+        at 2000; scan_capped is true when more may exist. External methods are
+        skipped since a native body only exists for a method defined here.
+        """
+        return _dump(analysis.apk_native_methods(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

@@ -326,6 +326,60 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def native_methods(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List methods declared native -- the JNI entry points into lib*.so.
+
+        native_libs names the .so files that ship in the APK; this names the
+        Java side of the boundary: every method whose access flags include
+        native, meaning its body lives in native code reached over JNI. The two
+        together locate where managed code hands off to the shipped libraries.
+        Each row is class_name, name, descriptor and access. External (referenced
+        but not defined here) methods are skipped, since a native body only
+        exists for a method defined in this DEX. Rows are deduped and sorted by
+        (class, name, descriptor); total is the number collected, capped at 2000
+        with scan_capped when more may exist, and has_more/offset page it.
+        """
+        parsed = self._parsed(path)
+        rows: list[JsonObject] = []
+        seen: set[tuple[str, str, str]] = set()
+        scan_more = False
+        for method in parsed.analysis.get_methods():
+            if len(rows) >= _MAX_METHODS_COLLECT:
+                scan_more = True
+                break
+            if method.is_external():
+                continue
+            access = str(getattr(method, "access", ""))
+            if "native" not in access.split():
+                continue
+            key = (
+                str(method.class_name),
+                str(method.name),
+                str(getattr(method, "descriptor", "")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "class_name": key[0],
+                    "name": key[1],
+                    "descriptor": key[2],
+                    "access": access,
+                }
+            )
+        rows.sort(key=lambda row: (row["class_name"], row["name"], row["descriptor"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "native_methods": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
