@@ -230,3 +230,18 @@ def test_proxy_export_har_names_path_and_entry_count(
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+
+
+def test_recorder_running_hook_signals_startup_completion() -> None:
+    """start() releases the shared-ctx startup lock only once this fires.
+
+    The recorder is added last, so mitmproxy calls its ``running`` after every
+    other startup hook; that is the point where the process-global
+    ``mitmproxy.ctx`` is fully settled and another master may safely construct.
+    If this signal is lost, start() would return mid-startup and the multi-proxy
+    ctx race ("No such option: rfile") comes back.
+    """
+    recorder = _FlowRecorder()
+    assert recorder.started.is_set() is False
+    recorder.running()
+    assert recorder.started.is_set() is True

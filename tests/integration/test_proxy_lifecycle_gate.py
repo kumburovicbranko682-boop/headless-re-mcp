@@ -9,6 +9,7 @@ reported as a running capture.
 from __future__ import annotations
 
 import socket
+import threading
 import time
 
 import pytest
@@ -99,6 +100,62 @@ def test_two_sessions_cannot_silently_share_one_port() -> None:
         assert backend.status("second") == {"running": False}
     finally:
         backend.close_all()
+
+
+@pytest.mark.integration
+def test_start_returns_only_after_the_masters_startup_hooks_have_run() -> None:
+    """A returned start must mean the shared mitmproxy ctx is fully settled.
+
+    mitmproxy stores options in a process global set in each ``Master.__init__``.
+    If start() returned while its own startup hooks were still running, the next
+    master's construction could overwrite that global mid-bind. The recorder's
+    ``started`` event is set by the last startup hook, so it must be set by the
+    time start() returns.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("gate-hooks", host="127.0.0.1", port=port)
+    try:
+        inst = backend._instances["gate-hooks"]
+        assert inst.recorder.started.is_set() is True
+    finally:
+        backend.stop("gate-hooks")
+
+
+@pytest.mark.integration
+def test_concurrent_starts_do_not_corrupt_the_shared_mitmproxy_context() -> None:
+    """Overlapping master construction must not trip mitmproxy's global ctx.
+
+    Six threads race to stand up and tear down their own capture. Before the
+    startup lock this intermittently failed with "No such option: rfile" or a
+    bind against another session's port (a backend_error). A plain port
+    collision between two workers is a different, expected outcome, so only a
+    backend_error counts as the corruption this guards against.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    corruption: list[str] = []
+
+    def worker(wid: int) -> None:
+        backend = ProxyBackend()
+        for _ in range(4):
+            port = _free_port()
+            try:
+                backend.start(f"race-{wid}", host="127.0.0.1", port=port)
+            except ProxyError as exc:
+                if exc.code == "backend_error":
+                    corruption.append(f"race-{wid}: {exc}")
+            finally:
+                backend.stop(f"race-{wid}")
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60.0)
+    assert not corruption, corruption
 
 
 @pytest.mark.integration
