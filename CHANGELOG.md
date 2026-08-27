@@ -178,6 +178,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   条大事件,首页 `has_more==True` 且 `next_after` 等于本页末事件 seq,顺着游标翻页能收敛到
   `has_more==False`,期间任何页都不重复 seq。
 
+### 修复（任务队列列表披露被分页截断,而非把一页当成整条队列）
+
+- `GET /api/agent/missions` 返回按创建时间倒序的一页(默认 100、最多 500),响应带 `count`
+  (＝本页条数)却没有总数:一个繁忙部署的队列条目多于上限时,截断后的一页读起来就是整条队列。
+  PENDING/RUNNING 任务从不裁剪,只有终态任务按线程保留 128 条,所以未决队列本身就可能超过页上限。
+  `AgentStore` 新增 `count_missions(status=)`(一条 `COUNT(*)`,可选状态过滤),端点据此新增
+  `total` 与 `truncated`(＝`total > 本页条数`);`missions` 列表与既有 `count` / `scheduler_running`
+  不变,纯增量。新增测试:存储层建 7 条、认领 3 条后 `count_missions()==7`、按 PENDING 计 4、按
+  RUNNING 计 3,且 `limit=2` 的分页不改变计数;路由层单条队列 `total==1`、`truncated==False`,加
+  到 2 条并请求 `limit=1` 后 `count==1`、`total==2`、`truncated==True`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
