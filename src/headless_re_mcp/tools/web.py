@@ -194,7 +194,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Export captured network activity to a HAR artifact.
 
         Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        was registered, and truncated when oldest entries were dropped to fit
+        the cap. There is no har, entries or artifact field. The log is
+        conformant HAR 1.2 -- each entry carries startedDateTime, timings,
+        cookies, queryString, cache and the captured request/response headers
+        -- so DevTools Import HAR and HAR viewers accept it.
         """
         return _dump(analysis.web_har_export(session_id))
 

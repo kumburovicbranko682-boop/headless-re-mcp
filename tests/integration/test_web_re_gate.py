@@ -369,6 +369,25 @@ def test_web_cdp_screenshot_and_har_export() -> None:
             assert any(u.endswith("/data.json") for u in urls), (
                 "the HAR is missing the /data.json subresource"
             )
+            # The log must be conformant HAR 1.2 (viewers reject entries missing
+            # these), and the captured response headers must land in it.
+            data_entry = next(
+                e for e in log["entries"] if e["request"]["url"].endswith("/data.json")
+            )
+            for field in ("startedDateTime", "time", "cache", "timings"):
+                assert field in data_entry, field
+            for field in ("send", "wait", "receive"):
+                assert field in data_entry["timings"], field
+            for side in ("request", "response"):
+                assert isinstance(data_entry[side]["headers"], list)
+                assert isinstance(data_entry[side]["cookies"], list)
+            resp_headers = {
+                str(h["name"]).lower(): str(h["value"])
+                for h in data_entry["response"]["headers"]
+            }
+            assert resp_headers.get("x-gate-marker") == "webre-gate-header", (
+                "the HAR did not carry the captured response header"
+            )
         finally:
             service.close_all()
 

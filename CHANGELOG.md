@@ -268,6 +268,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   要头部走 `network.get`。活体门在本地服务器上给 `/data.json` 加一个独特响应头、并让页面 POST 带 JSON 内容类型，
   断言 `network.get` 如实回响应头（含该标记与 content-type）与请求头、而列表行不含头部（缺浏览器时 skip≠pass）；
   单测直接驱动事件，覆盖有界化、超限截断标记、list 剥离与 get 保留。
+- **`web.har.export` 导出的 HAR 不合规，导入工具打不开、且头部全空**。每个 entry 只有 request.method/url 与
+  response.status/mimeType，缺 HAR 1.2 必需的 `startedDateTime`、`time`、`cookies`、`headers`、`queryString`、
+  `cache`、`timings`——DevTools「Import HAR」、HAR Analyzer、har-validator 一律拒收；而 HAR 导出的全部意义就是喂给
+  这些下游工具。加上刚补的头部捕获，现在导出补齐上述必需字段（httpVersion/headersSize/bodySize 用 HAR 允许的占位），
+  并把捕获到的请求/响应头按 HAR 的 name/value 数组填入、URL 查询串解析进 `queryString`。活体门加载回落盘的 HAR，
+  断言 entry 带齐必需字段、`timings` 有 send/wait/receive、且 `/data.json` 那条的响应头里有服务器设的自定义标记
+  （缺浏览器时 skip≠pass）；单测直接读回 HAR，校验结构合规、请求/响应头进了 name/value 数组、查询串被解析。
 - **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
   但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
   移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**

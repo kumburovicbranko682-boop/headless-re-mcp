@@ -23,8 +23,10 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
@@ -93,6 +95,25 @@ def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
         if key_cut or val_cut:
             truncated = True
     return out, truncated
+
+
+def _har_headers(mapping: object) -> list[JsonObject]:
+    """A captured header map as HAR's name/value array (empty when none)."""
+    if not isinstance(mapping, dict):
+        return []
+    return [{"name": str(name), "value": str(value)} for name, value in mapping.items()]
+
+
+def _har_query_string(url: str) -> list[JsonObject]:
+    """The URL's query as HAR's name/value array; a bad URL yields an empty one."""
+    try:
+        query = urlsplit(url).query
+    except (ValueError, TypeError):
+        return []
+    return [
+        {"name": name, "value": value}
+        for name, value in parse_qsl(query, keep_blank_values=True)
+    ]
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -858,14 +879,40 @@ class WebBackend:
 
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
+        # A HAR whose entries omit startedDateTime/timings/cookies/headers/
+        # queryString/cache is not valid HAR 1.2 -- the viewers this export
+        # feeds (DevTools Import HAR, HAR Analyzer, har-validator) reject it.
+        # Emit conformant entries and populate the request/response headers now
+        # that they are captured, so the export is actually loadable.
+        started = datetime.now(timezone.utc).isoformat()
         with handle.lock:
             entries = [
                 {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
+                    "startedDateTime": started,
+                    "time": 0,
+                    "request": {
+                        "method": e.get("method") or "",
+                        "url": e.get("url") or "",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [],
+                        "headers": _har_headers(e.get("request_headers")),
+                        "queryString": _har_query_string(e.get("url") or ""),
+                        "headersSize": -1,
+                        "bodySize": -1,
+                    },
                     "response": {
                         "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
+                        "statusText": "",
+                        "httpVersion": "HTTP/1.1",
+                        "cookies": [],
+                        "headers": _har_headers(e.get("response_headers")),
+                        "content": {"size": 0, "mimeType": e.get("mimeType") or ""},
+                        "redirectURL": "",
+                        "headersSize": -1,
+                        "bodySize": -1,
                     },
+                    "cache": {},
+                    "timings": {"send": 0, "wait": 0, "receive": 0},
                     "_resourceType": e.get("resourceType"),
                 }
                 for e in handle.requests.values()
