@@ -277,6 +277,7 @@ jobs:
             tests/integration/test_proxy_headers_and_omit_gate.py \
             tests/integration/test_web_re_gate.py \
             tests/integration/test_js_bundle_graph_gate.py \
+            tests/integration/test_web_js_deobfuscate_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_web_navigate_gate.py \
             tests/integration/test_web_cdp_gate.py \
