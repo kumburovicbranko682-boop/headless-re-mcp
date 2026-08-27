@@ -86,6 +86,23 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _script_in_injected_world(aux: object) -> bool:
+    """True for a Debugger.scriptParsed that belongs to an injected world.
+
+    scriptParsed fires for every script in every execution context, and
+    Playwright drives the page from an injected isolated "utility world": its
+    bindings, the utilityScript, page.title() and its readiness probes all parse
+    scripts there. Those are this tool's own instrumentation, not the target's
+    code, so surfacing them in web.scripts is misleading noise for JS RE -- a
+    bare page open already lists several. CDP tags each script's world through
+    executionContextAuxData: the page's own scripts run in the main world
+    (isDefault True) while injected scripts run in a non-default isolated world.
+    A CDP build that omits auxData leaves the world unknown, so it is not treated
+    as injected -- better to keep a script than risk hiding a real one.
+    """
+    return isinstance(aux, dict) and aux.get("isDefault") is False
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -495,6 +512,10 @@ class WebBackend:
                         entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
+            # Skip the tool's own instrumentation, which parses in an injected
+            # world rather than the page's -- see _script_in_injected_world.
+            if _script_in_injected_world(params.get("executionContextAuxData")):
+                return
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
                 params.get("scriptLanguage", "JavaScript"), _MAX_METADATA_BYTES

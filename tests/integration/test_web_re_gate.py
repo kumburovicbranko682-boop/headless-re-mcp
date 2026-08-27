@@ -54,7 +54,23 @@ def test_web_cdp_open_and_inspect() -> None:
         try:
             scripts = service.web_scripts(session_id)
             assert scripts.ok, scripts.error
-            assert isinstance(scripts.data["scripts"], list)
+            listed = scripts.data["scripts"]
+            assert isinstance(listed, list)
+
+            # web.scripts must list the target's own JavaScript, not the driver's.
+            # Playwright parses its bindings / utilityScript / page.title() probes
+            # in an injected isolated world; those must be filtered out, while the
+            # page's own inline script (window.__x / console.log('gate-ready'))
+            # stays. Fetching each listed script's source proves it end to end:
+            # before the filter the utility-world scripts showed up here too.
+            sources = []
+            for script in listed:
+                source = service.web_script_source(session_id, script["scriptId"])
+                assert source.ok, source.error
+                sources.append(source.data.get("source") or "")
+            assert any("gate-ready" in text for text in sources), sources
+            assert not any("utilityScript" in text for text in sources), sources
+            assert not any(text.strip() == "() => document.title" for text in sources), sources
 
             console = service.web_console(session_id)
             assert console.ok, console.error

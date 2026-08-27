@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（web.scripts 把 Playwright 自己的注入脚本当成页面脚本列出来）
+
+- **`web.scripts` 把驱动器自己的插桩脚本混进了目标页面的 JS 清单里。** `Debugger.scriptParsed`
+  对每一个执行上下文里的脚本都会触发，而 Playwright 是从一个注入的隔离「utility world」里驱动页面
+  的——它的 binding、`utilityScript`、`page.title()` 及各种就绪探针都在那里解析成脚本。后端过去把
+  这些原样记进脚本表，于是一个只有一两段脚本的页面，`web.scripts` 却报出五六条，多出来的全是本工具
+  自己的插桩、不是被分析目标的代码，做 JS 逆向时纯是噪声（真机复现：webcrack 无关，Chromium 一开就
+  混进 `((utilityScript, ...args) => ...`、`() => document.title` 等）。CDP 用
+  `executionContextAuxData` 标了每段脚本属于哪个 world：页面自己的脚本在主 world（`isDefault` 为
+  真），注入脚本在非默认的隔离 world。现按此过滤，只留主 world；某些 CDP 版本不带 `auxData` 时
+  world 未知，就保留（宁可多列一条，也不误藏真页面脚本）。真机验证：一个含外链 `app.js` + 一段内联
+  脚本的页面，修复前 `web.scripts` 报 6 条、修复后正好 2 条（都是页面脚本），`web.script.source`
+  仍能按 id 取到任意脚本源码。新增单测 `test_web_scripts_fields.py::test_injected_world_filter_*`
+  钉住过滤判定（主 world 留、隔离 world 丢、缺 auxData 保守留），并强化 web CDP 现场 gate：逐个取
+  已列脚本的源码，断言页面内联脚本在、且 Playwright 的 `utilityScript` / `() => document.title`
+  不在——旧后端上这条 gate 就挂在 `utilityScript` 断言上。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
