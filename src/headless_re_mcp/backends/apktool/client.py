@@ -20,6 +20,13 @@ _MAX_STDERR = 8000
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# apksigner reads the keystore/key password from this environment variable
+# rather than a ``pass:<password>`` argv token. A process command line is
+# world-readable on Linux (``/proc/<pid>/cmdline``) and shows up in ``ps``, so a
+# password on argv leaks to every local process for as long as the JVM runs;
+# ``/proc/<pid>/environ`` is readable only by the owning uid, so the env keeps
+# the secret to this process's user. SECURITY.md treats such leaks as bugs.
+_KS_PASSWORD_ENV = "HRE_MCP_KS_PASSWORD"
 
 
 class ApktoolError(RuntimeError):
@@ -30,10 +37,12 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -163,6 +172,10 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # Hand the password to apksigner through the environment, never argv:
+        # ``env:<name>`` reads System.getenv, so the secret stays out of the
+        # world-readable process command line for the life of the JVM.
+        signer_env = {**os.environ, _KS_PASSWORD_ENV: password}
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -170,16 +183,17 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASSWORD_ENV}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASSWORD_ENV}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=signer_env,
         )
         if code != 0 or not out_apk.is_file():
             # stderr can echo the argument vector, so scrub the password if present.

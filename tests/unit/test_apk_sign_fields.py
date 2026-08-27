@@ -76,6 +76,58 @@ def test_apk_sign_names_apk_not_signed_apk(
     assert "verify" in doc
 
 
+def test_apk_sign_keeps_the_keystore_password_off_the_command_line(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """SECURITY.md treats signing-password leaks as bugs, and a process command
+    line is not private.
+
+    A ``pass:<password>`` argv token hands the keystore password to every local
+    process: ``/proc/<pid>/cmdline`` is world-readable on Linux and the same
+    string shows up in ``ps`` for as long as the apksigner JVM runs.
+    ``/proc/<pid>/environ`` is readable only by the owning uid, so the password
+    must ride in an environment variable that apksigner reads with ``env:``,
+    and it must never appear as (or inside) any command-line argument.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> tuple[str, str, int]:
+        if "sign" in cmd:
+            seen["sign_cmd"] = list(cmd)
+            seen["sign_env"] = dict(kwargs.get("env") or {})
+            out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+
+    sign_cmd = seen["sign_cmd"]
+    assert all(password not in token for token in sign_cmd)
+    assert f"pass:{password}" not in sign_cmd
+    ks_pass = sign_cmd[sign_cmd.index("--ks-pass") + 1]
+    key_pass = sign_cmd[sign_cmd.index("--key-pass") + 1]
+    assert ks_pass.startswith("env:")
+    assert key_pass.startswith("env:")
+    var_name = ks_pass[len("env:") :]
+    assert seen["sign_env"].get(var_name) == password
+    # The child still inherits the ambient environment the JVM launcher needs.
+    assert "PATH" in seen["sign_env"]
+
+
 def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
