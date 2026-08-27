@@ -163,6 +163,60 @@ async def test_cancellation_is_not_treated_as_a_retryable_fault() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_long_retry_alert_error_is_marked_truncated_within_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cut alert error must say it was cut, not read as the whole error.
+
+    The provider appends the HTTP error body to the exception it re-raises --
+    that body is where a host says which limit was hit and for how long -- so
+    the alert's error text routinely exceeds its 300-character budget and the
+    operative detail sits past the cut. A bare slice read as complete.
+    """
+    from headless_re_mcp.agent.providers import retrying
+
+    alerts: list[JsonObject] = []
+    monkeypatch.setattr(
+        retrying,
+        "record_alert",
+        lambda kind, severity, fields: alerts.append({"kind": kind, **fields}),
+    )
+    failure = HttpError(429)
+    failure.args = ("http 429: " + "the body explains the limit " * 20,)
+    inner = ScriptedProvider([failure])
+    provider = RetryingProvider(inner, sleep=_no_sleep)
+
+    await _drain(provider)
+
+    assert alerts and alerts[0]["kind"] == "provider_retry"
+    error = alerts[0]["error"]
+    assert len(error) <= 300
+    assert error.endswith("...[truncated]")
+    assert error.startswith("HttpError: http 429")
+
+
+@pytest.mark.asyncio
+async def test_a_short_retry_alert_error_is_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Within budget the error is reported whole, with no marker."""
+    from headless_re_mcp.agent.providers import retrying
+
+    alerts: list[JsonObject] = []
+    monkeypatch.setattr(
+        retrying,
+        "record_alert",
+        lambda kind, severity, fields: alerts.append(dict(fields)),
+    )
+    inner = ScriptedProvider([HttpError(503)])
+    provider = RetryingProvider(inner, sleep=_no_sleep)
+
+    await _drain(provider)
+
+    assert alerts[0]["error"] == "HttpError: http 503"
+
+
+@pytest.mark.asyncio
 async def test_list_models_passes_through() -> None:
     provider = RetryingProvider(ScriptedProvider([]), sleep=_no_sleep)
     assert await provider.list_models() == ["fake"]
