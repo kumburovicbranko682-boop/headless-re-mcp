@@ -206,15 +206,19 @@ class _FakeCall:
 
 
 class _FakeMethod:
-    def __init__(self, name: str, callers: int) -> None:
+    def __init__(self, name: str, callers: int, callees: int = 0) -> None:
         self.name = name
         self._callers = callers
+        self._callees = callees
 
     def is_external(self) -> bool:
         return False
 
     def get_xref_from(self) -> list[tuple[object, _FakeCall, int]]:
         return [(None, _FakeCall(index), index) for index in range(self._callers)]
+
+    def get_xref_to(self) -> list[tuple[object, _FakeCall, int]]:
+        return [(None, _FakeCall(index), index) for index in range(self._callees)]
 
 
 class _FakeParsed:
@@ -266,6 +270,66 @@ class TestApkXrefsSayWhenTheyStopped:
 
         assert result["count"] == 10
         assert result["has_more"] is False
+
+
+class TestApkXrefsWalkBothDirections:
+    """callers walks xref_from; callees walks xref_to -- forward and backward."""
+
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, *, callers: int = 0, callees: int = 0
+    ) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        monkeypatch.setattr(
+            ApkClient,
+            "_parsed",
+            lambda self, path: _FakeParsed([_FakeMethod("decrypt", callers, callees)]),
+        )
+        return client
+
+    def test_default_direction_stays_callers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, callers=2, callees=99)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt")
+
+        assert result["direction"] == "callers"
+        assert result["count"] == 2
+        assert "callers" in result
+        assert "callees" not in result
+
+    def test_callees_direction_walks_xref_to(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, callers=99, callees=3)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", direction="callees", limit=10)
+
+        assert result["direction"] == "callees"
+        assert result["count"] == 3
+        assert result["has_more"] is False
+        assert "callees" in result
+        assert "callers" not in result
+        assert all(set(edge) == {"class", "method"} for edge in result["callees"])
+
+    def test_callees_report_when_they_hit_the_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, callees=25)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", direction="callees", limit=10)
+
+        assert result["count"] == 10
+        assert result["has_more"] is True
+
+    def test_an_unknown_direction_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkError
+
+        client = self._client(monkeypatch, callers=1)
+        with pytest.raises(ApkError) as excinfo:
+            client.xrefs(tmp_path / "app.apk", "decrypt", direction="sideways")
+        assert excinfo.value.code == "invalid_params"
 
 
 class _FakeCert:

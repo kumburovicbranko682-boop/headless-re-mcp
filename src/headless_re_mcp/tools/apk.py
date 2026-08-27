@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -138,14 +138,22 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_xrefs(
         session_id: str,
         method_name: str,
+        direction: Literal["callers", "callees"] = "callers",
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List callers of every method named method_name.
+        """List callers or callees of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        direction "callers" (default) lists who calls the method; direction
+        "callees" lists what the method calls (framework APIs included), so a
+        call graph can be walked forward as well as backward. Answers with
+        method_name, direction, count, has_more (so a page that filled the limit
+        is not read as the whole list), and one list of {class, method} named
+        after the direction: callers for "callers", callees for "callees". There
+        is no callers key on a callees answer, or vice versa.
         """
-        return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
+        return _dump(
+            analysis.apk_xrefs(session_id, method_name, direction=direction, limit=limit)
+        )
 
     @tools.tool(name="apk.decompile")
     def apk_decompile(

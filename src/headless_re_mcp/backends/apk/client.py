@@ -426,37 +426,61 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self,
+        path: Path,
+        method_name: str,
+        *,
+        direction: str = "callers",
+        limit: int = 100,
+    ) -> JsonObject:
+        """Walk one direction of the call graph for methods named method_name.
+
+        ``direction="callers"`` (the default) answers who calls the method
+        (androguard's xref_from); ``direction="callees"`` answers what the method
+        calls (xref_to), including framework APIs, which is how an agent traces a
+        call forward rather than only backward. The edges are the same
+        ``{class, method}`` shape either way, and the ``callers``/``callees`` key
+        names the direction so a reply cannot be misread.
+        """
+        if direction not in ("callers", "callees"):
+            raise ApkError(
+                "invalid_params",
+                "direction must be callers or callees",
+                direction=direction,
+            )
         parsed = self._parsed(path)
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
         cap = max(1, int(limit))
-        callers: list[JsonObject] = []
+        refs: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
-            for _, call, _ in method.get_xref_from():
-                if len(callers) >= cap:
+            walk = method.get_xref_from() if direction == "callers" else method.get_xref_to()
+            for _, other, _ in walk:
+                if len(refs) >= cap:
                     # Only set once something was actually left out, so a result
                     # that happens to fill the page is not reported as partial.
                     has_more = True
                     break
-                callers.append(
+                refs.append(
                     {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
+                        "class": str(other.class_name),
+                        "method": str(other.name),
                     }
                 )
             if has_more:
                 break
         return {
             "method_name": target,
-            "callers": callers,
-            "count": len(callers),
-            # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
+            "direction": direction,
+            direction: refs,
+            "count": len(refs),
+            # A caller deciding "these are all the refs" has to know whether the
+            # enumeration ended or merely stopped.
             "has_more": has_more,
         }
 

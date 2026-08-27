@@ -76,8 +76,9 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
-    doc = _tool_docstring("apk.xrefs")
-    assert "Answers with callers" in doc
+    doc = " ".join(_tool_docstring("apk.xrefs").split())
+    assert "callers or callees" in doc
+    assert "direction" in doc
     assert "has_more" in doc
 
 
@@ -98,9 +99,10 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     )
     payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
     assert payload["method_name"] == "decrypt"
+    assert payload["direction"] == "callers"
     assert "method" not in payload
     doc = " ".join(_tool_docstring("apk.xrefs").split())
-    assert "callers (class and method), method_name" in doc
+    assert "method_name, direction, count, has_more" in doc
 
 
 class _ManifestBody:
