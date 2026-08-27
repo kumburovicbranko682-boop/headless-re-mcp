@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（NETReactorSlayer 适配器 fail-closed 合同）
+
+- `dotnet/net_reactor_slayer.py` 的服务级测试用 mock runner 驱动 `dotnet.deobfuscate`,
+  因此 `run_net_reactor_slayer` 本体(argv 白名单、工作副本隔离、运行前后摘要校验、
+  `*_Slayed` 产物发布)与 `probe_net_reactor_slayer` 均未覆盖。新增
+  `tests/unit/test_net_reactor_slayer_adapter.py`:校验类错误在执行前抛出,跨平台运行
+  (缺可执行文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);诚实性
+  检查用脚本化假 CLI(`#!/usr/bin/env python3`,收到 `<work_input> --no-pause True` 并在
+  工作副本旁写结果,POSIX 专属):干净运行发布 `*_Slayed` 产物、异名 `*_Slayed*` 单候选经
+  glob 兜底接受、无产物记 `OUTPUT_MISSING`、两个候选歧义同样记 `OUTPUT_MISSING`、stdout
+  洪泛记 `OUTPUT_LIMIT` 不发布产物、非零退出记 `PROCESS_FAILED` 且 retryable、在摘要接缝
+  模拟工具回改原始被 `INPUT_MUTATED` 拦截;`probe_net_reactor_slayer` 覆盖缺文件、含产品
+  横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
+  60% → 97%(余量为两处实践中不可达的防御分支)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
