@@ -91,3 +91,51 @@ def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
         assert opened.error.code in {"target_mismatch", "invalid_request", "backend_unavailable"}
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apk_ops_degrade_without_incident_on_a_hostile_manifest(tmp_path: Path) -> None:
+    """No androguard apk.* op may crash or mint an internal_error on bad input.
+
+    A file that classifies as an APK (real zip carrying an AndroidManifest.xml
+    entry) whose manifest is not valid AXML is a routine corrupt/hostile input
+    for an unattended agent. androguard's APK() fails to parse it, and the
+    getters react differently: some raise (surfaced as backend_error), some
+    return best-effort results because they read the zip rather than the manifest
+    (native_libs, certificates). Either is fine. What must never happen is a
+    raised exception reaching the caller, or a failure landing as internal_error
+    with an error-boundary incident -- that would read as an adapter bug for what
+    is only the caller's corrupt data. apk.open pins this for one op; this pins
+    the rest of the androguard surface so a regression that starts leaking a raw
+    exception through the service's BaseException catch-all fails here.
+    """
+    apk = _build_synthetic_apk(tmp_path / "hostile.apk")
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+        klass = "Lcom/example/Foo;"
+        # Building this dict calls every op; a raise (rather than a returned
+        # Result) would abort here and fail the test, which is the crash guard.
+        results = {
+            "manifest": service.apk_manifest(session_id),
+            "permissions": service.apk_permissions(session_id),
+            "certificates": service.apk_certificates(session_id),
+            "components": service.apk_components(session_id),
+            "native_libs": service.apk_native_libs(session_id),
+            "classes": service.apk_classes(session_id),
+            "methods": service.apk_methods(session_id, klass),
+            "strings": service.apk_strings(session_id),
+            "xrefs": service.apk_xrefs(session_id, f"{klass}->bar()V"),
+        }
+        for name, result in results.items():
+            if result.ok:
+                continue  # best-effort success is allowed; only failures are pinned
+            assert result.error is not None, name
+            assert result.error.code != "internal_error", (name, result.error.code)
+            assert result.error.code in {"backend_error", "capability_unavailable"}, (
+                name,
+                result.error.code,
+            )
+            assert "incident_id" not in (result.error.details or {}), name
+    finally:
+        service.close_all()

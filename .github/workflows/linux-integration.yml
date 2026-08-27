@@ -10,7 +10,7 @@
 # the gates that produce real Linux coverage.
 #
 # Verified locally on ubuntu-24.04 / CPython 3.12 with these same steps:
-# 16 passed, 1 skipped. The single skip is the Windows-only OS-handle leak check
+# 17 passed, 1 skipped. The single skip is the Windows-only OS-handle leak check
 # in test_web_lifecycle_gate.py, which honestly skips on POSIX (skip != pass).
 #
 # Manual + weekly rather than per-commit: each run downloads a Chromium build and

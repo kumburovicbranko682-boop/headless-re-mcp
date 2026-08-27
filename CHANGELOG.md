@@ -62,6 +62,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   现断言这被结构化呈现（装了 androguard 时是 `backend_error`，即 client 对“failed to parse APK”的包装；
   没装时是 `capability_unavailable`），且 `error.code != internal_error`、details 里无 `incident_id`——
   坏 manifest 是调用方的数据，不是适配器 bug。实测装了 androguard 时返回 `backend_error`、无 incident。
+- 再加 Android 敌意输入鲁棒性 gate：新增 `test_android_apk_ops_degrade_without_incident_on_a_hostile_manifest`，
+  对 manifest 非合法 AXML 的 APK 依次调用 `manifest`/`permissions`/`certificates`/`components`/
+  `native_libs`/`classes`/`methods`/`strings`/`xrefs` 九个 androguard 操作，断言无一抛异常穿透、无一落成
+  `internal_error`（带 incident）：失败者一律是结构化的 `backend_error` 或 `capability_unavailable`，而读
+  zip 而非 manifest 的 `native_libs`/`certificates` 的 best-effort 成功也允许。此前仅 `apk.open` 有此护栏，
+  其余 androguard 面在敌意输入下的降级无任何覆盖——若某操作日后经服务层 `BaseException` 兜底把原始异常
+  漏成 `internal_error`，该 gate 即失败。实测九个操作全部结构化降级、无 incident。
 - 新增 `.github/linux-gates-constraints.txt` 并在工作流以 `pip install -c` 应用：把 pip 解析的 RE
   后端（frida、androguard、adbutils、mitmproxy、playwright）钉到本 gate 验证过的确切版本，避免定时跑
   时悄悄拉到改了后端 API 的上游新版（正是 frida 17 删掉 `Memory.readByteArray` 那类漂移）。只钉叶子
