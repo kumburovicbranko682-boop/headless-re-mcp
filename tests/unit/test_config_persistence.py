@@ -18,6 +18,37 @@ from headless_re_mcp import config as config_module
 from headless_re_mcp.config import Settings, update_config_values
 
 
+def test_load_names_the_config_keys_it_ignores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typo'd key must surface, not silently disable what it was meant to set.
+
+    Every key load() reads shares its field's name, so "ghidra_hom" was simply
+    ignored: the operator set the value, nothing complained, and doctor
+    reported ghidra as not configured. The ignored keys are now carried on the
+    settings as unknown_config_keys, sorted, with the read keys unaffected.
+    """
+    monkeypatch.delenv("HEADLESS_RE_HTTP_PORT", raising=False)
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"ghidra_hom": "/opt/ghidra", "http_port": 9000, "another_typo": 1}),
+        encoding="utf-8",
+    )
+
+    settings = Settings.load(path)
+
+    assert settings.unknown_config_keys == ("another_typo", "ghidra_hom")
+    assert settings.http_port == 9000
+
+
+def test_a_clean_or_absent_config_reports_no_unknown_keys(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"http_port": 9000}), encoding="utf-8")
+
+    assert Settings.load(path).unknown_config_keys == ()
+    assert Settings.load(tmp_path / "absent.json").unknown_config_keys == ()
+
+
 def test_a_merge_keeps_unrelated_keys_and_overwrites_named_ones(tmp_path: Path) -> None:
     path = tmp_path / "cfg" / "config.json"
     update_config_values({"ida_home": "C:/ida", "http_port": 8765}, config_path=path)
