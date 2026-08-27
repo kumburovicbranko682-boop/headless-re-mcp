@@ -296,6 +296,9 @@ class _WebSession:
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         self.requests_dropped = 0
         self.console_dropped = 0
+        # A redirect chain reuses one CDP requestId across every hop, so each
+        # hop is stored under a synthetic id built from this monotonic counter.
+        self.redirect_seq = 0
         # Bounded like the other two: scriptParsed fires for every script a page
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
@@ -458,6 +461,7 @@ class WebBackend:
 
         def on_request(params: JsonObject) -> None:
             req = params.get("request") or {}
+            request_id = str(params.get("requestId"))
             url, url_truncated = _bounded_metadata(req.get("url"), _MAX_URL_BYTES)
             method, method_truncated = _bounded_metadata(
                 req.get("method"), _MAX_METADATA_BYTES
@@ -465,8 +469,40 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            # A redirect reuses this requestId for the next hop and reports the
+            # hop that just redirected here, in redirectResponse -- a redirect
+            # never fires Network.responseReceived, so this is the only place its
+            # status and URL ever appear. Capture it as its own entry before the
+            # id is reused for the target, or the whole chain collapses to its
+            # final hop and "what redirected me here?" has no answer.
+            redirect = params.get("redirectResponse")
+            redirect_entry: JsonObject | None = None
+            if isinstance(redirect, dict):
+                from_url, from_truncated = _bounded_metadata(
+                    redirect.get("url"), _MAX_URL_BYTES
+                )
+                redirect_mime, redirect_mime_truncated = _bounded_metadata(
+                    redirect.get("mimeType"), _MAX_METADATA_BYTES
+                )
+                redirect_entry = {
+                    "requestId": request_id,  # replaced with the synthetic id below
+                    "url": from_url,
+                    "method": method,
+                    "resourceType": resource_type,
+                    "status": redirect.get("status"),
+                    "mimeType": redirect_mime or None,
+                    "redirect": True,
+                    "redirected_to": url,
+                }
+                if (
+                    from_truncated
+                    or method_truncated
+                    or type_truncated
+                    or redirect_mime_truncated
+                ):
+                    redirect_entry["metadata_truncated"] = True
             entry: JsonObject = {
-                "requestId": params.get("requestId"),
+                "requestId": request_id,
                 "url": url,
                 "method": method,
                 "resourceType": resource_type,
@@ -476,7 +512,17 @@ class WebBackend:
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                if redirect_entry is not None:
+                    # Drop the stale placeholder for this id (the from-hop with a
+                    # null status) and re-add the hops in chronological order:
+                    # the finished redirect under its own synthetic id, then the
+                    # new hop under the reused requestId.
+                    handle.requests.pop(request_id, None)
+                    handle.redirect_seq += 1
+                    redirect_id = f"{request_id}:redirect:{handle.redirect_seq}"
+                    redirect_entry["requestId"] = redirect_id
+                    handle.requests[redirect_id] = redirect_entry
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1

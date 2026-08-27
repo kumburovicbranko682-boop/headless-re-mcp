@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.network.list 逐跳保留重定向链，不再塌成最终落点）
+
+- CDP 对整条重定向链**复用同一个 requestId**：每一跳之后的下一跳以又一条
+  `Network.requestWillBeSent`（同 id）到达，刚结束那跳的 3xx 状态与 URL 只出现在其中的
+  `redirectResponse` 字段——重定向**不会**触发 `Network.responseReceived`，那是它唯一露面的地方。
+  旧 handler 无视该字段、按 requestId 直接覆盖条目，于是 `web.network.list` 只剩最终落点：
+  决定流量真正去向的 301/302/307（登录跳转、SSO 换域、短链展开——Web 逆向最要读的那几跳）
+  静默消失，连"发生过重定向"都无从得知。handler 现在在 id 被下一跳复用前，把刚结束的那跳
+  以合成 id（`原id:redirect:N`，N 取自会话内单调计数器）存成**独立条目**：带 `redirect: true`、
+  真实 3xx `status`、`redirected_to`（它转向的 URL），URL/mimeType 照旧设界并按需打
+  `metadata_truncated`；链上各跳按线序排列，`responseReceived` 只更新真正应答的最终跳。
+  合成条目与普通请求同住一个有界环（超界同样计入 dropped），`web.network.get` 对合成 id
+  走已有的 body_error 分支（重定向本就无 body）。`web.network.list` 文档串写明重定向链逐跳
+  各占一条、带 `redirect true` / 3xx / `redirected_to`、不塌成最终跳。单测新增
+  「302 那跳存活为独立条目（状态/目标/合成 id），最终跳不带 redirect 字段」「两跳链三条按线序、
+  `responseReceived` 只碰最终跳」「普通请求无 redirect 字段」「合成条目计入请求环上限」与文档串
+  五条；新增 live gate（`test_web_network_redirect_hops_live_gate.py`）起本机 origin 组成
+  `/login→302→/step→307→/home` 真链，真 Chromium 导航后断言列表三跳俱在、状态与转向正确、
+  合成 id 同链同源。CI 新增 `linux-web-redirects` job 装 playwright+Chromium 跑该 gate，
+  skip≠pass 守卫在 Chromium 已装却仍 skip 时判失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

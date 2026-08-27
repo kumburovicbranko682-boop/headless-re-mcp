@@ -152,6 +152,37 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-redirects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the package with playwright and Chromium
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+          python -m playwright install --with-deps chromium
+      - name: web.network.list redirect-hops gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_web_network_redirect_hops_live_gate.py \
+            -rs --tb=short --junitxml=web-redirects-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("web-redirects-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no web redirect-hops gate was collected")
+          if skipped:
+              sys.exit(f"web redirect-hops gate skipped despite an installed Chromium: {skipped}")
+          print(f"web redirect-hops gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
