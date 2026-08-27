@@ -84,6 +84,14 @@ _DEX_HELPER_SMALI = "Lcom/example/Helper;"
 _DEX_CROSS_CALLER = "run"
 _DEX_CROSS_CALLEE = "greet"
 
+# Field-DEX expectations: Store.save() writes the static field `secret` that
+# Store.load() reads, so read and write xrefs land on different methods -- the
+# edges apk.field_xrefs must resolve in each direction.
+_DEX_STORE_SMALI = "Lcom/example/Store;"
+_DEX_FIELD_NAME = "secret"
+_DEX_FIELD_READER = "load"
+_DEX_FIELD_WRITER = "save"
+
 
 def _s(text: str) -> int:
     return _IDX[text]
@@ -606,6 +614,127 @@ def _build_single_class_dex(
     return bytes(buf)
 
 
+def _build_field_dex() -> bytes:
+    """A valid DEX 035 with one static field written by one method, read by another.
+
+    ``com.example.Store`` has a static int field ``secret``; ``save`` writes it
+    (``sput``) and ``load`` reads it (``sget``). That gives androguard a field
+    with exactly one write xref (save) and one read xref (load), the two edges
+    ``apk.field_xrefs`` resolves per direction -- a surface neither a class,
+    method nor string fixture exercises, since none of them carries a field or a
+    field-access instruction. Every id table is emitted in the DEX-mandated
+    sorted order so androguard parses it as-is.
+    """
+    strings = [
+        "I",  # 0  int descriptor / field type
+        "Lcom/example/Store;",  # 1
+        "Ljava/lang/Object;",  # 2
+        "V",  # 3  void / shorty
+        "load",  # 4  reads the field
+        "save",  # 5  writes the field
+        "secret",  # 6  the field
+    ]
+    s_int, s_store, s_obj, s_v, s_load, s_save, s_secret = range(7)
+    type_to_str = [s_int, s_store, s_obj, s_v]  # type-ids sorted by string idx
+    t_int, t_store, t_obj, t_v = 0, 1, 2, 3
+    n_str, n_type, n_proto, n_field, n_method, n_class = len(strings), 4, 1, 1, 2, 1
+
+    string_ids_off = 0x70
+    type_ids_off = string_ids_off + 4 * n_str
+    proto_ids_off = type_ids_off + 4 * n_type
+    field_ids_off = proto_ids_off + 12 * n_proto
+    method_ids_off = field_ids_off + 8 * n_field
+    class_defs_off = method_ids_off + 8 * n_method
+    data_off = class_defs_off + 32 * n_class
+
+    data = bytearray()
+
+    def cursor() -> int:
+        return data_off + len(data)
+
+    def align4() -> None:
+        while (data_off + len(data)) % 4:
+            data.append(0)
+
+    str_data_off: list[int] = []
+    for text in strings:
+        str_data_off.append(cursor())
+        data += _uleb128(len(text)) + text.encode("ascii") + b"\x00"
+
+    align4()
+    code_load = cursor()
+    # sget v0, Store.secret (field 0); return-void
+    load_insns = [0x0060, 0x0000, 0x000E]
+    data += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(load_insns))
+    data += b"".join(struct.pack("<H", unit) for unit in load_insns)
+
+    align4()
+    code_save = cursor()
+    # const/4 v0, 0; sput v0, Store.secret (field 0); return-void
+    save_insns = [0x0012, 0x0067, 0x0000, 0x000E]
+    data += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(save_insns))
+    data += b"".join(struct.pack("<H", unit) for unit in save_insns)
+
+    class_data_off = cursor()
+    # 1 static field, 0 instance fields, 2 direct methods, 0 virtual methods
+    data += _uleb128(1) + _uleb128(0) + _uleb128(2) + _uleb128(0)
+    data += _uleb128(0) + _uleb128(0x9)  # secret (field 0), public static
+    data += _uleb128(0) + _uleb128(0x9) + _uleb128(code_load)  # load (method 0)
+    data += _uleb128(1) + _uleb128(0x9) + _uleb128(code_save)  # save (method 1)
+
+    align4()
+    map_off = cursor()
+    entries = [
+        (0x0000, 1, 0),
+        (0x0001, n_str, string_ids_off),
+        (0x0002, n_type, type_ids_off),
+        (0x0003, n_proto, proto_ids_off),
+        (0x0004, n_field, field_ids_off),
+        (0x0005, n_method, method_ids_off),
+        (0x0006, n_class, class_defs_off),
+        (0x2002, n_str, str_data_off[0]),
+        (0x2001, 2, code_load),
+        (0x2000, 1, class_data_off),
+        (0x1000, 1, map_off),
+    ]
+    data += struct.pack("<I", len(entries))
+    for typ, count, off in entries:
+        data += struct.pack("<HHII", typ, 0, count, off)
+
+    data_size = len(data)
+    file_size = data_off + data_size
+
+    buf = bytearray(data_off)
+    for i, off in enumerate(str_data_off):
+        struct.pack_into("<I", buf, string_ids_off + 4 * i, off)
+    for i, si in enumerate(type_to_str):
+        struct.pack_into("<I", buf, type_ids_off + 4 * i, si)
+    struct.pack_into("<III", buf, proto_ids_off, s_v, t_v, 0)  # shorty V, return V, no params
+    struct.pack_into("<HHI", buf, field_ids_off, t_store, t_int, s_secret)  # Store.secret:I
+    struct.pack_into("<HHI", buf, method_ids_off, t_store, 0, s_load)  # load()V
+    struct.pack_into("<HHI", buf, method_ids_off + 8, t_store, 0, s_save)  # save()V
+    struct.pack_into(
+        "<IIIIIIII", buf, class_defs_off, t_store, 0x1, t_obj, 0, _NO, 0, class_data_off, 0
+    )
+    buf += data
+
+    buf[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", buf, 32, file_size)
+    struct.pack_into("<I", buf, 36, 0x70)
+    struct.pack_into("<I", buf, 40, 0x12345678)  # endian tag
+    struct.pack_into("<I", buf, 52, map_off)
+    struct.pack_into("<II", buf, 56, n_str, string_ids_off)
+    struct.pack_into("<II", buf, 64, n_type, type_ids_off)
+    struct.pack_into("<II", buf, 72, n_proto, proto_ids_off)
+    struct.pack_into("<II", buf, 80, n_field, field_ids_off)
+    struct.pack_into("<II", buf, 88, n_method, method_ids_off)
+    struct.pack_into("<II", buf, 96, n_class, class_defs_off)
+    struct.pack_into("<II", buf, 104, data_size, data_off)
+    buf[12:32] = hashlib.sha1(bytes(buf[32:])).digest()  # noqa: S324 - DEX spec uses SHA-1
+    struct.pack_into("<I", buf, 8, zlib.adler32(bytes(buf[12:])) & 0xFFFFFFFF)
+    return bytes(buf)
+
+
 def _build_apk(
     path: Path, *, dex: bytes | None = None, extra_dexes: dict[str, bytes] | None = None
 ) -> Path:
@@ -900,6 +1029,56 @@ def test_apk_readers_merge_classes_across_secondary_dex(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_apk_field_xrefs_resolve_read_and_write_sites(tmp_path: Path) -> None:
+    """A field's read and write xrefs must land on the right methods.
+
+    Store.save writes the static field secret (sput) and Store.load reads it
+    (sget), so the write direction resolves to save and the read direction to
+    load -- distinct methods, the way an agent tells "who sets this key" from
+    "who uses it". A field untouched in a direction stays found True with an
+    empty list, not a miss, and a field that is not there is found False; the
+    two must not look alike. This exercises androguard's FieldAnalysis
+    read/write xref accessors, the drift surface no class/method/string fixture
+    touches. skip != pass when androguard is absent.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "field.apk", dex=_build_field_dex())
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        # The write site: secret is written only by save.
+        writes = service.apk_field_xrefs(session_id, _DEX_FIELD_NAME, direction="write")
+        assert writes.ok and writes.data is not None, writes.error
+        assert writes.data["found"] is True, writes.data
+        assert writes.data["direction"] == "write"
+        assert writes.data["total"] == 1, writes.data
+        writer = writes.data["xrefs"][0]
+        assert writer["class"] == _DEX_STORE_SMALI, writer
+        assert writer["method"] == _DEX_FIELD_WRITER, writer
+
+        # The read site: secret is read only by load (the default direction).
+        reads = service.apk_field_xrefs(session_id, _DEX_FIELD_NAME)
+        assert reads.ok and reads.data is not None, reads.error
+        assert reads.data["direction"] == "read"
+        assert reads.data["total"] == 1, reads.data
+        reader = reads.data["xrefs"][0]
+        assert reader["class"] == _DEX_STORE_SMALI, reader
+        assert reader["method"] == _DEX_FIELD_READER, reader
+
+        # A field the DEX never defines is found False, not an empty hit.
+        absent = service.apk_field_xrefs(session_id, "no_such_field")
+        assert absent.ok and absent.data is not None, absent.error
+        assert absent.data["found"] is False, absent.data
+        assert absent.data["xrefs"] == []
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_apk_dex_readers_fail_soft_on_a_corrupt_dex(tmp_path: Path) -> None:
     """A parseable APK with a garbage classes.dex must fault, not crash.
 
@@ -938,6 +1117,8 @@ def test_apk_dex_readers_fail_soft_on_a_corrupt_dex(tmp_path: Path) -> None:
                 "apk_classes": service.apk_classes(session_id, limit=50),
                 "apk_strings": service.apk_strings(session_id, limit=50),
                 "apk_xrefs": service.apk_xrefs(session_id, "onCreate"),
+                "apk_string_xrefs": service.apk_string_xrefs(session_id, "onCreate"),
+                "apk_field_xrefs": service.apk_field_xrefs(session_id, "secret"),
                 "apk_methods": service.apk_methods(session_id, "com.example.App"),
             }
             for name, result in dex_results.items():
