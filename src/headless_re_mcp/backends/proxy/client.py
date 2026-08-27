@@ -60,6 +60,24 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _stop_master_listeners(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close the proxy's listening sockets after ``master.run()`` returns.
+
+    Returning from run() does not free the port: Proxyserver has no ``done()``
+    hook, because mitmdump frees its listeners by exiting the process. Embedded
+    in a long-lived service the socket would stay bound -- and accepting, at
+    the kernel level -- forever, so stop the server instances explicitly while
+    the loop can still run them. Bounded and best-effort: this runs on the
+    teardown path, and an older mitmproxy without ``servers`` is a no-op.
+    """
+    with contextlib.suppress(Exception):
+        proxyserver = master.addons.get("proxyserver") if master is not None else None
+        if proxyserver is not None:
+            loop.run_until_complete(
+                asyncio.wait_for(proxyserver.servers.update([]), timeout=5.0)
+            )
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -345,22 +363,8 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
-            # master.run() returning does not free the port: Proxyserver has no
-            # done() hook, because mitmdump frees its listeners by exiting the
-            # process. Embedded in a long-lived service the socket would stay
-            # bound (and accepting, at the kernel level) forever, so stop the
-            # server instances explicitly while the loop can still run them.
             if loop is not None:
-                with contextlib.suppress(Exception):
-                    proxyserver = (
-                        self._master.addons.get("proxyserver")
-                        if self._master is not None
-                        else None
-                    )
-                    if proxyserver is not None:
-                        loop.run_until_complete(
-                            asyncio.wait_for(proxyserver.servers.update([]), timeout=5.0)
-                        )
+                _stop_master_listeners(self._master, loop)
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound

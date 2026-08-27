@@ -249,6 +249,63 @@ class TestProxyScoping:
         assert info.value.code == "invalid_params"
 
 
+class TestProxyStopFreesTheListenPort:
+    """master.run() returning does not close mitmproxy's listeners.
+
+    Proxyserver has no done() hook -- mitmdump frees the port by exiting the
+    process -- so an embedded capture must stop the server instances itself or
+    the port stays bound (and accepting, at the kernel level) for the life of
+    the service. The live bind/release contract is the proxy lifecycle gate;
+    this pins the teardown call the gate depends on, without mitmproxy.
+    """
+
+    def _fake_master(self, updates: list[list[object]] | None) -> object:
+        class _Servers:
+            async def update(self, modes: list[object]) -> bool:
+                assert updates is not None
+                updates.append(modes)
+                return True
+
+        class _Proxyserver:
+            servers = _Servers()
+
+        class _Addons:
+            def get(self, name: str) -> object | None:
+                if updates is None:
+                    return None
+                return _Proxyserver() if name == "proxyserver" else None
+
+        class _Master:
+            addons = _Addons()
+
+        return _Master()
+
+    def test_teardown_stops_every_server_instance(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _stop_master_listeners
+
+        updates: list[list[object]] = []
+        loop = asyncio.new_event_loop()
+        try:
+            _stop_master_listeners(self._fake_master(updates), loop)
+        finally:
+            loop.close()
+        assert updates == [[]], "teardown must ask the proxyserver to drop all modes"
+
+    def test_teardown_survives_a_master_without_the_addon_or_none(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _stop_master_listeners
+
+        loop = asyncio.new_event_loop()
+        try:
+            _stop_master_listeners(self._fake_master(None), loop)
+            _stop_master_listeners(None, loop)
+        finally:
+            loop.close()
+
+
 class _TrackingWebBackend:
     def __init__(self) -> None:
         self.live: set[str] = set()
