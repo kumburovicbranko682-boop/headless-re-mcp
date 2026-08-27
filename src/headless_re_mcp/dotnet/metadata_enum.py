@@ -21,6 +21,9 @@ DEFAULT_LIMIT: Final[int] = 64
 MAX_LIMIT: Final[int] = 256
 MAX_IL_BYTES: Final[int] = 4096
 MAX_IL_INSNS: Final[int] = 256
+# Bound on how many #Strings heap entries one enumeration materialises. Large
+# real assemblies exceed this, so hitting it must surface as source_truncated.
+MAX_STRINGS: Final[int] = 10_000
 CAPABILITY: Final[str] = "dotnet_metadata"
 
 _TBL_TYPEDEF: Final[int] = 0x02
@@ -95,6 +98,12 @@ class Page:
     backend: str = "dotnet_metadata"
     claims_universal_unpack: bool = False
     note: str = ""
+    # ``truncated`` is pagination: more pages follow this window. This flag is
+    # different: the item list itself is incomplete -- the file declares more
+    # rows than the #~ stream holds, or the strings cap cut the walk short --
+    # so ``total`` is a floor, not the true count. Kept separate so a pager
+    # looping on ``truncated`` still terminates at ``total``.
+    source_truncated: bool = False
 
     def to_dict(self) -> JsonObject:
         return {
@@ -104,6 +113,7 @@ class Page:
             "limit": self.limit,
             "total": self.total,
             "truncated": self.truncated,
+            "source_truncated": self.source_truncated,
             "capability": self.capability,
             "backend": self.backend,
             "not_ida_idalib": True,
@@ -141,20 +151,26 @@ def enumerate_metadata(
     inspect_dotnet(path, require_verified=require_verified)
     meta = _load_metadata_context(Path(path))
     if kind_norm == "strings":
-        items = list(_iter_strings_heap(meta))
+        items, source_truncated = _collect_strings_heap(meta)
         note = "ASCII/#Strings heap entries (not full #US decode)"
     elif kind_norm == "types":
         items = list(_iter_typedefs(meta))
+        source_truncated = _table_is_clamped(meta, _TBL_TYPEDEF)
         note = "TypeDef Name/Namespace from #~ + #Strings"
     elif kind_norm == "methods":
         items = list(_iter_methoddefs(meta))
+        source_truncated = _table_is_clamped(meta, _TBL_METHODDEF)
         note = "MethodDef Name + RVA; IL via dotnet.il"
     elif kind_norm == "fields":
         items = list(_iter_fields(meta))
+        source_truncated = _table_is_clamped(meta, _TBL_FIELD)
         note = "Field Name from Field table"
     else:
         items = list(_iter_resources(meta))
+        source_truncated = _table_is_clamped(meta, _TBL_MANIFESTRESOURCE)
         note = "ManifestResource Name (+ flags/offset)"
+    if source_truncated:
+        note += "; source truncated: total is a floor, the stream or cap cut the listing short"
     total = len(items)
     window = items[offset : offset + limit]
     return Page(
@@ -165,6 +181,7 @@ def enumerate_metadata(
         total=total,
         truncated=offset + len(window) < total,
         note=note,
+        source_truncated=source_truncated,
     )
 
 
@@ -563,6 +580,21 @@ def _rows_the_stream_can_hold(meta: _MetaCtx, offset: int, row_size: int) -> int
     return (len(meta.tables) - offset) // row_size
 
 
+def _table_is_clamped(meta: _MetaCtx, table: int) -> bool:
+    """True when the #~ stream holds fewer rows than the header declares.
+
+    ``_iter_table_rows`` clamps to what the stream can hold so a hostile row
+    count cannot balloon time and memory, but the clamp was silent: a table cut
+    short by truncation or a lying header enumerated as if the smaller count
+    were the whole story. This tells callers that ``total`` is a floor.
+    """
+    declared = meta.row_counts.get(table) or 0
+    if declared <= 0:
+        return False
+    held = _rows_the_stream_can_hold(meta, _table_start(meta, table), _table_row_size(meta, table))
+    return held < declared
+
+
 def _iter_typedefs(meta: _MetaCtx) -> Iterable[JsonObject]:
     for rid, at in _iter_table_rows(meta, _TBL_TYPEDEF):
         name_idx, nsz = _read_index(meta.tables, at + 4, meta.string_index_size)
@@ -624,23 +656,31 @@ def _iter_memberrefs(meta: _MetaCtx) -> Iterable[JsonObject]:
         }
 
 
-def _iter_strings_heap(meta: _MetaCtx) -> Iterable[JsonObject]:
+def _collect_strings_heap(meta: _MetaCtx) -> tuple[list[JsonObject], bool]:
+    """Collect #Strings entries, reporting whether the cap cut the list short.
+
+    The cap keeps a huge heap from being materialised, but large real
+    assemblies exceed it; the old generator just stopped, so the last page
+    reported ``truncated=False`` and a caller believed the capped list was
+    every string. The flag is precise: it is only set once a further non-empty
+    entry actually exists, so a heap of exactly ``MAX_STRINGS`` stays clean.
+    """
     data = meta.strings
+    items: list[JsonObject] = []
     if not data:
-        return
+        return items, False
     i = 1
-    count = 0
     while i < len(data):
         end = data.find(b"\0", i)
         if end < 0:
             end = len(data)
         raw = data[i:end]
         if raw:
-            count += 1
-            yield {"index": i, "value": raw.decode("utf-8", errors="replace")}
+            if len(items) >= MAX_STRINGS:
+                return items, True
+            items.append({"index": i, "value": raw.decode("utf-8", errors="replace")})
         i = end + 1
-        if count >= 10000:
-            break
+    return items, False
 
 
 def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject:
