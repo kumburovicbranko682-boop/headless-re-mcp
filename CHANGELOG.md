@@ -82,6 +82,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
+### 修复（`proxy.replay` 对无法重放的流仍报 replayed=True）
+
+- mitmproxy 的 `replay.client` 对过不了 `check` 的流（存活中、被拦截、WebSocket、缺
+  request/正文）只记一条 warning 就跳过并正常返回，于是一个从未发出的请求也被当成重放成功。
+  现在先用同一个 clientplayback addon 问一遍 `check`，过不了就按 `invalid_request` 连原因一起
+  报错；重放成功时额外回 `replayed_flow_id`——重放是带新 id 的新流，调用方据此在 `proxy.flows`
+  里找回它的响应，而不用在一堆条目里猜。
+- 新增回归：无法重放的流被 `invalid_request` 拒绝且从未抵达 `replay.client`；可重放的流照常运行并
+  回带新 id 的 `replayed_flow_id`。
+
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、

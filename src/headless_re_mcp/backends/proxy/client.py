@@ -701,6 +701,16 @@ class ProxyBackend:
 
             def _run() -> None:
                 try:
+                    # replay.client silently drops flows it cannot replay --
+                    # live, intercepted, WebSocket, or missing request/content --
+                    # logging a warning and returning normally. Reported as-is
+                    # that skip becomes replayed=True for a request that was
+                    # never sent, so ask the same addon the same question first
+                    # and surface its reason instead of a false success.
+                    playback = master.addons.get("clientplayback")
+                    reason = playback.check(new_flow) if playback is not None else None
+                    if reason:
+                        raise ProxyError("invalid_request", reason, flow_id=flow_id)
                     master.commands.call("replay.client", [new_flow])
                 except Exception as exc:  # noqa: BLE001
                     if not done.done():
@@ -719,7 +729,14 @@ class ProxyBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
-        return {"replayed": True, "flow_id": flow_id}
+        # The replay is a fresh flow with its own id; hand it back so the caller
+        # can find the replayed response in proxy.flows once it lands, rather
+        # than guessing which of many entries the replay produced.
+        return {
+            "replayed": True,
+            "flow_id": flow_id,
+            "replayed_flow_id": str(getattr(new_flow, "id", "") or ""),
+        }
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
