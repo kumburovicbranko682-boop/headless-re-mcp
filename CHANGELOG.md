@@ -217,6 +217,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   DIE / Exeinfo / 取消路径修过的错判，在无人值守下则是一条假告警。现按 `manifest()` 的做法包住
   元数据读取，清单不可读即报 `backend_error`。新增免 androguard 的桩测试（CI 可跑）钉住这次收敛，
   并收紧 Android RE gate：合成 APK 上 `apk_open` 可以失败，但绝不能是 `internal_error`。
+- **Android 静态线新增真实夹具，不再只测降级**。此前 Android RE gate 只喂一个合成（非法）压缩包，
+  androguard 的成功路径——真实清单事实、组件、DEX 类/方法/字符串——和 jadx 反编译从未跑过，
+  破坏真实解析的回归会在降级路径上一直绿着。现按 dotnet/upx 二进制夹具的同种方式提交一个 1.4 KB
+  的合法 APK（`aapt2` + `android.jar` 编出二进制 AXML 清单、smali 汇编出真实 `classes.dex`），
+  连同其源文件与 `build.sh` 可复现。新增两个按工具在场与否干净跳过（skip != pass）的 gate 用例：
+  androguard 打开夹具并断言其已知 package/activity/permission/类/方法/marker 字符串，jadx 把那一个类
+  反编译回含 marker 的源码。两者在 androguard / jadx 在场时均已验证通过。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
