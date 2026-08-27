@@ -613,7 +613,11 @@ def _read_pe_image_layout(path: Path) -> tuple[Architecture, int, int]:
 
 def _normalize_windows_path(value: str) -> str:
     raw = value.strip().replace("/", "\\")
-    if raw.startswith("\\??\\"):
+    # Strip both the NT object-manager prefix and the Win32 long-path prefix,
+    # mirroring _resolve_runtime_module_path: ntpath.normpath returns \\?\
+    # paths verbatim, so leaving the prefix in place makes the same file
+    # compare unequal to its plain spelling.
+    if raw.startswith("\\??\\") or raw.startswith("\\\\?\\"):
         raw = raw[4:]
     return ntpath.normcase(ntpath.normpath(raw)) if raw else ""
 
