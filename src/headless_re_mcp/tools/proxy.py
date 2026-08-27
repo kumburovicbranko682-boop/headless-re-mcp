@@ -58,13 +58,15 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
-        Answers with flows (id, seq, method, url, host, status, content_type),
-        count, total, offset, has_more, and dropped. body_omitted is set on a
-        row whose request/response body was over the retain cap. The list
-        field is flows, not items or requests, and the type column is
-        content_type. dropped is how many the capture ring already evicted;
-        a page that filled the limit is not the whole log. metadata_truncated
-        marks bounded oversized summary fields.
+        Answers with flows (id, seq, method, url, host, status, content_type,
+        response_size), count, total, offset, has_more, and dropped.
+        response_size is the decoded response body length in bytes (0 when the
+        response had no body). body_omitted is set on a row whose
+        request/response body was over the retain cap. The list field is flows,
+        not items or requests, and the type column is content_type. dropped is
+        how many the capture ring already evicted; a page that filled the limit
+        is not the whole log. metadata_truncated marks bounded oversized summary
+        fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
@@ -90,11 +92,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.export_har")
     def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a HAR artifact.
+        """Export captured flows to a spec-valid HAR 1.2 artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        Answers with path, entry_count and truncated, plus artifact_id when
+        the HAR was registered. truncated is true when the oldest entries were
+        dropped to keep the file under the capture cap. There is no har,
+        output or artifact field. path is the file; looking for har after a
+        successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

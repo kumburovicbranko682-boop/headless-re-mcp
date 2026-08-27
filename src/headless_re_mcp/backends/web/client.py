@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -686,45 +687,30 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
+                har_entry(
+                    method=e.get("method"),
+                    url=e.get("url"),
+                    status=e.get("status"),
+                    mime_type=e.get("mimeType") or "",
+                    resource_type=e.get("resourceType"),
+                )
                 for e in handle.requests.values()
             ]
-        import json
-
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(har, ensure_ascii=False)
-        truncated = False
-        encoded = text.encode("utf-8")
-        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
-            drop = max(1, len(entries) // 8)
-            del entries[-drop:]
-            har["log"]["entries"] = entries
-            text = json.dumps(har, ensure_ascii=False)
-            encoded = text.encode("utf-8")
-            truncated = True
-        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
                 "too_large",
                 "HAR export exceeds capture cap",
-                size=len(encoded),
+                size=serialized.size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
-        out_path.write_text(text, encoding="utf-8")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(serialized.text, encoding="utf-8")
         return {
             "path": str(out_path),
-            "entry_count": len(entries),
-            "truncated": truncated,
-            "size": len(encoded),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
         }
 
     def close_all(self) -> None:
