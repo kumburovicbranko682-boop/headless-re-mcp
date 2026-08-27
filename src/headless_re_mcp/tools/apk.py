@@ -157,7 +157,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Java was cut at the buffer. There is no java, code or text field. If
         jadx exited non-zero on the whole-APK pass but still wrote this class,
         the reply carries exit_code, tool_failed and stderr so a partial
-        decompile is not read as complete.
+        decompile is not read as complete. An output tree over the capture
+        cap is deleted and refused as too_large rather than left on disk.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
@@ -170,7 +171,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decode the APK to smali and resources with apktool (editable tree).
 
         Answers with decoded_dir, manifest, smali_dirs, and has_resources.
-        There is no output, path or tree field.
+        There is no output, path or tree field. A decoded tree over the
+        capture cap is deleted and refused as too_large rather than left
+        on disk.
         """
         return _dump(analysis.apk_decode(session_id, timeout=timeout, no_resources=no_resources))
 
@@ -228,7 +231,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         plus has_more when the listed files were cut at the buffer. There is
         no files or sources field. If jadx exited non-zero but still wrote a
         tree, the reply carries exit_code, tool_failed and stderr so a tree
-        that is missing classes is not read as a complete decompile.
+        that is missing classes is not read as a complete decompile. An
+        output tree over the capture cap is deleted and refused as too_large
+        rather than left on disk.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
