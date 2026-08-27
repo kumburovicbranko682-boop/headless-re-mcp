@@ -5,6 +5,11 @@ param(
     # Pinned because the vendored wheels are built for one interpreter: pydantic
     # ships cp312-only binaries, so the runtime and the packages have to agree.
     [string]$PythonVersion = "3.12.10",
+    # SHA-256 of python.org's python-$PythonVersion-embed-amd64.zip. The
+    # interpreter is the one artifact this build fetches over the network and
+    # it ships inside every MSI, so it gets the same pin-and-verify treatment
+    # as the upstream.lock.json tool bundles. Bump together with PythonVersion.
+    [string]$PythonEmbedSha256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
     [string]$CacheDir = "artifacts/tools"
 )
 
@@ -67,6 +72,12 @@ if (-not (Test-Path -LiteralPath $embedZip)) {
     $url = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
     Write-Host "downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $embedZip -UseBasicParsing
+}
+# Verify cache hits as well as fresh downloads: a truncated earlier fetch or a
+# swapped file would otherwise ship inside every MSI built from this machine.
+$embedHash = (Get-FileHash -LiteralPath $embedZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($embedHash -ne $PythonEmbedSha256.ToLowerInvariant()) {
+    throw "python embed zip hash mismatch for ${embedZip}: expected $PythonEmbedSha256, got $embedHash -- delete the file to redownload, or update PythonEmbedSha256 together with PythonVersion"
 }
 Expand-Archive -LiteralPath $embedZip -DestinationPath $runtime -Force
 $sitePackages = Join-Path $runtime "Lib\site-packages"

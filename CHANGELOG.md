@@ -588,6 +588,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（MSI 内嵌解释器无校验下载）
+
+- `build_msi.ps1` 现在校验 Python 嵌入式运行时 zip 的 SHA-256（钉在脚本参数里,与
+  `PythonVersion` 成对升级）。这是 MSI 构建期唯一从网络获取、且随每份安装包出厂的
+  制品,此前既不校验下载结果、也不校验缓存命中——被截断的旧下载或被换掉的缓存文件
+  会原样打进安装包;外部工具包在 `upstream.lock.json` 早有钉扎惯例,解释器现在同等
+  对待。哈希取自 python.org 官方源实测并经独立来源比对（大小 11,133,606 字节一致）。
+  不匹配即报错并给出重下或随版本更新钉值的指引。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、
