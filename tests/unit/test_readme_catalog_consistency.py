@@ -36,9 +36,12 @@ def _single_match(pattern: str, text: str) -> re.Match[str]:
 
 
 def test_the_headline_tool_total_matches_the_catalog() -> None:
+    # PR #11's banner rewrite dropped the old 「收成 N 个受限语义工具」 phrasing;
+    # the claim now reads 「N 个受限语义工具供 … 调用」. Pin the part that names
+    # the number, which stays unique in the README.
     total, _read, _write = _catalog_counts()
     text = README.read_text(encoding="utf-8")
-    claim = _single_match(r"收成 (\d+) 个受限语义工具", text)
+    claim = _single_match(r"(\d+) 个受限语义工具", text)
     assert int(claim.group(1)) == total
 
 
