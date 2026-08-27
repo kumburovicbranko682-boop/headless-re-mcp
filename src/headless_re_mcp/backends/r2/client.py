@@ -14,6 +14,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     run_bounded,
 )
 from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -86,17 +87,18 @@ class R2Client:
         *,
         count: int = 32,
         timeout: float = 30.0,
+        architecture: Architecture | None = None,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         if type(count) is not int or not 1 <= count <= 512:
             raise R2Error("invalid_params", "count must be 1..512")
         cmd = f"pdj {count} @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, ["aa", cmd], timeout=timeout, architecture=architecture)
         data = dict(data)
         data["address"] = address
         data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, architecture=architecture)
 
     def xrefs(
         self,
@@ -104,16 +106,24 @@ class R2Client:
         address: int,
         *,
         timeout: float = 30.0,
+        architecture: Architecture | None = None,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, ["aa", cmd], timeout=timeout, architecture=architecture)
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, architecture=architecture)
 
-    def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+    def run(
+        self,
+        binary: Path,
+        commands: list[str],
+        *,
+        timeout: float = 30.0,
+        architecture: Architecture | None = None,
+    ) -> JsonObject:
         try:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
@@ -176,7 +186,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return enrich_r2_payload(payload, binary=binary, architecture=architecture)
 
 
 def _discover() -> Path | None:

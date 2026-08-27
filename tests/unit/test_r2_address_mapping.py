@@ -173,6 +173,96 @@ def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     assert enriched["items"][0]["address"]["module"] == binary.name
 
 
+def _non_pe(tmp_path: Path) -> Path:
+    """A file r2 can open but ``pe_preferred_base`` reads no base from (ELF)."""
+    path = tmp_path / "prog.elf"
+    path.write_bytes(b"\x7fELF" + b"\x00" * 60)
+    return path
+
+
+def test_session_architecture_flows_into_non_pe_r2_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native session knows its arch from the header; the output must show it.
+
+    ``enrich_r2_payload`` only ever derived architecture from the PE header, so
+    on an ELF -- which carries no PE ImageBase -- the r2 tools returned no
+    architecture at all, even when ``describe_native`` had already read x86-64
+    onto the session. Threading the session architecture through ``R2Client``
+    puts it back: it must appear at the top level and on every mapped item,
+    without inventing an rva/module (there is no PE base to map against).
+    """
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"offset": 0x1149, "name": "main", "size": 32}])
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.run(binary, ["aa", "aflj"], architecture=Architecture.X64)
+
+    assert payload["architecture"] == "x64"
+    item = payload["items"][0]
+    assert item["address"]["va"] == 0x1149
+    assert item["address"]["architecture"] == "x64"
+    assert "rva" not in item["address"]
+    assert "module" not in item["address"]
+
+
+def test_a_non_pe_reports_no_architecture_without_a_session_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression guard: no threaded arch + no PE header => no architecture.
+
+    This is the exact state the native line was in before the session arch was
+    threaded, so it must stay reproducible -- otherwise the test above proves a
+    constant rather than a real difference.
+    """
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"offset": 0x1149, "name": "main", "size": 32}])
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.run(binary, ["aa", "aflj"])
+
+    assert "architecture" not in payload
+    assert "architecture" not in payload["items"][0]["address"]
+
+
+def test_disasm_threads_architecture_through_the_double_enrich(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """disasm enriches twice (inner ``run`` then outer shaping); arch must survive.
+
+    disasm and xrefs re-enrich the payload their inner ``run`` already enriched,
+    so the architecture has to be passed to both calls or it is dropped on the
+    second pass. This pins that it reaches the request address and the items.
+    """
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"offset": 0x1149, "opcode": "endbr64"}])
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.disasm(binary, 0x1149, count=1, architecture=Architecture.X64)
+
+    assert payload["architecture"] == "x64"
+    assert payload["address"]["architecture"] == "x64"
+    assert payload["items"][0]["address"]["architecture"] == "x64"
+
+
 def test_r2_open_only_asks_for_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

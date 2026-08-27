@@ -130,6 +130,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   x86/x86-64/arm/aarch64),并把 x86/x86-64 映射进 `Architecture` 填到会话上;`create` 在原生分支调用它,
   与 PE/APK 分支同构。r2 服务 Gate 顺带断言现编 ELF 建出的会话带上 `format=elf`、`bits`、`arch`,单测用手搓
   的 ELF/Mach-O 头钉住精确解析(含 PIE→`dyn`、aarch64、截断头只报 `format`)。
+- 原生会话的架构现在真的进得了 r2 输出:`enrich_r2_payload` 一直只从 PE 头(`pe_preferred_base`)推架构,ELF
+  没有 PE 头,于是同一个 `r2.functions`/`disasm`/`xrefs`——即便会话已经用 `describe_native` 认出是 x86-64——
+  在 PE 上标 `architecture: x64`、在 ELF 上却什么都不标。现把 `session.architecture` 从服务层(`_r2_request`/
+  `r2_disasm`/`r2_xrefs`)一路串到 `R2Client.run/disasm/xrefs` 再到 `enrich_r2_payload`(其 `arch = 传入 or PE 头`
+  的既有逻辑正好让 PE 行为不变——两者本就同值),ELF 的顶层与每个 item 地址这才带上 `architecture`;PE 侧零回归。
+  `disasm`/`xrefs` 会二次 enrich(内层 `run` 一次、外层整形一次),故两处调用都传架构、单测专门钉住它熬过两轮。
+  服务 Gate 断言现编 ELF(CI 上即 x86-64)的 `r2.functions`/`disasm` 输出携带会话检出的 `architecture`(非 x86/x64
+  的架构如 aarch64 不建模、留空,故按会话有没有报架构来条件断言,不把 runner 的 ISA 钉死);单测用非 PE 夹具正反
+  两面钉住「传了架构就出现在非 PE 输出里」「不传且无 PE 头就一律不报」。
 
 ### 新增（抓包代理实测 Gate：真的录到流量、也真的能重放）
 

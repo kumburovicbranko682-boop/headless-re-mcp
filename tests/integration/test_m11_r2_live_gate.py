@@ -11,9 +11,13 @@ system C compiler so it needs no committed binary; skip != pass when neither r2
 nor a compiler is present.
 
 A third gate drives the r2 *service* surface (``r2.open`` / ``functions`` /
-``strings`` / ``imports``) through a real session created from that ELF -- the
-path that was impossible before the native target kind, because an ELF was
-classified PE and rejected as "not a PE file".
+``strings`` / ``imports`` / ``disasm``) through a real session created from that
+ELF -- the path that was impossible before the native target kind, because an
+ELF was classified PE and rejected as "not a PE file". It also proves the
+architecture ``describe_native`` read from the header reaches the r2 output:
+before it was threaded from the session, ``enrich_r2_payload`` derived arch only
+from the PE header, so a PE listed ``x64`` while the same tool on an ELF listed
+nothing.
 """
 
 from __future__ import annotations
@@ -197,6 +201,29 @@ def test_r2_tool_surface_reachable_for_a_native_elf_session(tmp_path: Path) -> N
         assert imports.ok, imports.error
         imported = {str(item.get("name", "")) for item in imports.data["items"]}
         assert any("printf" in name for name in imported), imported
+
+        # The architecture describe_native read from the header must now flow
+        # into the r2 tool output. Before it was threaded from the session,
+        # enrich_r2_payload derived arch only from the PE header (None for an
+        # ELF), so native r2 output silently dropped the architecture the
+        # session already knew -- a PE listed "x64", the same tool on an ELF
+        # listed nothing. On CI the fixture is x86-64 (a modelled Architecture);
+        # a non-modelled arch (e.g. aarch64) stays None and is skipped, not
+        # asserted false, so the gate does not pin the runner's ISA.
+        session_arch = created.data["session"].get("architecture")
+        if session_arch:
+            assert funcs.data.get("architecture") == session_arch
+            mapped = [it for it in funcs.data["items"] if isinstance(it.get("address"), dict)]
+            assert mapped, "no function came back with a mapped address"
+            assert all(it["address"].get("architecture") == session_arch for it in mapped)
+
+            # disasm/xrefs enrich twice (inner run + outer shaping); prove the
+            # architecture survives that path too, at a real function address.
+            va = next(it["address"]["va"] for it in mapped if "va" in it["address"])
+            dis = service.r2_disasm(session_id, va, count=8)
+            assert dis.ok, dis.error
+            assert dis.data.get("architecture") == session_arch
+            assert dis.data.get("address", {}).get("architecture") == session_arch
 
         # A PE-only tool must reject the native session with target_mismatch,
         # not crash inside the debugger backend.
