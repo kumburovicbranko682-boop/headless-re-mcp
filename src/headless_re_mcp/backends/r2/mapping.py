@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# How many candidate ``[`` / ``{`` positions the JSON scan will try to decode
+# before giving up. r2 -q0 prints its JSON value after at most a short banner,
+# so the root value's opening brace is among the first few; this only bounds the
+# cost of a hostile reply whose braces the sample controls.
+_MAX_JSON_VALUE_SCANS: Final[int] = 256
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -106,12 +111,26 @@ def parse_r2_json(raw: str) -> Any | None:
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        # A failed decode is not free: raw_decode(text, index) pays for the
+        # line/column count JSONDecodeError computes from the buffer start, so
+        # trying every brace is O(n^2). This runs after capture, on r2 stdout
+        # that is only bounded (megabytes), not small, and whose braces the
+        # sample influences (opcodes, strings, C++ names). A reply that is
+        # almost all '[' turned a bounded capture into quadratic work; the real
+        # value's brace is within the first handful, so cap the attempts.
+        if attempts >= _MAX_JSON_VALUE_SCANS:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
+            # A deeply nested candidate (thousands of unmatched '[') raises
+            # RecursionError out of the C decoder rather than JSONDecodeError,
+            # and it must not escape this best-effort scan.
             continue
         return value
     return None

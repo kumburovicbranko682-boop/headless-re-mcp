@@ -123,6 +123,43 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_survives_a_deeply_nested_brace_flood() -> None:
+    """A reply that is thousands of unmatched '[' must not raise.
+
+    The scan calls decoder.raw_decode at each '[', and a deep run of them makes
+    the C decoder recurse until it raises RecursionError -- which is not a
+    JSONDecodeError, so it escaped this best-effort parse and surfaced as an
+    internal error from post-capture enrichment on untrusted r2 stdout. It now
+    returns None like any other unparseable reply.
+    """
+    assert parse_r2_json("[" * 20000) is None
+
+
+def test_parse_r2_json_does_not_scan_every_brace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A brace-heavy reply is refused in bounded, not quadratic, work.
+
+    Every failed candidate decode costs O(len), so trying all of them is
+    O(n^2) on a stdout bounded only at megabytes. The scan now stops after a
+    fixed number of attempts; counting raw_decode calls pins that it does not
+    walk the whole flood.
+    """
+    import headless_re_mcp.backends.r2.mapping as mapping
+
+    calls = 0
+    real = json.JSONDecoder.raw_decode
+
+    def counting(self: json.JSONDecoder, s: str, idx: int = 0) -> Any:
+        nonlocal calls
+        calls += 1
+        return real(self, s, idx)
+
+    monkeypatch.setattr(json.JSONDecoder, "raw_decode", counting)
+    # Braces that never form a value: each is attempted and fails, so without
+    # the cap this would attempt all 50000.
+    assert parse_r2_json("{" * 50000) is None
+    assert calls <= mapping._MAX_JSON_VALUE_SCANS
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,
