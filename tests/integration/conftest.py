@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -25,6 +28,7 @@ import pytest
 from headless_re_mcp.config import Settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ELF_FIXTURE_SOURCE = _PROJECT_ROOT / "fixtures" / "native" / "elf_fixture.c"
 
 # One integration run per machine. idalib opens a binary in place, so a sample
 # has exactly one database and a second process asking for it is refused --
@@ -184,6 +188,46 @@ def _one_integration_run_at_a_time() -> Iterator[None]:
         if held:
             with suppress(OSError):
                 _GATE_LOCK.unlink()
+
+
+def _c_compiler() -> str | None:
+    for name in ("cc", "gcc", "clang"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+@pytest.fixture(scope="session")
+def elf_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Compile the portable ELF fixture, or skip when no C compiler is present.
+
+    Linux x86_64 is a supported host, but the repository ships C sources rather
+    than binaries, so the portable static gates (radare2 today, any future
+    Ghidra Linux gate) have no ELF to analyse out of the box. Building it here
+    keeps "skip != pass" honest: a skip means there is no compiler, not that the
+    backend went unexercised. Windows keeps its committed PE fixtures.
+    """
+    if sys.platform == "win32":
+        pytest.skip("ELF fixture is for POSIX hosts; PE fixtures cover Windows")
+    if not _ELF_FIXTURE_SOURCE.is_file():
+        pytest.skip(f"ELF fixture source missing: {_ELF_FIXTURE_SOURCE}")
+    compiler = _c_compiler()
+    if compiler is None:
+        pytest.skip("no C compiler (cc/gcc/clang) — ELF fixture not built (skip != pass)")
+    out = tmp_path_factory.mktemp("elf-fixture") / "elf_fixture"
+    try:
+        subprocess.run(
+            [compiler, "-O0", "-o", str(out), str(_ELF_FIXTURE_SOURCE)],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        pytest.skip(f"C compiler could not build the ELF fixture: {exc}")
+    if not out.is_file():
+        pytest.skip("ELF fixture did not build")
+    return out
 
 
 def _hidden_desktop_is_on() -> bool:

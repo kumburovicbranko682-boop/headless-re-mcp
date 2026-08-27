@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（radare2 ELF 实测 Gate 与可移植 ELF 夹具）
+
+- 跨平台静态那条线此前只有 PE 夹具的 r2 实测 Gate，Linux/ELF 目标走的 `enrich_r2_payload`
+  非 PE 分支（无 PE 头可读首选基址，地址只映射为 `va`、不重定位成 `rva`/`module`）只有单元桩
+  覆盖、从无真机验证。新增 `fixtures/native/elf_fixture.c`（无害算术 + 一次打印，含具名 helper
+  与调用方供交叉引用），由 `tests/integration/conftest.py` 的 `elf_fixture` 会话夹具在测试时用
+  首个可用的 `cc`/`gcc`/`clang` 现编（无编译器则如实 skip，仓库不落二进制），并加
+  `test_m11_r2_live_elf_address_mapping`：对 ELF 跑 `aa`/`aflj`，断言 `parsed`、函数计数、
+  不报 `image_base`、函数地址为 `va` 且不含 `rva`。原 PE Gate 在 Windows 继续覆盖重定位分支。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
