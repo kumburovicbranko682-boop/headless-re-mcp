@@ -78,6 +78,7 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2
         assert stats["field_count"] == 1
+        assert stats["resource_count"] == 1
 
         # enumerate: types / methods / fields / strings all carry real names.
         types = _data(service.dotnet_enumerate(session_id, "types", limit=16))
@@ -95,6 +96,13 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
 
         fields = _data(service.dotnet_enumerate(session_id, "fields", limit=16))
         assert [f["name"] for f in fields["items"]] == ["Secret"]
+
+        resources = _data(service.dotnet_enumerate(session_id, "resources", limit=16))
+        assert resources["total"] == 1
+        resource = resources["items"][0]
+        assert resource["name"] == "config.json"
+        assert resource["token"] == 0x28000001
+        assert resource["flags"] == 0x0001
 
         strings = _data(service.dotnet_enumerate(session_id, "strings", limit=64))
         string_values = {s["value"] for s in strings["items"]}

@@ -32,6 +32,8 @@ FIELD_NAME = "Secret"
 METHOD_ADD = "Add"
 METHOD_RUN = "Run"
 MEMBERREF_NAME = "WriteLine"
+RESOURCE_NAME = "config.json"
+RESOURCE_FLAGS = 0x0001  # Public
 METADATA_VERSION = "v4.0.30319"
 ENTRY_POINT_TOKEN = 0x06000002  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
@@ -77,6 +79,7 @@ def build() -> bytes:
     i_asm = add_string(ASSEMBLY_NAME)
     i_field = add_string(FIELD_NAME)
     i_memberref = add_string(MEMBERREF_NAME)
+    i_resource = add_string(RESOURCE_NAME)
     i_ns = 0
     strings_heap = _pad4(bytes(strings))
 
@@ -105,8 +108,9 @@ def build() -> bytes:
         | (1 << 0x06)  # MethodDef
         | (1 << 0x0A)  # MemberRef
         | (1 << 0x20)  # Assembly
+        | (1 << 0x28)  # ManifestResource
     )
-    row_counts = {0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x20: 1}
+    row_counts = {0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x20: 1, 0x28: 1}
 
     tables = bytearray()
     tables += _u32(0)  # Reserved
@@ -137,6 +141,8 @@ def build() -> bytes:
         + _u32(0)
         + _u16(0) + _u16(i_asm) + _u16(0)
     )
+    # ManifestResource: Offset Flags Name Implementation (null => embedded here)
+    tables += _u32(0) + _u32(RESOURCE_FLAGS) + _u16(i_resource) + _u16(0)
     tables_stream = _pad4(bytes(tables))
 
     # ---- metadata root (BSJB) ----
