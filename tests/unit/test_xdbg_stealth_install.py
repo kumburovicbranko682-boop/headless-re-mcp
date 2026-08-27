@@ -9,6 +9,7 @@ existing ini), and the ``summarize_settings`` invalid-default fallback.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from headless_re_mcp.backends.x64dbg.stealth import (
     DEFAULT_PROFILE_ID,
     StealthError,
     StealthLayout,
+    _load_or_seed,
     apply_profile,
     install_from_extracted_tree,
     layout_for_headless,
@@ -69,6 +71,24 @@ def test_read_current_section_reads_configured_profile(tmp_path: Path) -> None:
     ini = tmp_path / "ok.ini"
     ini.write_text("[SETTINGS]\nCurrentProfile=Basic\n", encoding="utf-8")
     assert read_current_section(ini) == "Basic"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="an unreadable existing file is a POSIX permission")
+def test_load_or_seed_seeds_defaults_when_an_existing_ini_cannot_be_read(tmp_path: Path) -> None:
+    # The ini exists (so the is_file guard passes) but cannot be opened, the way a
+    # permission-locked profile file behaves. Rather than crash or hand back an
+    # empty parser, _load_or_seed falls through both the utf-8 and utf-16 reads and
+    # seeds the built-in defaults so callers still get a usable configuration.
+    ini = tmp_path / "scylla_hide.ini"
+    ini.write_text("[SETTINGS]\nCurrentProfile=Basic\n", encoding="utf-8")
+    ini.chmod(0o000)
+    try:
+        parser = _load_or_seed(ini)
+    finally:
+        ini.chmod(0o644)
+
+    assert parser.has_section("SETTINGS")
+    assert parser.get("SETTINGS", "CurrentProfile") == "VMProtect x86/x64"
 
 
 def test_apply_profile_rejects_ini_missing_target_section(tmp_path: Path) -> None:
