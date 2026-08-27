@@ -147,8 +147,13 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses to write into a directory that already exists
+        # ("output directory already exists") and creates the leaf itself. This
+        # method creates out_dir up front (callers, and the file listing below,
+        # expect it to exist), so without --force every real unpack aborted
+        # before writing a single module. -f tells webcrack to use it anyway.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"], timeout=timeout
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
