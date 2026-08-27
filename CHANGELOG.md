@@ -83,6 +83,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 新增（wasm.wat / wasm.info 首个真 wabt live gate）
+
+- `wasm.*` 全部单测都 mock 掉 `run_bounded`，后端从未真正跑过 wabt：`wasm.wat` 依赖 `wasm2wat` 的
+  stdout、`wasm.info` 依赖 `wasm-objdump -h -x` 的 stdout，都是版本敏感的 CLI 契约，一旦 wabt 改动
+  （输出改写文件、换 flag、要求 `-o`）所有 mock 测试照过、只在真机上炸——正是 `js.unpack_bundle` 的
+  `-o` 那类只在真机才犯的错。新增 live gate（`test_wasm_wabt_live_gate.py`）配一枚一次性构建、随仓库
+  提交的 `fixtures/wasm/gate_sample.wasm`（`wat2wasm` 产出，导出内存 `mem`、函数 `add_marker`
+  (i32,i32)->i32、全局 `answer`=42），只依赖被测工具本身、不依赖 `wat2wasm`：`wasm.wat` 断言从 stdout
+  拿到含 `(module`/`add_marker`/`answer`/`i32.add` 的文本、无假 `tool_failed`、`bytes` 与文本一致；
+  `wasm.info` 断言 objdump 含 `Sections:`/`Export`/`add_marker`；并钉住非 wasm 输入在开子进程前即被
+  `invalid_params` 拒。CI 新增 `linux-wasm-wabt` job 用 apt 装 wabt 跑该 gate，skip≠pass 守卫在 wabt
+  已装却仍 skip 时判失败。
+
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
 
 - `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它

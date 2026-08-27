@@ -199,3 +199,44 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-wasm-wabt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the package and wabt
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+          sudo apt-get update
+          sudo apt-get install -y wabt
+          wasm2wat --version
+          python -c "import shutil, sys; sys.exit(0 if shutil.which('wasm2wat') and shutil.which('wasm-objdump') else 'wabt not on PATH')"
+
+      - name: wasm wabt gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_wasm_wabt_live_gate.py \
+            -rs --tb=short --junitxml=wasm-wabt-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("wasm-wabt-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # wabt was just installed, so a skip here means the real wasm2wat /
+          # wasm-objdump could not be exercised -- the false-green "skip != pass"
+          # warns about. This is the only test that runs wasm.wat / wasm.info
+          # against real wabt rather than a mocked run_bounded.
+          if not cases:
+              sys.exit("no wasm-wabt gate was collected")
+          if skipped:
+              sys.exit(f"wasm-wabt gate skipped despite an installed wabt: {skipped}")
+          print(f"wasm-wabt gate ran for real: {[c.get('name') for c in cases]}")
+          PY
