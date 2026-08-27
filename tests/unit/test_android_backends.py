@@ -118,6 +118,67 @@ class TestFridaTargetAuthorization:
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
 
+def _forced_available_frida_client() -> FridaClient:
+    """A FridaClient that behaves as if the module is importable.
+
+    The authorization and template guards reject before _resolve_device is
+    reached, so the rejection paths never dereference self._frida -- a sentinel
+    stands in so the contract is exercised identically whether or not frida is
+    installed on the runner.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    return client
+
+
+class TestFridaAuthorizationRunsWithoutFrida:
+    """The device authorization boundary is pure Python; CI must not skip it.
+
+    TestFridaTargetAuthorization only runs when frida is installed, so on the
+    stock CI matrix (.[test,dev,web]) the pid allow-set -- the whole reason
+    device.* is safe to expose -- was asserted by nothing. These force the
+    availability flag the guards check first, then exercise the same rejections
+    that reach permission_denied / invalid_params before any real frida call.
+    """
+
+    def test_device_enumeration_refuses_a_pid_outside_the_allow_set(self) -> None:
+        client = _forced_available_frida_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate(
+                "usb", 4242, allowed_pids=[1, 2, 3], mode="classes", limit=1
+            )
+        assert info.value.code == "permission_denied"
+        assert info.value.details["pid"] == 4242
+        assert info.value.details["allowed_pids"] == [1, 2, 3]
+
+    def test_device_hook_refuses_a_pid_outside_the_allow_set(self) -> None:
+        client = _forced_available_frida_client()
+        with pytest.raises(FridaError) as info:
+            client.hook_template_device("usb", 99, "noop", allowed_pids=[7])
+        assert info.value.code == "permission_denied"
+        assert info.value.details["pid"] == 99
+
+    def test_local_single_pid_rule_still_denies_a_mismatch(self) -> None:
+        client = _forced_available_frida_client()
+        with pytest.raises(FridaError) as info:
+            client.modules(4242, allowed_pid=4243, limit=1)
+        assert info.value.code == "permission_denied"
+
+    def test_authorized_pid_with_unknown_template_is_invalid_params(self) -> None:
+        client = _forced_available_frida_client()
+        with pytest.raises(FridaError) as info:
+            client.hook_template_device("usb", 5, "arbitrary-script", allowed_pids=[5])
+        assert info.value.code == "invalid_params"
+        assert "android_ssl_unpin" in info.value.details["allowed"]
+
+    def test_a_non_positive_pid_is_rejected_before_the_allow_set(self) -> None:
+        client = _forced_available_frida_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate("usb", 0, allowed_pids=[0], mode="classes", limit=1)
+        assert info.value.code == "invalid_params"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False

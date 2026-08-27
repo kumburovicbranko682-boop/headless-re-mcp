@@ -248,6 +248,20 @@ class TestProxyScoping:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
 
+    @pytest.mark.parametrize("port", [0, -1, 99999, 65536, "8080"])
+    def test_start_port_range_is_enforced_without_mitmproxy(self, port: object) -> None:
+        """The port guard runs after _check_available, so on the stock CI
+        matrix (mitmproxy absent) it was never reached. Force the memoized
+        availability flag the guard checks first; the range/type check is pure
+        Python and raises before the lock, any mitmproxy import or socket bind.
+        The mix of out-of-range ints and a string proves it is a real guard,
+        not a constant rejection."""
+        backend = ProxyBackend()
+        backend._available = True
+        with pytest.raises(ProxyError) as info:
+            backend.start("s", port=port)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+
 
 class _TrackingWebBackend:
     def __init__(self) -> None:
