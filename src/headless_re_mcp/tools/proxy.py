@@ -95,8 +95,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body_decoded (false means the bytes are still that encoding, e.g.
         brotli), and encoded_size (the on-wire length) to its own section; size
         is the decoded length. body_truncated marks a decoded body cut at the
-        decode ceiling. A flow that failed before any response adds top-level
-        failed and error_text, and its response section is empty.
+        decode ceiling. remote_ip/remote_port name the upstream server the flow
+        actually reached -- the C2/CDN host behind the domain -- present once a
+        connection was established. A flow that failed before any response adds
+        top-level failed and error_text, and its response section is empty.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

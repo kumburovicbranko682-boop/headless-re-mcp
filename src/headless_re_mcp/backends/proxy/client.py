@@ -224,19 +224,28 @@ def _request_body(request: Any) -> tuple[bytes | None, str]:
     return (content if isinstance(content, bytes) else None), content_type
 
 
-def _server_ip(flow: Any) -> str:
-    """The upstream server IP mitmproxy actually connected to, guarded.
+def _server_endpoint(flow: Any) -> tuple[str, int | None]:
+    """The upstream (ip, port) mitmproxy actually connected to, guarded.
 
     ``server_conn.ip_address`` is the (host, port) tuple resolved once the
     connection is established -- the C2/CDN host behind the domain, which the
     URL alone does not give. It is ``None`` for a flow that never reached the
-    server; return "" then so the HAR entry simply omits serverIPAddress.
+    server; return ("", None) then so callers simply omit the fields.
     """
     conn = getattr(flow, "server_conn", None)
     address = getattr(conn, "ip_address", None)
     if isinstance(address, (tuple, list)) and address:
-        return str(address[0])
-    return ""
+        ip = str(address[0])
+        port = address[1] if len(address) > 1 else None
+        if isinstance(port, bool) or not isinstance(port, int):
+            port = None
+        return ip, port
+    return "", None
+
+
+def _server_ip(flow: Any) -> str:
+    """Just the upstream server IP; see ``_server_endpoint``."""
+    return _server_endpoint(flow)[0]
 
 
 def _encoded_len(value: object) -> int:
@@ -712,6 +721,15 @@ class ProxyBackend:
         self._attach_body(request, req, artifact_dir, name="req", always=False)
         self._attach_body(response, resp, artifact_dir, name="resp", always=True)
         result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # The upstream host this flow actually reached -- the C2/CDN server
+        # behind the domain, an infrastructure pivot the URL alone does not
+        # give, mirroring web.network.get's remote_ip. Absent for a flow that
+        # never connected (DNS/handshake failure).
+        remote_ip, remote_port = _server_endpoint(flow)
+        if remote_ip:
+            result["remote_ip"] = remote_ip
+        if remote_port is not None:
+            result["remote_port"] = remote_port
         # A failed flow (upstream reset, TLS handshake failure, timeout) has an
         # empty response by definition; say why rather than let it read as a
         # successful fetch of a zero-length body.

@@ -316,6 +316,41 @@ def test_proxy_flow_get_preserves_every_set_cookie(tmp_path: Path, monkeypatch: 
     assert {"name": "Content-Type", "value": "text/html"} in headers
 
 
+def test_proxy_flow_get_reports_the_upstream_server_ip(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The server the flow actually reached -- the C2/CDN host behind the
+    domain -- is surfaced from server_conn, mirroring web.network.get."""
+    request = SimpleNamespace(method="GET", pretty_url="http://x/", headers={}, raw_content=b"")
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    flow = SimpleNamespace(
+        request=request,
+        response=response,
+        server_conn=SimpleNamespace(ip_address=("93.184.216.34", 443)),
+    )
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["remote_ip"] == "93.184.216.34"
+    assert payload["remote_port"] == 443
+
+
+def test_proxy_flow_get_omits_the_server_ip_when_no_connection_was_made(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A flow that never connected has no ip_address; the fields stay off."""
+    request = SimpleNamespace(method="GET", pretty_url="http://x/", headers={}, raw_content=b"")
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+    assert "remote_ip" not in payload
+    assert "remote_port" not in payload
+
+
 def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
     """The POST payload -- the params traffic analysis is usually after -- was
     unreachable when only the response body came back."""
