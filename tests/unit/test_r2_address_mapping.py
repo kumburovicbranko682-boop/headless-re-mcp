@@ -55,6 +55,64 @@ def _stub_executable(tmp_path: Path) -> Path:
     return path
 
 
+def _elf(tmp_path: Path, *, e_machine: int, order: str = "little", bits: int = 64) -> Path:
+    head = bytearray(64)
+    head[0:4] = b"\x7fELF"
+    head[4] = 2 if bits == 64 else 1
+    head[5] = 1 if order == "little" else 2
+    endian = "little" if order == "little" else "big"
+    head[16:18] = (2).to_bytes(2, endian)  # e_type = EXEC
+    head[18:20] = e_machine.to_bytes(2, endian)
+    path = tmp_path / f"m{e_machine}.elf"
+    path.write_bytes(bytes(head))
+    return path
+
+
+def test_pe_preferred_base_reads_elf_arch_without_an_image_base(tmp_path: Path) -> None:
+    """A native ELF gets its x86/x64 machine type, but no PE-style image base.
+
+    r2 reports absolute vaddrs for ELF, so there is no base to subtract; the
+    arch still has to come through, or a native session's addresses lose it.
+    """
+    arch, base = pe_preferred_base(_elf(tmp_path, e_machine=0x3E))
+    assert arch is Architecture.X64
+    assert base is None
+
+    arch32, base32 = pe_preferred_base(_elf(tmp_path, e_machine=0x03, bits=32))
+    assert arch32 is Architecture.X86
+    assert base32 is None
+
+
+def test_pe_preferred_base_leaves_non_x86_elf_unmapped(tmp_path: Path) -> None:
+    arch, base = pe_preferred_base(_elf(tmp_path, e_machine=0xB7))  # aarch64
+    assert arch is None
+    assert base is None
+
+
+def test_pe_preferred_base_reads_macho_x86_64(tmp_path: Path) -> None:
+    head = bytearray(32)
+    head[0:4] = b"\xcf\xfa\xed\xfe"  # 64-bit little-endian
+    head[4:8] = (0x01000007).to_bytes(4, "little")  # CPU_TYPE_X86_64
+    path = tmp_path / "prog.macho"
+    path.write_bytes(bytes(head))
+    arch, base = pe_preferred_base(path)
+    assert arch is Architecture.X64
+    assert base is None
+
+
+def test_enrich_annotates_a_native_elf_payload_with_architecture(tmp_path: Path) -> None:
+    """The whole point: r2 payloads on an ELF carry the arch, va but no rva."""
+    raw = json.dumps([{"name": "main", "offset": 4160, "size": 20}])
+    payload = {"raw": raw, "commands": ["aflj"]}
+    enriched = enrich_r2_payload(payload, binary=_elf(tmp_path, e_machine=0x3E))
+    assert enriched["architecture"] == "x64"
+    addr = enriched["items"][0]["address"]
+    assert addr["va"] == 4160
+    assert addr["architecture"] == "x64"
+    # No image base for native, so no rva/module is fabricated.
+    assert "rva" not in addr
+
+
 def test_output_cut_at_the_buffer_says_it_was_cut(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

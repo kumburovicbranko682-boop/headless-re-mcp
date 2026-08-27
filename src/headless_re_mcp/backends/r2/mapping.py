@@ -35,7 +35,11 @@ def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     except OSError:
         return None, None
     if len(data) < 0x40 or data[:2] != b"MZ":
-        return None, None
+        # Not a PE. A native ELF/Mach-O still has a determinable x86/x64 machine
+        # type; hand it back (with no image_base -- r2 already reports absolute
+        # vaddrs for these) so a native session's address objects are annotated
+        # like a PE's instead of losing the architecture field.
+        return _native_architecture(data), None
     pe_offset = int.from_bytes(data[0x3C:0x40], "little")
     if pe_offset <= 0 or pe_offset + 24 > len(data) or data[pe_offset : pe_offset + 4] != b"PE\0\0":
         return None, None
@@ -55,6 +59,39 @@ def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     if image_base <= 0:
         return architecture, None
     return architecture, image_base
+
+
+_MACHO_BYTE_ORDER: dict[bytes, str] = {
+    b"\xfe\xed\xfa\xce": "big",
+    b"\xfe\xed\xfa\xcf": "big",
+    b"\xce\xfa\xed\xfe": "little",
+    b"\xcf\xfa\xed\xfe": "little",
+}
+
+
+def _native_architecture(data: bytes) -> Architecture | None:
+    """x86/x64 machine type for an ELF or Mach-O header, else None.
+
+    Only what the Architecture enum models -- enough to annotate a native
+    session's r2 addresses the way a PE is annotated. Other machines (ARM, MIPS,
+    ...) stay None here; r2 still decodes them, they just carry no enum value.
+    """
+    if data[:4] == b"\x7fELF" and len(data) >= 20:
+        order = "little" if len(data) > 5 and data[5] == 1 else "big"
+        e_machine = int.from_bytes(data[18:20], order)  # type: ignore[arg-type]
+        if e_machine == 0x03:
+            return Architecture.X86
+        if e_machine == 0x3E:
+            return Architecture.X64
+        return None
+    order = _MACHO_BYTE_ORDER.get(data[:4], "")
+    if order and len(data) >= 8:
+        cputype = int.from_bytes(data[4:8], order, signed=True)  # type: ignore[arg-type]
+        if cputype == 7:
+            return Architecture.X86
+        if cputype == 0x01000007:
+            return Architecture.X64
+    return None
 
 
 def _needed_header_bytes(head: bytes) -> int | None:
