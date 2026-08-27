@@ -43,6 +43,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（PE 检测分诊 Gate：内置扫描器真能把加壳件和它的未加壳孪生分开）
+
+- 内置 PE 检测（`detection/pe.py`）是整条逆向流程的纯 Python、零外部工具入口：
+  `detect.scan` 喂给 `packer.classify`，再喂给 `unpack.recommend`。但既有覆盖要么跑手搓的
+  合成 PE（`tests/unit/test_detection_pe.py`），要么依赖 UPX / DIE / IDA 的 CLI
+  （`tests/unit/test_upx_fixtures.py`、`test_unpack_live_gate.py`），没有一处证明这条分诊链
+  在**真实** UPX 加壳件上经服务层走通，更没证明它对同一程序加壳前的样本保持沉默——也就是
+  没排除“逢 PE 就喊加壳”的假阳性。
+- 新增 `tests/integration/test_pe_detection_triage_gate.py`：拿提交的孪生夹具对
+  （`console_fixture-<arch>.upx.exe` 与其 `.pre-upx.exe` 未加壳孪生，是同一程序的加壳/未加壳两态）
+  驱动三个服务方法并断言反差——加壳态浮现 UPX 加壳候选**外加**一个越过 7.2 阈值的实测高熵段，
+  `unpack.recommend` 路由到 `upx`（建议工具含 `unpack.upx.unpack` / `unpack.auto`）；未加壳孪生
+  两者皆无，`packer.classify` 结论 `none_detected`，`unpack.recommend` 路由到 `none`，且无任何段
+  越过高熵阈值。x86/x64 双架构各断言一遍。DIE 与 Exeinfo PE 全程关闭，故整跑不需任何外部工具，
+  报告里唯一 `completed` 的来源就是 `builtin.pe`——这是内置检测器自证，而非借第三方口径。
+  另断言 `detect.explain` 能按 id 解出 UPX 发现（证据为 `section_name`）并对未知 id 回
+  `finding_not_found`。夹具缺失时按 skip != pass 明确跳过。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
