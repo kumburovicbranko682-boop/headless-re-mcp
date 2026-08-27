@@ -44,6 +44,24 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _signed_flag(apk: Any, method_name: str) -> bool | None:
+    """Best-effort signature-scheme check: True/False, or None when unknowable.
+
+    androguard only grew ``is_signed_v2`` / ``is_signed_v3`` in 3.4; older
+    builds lack them. A missing probe is reported as None (unknown) rather than
+    a definitive False, because "the parser cannot tell" and "the APK is not
+    signed under this scheme" are different facts, and reporting the former as
+    the latter is exactly the kind of dishonesty the rest of this surface avoids.
+    """
+    probe = getattr(apk, method_name, None)
+    if not callable(probe):
+        return None
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - androguard raises varied parse errors
+        return None
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -273,6 +291,12 @@ class ApkClient:
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            # v1 (JAR) signing is optional from API 24 on, so a modern APK can
+            # be signed only under scheme v2/v3. Reporting v1_signed alone reads
+            # such an APK as unsigned; the scheme flags make signed-but-not-v1
+            # distinguishable from genuinely unsigned.
+            "v2_signed": _signed_flag(apk, "is_signed_v2"),
+            "v3_signed": _signed_flag(apk, "is_signed_v3"),
             "has_more": certs_more or files_more,
         }
 
