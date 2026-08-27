@@ -91,6 +91,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（isolation_command 一个引号笔误会让所有入口起不来）
+
+- `isolation_command` 写成字符串时由 `_split_command` 按 shell 规则切词，而该切词跑在
+  `Settings.load()` 里（`_as_command`）。操作员少敲一个闭引号、或行尾多一个反斜杠这种一键
+  笔误，`shlex.split` 会抛 `ValueError: No closing quotation` / `No escaped character`，直接
+  炸掉配置加载——`serve`、`serve-web` 连 `doctor` 全都起不来，报错还不点名是哪个键，与
+  `_as_float` 处“坏值不得阻止服务启动”的既定约定相悖。
+- 修法不是退成空 argv：那会让 `configured` 变 False、调度器直接跳过轮换，声明了隔离的部署
+  从此每个样本都跑在脏机器上且无任何声响。现改为把整行保留成**单个 argv 词元**——它必然
+  exec 失败，于是服务照常启动，`IsolationRunner` 把这步失败大声报出来，默认 `required`
+  策略按原有 fail-closed 语义拦停任务而不是无隔离继续。空白行仍是“未配置”。
+- 新增四条直测：未闭合引号/悬空转义保留为单词元（Windows 分支同样）、带笔误的
+  `HEADLESS_RE_ISOLATION_COMMAND` 不再炸 `Settings.load()`、以及笔误命令仍
+  `configured=True` 且 rotate 以 `IsolationError` 拦停。四条在修复前全部复现原崩溃。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
