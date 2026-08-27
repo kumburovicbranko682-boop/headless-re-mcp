@@ -78,7 +78,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        from_cache marks a response the browser served from its own cache
+        (disk, service worker, prefetch, or memory) rather than the network,
+        so a cache hit is not miscounted as a live server call. There is no
+        type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

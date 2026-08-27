@@ -486,13 +486,35 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            # A response the browser served from its own cache (disk, a service
+            # worker, or the prefetch cache) still fires responseReceived with
+            # the cached status, so status 200 reads identically to a fresh
+            # network fetch. An analyst mapping which endpoints were actually
+            # contacted would count the cache hit as a live server call. Flag it.
+            from_cache = bool(
+                resp.get("fromDiskCache")
+                or resp.get("fromServiceWorker")
+                or resp.get("fromPrefetchCache")
+            )
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
+                    if from_cache:
+                        entry["from_cache"] = True
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+
+        def on_served_from_cache(params: JsonObject) -> None:
+            # A pure memory-cache hit arrives on requestServedFromCache and never
+            # gets a fromDiskCache flag on a response, so on_response alone would
+            # miss it and the request would read as a live fetch. Mark it the
+            # same way so both cache paths are visible.
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["from_cache"] = True
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -530,6 +552,9 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        # A memory-cache hit is reported here, not on responseReceived, so
+        # without it a cached request looks like a live one at status None.
+        cdp.on("Network.requestServedFromCache", on_served_from_cache)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
