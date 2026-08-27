@@ -1,0 +1,55 @@
+# capabilities honesty: prove capabilities.search maps each non-PE backend to
+# the status of its *own* doctor probe, on a host where those backends are
+# really installed. Path-scoped so a PR pays for this only when it touches the
+# capability catalog, doctor, or the gate itself.
+name: capabilities-nonpe-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/core/capabilities_catalog.py"
+      - "src/headless_re_mcp/doctor.py"
+      - "tests/integration/test_capabilities_nonpe_status_gate.py"
+      - ".github/workflows/capabilities-nonpe-gate.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capabilities-nonpe-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install optional non-PE CLIs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wabt radare2
+
+      - name: Install package with Android + proxy extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,android,proxy]"
+
+      - name: Sanity — the backends this gate expects to detect are present
+        run: |
+          for tool in wasm2wat r2; do
+            command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+          done
+          python - <<'PY'
+          import importlib.util
+          for module in ("androguard", "adbutils", "mitmproxy"):
+              assert importlib.util.find_spec(module) is not None, f"{module} not importable"
+          print("non-PE backends present: wabt, radare2, androguard, adbutils, mitmproxy")
+          PY
+
+      - name: capabilities non-PE status gate
+        run: |
+          python -m pytest tests/integration/test_capabilities_nonpe_status_gate.py \
+            -q -rs --tb=short --timeout=120

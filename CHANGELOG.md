@@ -213,6 +213,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 新增（capabilities.search 非-PE 后端状态映射实机 gate）
+
+- `capabilities.search` 用每条能力声明的 `status_probe` 名去 `run_doctor()` 的探针里取值当状态。
+  两处既有测试都盖不住这里的失效:单测把 `run_doctor` 打桩成只含 PE 探针,非-PE 能力的状态从不
+  由真实安装算出;`test_capabilities_catalog` 只校验 `status_probe` **是某条真探针**,不校验它是不是
+  **对的那条**。于是一条能力若被误指到「真实存在但不对」的探针(例如 `wasm.wabt` 读了 `webcrack`
+  探针),会安然穿过所有测试,却按错误工具的在场与否报告可用性。
+- 新增 `tests/integration/test_capabilities_nonpe_status_gate.py`:对真机装上若干非-PE 后端,断言
+  `capabilities.search` 把每条能力标成 `detected` 当且仅当**它自己的**后端在场
+  (r2.pipe / wasm.wabt / jsre.webcrack / apk.androguard / apk.jadx / apk.apktool / device.adb /
+  frida.session / frida.device / web.cdp / proxy.mitmproxy)。判定用的在场谓词按 `run_doctor()` 的
+  候选清单逐条镜像,因而只有当 `status_probe` 被指错探针时两者才会分歧、当场失败——这正是被打桩单测
+  结构上测不到的一类回归。任一非-PE 后端都不在场时按 skip != pass 明确跳过。
+- CI 增 `.github/workflows/capabilities-nonpe-gate.yml`:按路径触发(仅 `capabilities_catalog.py` /
+  `doctor.py` / 该 gate / 工作流自身变更时才跑),apt 装 wabt + radare2、pip 装
+  `.[test,dev,android,proxy]`,先 sanity 校验这几件真在场,再跑该 gate。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
