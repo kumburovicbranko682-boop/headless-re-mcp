@@ -10,6 +10,7 @@ from typing import Any
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
+    ProxyError,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
@@ -226,7 +227,83 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "har" not in payload
     assert "output" not in payload
     assert payload["entry_count"] == 4
+    assert payload["truncated"] is False
     assert payload["path"].endswith("capture.har")
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+
+
+class _RowRecorder:
+    """A recorder whose snapshot returns pre-built flow summaries."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+
+def test_proxy_export_har_sheds_entries_to_stay_under_the_capture_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """proxy.export_har used to write every flow with no size ceiling.
+
+    web.har_export already bounds its output; the proxy export wrote
+    json.dumps of the whole snapshot straight to the artifact root. The ring
+    and per-field caps keep it small today, but an unbounded write is the same
+    overnight-disk risk the ring exists to prevent and loses that protection
+    the moment either limit is raised. It must shed the newest entries until
+    the serialized HAR fits, report truncated, and never exceed the cap.
+    """
+    from headless_re_mcp.backends.proxy import client as proxy_client
+
+    rows = [
+        {
+            "method": "GET",
+            "url": "http://example.test/" + "a" * 1000,
+            "status": 200,
+            "content_type": "text/plain",
+        }
+        for _ in range(200)
+    ]
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=_RowRecorder(rows))
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 20_000)
+
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+
+    written = out.read_bytes()
+    assert len(written) <= 20_000
+    assert payload["size"] == len(written)
+    assert payload["truncated"] is True
+    # Some entries survive, but not all 200: the newest are shed.
+    assert 0 < payload["entry_count"] < 200
+
+
+def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The final guard: if the skeleton itself is over the cap, refuse.
+
+    A degenerate cap (below even an empty HAR) must raise too_large rather
+    than write, mirroring web.har_export's terminal check.
+    """
+    from headless_re_mcp.backends.proxy import client as proxy_client
+
+    rows = [
+        {"method": "GET", "url": "http://x/1", "status": 200, "content_type": "text/plain"}
+    ]
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=_RowRecorder(rows))
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 8)
+
+    out = tmp_path / "capture.har"
+    try:
+        backend.export_har("s", out)
+    except ProxyError as exc:
+        assert exc.code == "too_large"
+    else:  # pragma: no cover - the guard must fire
+        raise AssertionError("export_har did not refuse an over-cap HAR")
+    assert not out.exists()
