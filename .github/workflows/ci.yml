@@ -52,6 +52,15 @@ jobs:
       - name: Python dependency audit
         run: python -m pip_audit --skip-editable --progress-spinner=off
 
+      - name: Build native fixtures
+        # Around fifteen PE unit tests (detection, unpack, rebuild on hostile
+        # dumps) skip themselves when artifacts/fixtures-*/ is absent, so the
+        # Windows job never exercised them. The hosted runner carries VS 2022
+        # and CMake, which is all build.ps1 needs; windows-integration already
+        # builds the same fixtures on self-hosted runners.
+        timeout-minutes: 10
+        run: powershell -File .\fixtures\native\build.ps1 -Architecture all
+
       - name: Unit tests
         # -rs prints every skip reason: a suite that quietly skips half of
         # itself reads exactly like a suite that passed.
