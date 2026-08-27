@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（OpenAI 兼容 provider 把非流式多工具快照拼成一坨废数据）
+
+- `_ingest_tool_calls` 对每条工具调用取 `int(raw_call.get("index", 0))`。流式增量里每个
+  `tool_calls` 片段都带整数 `index` 用来跨 chunk 归并同一次调用,这没问题;但 provider 忽略
+  `stream=True` 直接回一条完整 `message` 时,`message.tool_calls` 是一组各自完整、互不相同的
+  调用,且**根本不带 `index`**(index 是流式独有概念)。于是缺省成 0 会把所有快照调用塞进同一个
+  槽:`id`/`name`/`arguments` 依次拼接,两次调用的参数 JSON 被拼成 `{"x":1}{"y":2}` 这种解析不了
+  的串,下游 `json.loads` 报错、整轮对话被判 `provider emitted invalid tool arguments`。现按此逻辑
+  修:`index` 缺失(或非整数)时退回列表位置,每条快照调用各占其槽;流式路径因始终带整数 `index`
+  行为不变。新增端到端回归(非流式两工具快照解析为两个独立调用)与直测(缺 index 用位置且跳过
+  非 dict 项、显式流式 index 仍按 index 归并)。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

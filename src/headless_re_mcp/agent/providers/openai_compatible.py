@@ -134,10 +134,24 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        # Streaming deltas carry an integer ``index`` so fragments of one call
+        # can be correlated across chunks. A non-streaming ``message.tool_calls``
+        # snapshot carries no ``index`` at all -- each complete entry is a
+        # distinct call -- so defaulting a missing index to 0 collapsed every
+        # snapshot call onto one slot, splicing their ids, names and argument
+        # JSON into a single unparseable blob. Fall back to the list position
+        # so each keeps its own slot.
+        raw_index = raw_call.get("index")
+        if raw_index is None:
+            index = position
+        else:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                index = position
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "

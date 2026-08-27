@@ -268,6 +268,95 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_message_snapshot_with_multiple_indexless_tool_calls_stays_distinct() -> None:
+    """Non-streaming ``message.tool_calls`` entries carry no ``index`` field.
+
+    Each complete entry is a distinct call. Defaulting a missing index to 0
+    collapsed every snapshot call onto one slot, splicing their ids, names and
+    argument JSON into one unparseable blob that rejected the whole turn.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.open",
+                                    "arguments": '{"session_id": "s"}',
+                                },
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.strings",
+                                    "arguments": '{"limit": 5}',
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = (
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" + "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert completed.finish_reason == "tool_calls"
+    assert [(call.id, call.name, call.arguments) for call in completed.tool_calls] == [
+        ("call_1", "static.open", {"session_id": "s"}),
+        ("call_2", "static.strings", {"limit": 5}),
+    ]
+
+
+def test_ingest_tool_calls_uses_list_position_when_index_is_missing() -> None:
+    """Index-less entries keep their list position, skipping junk entries."""
+    fragments: dict[int, dict[str, str]] = {}
+    calls = [
+        {"id": "a", "function": {"name": "one", "arguments": "{}"}},
+        "junk entry",
+        {"id": "b", "function": {"name": "two", "arguments": "{}"}},
+    ]
+    _, pieces = openai_compatible._ingest_tool_calls(calls, fragments, 0)
+    assert sorted(fragments) == [0, 2]
+    assert fragments[0]["name"] == "one"
+    assert fragments[2]["name"] == "two"
+    assert pieces == ["one", "{}", "two", "{}"]
+
+
+def test_ingest_tool_calls_prefers_the_explicit_stream_index() -> None:
+    """Streamed fragments still correlate by their explicit index, not position."""
+    fragments: dict[int, dict[str, str]] = {}
+    buffered = 0
+    buffered, _ = openai_compatible._ingest_tool_calls(
+        [{"index": 3, "id": "c", "function": {"name": "tool"}}], fragments, buffered
+    )
+    buffered, _ = openai_compatible._ingest_tool_calls(
+        [{"index": 3, "function": {"arguments": '{"a":1}'}}], fragments, buffered
+    )
+    assert list(fragments) == [3]
+    assert fragments[3] == {"id": "c", "name": "tool", "arguments": '{"a":1}'}
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 
