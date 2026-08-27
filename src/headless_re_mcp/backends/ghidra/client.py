@@ -265,6 +265,22 @@ class GhidraClient:
             # a foreign-interpreter boundary, so derive it here when the script
             # did not emit it rather than trusting the field to be present.
             payload.setdefault("found", bool(payload.get("function")))
+        payload["partial"] = code != 0
+        if code != 0:
+            # The guard above only fails hard when the export is missing; a
+            # non-zero exit with the file on disk is tolerated because the
+            # post-script still wrote what Ghidra managed to analyse. But the
+            # headless run reported an error, so the listing or decompilation
+            # may be incomplete. Say so, rather than handing back a partial
+            # export as a clean, whole result (distinct from the per-list
+            # has_more/truncated flags, which are about paging).
+            payload["exit_code"] = code
+            payload["note"] = (
+                "analyzeHeadless exited with errors after writing the export; "
+                "results may be incomplete"
+            )
+            if stderr.strip():
+                payload["stderr"] = stderr[:4000]
         return payload
 
     def _run_headless(
