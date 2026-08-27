@@ -70,6 +70,9 @@ _MAX_DOM_ATTRS = 48
 _MAX_DOM_VALUE_CHARS = 16 * 1024
 _MAX_DOM_VALUE_BYTES = 4 * 1024
 _MAX_DOM_TEXT_BYTES = 8 * 1024
+# A page's frame tree. An ad-heavy or malicious page can nest dozens of iframes,
+# so the list is capped; each frame's url/name is bounded like other metadata.
+_MAX_FRAMES = 200
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -1432,6 +1435,52 @@ class WebBackend:
                 "count": len(elements),
                 "total": total,
                 "has_more": total > len(elements),
+            }
+
+        return self._runner(handle).call(work)
+
+    def frames(self, session_id: str) -> JsonObject:
+        """The page's frame tree: the main document plus every (i)frame, with URLs.
+
+        dom.snapshot returns only the main document's HTML, and scripts/network
+        are not grouped by frame, so a cross-origin iframe loading remote content
+        -- a phishing embed, a third-party widget, a clickjacked overlay -- was
+        invisible as a structure. This lists each frame's url, name, whether it
+        is the main frame, and its parent's url, so the embedding tree and each
+        frame's origin come back in one call.
+        """
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                page_frames = list(handle.page.frames)
+                main = handle.page.main_frame
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"frame list failed: {exc}") from exc
+            total = len(page_frames)
+            frames: list[JsonObject] = []
+            for frame in page_frames[:_MAX_FRAMES]:
+                try:
+                    url = frame.url
+                    name = frame.name
+                    parent = frame.parent_frame
+                except Exception:  # noqa: BLE001 - a frame can detach mid-read
+                    continue
+                entry: JsonObject = {
+                    "url": _bounded_metadata(url, _MAX_URL_BYTES)[0],
+                    "name": _bounded_metadata(name, _MAX_METADATA_BYTES)[0],
+                    "is_main": frame is main,
+                }
+                if parent is not None:
+                    # The parent can detach mid-read; the child entry still stands.
+                    with contextlib.suppress(Exception):
+                        entry["parent_url"] = _bounded_metadata(parent.url, _MAX_URL_BYTES)[0]
+                frames.append(entry)
+            return {
+                "frames": frames,
+                "count": len(frames),
+                "total": total,
+                "has_more": total > len(frames),
             }
 
         return self._runner(handle).call(work)

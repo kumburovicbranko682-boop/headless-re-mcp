@@ -329,6 +329,21 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.frames")
+    def web_frames(session_id: str) -> dict[str, Any]:
+        """List the page's frame tree: the main document and every (i)frame.
+
+        Answers with frames, each carrying url, name, is_main (true for the main
+        document) and parent_url (absent on the main frame), plus count, total
+        and has_more. dom.snapshot returns only the main document and scripts/
+        network are not grouped by frame, so this is the one view of the
+        embedding structure -- a cross-origin iframe pulling remote content (a
+        phishing embed, a third-party widget, a clickjack overlay) shows up here
+        with its origin. The list is capped at 200 frames and each url/name is
+        bounded. There is no html field -- use web.dom.snapshot for markup.
+        """
+        return _dump(analysis.web_frames(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

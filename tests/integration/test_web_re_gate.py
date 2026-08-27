@@ -1101,6 +1101,87 @@ def test_web_cdp_dom_snapshot_spills_a_large_document() -> None:
             service.close_all()
 
 
+_IFRAME_CHILD_PAGE = b"<!doctype html><html><body>embedded child</body></html>"
+_IFRAME_MAIN_PAGE = (
+    b"<!doctype html><html><head><title>frames-gate</title></head>"
+    b'<body><iframe name="embed" src="/iframe.html"></iframe></body></html>'
+)
+
+
+@contextmanager
+def _iframe_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            body = _IFRAME_CHILD_PAGE if self.path.startswith("/iframe.html") else _IFRAME_MAIN_PAGE
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_frames_lists_the_page_frames_in_a_nested_site() -> None:
+    """The embedding structure of a page was invisible before web.frames.
+
+    dom.snapshot returns only the main document, so a cross-origin iframe --
+    the shape of a phishing embed or a clickjack overlay -- never surfaced as
+    structure. Drive a page with one nested iframe and assert web.frames lists
+    both frames with URLs, marks the main document, and links the child to its
+    parent.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web frames Gate not run (skip != pass)")
+    with _iframe_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _two_frames() -> dict[str, Any] | None:
+                res = service.web_frames(session_id)
+                assert res.ok, res.error
+                if res.data["count"] >= 2:
+                    return res.data
+                return None
+
+            data = _poll(_two_frames, timeout=15.0)
+            assert data is not None, "the iframe never appeared in the frame tree"
+            assert data["total"] == data["count"] == 2
+            assert data["has_more"] is False
+
+            main = next(f for f in data["frames"] if f["is_main"])
+            assert main["url"] == url
+            assert "parent_url" not in main
+
+            child = next(f for f in data["frames"] if not f["is_main"])
+            assert child["url"].endswith("/iframe.html")
+            assert child["name"] == "embed"
+            assert child["parent_url"] == url
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

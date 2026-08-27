@@ -255,6 +255,9 @@ class WebAnalysisMixin:
     def web_dom_query(self, session_id: str, selector: str, limit: int = 50) -> Result[JsonObject]:
         return self._web_wrap(session_id, "dom_query", session_id, selector, limit=limit)
 
+    def web_frames(self, session_id: str) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "frames", session_id)
+
     def web_dom_snapshot(self, session_id: str) -> Result[JsonObject]:
         try:
             data = self._web.dom_snapshot(session_id, self._web_artifact_dir(session_id))

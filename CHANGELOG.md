@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **286（166 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **287（167 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -572,6 +572,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   entrypoints/truncated/has_more 字段。`iej` 纳入后端命令白名单。活体门在真 ELF 上断言 iej 解析出恰好一个 `program` 入口、带由
   vaddr 生成的结构化 va（ELF 不伪造 PE RVA）。单测用构造的 iej 输出钉住 vaddr→Address 映射与 type 保留（program 与 tls 各留其址）、
   4096 截断、`iej` 过白名单、docstring 形状。该工具计入读效果，工具面因此 285→286。
+- **页面的嵌套结构（iframe 树）之前完全不可见**。`web.dom.snapshot` 只回主文档的 HTML，脚本/网络也不按 frame 分组，
+  于是一个拉远端内容的跨域 iframe——钓鱼嵌页、第三方 widget、clickjack 覆盖层——作为*结构*根本浮不出来。新增只读的
+  `web.frames`：一次调用列出整棵 frame 树（主文档加每个 (i)frame）。回 `frames`，每条带 `url`、`name`、`is_main`
+  （主文档为真）与 `parent_url`（主 frame 上没有），外加 `count`、`total` 与 `has_more`。列表硬上限 200（广告/恶意页
+  可嵌几十层 iframe），url/name 按元数据字节界收紧；读取中途 detach 的 frame 跳过不炸。没有 html 字段——要标记去
+  `web.dom.snapshot`。活体门起本地站点、主页嵌一个具名 iframe，断言两个 frame 都在、主文档 `is_main`、子 frame 的
+  `url` 指向嵌页且 `parent_url` 指回主文档；单测 mock Playwright 的 page.frames/main_frame 钉住整形、父子链、
+  detach 跳过、200 截断与 docstring 形状。该工具计入读效果，工具面因此 286→287。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`
