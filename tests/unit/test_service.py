@@ -633,6 +633,49 @@ def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:
     assert result.error.code == "file_not_found"
 
 
+def test_hostile_apk_at_create_session_is_invalid_request_not_an_incident(tmp_path: Path) -> None:
+    """A file named .apk that is not a real package is a caller mistake.
+
+    classify_target trusts the .apk suffix (the caller's stated intent) before
+    it ever inspects the bytes, so describe_apk -- the stdlib-only identity read
+    on session creation -- is what meets the actual content. Point create_session
+    at a .apk that is not a zip, or a zip with no AndroidManifest.xml, and
+    describe_apk raises ValueError. That must land as a structured invalid_request
+    the caller can act on, not fall through to internal_error, which would mint a
+    logged incident and read as an adapter bug for what is only a bad path from an
+    agent. This pins the end-to-end contract; the describe_apk unit tests only
+    prove the raise, never that _failure classifies it correctly through the
+    service. No androguard needed: this path is entirely stdlib.
+    """
+    import zipfile
+
+    not_a_zip = tmp_path / "garbage.apk"
+    not_a_zip.write_bytes(b"this is plainly not a zip archive")
+
+    zip_without_manifest = tmp_path / "no_manifest.apk"
+    with zipfile.ZipFile(zip_without_manifest, "w") as archive:
+        archive.writestr("classes.dex", b"dex\n035\x00placeholder")
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        for hostile in (not_a_zip, zip_without_manifest):
+            result = service.create_session(str(hostile))
+            assert not result.ok, hostile
+            assert result.error is not None
+            assert result.error.code == "invalid_request", (hostile, result.error.code)
+            # An invalid_request carries no error-boundary incident; internal_error
+            # would have stamped one into details.
+            assert "incident_id" not in result.error.details
+
+        # The explicit target="apk" path meets describe_apk the same way.
+        forced = service.create_session(str(not_a_zip), target="apk")
+        assert not forced.ok
+        assert forced.error is not None
+        assert forced.error.code == "invalid_request"
+    finally:
+        service.close_all()
+
+
 def test_pe_tools_on_apk_and_web_sessions_report_target_mismatch(tmp_path: Path) -> None:
     import zipfile
 
