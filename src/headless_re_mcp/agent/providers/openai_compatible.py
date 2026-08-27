@@ -134,10 +134,22 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        # Streaming deltas always carry an ``index`` that ties a fragment to its
+        # call. A non-incremental snapshot (choice.message.tool_calls, the
+        # fallback below) uses the /chat/completions non-streaming shape, where
+        # the calls are a plain list with no ``index`` on any of them. Defaulting
+        # a missing index to 0 collapsed every snapshot call onto one slot, so
+        # two calls' arguments were concatenated into invalid JSON and the whole
+        # response was rejected. Fall back to the list position, which is
+        # distinct per call and matches the order the provider sent them.
+        raw_index = raw_call.get("index")
+        try:
+            index = int(raw_index) if raw_index is not None else position
+        except (TypeError, ValueError):
+            index = position
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "

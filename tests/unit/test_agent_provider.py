@@ -268,6 +268,66 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_message_snapshot_with_multiple_indexless_tool_calls(
+    tmp_path: Path,
+) -> None:
+    """A non-incremental snapshot carries tool calls with no ``index``.
+
+    The /chat/completions non-streaming shape (which a provider that answers in
+    one chunk despite stream:True re-uses) lists tool calls without an ``index``
+    on any of them. Defaulting a missing index to 0 collapsed both onto one
+    slot: their arguments were concatenated into ``{"a":1}{"b":2}`` -- invalid
+    JSON -- and the whole response was rejected as "invalid tool arguments at
+    index 0". Each call must land in its own slot, in order.
+    """
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-a",
+                                "type": "function",
+                                "function": {
+                                    "name": "session.get",
+                                    "arguments": '{"session_id":"s"}',
+                                },
+                            },
+                            {
+                                "id": "call-b",
+                                "type": "function",
+                                "function": {"name": "doctor", "arguments": "{}"},
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert [(call.id, call.name, call.arguments) for call in completed.tool_calls] == [
+        ("call-a", "session.get", {"session_id": "s"}),
+        ("call-b", "doctor", {}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 

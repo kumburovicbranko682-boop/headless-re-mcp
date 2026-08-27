@@ -215,6 +215,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 修复（provider 非增量快照里的多个工具调用被并到同一槽位）
+
+- OpenAI 兼容 provider 在流式增量之外还支持一条**非增量快照**回退：某些 provider 尽管 `stream:True`
+  仍把整条回答放进一个 chunk 的 `choices[0].message`（而非 `delta`）。流式增量里每个工具调用片段都带
+  `index` 把片段归位；但 `/chat/completions` 的非流式 `message.tool_calls` 用的是普通列表形态，**每个
+  调用都没有 `index`**。此前解析把缺失的 `index` 默认成 0，于是快照里的多个工具调用被并到同一个槽位：
+  两个调用的 `arguments` 被拼成 `{"a":1}{"b":2}` 这样的非法 JSON，整条回答被当成
+  `invalid tool arguments at index 0` 整体拒绝——一个合法的多工具快照回答就此失败（单工具快照恰好因为
+  只占 0 号槽而幸免，故既有单工具快照测试没暴露它）。现缺失 `index` 时回退到调用在列表中的位置，各调用
+  各占其槽、顺序与 provider 下发一致；带 `index` 的流式路径不变。新增回归钉住两个无 `index` 的快照工具
+  调用被正确解析成两个独立调用。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
