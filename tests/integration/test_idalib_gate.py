@@ -15,7 +15,14 @@ def test_idalib_opens_fixture_without_analyzer_window() -> None:
     raw = os.environ.get("HEADLESS_RE_IDA_GATE_BINARY")
     if not raw:
         pytest.skip("HEADLESS_RE_IDA_GATE_BINARY is not configured")
-    result = run_idalib_gate(Path(raw), Settings.load(), timeout=600)
+    settings = Settings.load()
+    if settings.ida_home is None:
+        # The conftest bridges the gate binary from the built fixture, so a
+        # machine with fixtures but no IDA reaches this call -- run_idalib_gate
+        # raising there is a hard failure, not the honest skip every other
+        # IDA gate reports (skip != pass, but error != skip either).
+        pytest.skip("IDA home is not configured")
+    result = run_idalib_gate(Path(raw), settings, timeout=600)
     assert result.ok, result.to_dict()
     assert result.payload["function_count"] > 0
     assert not result.analyzer_windows
