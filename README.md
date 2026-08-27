@@ -390,10 +390,11 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 85 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 86 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄；新增浏览器 CDP
-  页面驱动实测——用本地 HTTP 源站验证 `web.open` 的 200/标题、DOM body 快照、console 采集、
+  页面驱动实测——用本地 HTTP 源站验证 `web.open` 的 200/标题、DOM body 快照、console 采集
+  （并证明 log/warn/error 级别如实保留、不被压平成 log）、
   文档与外链脚本双 flow 网络采集与正文取回、脚本源码取回、真 PNG 截图与引用外链脚本的 HAR，
   以及页内实例化的 `add.wasm` 经 `web.wasm.list` 被枚举、`wasm_only` 为真过滤；`web.navigate`
   跨页切换并对 404 主文档如实上报状态而非伪装成功；`web.network.get` 对二进制正文回

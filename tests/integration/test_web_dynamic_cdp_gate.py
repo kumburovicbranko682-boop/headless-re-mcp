@@ -210,6 +210,34 @@ class _BinaryHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+# Distinct console levels: an RE analyst triages on these -- a console.error
+# (a thrown exception, a failed decrypt) must not surface as a plain "log". CDP
+# reports the console API level in consoleAPICalled.type, so prove the capture
+# preserves it rather than flattening everything to "log".
+_CT_LOG = "CT_LOG_7f3a"
+_CT_WARN = "CT_WARN_7f3a"
+_CT_ERROR = "CT_ERROR_7f3a"
+_CONSOLE_TYPES_HTML = (
+    "<!doctype html><html><head><meta charset=utf-8>"
+    f"<title>{_TITLE}</title><script>"
+    f"console.log('{_CT_LOG}');console.warn('{_CT_WARN}');console.error('{_CT_ERROR}');"
+    "</script></head><body>console</body></html>"
+)
+
+
+class _ConsoleTypesHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - required name
+        body = _CONSOLE_TYPES_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @contextmanager
 def _origin(handler: type[BaseHTTPRequestHandler] = _Handler) -> Iterator[str]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -313,6 +341,44 @@ def test_web_dynamic_dom_console_and_scripts(_service: AnalysisService) -> None:
         source = _service.web_script_source(session_id, script["scriptId"])
         assert source.ok, source.error
         assert _SCRIPT_MARKER in source.data["source"], source.data
+
+
+def test_web_dynamic_console_preserves_message_types(_service: AnalysisService) -> None:
+    """console.log/warn/error keep their level over CDP -- an error is not a log.
+
+    The capture wires ``Runtime.consoleAPICalled`` and carries its ``type`` per
+    entry. Earlier coverage only ever asserted a plain log, so a regression that
+    flattened every level to "log" -- turning a thrown exception or failed
+    decrypt into indistinguishable noise for an analyst triaging output -- would
+    have passed. Emit one of each level and prove the level survived.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic CDP gate not run (skip != pass)")
+    with _origin(_ConsoleTypesHandler) as url:
+        session_id = _open_on(_service, url)
+
+        # Map each marker to the type CDP reported for the line that carried it.
+        def _levels() -> dict[str, str]:
+            res = _service.web_console(session_id)
+            if not res.ok:
+                return {}
+            out: dict[str, str] = {}
+            for e in res.data["console"]:
+                text = str(e.get("text", ""))
+                for marker in (_CT_LOG, _CT_WARN, _CT_ERROR):
+                    if marker in text:
+                        out[marker] = str(e.get("type", ""))
+            return out
+
+        assert _wait_until(lambda: {_CT_LOG, _CT_WARN, _CT_ERROR} <= set(_levels())), (
+            f"not all three console levels captured: {_levels()}"
+        )
+        levels = _levels()
+        # error is stable across CDP versions; warn is "warning" but tolerate
+        # "warn"; log stays "log". The point is that they are *distinct*.
+        assert levels[_CT_LOG] == "log", levels
+        assert levels[_CT_WARN] in ("warning", "warn"), levels
+        assert levels[_CT_ERROR] == "error", levels
 
 
 def test_web_dynamic_network_capture_and_har(_service: AnalysisService) -> None:

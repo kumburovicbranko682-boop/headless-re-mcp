@@ -572,6 +572,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 再加一例证明 `web.navigate`：从已开的 `/` 导航到同源第二页，断言 URL/标题/状态都换成新页
   且活 DOM 确为第二页（首页 marker 已消失）；随后导航到一个返回 404 的路径，断言状态如实为
   404——覆盖后端“4xx 主文档正常 resolve、必须把状态透出”的分支，杜绝错误页伪装成命中。
+- 再加一例证明 `web.console` 保真消息级别：页面分别打出 `console.log`/`warn`/`error`，断言
+  经 CDP `Runtime.consoleAPICalled` 采到的三条 `type` 分别为 `log`/`warning`/`error`——此前只
+  断言过普通 log，若哪天回归把所有级别压平成 `log`（把抛出的异常、失败的解密与普通输出混为一谈，
+  正是无人值守分析最需要区分的信息）也照样能过。
 - 网络/HAR 那一例再加固：不再只断言导出的 HAR 非空并含 `app.js`，而是逐条校验**活导出**
   确实带齐 HAR 1.2 的强制成员（`log.version`/`creator`、每条 entry 的 `startedDateTime`/
   `time`/`request`/`response`/`cache`/`timings`，以及 request/response/content/timings 各自的
