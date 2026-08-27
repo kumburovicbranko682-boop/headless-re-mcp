@@ -91,23 +91,28 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
 
     def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
         del timeout
+        # webcrack creates the -o directory itself; model that, since the
+        # client no longer pre-creates it (it must not, or webcrack refuses).
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
-            for index in range(250):
-                (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(250):
+            (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
         return "", "", 0
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)
     bundle = tmp_path / "app.js"
     bundle.write_text("bundle", encoding="utf-8")
-    out = tmp_path / "out"
     client = JsClient(executable=Path("/bin/true"))
-    page = client.unpack_bundle(bundle, out, offset=0, limit=10)
+    # Each call gets a fresh output directory, exactly as the service does
+    # (a unique unpack-<uuid> per call): webcrack owns and creates the dir and
+    # will not run into one that already exists. Same bundle -> same listing,
+    # so disjoint offset windows still exercise the paging contract.
+    page = client.unpack_bundle(bundle, tmp_path / "out_a", offset=0, limit=10)
     assert page["count"] == 10
     assert page["total"] == 250
     assert page["file_count"] == 250
     assert page["has_more"] is True
-    tail = client.unpack_bundle(bundle, out, offset=240, limit=20)
+    tail = client.unpack_bundle(bundle, tmp_path / "out_b", offset=240, limit=20)
     assert tail["count"] == 10
     assert tail["has_more"] is False
     assert set(page["files"]) & set(tail["files"]) == set()
@@ -131,9 +136,9 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
     def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
         del timeout
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
-            for index in range(files_written):
-                (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(files_written):
+            (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
         return "", "", 0
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)

@@ -84,6 +84,52 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    """webcrack unpack used to fail every time on webcrack 2.x.
+
+    The client pre-created the -o directory that webcrack insists on owning, so
+    the tool exited 1 with "output directory already exists" and the service
+    reported backend_error. Only js.deobfuscate was gated, so this end-to-end
+    break went unseen. Drive the real tool and assert it actually produces a
+    listing (and, pointedly, is not the old backend_error).
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+        assert isinstance(result.data["files"], list)
+        assert result.data["files"], "webcrack wrote no files"
+        assert "output_dir" in result.data
+        # A second call takes a fresh unpack dir; it must succeed too, proving
+        # the fix is not a one-shot that wedges on the leftover directory.
+        again = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert again.ok, again.error
+        assert again.data["output_dir"] != result.data["output_dir"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "empty.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        assert isinstance(result.data["objdump"], str)
+        assert "file format wasm" in result.data["objdump"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")

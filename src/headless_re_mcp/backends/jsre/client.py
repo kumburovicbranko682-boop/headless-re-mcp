@@ -7,6 +7,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -146,7 +147,25 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack creates the -o directory itself and refuses to write into one
+        # that already exists ("output directory already exists", exit 1).
+        # Pre-creating it here made unpack fail every time on webcrack 2.x. Make
+        # the parent only; if a caller reuses an empty path, drop it so webcrack
+        # can own it, but never clobber a directory that has contents.
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+        if out_dir.exists() and out_dir.is_dir() and not any(out_dir.iterdir()):
+            with contextlib.suppress(OSError):
+                out_dir.rmdir()
+        if out_dir.exists():
+            # webcrack will not write into an existing directory, so anything
+            # here now is pre-existing content, not output. Refuse rather than
+            # run webcrack (which would fail) and then report those foreign
+            # files as if they were the unpack result.
+            raise JsReError(
+                "invalid_params",
+                "output directory already exists and is not empty",
+                path=str(out_dir),
+            )
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )

@@ -195,11 +195,13 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     src = tmp_path / "app.js"
     src.write_text("x", encoding="utf-8")
     out = tmp_path / "out"
-    out.mkdir()
-    for index in range(5):
-        (out / f"m{index}.js").write_text("1", encoding="utf-8")
 
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        # Real webcrack creates the -o directory itself and refuses one that
+        # already exists, so the fake creates it too.
+        out.mkdir()
+        for index in range(5):
+            (out / f"m{index}.js").write_text("1", encoding="utf-8")
         return Completed(0, b"", b"")
 
     with (
@@ -214,6 +216,86 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert len(payload["files"]) == 3
     assert payload["has_more"] is True
     assert "has_more" in _tool_docstring("js.unpack_bundle")
+
+
+def test_unpack_bundle_lets_webcrack_own_the_output_directory(tmp_path: Path) -> None:
+    """webcrack creates -o itself and errors on a directory that already exists.
+
+    The client used to run ``out_dir.mkdir(exist_ok=True)`` right before the
+    call, so on webcrack 2.x every unpack died with "output directory already
+    exists" (exit 1). Pin that the client hands webcrack a path that does not
+    yet exist, and that it tolerates a stale empty directory by dropping it.
+    """
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "nested" / "unpack-xyz"
+
+    seen: dict[str, bool] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        target = Path(cmd[cmd.index("-o") + 1])
+        seen["existed_at_call"] = target.exists()
+        target.mkdir(parents=True)
+        (target / "deobfuscated.js").write_text("1", encoding="utf-8")
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).unpack_bundle(src, out)
+
+    assert seen["existed_at_call"] is False
+    assert payload["file_count"] == 1
+    assert payload["files"] == ["deobfuscated.js"]
+
+
+def test_unpack_bundle_drops_a_stale_empty_output_directory(tmp_path: Path) -> None:
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "unpack-reused"
+    out.mkdir()
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        target = Path(cmd[cmd.index("-o") + 1])
+        assert not target.exists(), "empty stale dir should have been removed"
+        target.mkdir(parents=True)
+        (target / "deobfuscated.js").write_text("1", encoding="utf-8")
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).unpack_bundle(src, out)
+
+    assert payload["files"] == ["deobfuscated.js"]
+
+
+def test_unpack_bundle_refuses_a_nonempty_output_directory_without_clobbering(
+    tmp_path: Path,
+) -> None:
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "has-content"
+    out.mkdir()
+    (out / "keep.txt").write_text("important", encoding="utf-8")
+
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"", b"")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        JsClient(tool).unpack_bundle(src, out)
+
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+    assert (out / "keep.txt").read_text(encoding="utf-8") == "important"
 
 
 def test_js_deobfuscate_refuses_an_oversized_input(

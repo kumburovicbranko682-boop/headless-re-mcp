@@ -3635,11 +3635,17 @@ class TestExportedFileListsDiscloseTruncation:
             "_require_input",
             lambda self, path: path,
         )
-        monkeypatch.setattr(mod, "_run", lambda cmd, timeout: ("", "", 0))
         out = tmp_path / "unpacked"
-        out.mkdir()
-        for index in range(5):
-            (out / f"{index}.js").write_text("x", encoding="utf-8")
+
+        def fake_run(cmd: Any, timeout: Any) -> tuple[str, str, int]:
+            # webcrack owns and creates the -o directory; the client no longer
+            # pre-creates it, so the stand-in has to.
+            out.mkdir(parents=True, exist_ok=True)
+            for index in range(5):
+                (out / f"{index}.js").write_text("x", encoding="utf-8")
+            return "", "", 0
+
+        monkeypatch.setattr(mod, "_run", fake_run)
         result = mod.JsClient(tmp_path / "webcrack").unpack_bundle(
             tmp_path / "app.js", out, offset=0, limit=3
         )
