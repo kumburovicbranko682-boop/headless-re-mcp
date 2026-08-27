@@ -268,6 +268,91 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_a_trailing_snapshot_does_not_re_ingest_streamed_tool_calls(
+    tmp_path: Path,
+) -> None:
+    """A final message.tool_calls snapshot is ignored once deltas were assembled.
+
+    Some gateways stream the tool call incrementally and then re-send the whole
+    thing as a consolidated ``message.tool_calls`` on the finishing chunk. The
+    reconciliation only pulls the snapshot when nothing was streamed yet
+    (``not tool_fragments``); drop that guard and this chunk's snapshot appends
+    onto the already-complete arguments, so ``{"a":1}`` becomes
+    ``{"a":1}{"a": 1}`` and json.loads rejects it. Streaming the arguments across
+    two deltas, then handing back the full snapshot, pins that the snapshot is
+    discarded and the call parses exactly once.
+    """
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "function": {
+                                        "name": "static.open",
+                                        "arguments": '{"a":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]}}
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {},
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "function": {
+                                        "name": "static.open",
+                                        "arguments": {"a": 1},
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert completed.finish_reason == "tool_calls"
+    assert [(c.id, c.name, c.arguments) for c in completed.tool_calls] == [
+        ("c1", "static.open", {"a": 1})
+    ]
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 
