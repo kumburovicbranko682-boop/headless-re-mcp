@@ -64,6 +64,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `permissions_truncated` 为真;`certificates` 既覆盖两份都触顶的情形,又新增"40 签名文件、1
   证书"的非对称夹具证明两个标志各自独立(`signature_files_truncated` 真、
   `certificates_truncated` 假)。
+- 同一处 `apk.permissions` 还有个数据顶替问题:旧 androguard 没有
+  `get_requested_permissions()` 时,回退分支把 `requested_permissions` 直接置为 declared 的副本。
+  于是调用方比对两份列表看到完全一致,会得出"每一条声明的权限都被申请了"的结论——而这是一份
+  从未读到的清单。现回退时 `requested_permissions` 返回空并新增 `requested_permissions_available`
+  标志(此时为 False),把"读不到"如实暴露而非伪造成真数据;正常路径该标志为 True。工具说明写明
+  该标志。新增一条直测:用会抛异常的 `get_requested_permissions` 夹具断言 `requested_permissions`
+  为空、`requested_permissions_available` 为 False、且不等于 declared 列表。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
