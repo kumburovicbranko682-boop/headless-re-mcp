@@ -9,7 +9,10 @@ the live-device parts, which have their own explicit skips).
 
 from __future__ import annotations
 
+import base64
+import datetime
 import hashlib
+import importlib.util
 import shutil
 import struct
 import subprocess
@@ -32,6 +35,8 @@ _APK_ACTIVITY = "com.example.gate.MainActivity"
 _DEX_CLASS = "Lcom/example/gate/Sample;"
 _DEX_METHOD = "helper"
 _DEX_STRING = "gate-secret-marker"
+_CERT_SERIAL = 0x0A11CE
+_CERT_CN = "Gate Test Cert"
 
 
 def _build_synthetic_apk(path: Path) -> Path:
@@ -306,6 +311,78 @@ def _build_apk_with_dex(path: Path) -> Path:
         archive.writestr("AndroidManifest.xml", _build_axml_manifest())
         archive.writestr("classes.dex", _build_classes_dex())
         archive.writestr("resources.arsc", b"")
+    return path
+
+
+# --- Minimal *valid* v1 (JAR) signature -----------------------------------
+#
+# apk.certificates only ever ran on the synthetic archive's failure path; the
+# success path (androguard reading a real signer certificate) had no coverage
+# and no fixture carried a signature. Signing normally needs the Java toolchain
+# (apksigner/jarsigner); to keep this self-contained we hand-build the classic
+# v1 JAR signature -- META-INF/MANIFEST.MF, CERT.SF and a PKCS#7 CERT.RSA over a
+# throwaway self-signed cert -- with the `cryptography` library androguard
+# already pulls in. androguard extracts the embedded X.509 without a JRE.
+def _b64_sha256(data: bytes) -> str:
+    return base64.b64encode(hashlib.sha256(data).digest()).decode("ascii")
+
+
+def _build_v1_signed_apk(path: Path) -> Path:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import Encoding, pkcs7
+    from cryptography.x509.oid import NameOID
+
+    entries = {
+        "AndroidManifest.xml": _build_axml_manifest(),
+        "classes.dex": _build_classes_dex(),
+    }
+    manifest = "Manifest-Version: 1.0\r\nCreated-By: gate\r\n\r\n"
+    sections: dict[str, str] = {}
+    for name, data in entries.items():
+        section = f"Name: {name}\r\nSHA-256-Digest: {_b64_sha256(data)}\r\n\r\n"
+        sections[name] = section
+        manifest += section
+    manifest_bytes = manifest.encode("utf-8")
+
+    sf = (
+        "Signature-Version: 1.0\r\nCreated-By: gate\r\n"
+        f"SHA-256-Digest-Manifest: {_b64_sha256(manifest_bytes)}\r\n\r\n"
+    )
+    for name, section in sections.items():
+        sf += f"Name: {name}\r\nSHA-256-Digest: {_b64_sha256(section.encode('utf-8'))}\r\n\r\n"
+    sf_bytes = sf.encode("utf-8")
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, _CERT_CN)])
+    not_before = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(_CERT_SERIAL)
+        .not_valid_before(not_before)
+        .not_valid_after(not_before + datetime.timedelta(days=3650))
+        .sign(key, hashes.SHA256())
+    )
+    pkcs7_der = (
+        pkcs7.PKCS7SignatureBuilder()
+        .set_data(sf_bytes)
+        .add_signer(cert, key, hashes.SHA256())
+        .sign(
+            Encoding.DER,
+            [pkcs7.PKCS7Options.DetachedSignature, pkcs7.PKCS7Options.NoAttributes],
+        )
+    )
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("META-INF/MANIFEST.MF", manifest_bytes)
+        archive.writestr("META-INF/CERT.SF", sf_bytes)
+        archive.writestr("META-INF/CERT.RSA", pkcs7_der)
+        for name_, data in entries.items():
+            archive.writestr(name_, data)
     return path
 
 
@@ -612,6 +689,46 @@ def test_valid_apk_apksigner_signs_and_verifies_a_repack(tmp_path: Path) -> None
         assert signed.data["signed"] is True
         assert signed.data["debug_keystore"] is False
         assert Path(signed.data["apk"]).is_file()
+    finally:
+        service.close_all()
+
+
+def _cryptography_available() -> bool:
+    return importlib.util.find_spec("cryptography") is not None
+
+
+@pytest.mark.integration
+def test_v1_signed_apk_androguard_reads_the_certificate(tmp_path: Path) -> None:
+    """Live apk.certificates success path: androguard reads a real signer cert.
+
+    Every other apk.certificates assertion runs on the synthetic archive, where
+    it can only fail cleanly -- androguard reading an actual certificate had no
+    coverage. Build an APK with a hand-crafted v1 JAR signature (self-signed
+    cert, no JRE needed) and assert androguard reports it v1-signed, names the
+    signature file, and returns the certificate with the exact serial we minted.
+    Skips only if androguard or cryptography is missing (skip != pass).
+    """
+    from headless_re_mcp.backends.apk import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — certificate gate not run (skip != pass)")
+    if not _cryptography_available():
+        pytest.skip("cryptography not installed — certificate gate not run (skip != pass)")
+    apk = _build_v1_signed_apk(tmp_path / "signed.apk")
+    assert classify_target(apk) is TargetKind.APK
+
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        certs = service.apk_certificates(session_id)
+        assert certs.ok, certs.error
+        assert certs.data["v1_signed"] is True
+        assert "META-INF/CERT.RSA" in certs.data["signature_files"]
+        assert len(certs.data["certificates"]) >= 1
+        first = certs.data["certificates"][0]
+        assert first["serial"] == str(_CERT_SERIAL)
+        assert first["sha256"]
     finally:
         service.close_all()
 

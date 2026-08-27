@@ -126,6 +126,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会话产物树内现造一个 RSA 密钥库、`apk.sign` 用它签名——后端签完自己再跑 `apksigner verify`,信封回
   绿即代表产物真带合法签名;断言其报告用(非 debug)密钥库签成且 signed.apk 落盘。仅当
   apktool/apksigner/keytool 缺失时 skip。
+- `apk.certificates` 的成功路径首次有覆盖(此前只在合成包上跑失败路径)。用 `cryptography`(androguard
+  已依赖,无需 JRE)手工构造一枚**合法 v1(JAR)签名**——`META-INF/MANIFEST.MF`+`CERT.SF`+PKCS#7
+  `CERT.RSA`(自签证书),塞进 APK。断言 androguard 报 `v1_signed`、点名签名文件、并读回签名者证书**我
+  铸进去的确切序列号**与 SHA-256 指纹。纯进程内,只要 androguard/cryptography 在就跑,不占任何 Java 工具。
+  仅当二者缺失时 skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
