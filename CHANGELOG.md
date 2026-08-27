@@ -137,6 +137,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 修复（`frida.spawn` 在会话关闭到一半时仍报成功并写回 pid）
+
+- `frida.device.connect` 与 `frida.server.ensure` 触碰设备后都会复查会话状态，唯独 spawn 少了
+  这一步：一次 spawn 中途关闭会话，仍会把刚 spawn 出来的 pid 写进（已关闭的）会话元数据并返回
+  ok=True，让一个已死会话被记成持有一个活着的设备进程。现在 spawn 之后也复查状态，关闭时改报
+  invalid_state 且不落 `frida_authorized`（设备侧进程无论如何已经起来，这里只保证不把它记到死
+  会话名下）。
+
 ### 修复（js/wasm 工具非零退出不再伪装成干净结果）
 
 - `js.deobfuscate` / `js.beautify` / `js.unpack_bundle` / `wasm.wat` / `wasm.info` 走的是「工具死了也把
