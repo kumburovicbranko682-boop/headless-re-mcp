@@ -41,7 +41,11 @@ class WebAnalysisMixin:
         return self._web_backend
 
     def _web_artifact_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        # A bare name only: "" / "." / ".." and anything with a separator or an
+        # absolute root are path-escape shapes. Path(..).name catches most, but
+        # ".." has itself as its own name, so name it out explicitly -- the join
+        # would otherwise point the session dir at the artifact root.
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             raise WebError("invalid_params", "invalid session id")
         self.registry.get(session_id)
         root = self.settings.artifact_root.expanduser().resolve() / "web" / session_id
