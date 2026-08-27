@@ -16,6 +16,8 @@ only when apktool is not installed.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -25,6 +27,38 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minimal.apk"
+
+# The standard Android debug keystore: exact alias/password/DN that Android
+# tooling itself creates, so apk.sign's zero-config default is what gets
+# exercised. Path.home() is read the same way the apktool backend reads it.
+_DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
+
+
+def _ensure_debug_keystore() -> Path | None:
+    """Return the debug keystore, creating it with keytool if absent.
+
+    apk.sign's default path signs with ~/.android/debug.keystore. On a fresh
+    runner that file does not exist yet; keytool (shipped with the JDK the lane
+    already installs) builds the canonical one. Returns None only when neither
+    the keystore nor keytool is available, so the gate can skip rather than
+    fail -- skip != pass.
+    """
+    if _DEBUG_KEYSTORE.is_file():
+        return _DEBUG_KEYSTORE
+    keytool = shutil.which("keytool")
+    if keytool is None:
+        return None
+    _DEBUG_KEYSTORE.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            keytool, "-genkeypair", "-alias", "androiddebugkey",
+            "-keypass", "android", "-keystore", str(_DEBUG_KEYSTORE),
+            "-storepass", "android", "-dname", "CN=Android Debug,O=Android,C=US",
+            "-validity", "10000", "-keyalg", "RSA", "-keysize", "2048",
+        ],
+        capture_output=True, timeout=120,
+    )
+    return _DEBUG_KEYSTORE if result.returncode == 0 and _DEBUG_KEYSTORE.is_file() else None
 
 
 @pytest.mark.integration
@@ -68,5 +102,70 @@ def test_android_apktool_decode_and_repack() -> None:
             names = set(archive.namelist())
         assert "AndroidManifest.xml" in names
         assert "classes.dex" in names
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apktool_repack_and_sign() -> None:
+    """Complete the modify workflow: decode -> repack -> sign the rebuilt APK.
+
+    apk.sign had only unit coverage (path safety, closed-session guards); no
+    test ever ran apksigner, so a break in the sign/verify adapter or in the
+    debug-keystore default would pass CI unseen. This gate rebuilds the fixture
+    unsigned, then signs it with the zero-config debug keystore and confirms the
+    result really verifies -- once via the backend's own apksigner verify (which
+    gates signed=True) and again independently here. It needs apktool (to
+    rebuild), apksigner (to sign) and the debug keystore; it skips, naming which
+    is missing, rather than pass silently.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_FIXTURE}")
+    settings = Settings.load()
+    if settings.apktool is None:
+        pytest.skip("apktool not installed — sign gate not run (skip != pass)")
+    if settings.apksigner is None:
+        pytest.skip("apksigner not installed — sign gate not run (skip != pass)")
+    keystore = _ensure_debug_keystore()
+    if keystore is None:
+        pytest.skip(
+            "no debug keystore and no keytool to create one — sign gate not run (skip != pass)"
+        )
+
+    service = AnalysisService(settings=settings)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=180.0, no_resources=True)
+        assert decoded.ok, decoded.error
+        repacked = service.apk_repack(session_id, timeout=180.0)
+        assert repacked.ok, repacked.error
+        assert repacked.data["signed"] is False
+
+        signed = service.apk_sign(session_id, timeout=180.0)
+        assert signed.ok, signed.error
+        # signed=True only after the backend's apksigner verify succeeded.
+        assert signed.data["signed"] is True
+        assert signed.data["debug_keystore"] is True
+        assert Path(signed.data["keystore"]) == _DEBUG_KEYSTORE
+        out_apk = Path(signed.data["apk"])
+        assert out_apk.is_file()
+        assert signed.data["size"] > 0
+        assert zipfile.is_zipfile(out_apk)
+
+        # Independent confirmation the signature is real, not just that the tool
+        # exited 0: apksigner verify must accept the output as a signed APK.
+        verify = subprocess.run(
+            [str(settings.apksigner), "verify", "--verbose", str(out_apk)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert verify.returncode == 0, verify.stderr or verify.stdout
+        # apktool rebuilds without a v1 (JAR) signature, so apksigner applies a
+        # v2 APK Signature Scheme block; the verifier must report it as such.
+        assert "v2 scheme" in verify.stdout.lower()
     finally:
         service.close_all()

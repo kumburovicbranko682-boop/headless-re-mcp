@@ -226,6 +226,12 @@ jobs:
           chmod +x /tmp/apktoolbin/apktool
           echo "/tmp/apktoolbin" >> "$GITHUB_PATH"
 
+      - name: Install apksigner for the Android sign gate
+        # The standalone Debian/Ubuntu package is just apksigner.jar plus a
+        # wrapper (a few MB), not the whole Android SDK. The sign gate builds
+        # the debug keystore itself with keytool from the JDK above.
+        run: sudo apt-get update && sudo apt-get install -y apksigner
+
       - name: Install Ghidra for the headless analysis gate
         run: |
           curl -fsSL -o /tmp/ghidra.zip \
