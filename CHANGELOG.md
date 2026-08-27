@@ -809,6 +809,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Frida `spawn` 成功而 `resume` 失败时，暂停的进程被留下，错误里也不带 pid**。
   无人值守循环会在设备上堆暂停的应用。现在 resume 失败会杀掉该 pid，并把 pid 放进
   错误详情。
+- **Frida `spawn` 先连设备、后校验包名**。包名校验只是一次廉价的正则，`_resolve_device`
+  却要走 USB/远程往返；把校验排在后面，意味着一个写错的包名要白搭一次设备连接，而当设备
+  正好不可达时，真正的问题（包名非法）还会被设备错误盖掉。改为先判包名：非法包名当场回
+  `invalid_params`，合法包名才去连设备。
 - **`device.launch` 在 monkey 返回后就报 `launched: True`**，不管应用有没有到前台。
   启动后再读一次当前 activity，对不上就如实回 `launched: False` 并带上 `foreground`。
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
