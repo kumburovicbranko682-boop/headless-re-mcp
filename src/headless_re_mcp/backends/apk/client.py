@@ -9,6 +9,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 from __future__ import annotations
 
 import functools
+import hashlib
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -25,6 +26,10 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+# A single .so pulled out for r2/Ghidra. 64 MiB matches the unregistered-capture
+# budget the service enforces on trees, so a pathological lib is refused here
+# rather than after it has already landed on disk.
+_MAX_EXTRACT_BYTES = 64 * 1024 * 1024
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -561,6 +566,67 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    @_guard_androguard
+    def extract_native_lib(self, path: Path, entry: str, out_dir: Path) -> JsonObject:
+        """Pull one bundled ``.so`` out of the APK, ready for r2/Ghidra.
+
+        ``native_libs`` names the libraries, but the interesting logic in a
+        modern Android app (crypto, licensing, anti-tamper) lives in that native
+        code, and getting the bytes out meant a full ``apktool`` decode of the
+        whole archive. This reads a single library straight from the zip and
+        writes it to ``out_dir`` so the binary-analysis line can open it.
+
+        Only a real loadable library is allowed, and only by its exact archive
+        path (``lib/<abi>/<name>.so``): the entry must be one androguard already
+        lists, so a caller cannot climb out of ``lib/`` or read an arbitrary
+        zip member. The ABI is flattened into the output name so the same
+        library for two ABIs does not collide on disk.
+        """
+        apk = self._apk(path)
+        target = (entry or "").strip()
+        if not target:
+            raise ApkError("invalid_params", "entry is required")
+        files = {str(name) for name in (apk.get_files() or [])}
+        if target not in files:
+            raise ApkError("not_found", "native library not in apk", entry=target)
+        parts = target.split("/")
+        if len(parts) != 3 or parts[0] != "lib" or not parts[2].endswith(".so"):
+            raise ApkError(
+                "invalid_params",
+                "entry must be a bundled native library path lib/<abi>/<name>.so",
+                entry=target,
+            )
+        abi, name = parts[1], parts[2]
+        try:
+            blob = apk.get_file(target)
+        except Exception as exc:  # noqa: BLE001 - androguard raises FileNotPresent etc.
+            raise ApkError(
+                "not_found", f"could not read {target}: {exc}", entry=target
+            ) from exc
+        if not isinstance(blob, bytes | bytearray):
+            raise ApkError("backend_error", "apk entry was not raw bytes", entry=target)
+        data = bytes(blob)
+        size = len(data)
+        if size > _MAX_EXTRACT_BYTES:
+            raise ApkError(
+                "too_large",
+                "native library exceeds capture cap",
+                entry=target,
+                size=size,
+                cap=_MAX_EXTRACT_BYTES,
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{abi}-{name}"
+        out.write_bytes(data)
+        return {
+            "entry": target,
+            "abi": abi,
+            "name": name,
+            "path": str(out),
+            "size": size,
+            "sha256": hashlib.sha256(data).hexdigest(),
         }
 
     @_guard_androguard

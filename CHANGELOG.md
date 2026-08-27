@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（148 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -311,6 +311,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **能看见 APK 里的 .so 却拿不出来喂给 r2/Ghidra**。`apk.native_libs` 会列出每个打包的原生库，但现代
+  Android 应用真正值钱的逻辑（加密、授权校验、反调试）都在这些原生代码里——而在此之前，把某个 `.so` 的字节
+  取出来的唯一办法是 `apk.decode` 整包 apktool 解一遍（重、且会连资源一起铺开）。新增 `apk.extract_native_lib`：
+  直接从 zip 里读出单个库写进会话产物树，回 `entry`/`abi`/`name`/`path`/`size`/`sha256`/`artifact_id`——注册一次
+  即可用二进制线打开 `path`。只接受 androguard 已经列出的、形如 `lib/<abi>/<name>.so` 的真实可加载库（DEX 条目、
+  越过 `lib/` 的路径、未列出的条目都按 `invalid_params`/`not_found` 拒绝，不写盘、也不读任意 zip 成员），ABI 拼进
+  输出文件名避免两个 ABI 的同名库在盘上撞车，单库超 64 MiB（与未注册产物预算一致）先行拒绝。活体门在自建 APK 里放两
+  个 `.so`、抽其中一个，断言落盘字节与打包内容逐字节相等、`size`/`sha256`/`abi` 正确、有 `artifact_id`，且抽一个
+  androguard 没列出的路径按 `not_found` 拒绝（缺 androguard 时 skip≠pass）；单测覆盖真实字节落盘、非库/越界/未列出条目
+  的拒绝，以及结果里不夹带内联字节。该工具计入写效果，工具面因此 265→266。
 - **`web.console` 只留消息文本，丢掉了它从哪儿来**。控制台捕获只记 `type` 与 `text`——CDP 明明在
   `Runtime.consoleAPICalled` 与 `Runtime.exceptionThrown` 里随每条消息带了 `stackTrace`（首帧即调用点：
   url/lineNumber/columnNumber/functionName），异常还在 `exceptionDetails` 顶层另钉了 url/行号——过去全被丢弃，

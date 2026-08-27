@@ -435,6 +435,26 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert sorted(libs.data["abis"]) == ["arm64-v8a", "x86_64"]
         assert libs.data["count"] == 2
 
+        # Pull one .so straight out of the zip for the binary line and confirm
+        # the bytes on disk are the real member (the fixture wrote this exact
+        # payload), the metadata matches, and it registered as an artifact.
+        expected_so = b"\x7fELF" + b"\x00" * 60
+        extracted = service.apk_extract_native_lib(
+            session_id, "lib/arm64-v8a/libnative.so"
+        )
+        assert extracted.ok, extracted.error
+        on_disk = Path(extracted.data["path"])
+        assert on_disk.is_file()
+        assert on_disk.read_bytes() == expected_so
+        assert extracted.data["size"] == len(expected_so)
+        assert extracted.data["sha256"] == hashlib.sha256(expected_so).hexdigest()
+        assert extracted.data["abi"] == "arm64-v8a"
+        assert extracted.data["artifact_id"]
+        # A path androguard does not list is refused, not written.
+        missing = service.apk_extract_native_lib(session_id, "lib/mips/ghost.so")
+        assert not missing.ok
+        assert missing.error is not None and missing.error.code == "not_found"
+
         certs = service.apk_certificates(session_id)
         assert certs.ok, certs.error
         assert certs.data["v1_signed"] is False

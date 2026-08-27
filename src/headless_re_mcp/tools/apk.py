@@ -99,6 +99,20 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.extract_native_lib")
+    def apk_extract_native_lib(session_id: str, entry: str) -> dict[str, Any]:
+        """Extract one bundled native library (.so) for r2/Ghidra analysis.
+
+        entry is the exact archive path apk.native_libs lists
+        (lib/<abi>/<name>.so); anything else is rejected. Writes the library
+        to the session artifact tree and answers with entry, abi, name, path,
+        size, sha256, and artifact_id (register it once, then open path with
+        the binary line). The interesting native logic in a modern app lived
+        behind a full apktool decode before this; now a single lib comes out
+        directly. There is no bytes, data or lib field.
+        """
+        return _dump(analysis.apk_extract_native_lib(session_id, entry))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
