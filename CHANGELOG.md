@@ -80,6 +80,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   而非报错。回归测试覆盖分页(40 项按 10 翻,total=40)、整表放得下(total 等于 count 而非页
   大小)、以及旧脚本无 total 时的降级。
 
+### 修复（frida.java.methods 补齐 total,与 modules/exports 对齐)
+
+- `frida.java.methods` 此前只回 `count` 与 `has_more`,调用方翻页时无从得知类到底声明了多少方法。
+  注入脚本里 `getDeclaredMethods()` 本就把整张方法数组取了出来,`methods.length` 是白得的真实
+  总数——现在脚本连同 `total` 一起返回,Python 端把它透出(类型有守卫,旧的裸数组脚本缺该字段时
+  降级回原形状而非报错)。`frida.java.classes` 保持只有 `has_more`:它是遇到上限就抛异常提前停止
+  枚举、并不遍历每个已加载类,因此拿不到廉价的总数,不假装有 `total`。回归测试覆盖 methods 分页
+  (40 声明按 10 翻,total=40)、整表放得下(total 等于 count)、裸数组/旧字典无 total 时降级,
+  以及 classes 不带 total 的既定不对称。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
