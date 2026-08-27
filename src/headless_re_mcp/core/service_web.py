@@ -114,24 +114,39 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
+        result = self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
+        self._note_web_action(result, session_id, "web.navigate", "page navigated", "url")
+        return result
 
     def web_click(
         self, session_id: str, selector: str, timeout: float = 5.0
     ) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "click", session_id, selector, timeout=timeout)
+        result = self._web_wrap(session_id, "click", session_id, selector, timeout=timeout)
+        self._note_web_action(result, session_id, "web.click", "page click", "selector", "url")
+        return result
 
     def web_type(
         self, session_id: str, selector: str, text: str, timeout: float = 5.0
     ) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "type_text", session_id, selector, text, timeout=timeout)
+        result = self._web_wrap(
+            session_id, "type_text", session_id, selector, text, timeout=timeout
+        )
+        # Only the selector and the length reach the timeline; the typed text
+        # never does, so a filled password or token stays out of the audit log
+        # just as it stays out of the result envelope.
+        self._note_web_action(result, session_id, "web.type", "field filled", "selector", "length")
+        return result
 
     def web_wait(
         self, session_id: str, selector: str, state: str = "visible", timeout: float = 5.0
     ) -> Result[JsonObject]:
-        return self._web_wrap(
+        result = self._web_wrap(
             session_id, "wait_selector", session_id, selector, state=state, timeout=timeout
         )
+        self._note_web_action(
+            result, session_id, "web.wait", "waited for selector", "selector", "state"
+        )
+        return result
 
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:
@@ -249,6 +264,30 @@ class WebAnalysisMixin:
             return _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    def _note_web_action(
+        self,
+        result: Result[JsonObject],
+        session_id: str,
+        event: str,
+        message: str,
+        *fields: str,
+    ) -> None:
+        """Record a page action in the session timeline, best-effort.
+
+        Multi-step web flows (navigate, click, type, wait) were invisible after
+        the fact: only open/close/screenshot/HAR reached the timeline, so the
+        console's activity log could not show what the agent actually did on the
+        page. These add that trail. It is best-effort -- a timeline write that
+        fails must not turn a click that already happened in the browser into a
+        failed tool call -- and it copies only the named result fields, so
+        web.type contributes its selector and length but never the typed text.
+        """
+        if not (result.ok and isinstance(result.data, dict)):
+            return
+        details = {name: result.data.get(name) for name in fields}
+        with suppress(Exception):
+            _timeline_append(self, session_id, event, message, **details)
 
     def _web_wrap(
         self, session_id: str, op: str, /, *args: Any, **kwargs: Any
