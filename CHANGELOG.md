@@ -799,6 +799,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   出现批准卡片。刷新后再批准这一段改为钉住 `/approve` 回包与恢复的 SSE 游标(reload 会丢掉内存里的
   对话记录直到重新选中会话,完成气泡只作为流式文本一闪而过,钉它会 flaky)。这条 gate 现在在 Linux
   上真实起浏览器跑通,而不再只是崩溃或跳过。
+- **`apk.open` 对「能打开但清单解析不了」的 APK 不再谎报 `internal_error`**。androguard 打开一个
+  ZIP 合法、但 `AndroidManifest.xml` 不是有效 AXML（混淆/截断/故意损坏,野外常见）的 APK 时,多数
+  取值器会吞掉解析失败返回 `None`/`[]`,唯独 `get_androidversion_name`/`get_androidversion_code`
+  抛 `KeyError('Name')`/`KeyError('Code')`。`open()` 里这两个调用没有包裹,裸 `KeyError` 逃出
+  后端,被服务层兜底的 `except BaseException` 记成 `internal_error` 事故——把一次「输入畸形」
+  误报成「我们的代码崩了」,还顺手抹掉了本可解析出的字段（包名、native ABI、权限数）。现在这两个
+  取值器像 androguard 对其兄弟取值器一样容错降级为 `None`,并加一层结构化兜底,任何其他 androguard
+  异常也回结构化 `backend_error` 而非 `internal_error`（`apk.manifest` 早已如此,`open` 是唯一漏网的）。
+  `tests/unit/test_apk_open_fields.py` 不装 androguard 也能钉住这条降级；
+  `tests/integration/test_android_re_gate.py` 在装了 androguard 时真实断言 `apk.open` 对合成 APK
+  返回 ok、native ABI 正确、`version_name` 为 None（修复前是 ok=False / `internal_error`）。
 
 ### 变更（Android 后端清理）
 
