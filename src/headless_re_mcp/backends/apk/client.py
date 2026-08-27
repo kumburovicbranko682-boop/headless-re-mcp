@@ -361,12 +361,27 @@ class ApkClient:
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
-        found = [
+        matched = [
             klass
             for klass in parsed.analysis.get_classes()
             if klass.name == target or klass.name == _dotted_to_smali(target)
         ]
+        # get_classes() also yields *external* classes -- framework/library types
+        # the APK only references, never defines (Ljava/lang/Object;, Landroid/...).
+        # androguard's ClassAnalysis for one of those carries only the handful of
+        # methods the app happened to call, so listing them read as "these are the
+        # class's methods" when they are just the referenced subset of a type that
+        # is not in this APK at all. apk.classes already hides external classes;
+        # mirror it here so the two tools agree on what "a class in this APK" means.
+        found = [klass for klass in matched if not klass.is_external()]
         if not found:
+            if matched:
+                raise ApkError(
+                    "not_found",
+                    "class is referenced but not defined in this APK (external)",
+                    class_name=class_name,
+                    external=True,
+                )
             raise ApkError("not_found", "class not found", class_name=class_name)
         methods: list[JsonObject] = []
         scan_more = False

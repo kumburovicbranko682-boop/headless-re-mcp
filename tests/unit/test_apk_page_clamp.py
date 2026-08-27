@@ -57,6 +57,9 @@ class _FakeMethodClass:
         self.name = "Lcom/example/Foo;"
         self._methods = [_FakeApkMethod(index) for index in range(count)]
 
+    def is_external(self) -> bool:
+        return False
+
     def get_methods(self) -> list[_FakeApkMethod]:
         return self._methods
 

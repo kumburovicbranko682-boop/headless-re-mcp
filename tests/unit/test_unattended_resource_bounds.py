@@ -3343,6 +3343,9 @@ class TestDeviceListsDiscloseTruncation:
         class Klass:
             name = "Lfoo/C;"
 
+            def is_external(self) -> bool:
+                return False
+
             def get_methods(self) -> list[Method]:
                 return [Method(f"m{index}") for index in range(20)]
 

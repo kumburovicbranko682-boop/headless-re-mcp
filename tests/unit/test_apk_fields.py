@@ -195,18 +195,22 @@ class _FakeApkMethod:
 
 
 class _FakeMethodClass:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, *, external: bool = False) -> None:
         self.name = "Lcom/example/Foo;"
         self._methods = [_FakeApkMethod(index) for index in range(count)]
+        self._external = external
+
+    def is_external(self) -> bool:
+        return self._external
 
     def get_methods(self) -> list[_FakeApkMethod]:
         return self._methods
 
 
 class _FakeMethodParsed:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, *, external: bool = False) -> None:
         self.analysis = self
-        self._classes = [_FakeMethodClass(count)]
+        self._classes = [_FakeMethodClass(count, external=external)]
 
     def get_classes(self) -> list[_FakeMethodClass]:
         return self._classes
@@ -234,6 +238,47 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     doc = _tool_docstring("apk.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+
+
+def test_apk_methods_rejects_a_class_only_referenced_not_defined(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An external (framework/library) class is not a class in this APK.
+
+    androguard's get_classes() also yields classes the APK only references, and
+    a ClassAnalysis for one of those carries just the methods the app called --
+    so listing them read as "the class's methods". apk.classes already hides
+    external classes; apk.methods now refuses one with not_found/external true
+    rather than a misleading partial listing, while a genuinely absent name
+    stays a plain not_found.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeMethodParsed(3, external=True),
+    )
+    with pytest.raises(ApkError) as caught:
+        client.methods(tmp_path / "app.apk", "com.example.Foo", limit=10)
+    assert caught.value.code == "not_found"
+    assert caught.value.details.get("external") is True
+
+    # A name that matches nothing at all is still a plain not_found (no external
+    # flag), so the two cases stay distinguishable.
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeMethodParsed(3, external=False),
+    )
+    with pytest.raises(ApkError) as missing:
+        client.methods(tmp_path / "app.apk", "com.example.Nope", limit=10)
+    assert missing.value.code == "not_found"
+    assert "external" not in missing.value.details
+
+    doc = " ".join(_tool_docstring("apk.methods").split())
+    assert "external" in doc
+    assert "defined in this APK" in doc
+
 
 def test_apk_decompile_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any

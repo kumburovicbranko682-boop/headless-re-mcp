@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（apk.methods 拒绝"只被引用、并未在本 APK 定义"的外部类）
+
+- androguard 的 `get_classes()` 不只给出本 APK **定义**的类,还包括它仅仅**引用**的框架/库类型
+  (`Ljava/lang/Object;`、`Landroid/...`)。这些外部类的 `ClassAnalysis` 只带 app 恰好调用过的那
+  几个方法,于是 `apk.methods("java.lang.Object")` 会"成功"返回一个 `<init>`,读起来像"这就是该类的
+  方法列表"——可这个类根本不在本 APK 里。而 `apk.classes` 早已过滤掉外部类、从不列出它们,两个工具对
+  "什么算本 APK 里的一个类"各执一词。现 `apk.methods` 与 `apk.classes` 对齐:匹配到的类先按
+  `is_external()` 过滤,只保留本 APK 定义的类;若某名字只匹配到外部类,报 `not_found` 且带
+  `external: true`(点出"被引用但未定义"),而不是给一份误导性的残缺方法表;完全不存在的名字仍是普通
+  `not_found`(不带 external),两种情况可区分。`apk.methods` 文档串说明:类必须在本 APK 中定义,外部
+  引用类返回 `not_found`/`external`。单测新增「外部类报 not_found+external、缺失名报纯 not_found」一条,
+  并给既有方法/翻页假类补上 `is_external`。新增 live gate
+  (`test_apk_methods_external_class_live_gate.py`,复用夹具 `fixtures/apk/xref_sample.apk`):经真
+  androguard 断言本 APK 定义的 `Lcom/example/re/Sample;` 正常列出五个方法、外部的 `Ljava/lang/Object;`
+  两种写法都被拒(not_found+external),并守卫 androguard 确实把前者标为内部、后者标为外部。CI 新增
+  `linux-apk-methods-external` job 装 androguard 跑该 gate,skip≠pass 守卫在 androguard 已装却仍 skip
+  时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

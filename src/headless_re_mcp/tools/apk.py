@@ -106,6 +106,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List methods of a class (dotted or Lsmali/form; paginated).
 
+        The class must be defined in this APK. A framework or library class the
+        app only references (Ljava/lang/Object;, Landroid/...) is external and
+        answers not_found with external true, not a listing of the few methods
+        that happened to be called -- matching apk.classes, which never lists
+        external classes.
+
         Answers with methods (name, descriptor, access), class_name, count,
         total, offset, and has_more so a page that filled the limit is not
         read as the whole collected class. total is the number collected,
