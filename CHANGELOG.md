@@ -834,6 +834,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `messages_total`/`events_total` 与 `messages_truncated`/`events_truncated`(页长小于总数即为真;`messages`
   与 `events` 数组保持原样,向后兼容)。补测:store 计数在计数/字节两种封顶下都超过窗口长度且只算本线程;
   HTTP 层忙碌线程两个 `*_truncated` 皆真、短线程皆假且 `*_total` 与页长一致。
+- **`GET /api/agent/threads` 封顶 100 却把这一页当成全部线程**。存活线程不受留存裁剪,超过单页上限后
+  较旧的线程从列表里静默消失——既无 `limit`/`offset` 参数可翻页,也无 `total`/`has_more` 可察觉,而相邻的
+  `/missions` 与 `/events/history` 都已修过同一类问题。store 的 `list_threads` 补 `offset`
+  (排序补 `id DESC` 决胜以稳定翻页)并新增 `count_threads`;端点接受 `limit`(默认 100、上限 500)与
+  `offset` 查询参数,回 `count`/`offset`/`total`/`has_more`(`threads` 数组保持原样,向后兼容)。补测:
+  store 按 offset 翻页无重叠且覆盖全部;HTTP 层首页 `has_more=True`、翻到尾页转假、两页并起来正好是
+  全部线程、`limit=0` 被 422 拒绝。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

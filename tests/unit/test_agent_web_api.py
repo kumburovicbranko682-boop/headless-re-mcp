@@ -470,3 +470,45 @@ def test_thread_detail_does_not_flag_a_thread_that_fits(tmp_path: Path, monkeypa
     assert body["messages_truncated"] is False
     assert body["events_total"] == len(body["events"])
     assert body["events_truncated"] is False
+
+
+def test_thread_listing_pages_and_reports_the_true_total(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A capped threads page must say the set continues, like missions do.
+
+    Live threads are never retention-trimmed, so a deployment outgrows the
+    page. Without offset/total/has_more the page reads as every thread there
+    is, and older threads silently vanish from the listing.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    store = app.state.agent_store
+    made = {store.create_thread(title=f"t{index}").id for index in range(3)}
+
+    with TestClient(app) as client:
+        first = client.get(
+            "/api/agent/threads", headers=headers, params={"limit": 2}
+        ).json()
+        assert first["ok"] is True
+        assert first["count"] == 2
+        assert first["offset"] == 0
+        assert first["total"] == 3
+        assert first["has_more"] is True
+
+        second = client.get(
+            "/api/agent/threads", headers=headers, params={"limit": 2, "offset": 2}
+        ).json()
+        assert second["count"] == 1
+        assert second["offset"] == 2
+        assert second["has_more"] is False
+
+        paged = [item["id"] for item in (*first["threads"], *second["threads"])]
+        assert len(paged) == len(set(paged))
+        assert set(paged) == made
+
+        assert client.get(
+            "/api/agent/threads", headers=headers, params={"limit": 0}
+        ).status_code == 422

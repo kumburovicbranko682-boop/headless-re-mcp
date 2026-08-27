@@ -100,6 +100,28 @@ def test_list_missions_pages_and_reports_the_true_total(tmp_path: Path) -> None:
     assert store.count_missions(status=MissionStatus.PENDING) == 2
 
 
+def test_list_threads_pages_and_reports_the_true_total(tmp_path: Path) -> None:
+    """A capped thread page must expose the total so it is not read as the set.
+
+    Live threads are never retention-trimmed, so a busy deployment outgrows a
+    single page. Without a total and an offset, the page reads as every thread
+    there is and older threads silently vanish from the listing.
+    """
+    store = AgentStore(tmp_path / "threads.db")
+    made = [store.create_thread(title=f"thread {index}") for index in range(5)]
+
+    assert store.count_threads() == 5
+
+    first = store.list_threads(limit=2, offset=0)
+    second = store.list_threads(limit=2, offset=2)
+    third = store.list_threads(limit=2, offset=4)
+    assert [len(first), len(second), len(third)] == [2, 2, 1]
+    # No overlap, and every thread is reachable across the pages.
+    paged_ids = [item.id for item in (*first, *second, *third)]
+    assert len(paged_ids) == len(set(paged_ids))
+    assert set(paged_ids) == {thread.id for thread in made}
+
+
 def test_canonical_args_hash_is_key_order_independent() -> None:
     """The approval gate compares two independently computed hashes.
 

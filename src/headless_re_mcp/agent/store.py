@@ -320,10 +320,28 @@ class AgentStore:
             con.execute("INSERT INTO threads VALUES(?,?,?,?,?)", (thread_id, title[:200], session_id, now, now))
         return AgentThread(thread_id, title[:200], session_id, now, now)
 
-    def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
+    def list_threads(self, *, limit: int = 100, offset: int = 0) -> list[AgentThread]:
+        bounded = max(1, min(limit, 500))
+        start = max(0, int(offset))
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            rows = con.execute(
+                "SELECT * FROM threads ORDER BY updated_at DESC, id DESC"
+                " LIMIT ? OFFSET ?",
+                (bounded, start),
+            ).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
+
+    def count_threads(self) -> int:
+        """How many threads exist, so a capped page can report has_more.
+
+        list_threads returns at most 500 newest-updated threads, and live
+        threads are never retention-trimmed, so a busy deployment outgrows a
+        single page. Without the total, the page reads as the whole set and
+        older threads silently disappear from every listing.
+        """
+        with self._reading() as con:
+            row = con.execute("SELECT COUNT(*) AS n FROM threads").fetchone()
+        return int(row["n"])
 
     def get_thread(self, thread_id: str) -> AgentThread | None:
         with self._reading() as con:
