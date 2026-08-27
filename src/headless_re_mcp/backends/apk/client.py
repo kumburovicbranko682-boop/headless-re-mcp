@@ -400,15 +400,19 @@ class ApkClient:
         parsed = self._parsed(path)
         seen: set[str] = set()
         scan_more = False
+        value_truncated = False
         for item in parsed.analysis.get_strings():
             if len(seen) >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            raw = str(item.get_value())
+            if len(raw) > _MAX_STRING_LEN:
+                value_truncated = True
+            seen.add(raw[:_MAX_STRING_LEN])
         values = sorted(seen)
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
         window = values[start : start + cap]
-        return {
+        result: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
@@ -416,6 +420,16 @@ class ApkClient:
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
+        # A returned string cut at _MAX_STRING_LEN looks whole, and dedupe keys
+        # on that cut value, so two strings sharing the first _MAX_STRING_LEN
+        # chars collapse into one row -- a distinct string silently gone and a
+        # returned value that is a prefix, not the whole constant. Say so, like
+        # scan_capped names the collection cap beside it, when it actually
+        # happened so a table of short strings stays clean.
+        if value_truncated:
+            result["values_truncated"] = True
+            result["max_string_len"] = _MAX_STRING_LEN
+        return result
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
