@@ -107,13 +107,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   跑 `aflj`/`pdj`/`axj`,断言函数/反汇编/xref 都解析成功且地址是纯 va(显式断言 ELF 上不出现 rva/module)。
   没有 r2 或没有编译器时如实 skip(skip 不等于 pass),不落任何提交产物。
 
-### 新增（抓包代理实测 Gate：真的录到流量）
+### 新增（抓包代理实测 Gate：真的录到流量、也真的能重放）
 
 - 代理线过去只有 `test_proxy_lifecycle_gate` 验证「起得来、端口占用被拒、停得掉、端口回收」,但代理的
   本职——把经过它的流量录进环形缓冲——毫无真机覆盖:`_FlowRecorder`(跑在代理自己的 asyncio 线程上)
   与 addon 接线一旦断掉,看起来会和「代理空闲」一模一样。新增 `test_proxy_capture_gate`:用 stdlib 起一个
   HTTP 源站、再用 stdlib 经代理发一条 GET(无外网、无额外依赖),轮询直到流入环,断言方法/URL/状态码正确、
   `flow_get` 能取回响应状态与内联 body、`export_har` 至少导出一条。缺 mitmproxy 时如实 skip(skip 不等于 pass)。
+- 同文件再补一条 `proxy.replay` 实测:`replay` 把录到的流交给 mitmproxy 的 `replay.client` 在代理自己的
+  循环上重发,此前无任何真机覆盖——接线断了它照样回 `{"replayed": True}`。新测用一个**会数命中次数**的源站,
+  先经代理发一条 GET(源站命中 1、录到 1 条流),再 `replay` 该流,断言源站命中变 2(请求真的又到了一次),
+  且因重放同样过代理而被再次录成一条新流(流数变 2)。缺 mitmproxy 时如实 skip。
 
 ### 新增（APK 静态成功路径 Gate：纯 Python 现造一个合法 APK）
 
