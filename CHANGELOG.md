@@ -102,6 +102,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 新增回归（`_clip_console_text` 渲染三种 CDP 参数形状并按预算收尾,直测固定）
+
+- Web 控制台缓冲喂自 `Runtime.consoleAPICalled`,其 `args` 是 CDP RemoteObject 而非字符串;
+  `_clip_console_text` 把每个渲染成文本再按字节预算拼接。整只 helper 此前无任何测试,几处取舍只在
+  朴素夹具从不产生的输入上才显形:一是**三种 RemoteObject 形状、按序取**——基元带 `value`、对象/函数只带
+  `description`(`"Array(3)"`、栈)、裸 `undefined`/`null` 二者皆无、只有 `type` 名可显;一色 `value` 字符串
+  参数的夹具永远走不到 `description`/`type` 分支,删掉任一,对象就记成空。二是**`"value" in argument` 是
+  成员判定、不是真值判定**——`console.log(0)`/`console.log("")` 到手是 `{"value":0}`/`{"value":""}`,用
+  `argument.get("value")` 读会把假值当缺失、落到 `description`/`type`,把 `0` 记成 `"number"`。三是**非 dict
+  参数要跳过**——`args` 里混进的非对象必须迈过去(`"value" in` 一个 str 是子串判定,`str.get` 更不存在),
+  不能当文本、也不能崩。四是**连接空格计入预算**——参数以 `" ".join` 拼接、分隔符占一字节,故截断正好落在
+  上限处、不迟一字节。新增十一例直测该 helper(三形状各一、非串 value 转字符串、假值仍用、非 dict 跳过、
+  多参空格拼接、空参、单个超长切到上限、连接空格计费、首参恰好填满时次参被分隔符触发截断);成员改真值、
+  删 description 回落、删非 dict 跳过、分隔符改免费四处变异各被相应用例逮到。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
