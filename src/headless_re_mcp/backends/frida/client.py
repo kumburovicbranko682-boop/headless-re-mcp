@@ -292,10 +292,14 @@ class FridaClient:
     # ------------------------------------------------------------------
     def attach(self, pid: int, *, allowed_pid: int,
                timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+        # Validate the caller's pid shape before the capability probe: a malformed
+        # pid is the caller's mistake regardless of environment, so it must earn a
+        # deterministic invalid_params rather than capability_unavailable wherever
+        # the frida module happens to be absent.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
         if pid != allowed_pid:
             raise FridaError(
                 "permission_denied",
@@ -476,6 +480,11 @@ class FridaClient:
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
 
     def _require(self, pid: int, allowed_pid: int) -> None:
+        # A malformed pid is invalid_params before it is anything else, so the
+        # same bad pid cannot read as permission_denied here yet invalid_params in
+        # attach(); authorization and the capability probe keep their order below.
+        if type(pid) is not int or pid <= 0:
+            raise FridaError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
             raise FridaError("permission_denied", "pid not allowed", pid=pid)
         if not self._available or self._frida is None:
@@ -743,10 +752,13 @@ class FridaClient:
             raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+        # Shape first, matching attach()/_require(): a malformed pid is
+        # invalid_params on every host, not capability_unavailable where frida is
+        # absent; the capability probe and the allow-set check keep their order.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
         allowed = set(int(value) for value in allowed_pids)
         if pid not in allowed:
             raise FridaError(

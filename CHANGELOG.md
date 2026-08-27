@@ -128,6 +128,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`——错误码取决于环境。现把端口校验挪到可用性探测之前,坏端口在任何机器上都确定地
   报 `invalid_params`;对应回归测试也不再因为缺 mitmproxy 而跳过(quality job 的 `.[test,dev,web]`
   不含 `proxy` 附加项),从而在 CI 上真正钉死这个顺序。
+- Frida 的 pid 形状校验统一提到最前：`attach` 与 `_authorize`(设备路径)此前先探测 frida 模块、
+  `_require`(本地设备路径)先判授权,导致同一个畸形 pid(负数/0/非整数)在没装 frida 的机器上报
+  `capability_unavailable`、在授权不符时报 `permission_denied`、装了 frida 才报 `invalid_params`
+  ——三条路径三种码且随环境漂移。现三个守卫都先做 pid 形状校验,畸形 pid 在任何机器、任何授权状态下
+  都确定地报 `invalid_params`;各自的能力探测与授权判定保持原有相对顺序不变。新增回归覆盖
+  `attach` / `modules`(`_require`)/ `java_enumerate`(`_authorize`)三条入口,并钉死形状校验先于
+  授权判定。
 
 ### 新增（会话目标类型）
 
