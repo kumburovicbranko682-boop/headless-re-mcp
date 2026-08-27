@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+apktool 线（`apk.decode` / `apk.repack`）首次有了对真实 APK 的执行覆盖。此前 decode/build/sign 只对 mock 跑
+过，没有任何测试证明 apktool 能把真实 APK 拆成 smali 树与解码后的清单、或把解码树重新打回有效 APK；而这两件
+事都需要一个带真实二进制资源的 APK，手搓 zip 给不了。复用一次性构建并提交的夹具
+`fixtures/android/gate_sample.apk`（真实 AXML + resources.arsc + `com.example.MainActivity` 的 classes.dex），
+新增 `tests/integration/test_apktool_decode_live_gate.py`：decode 后断言产出 smali 目录、资源、以及解码清单含
+包名/Activity，且 `MainActivity` 的 smali 里保留了独特字符串 `ANDROGUARD_APK_MARKER` 与方法 `addNumbers`；再
+对解码树做 build，断言重新打出一个有效（zip）APK。覆盖 decode 与 build；`sign` 需要 apksigner（另一个 Android
+build tool），未纳入，已在 docstring 说明，避免把 green 误读成"整条 repack+sign 已覆盖"。新增
+`linux-apktool-decode` CI job：装 JDK 21 + apktool、跑该 gate 并解析 junitxml，apktool 已装却 skip 时判失败
+（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

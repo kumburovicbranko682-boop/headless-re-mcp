@@ -152,6 +152,59 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apktool-decode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install apktool
+        run: |
+          mkdir -p "$HOME/apktool"
+          curl -fsSL -o "$HOME/apktool/apktool.jar" \
+            https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+          printf '#!/bin/sh\nexec java -jar "%s/apktool.jar" "$@"\n' "$HOME/apktool" \
+            > "$HOME/apktool/apktool"
+          chmod +x "$HOME/apktool/apktool"
+          echo "$HOME/apktool" >> "$GITHUB_PATH"
+
+      - name: Install the package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: apktool decode gate runs for real (skip != pass)
+        run: |
+          apktool --version
+          python -m pytest tests/integration/test_apktool_decode_live_gate.py \
+            -rs --tb=short --junitxml=apktool-decode-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apktool-decode-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # apktool and a JRE were just installed, so a skip here means apktool
+          # could not decode/rebuild a real APK -- the false-green "skip != pass"
+          # warns about. This is the only test that runs apk.decode and repack
+          # against a real APK.
+          if not cases:
+              sys.exit("no apktool-decode gate was collected")
+          if skipped:
+              sys.exit(f"apktool-decode gate skipped despite an installed apktool: {skipped}")
+          print(f"apktool-decode gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
