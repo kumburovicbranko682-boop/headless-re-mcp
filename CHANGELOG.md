@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（回归护栏：catalog 三张辅助名表只许引用真实存在的工具）
+
+- `_declared_spec` 逐个从 `_ALL_TOOL_NAMES`（导入期由 `len(...) != 265` 断言把守）造 `CommandSpec`
+  时会顺带查三张手写的旁表：`_WEB_NAMES`（授予 legacy Web transport）、`_SERVICE_OVERRIDES`
+  （把某工具重定向到异名的 service 方法）、`_TOOL_TIMEOUTS`（把某工具的 resource-policy 超时从
+  60s 默认抬高）。三张表都用 `in` / `.get(...)` 查，于是一个「不是真实工具名」的键根本不会被读到，
+  也不抛任何错——正是效果三集靠 `len` 断言挡住、而这里却静默的那类「幽灵引用」漂移：把
+  `_FILE_WRITE_NAMES` 里的 `static.open` 改名却漏改 `_TOOL_TIMEOUTS`，改名后的工具就悄悄退回
+  60s 上限（那条 1800s override 正是为抬高它而存在）；把某工具从工具集删掉却留在 `_WEB_NAMES` 里，
+  这条残留项直接蒸发而非报错。既有 `test_web_command_adapter.py` 只断言适配器的 write 方法等于
+  `write_names(WEB)`——两边都由同一批已构建的 spec 推出，一个从未变成 spec 的残留键在那里根本看不见。
+  新增 `test_catalog_aux_map_integrity.py` 锁死三条不变量：Web-transport 工具集恰好等于
+  `_WEB_NAMES`（等号而非子集，既抓残留键、也确认 `_WEB_NAMES` 是 Web transport 的唯一来源）、
+  每个 `_SERVICE_OVERRIDES` 键都是真实工具且其 `service_method` 已被 override 写进 spec、
+  每个 `_TOOL_TIMEOUTS` 键都是真实工具且其 `resource_policy.timeout_seconds` 已等于所配值——
+  既校验键名有效、也校验旁表确实接进了构建产物，改名漏改某张表时会当场大声失败而非上线一个静默的
+  transport/超时回退。已实测：当前三张表全部对得上（Web 集与 `_WEB_NAMES` 相等、15 条 override 与
+  4 条 timeout 均已接线）；三条负控分别往三张表塞一个改名后的残留键，各自对应的护栏以
+  `diverged from _WEB_NAMES` / `phantom or unwired keys` 失败，还原后恢复通过。纯测试新增，无产品
+  行为变更；`ruff` 与 `mypy` 均通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
