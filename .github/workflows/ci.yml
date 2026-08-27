@@ -259,6 +259,7 @@ jobs:
           python -m pytest \
             tests/integration/test_proxy_lifecycle_gate.py \
             tests/integration/test_proxy_capture_gate.py \
+            tests/integration/test_proxy_flow_body_spill_gate.py \
             tests/integration/test_proxy_https_gate.py \
             tests/integration/test_proxy_replay_gate.py \
             tests/integration/test_web_re_gate.py \
