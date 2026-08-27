@@ -47,6 +47,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   末尾之后返回空页,不可被滥用)。两例都断言各后端的已知分页工具确实被扫到,防止枚举失效导致空过。新增分页工具若漏掉
   bound 会在此失败。(纯测试新增,无行为变更。)
 
+### 测试（钉住 proxy 服务层对“非 ProxyError 意外故障”的 fail-closed 契约）
+
+- proxy 各服务包装器先 catch `ProxyError`(按 code 映射),再以末尾 `except BaseException` 把*意外*故障(bug、
+  adbutils/mitmproxy 内部错误等一切非 `ProxyError`)经统一信封记为 `internal_error`,而非让它逃逸掀翻 worker 循环。
+  此前 `proxy.stop` / `proxy.replay` / 读形 `_proxy_wrap`(status/flows)三处 catch-all,以及 `proxy.flow_get` 的
+  ProxyError 映射与“跳过非 dict part”分支都无测试覆盖(`service_proxy.py` 是服务层里最低的 94%)。
+- `tests/unit/test_proxy_service_failclosed.py` 新增五例,用注入故障的假后端在服务层钉住:`proxy.stop` /
+  `proxy.replay` / `proxy.status` 遇非 `ProxyError` 异常一律 `internal_error`(且崩掉的 replay 不留 `proxy.replay`
+  时间线条目);`proxy.flow_get` 的 `ProxyError` 按原 code 返回(`not_found`),非 dict 的 request/response part 被
+  原样跳过、整次读取仍 `ok`。service_proxy.py 覆盖率 94%→~99%,仅剩两处不可达的防御分支
+  (`_register_capture` 必返回 artifact_id 或 artifact_error 二者其一;`_failure` 必置 error)。(纯测试新增,无行为变更。)
+
 ### 测试（修复 unattended 线程泄漏守卫在整套并跑时的假失败）
 
 - `test_unattended_resource_bounds.py` 的三处线程守卫过去用 `threading.active_count() == baseline` 断言“操作不泄漏
