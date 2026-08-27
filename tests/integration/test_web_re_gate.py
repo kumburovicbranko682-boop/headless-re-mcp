@@ -344,6 +344,43 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_deobfuscate_spills_full_output_when_truncated(tmp_path: Path) -> None:
+    """A large real deobfuscation must remain fully recoverable, not half lost.
+
+    Measured against live webcrack: a ~600 KB minified bundle unminifies past
+    900 KB, but the inline reply caps at 400 KB, so most of the code used to be
+    unrecoverable. The service now spills the full text to an artifact; this
+    proves artifact_path holds every byte and the inline code is just a preview.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
+    big = tmp_path / "big.min.js"
+    big.write_text(
+        ";".join(
+            f"function f{i}(a,b){{if(a>b){{return a*{i}+b}}else{{return b-a+{i}}}}}"
+            for i in range(9000)
+        ),
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_deobfuscate(str(big))
+        assert result.ok, result.error
+        data = result.data
+        assert data["truncated"] is True, "expected the bundle to overflow inline"
+        assert len(data["code"].encode("utf-8")) <= 400_000
+        artifact = Path(data["artifact_path"])
+        assert artifact.is_file()
+        full = artifact.read_bytes()
+        assert len(full) == data["artifact_bytes"] == data["bytes"]
+        # The artifact is the whole output; the inline code is only its prefix.
+        assert len(full) > len(data["code"].encode("utf-8"))
+        assert full.decode("utf-8", "ignore").startswith(data["code"][:200])
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_js_deobfuscate_faults_soft_on_unparseable_input(tmp_path: Path) -> None:
     """Broken JS must fault with a structured error, not a false success.
 

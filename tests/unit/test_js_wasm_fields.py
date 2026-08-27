@@ -167,6 +167,93 @@ def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     assert "bytes" in doc
 
 
+def test_js_deobfuscate_spills_full_output_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated deobfuscation must remain fully recoverable off disk.
+
+    Measured: a 600 KB minified bundle unminifies past 900 KB but the inline
+    reply caps at 400 KB, so more than half the code was unrecoverable. With a
+    spill directory the full text lands in an artifact and the inline code is
+    only a preview.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "abcdefghij" * 20  # 200 bytes, over the shrunk cap below
+    spill = tmp_path / "spill"
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 50)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert len(payload["code"]) == 50  # inline preview only
+    artifact = Path(payload["artifact_path"])
+    assert artifact.is_file()
+    assert artifact.suffix == ".js"
+    assert artifact.read_text(encoding="utf-8") == body  # the whole thing
+    assert payload["artifact_bytes"] == len(body.encode("utf-8"))
+
+
+def test_wasm_wat_spills_full_output_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)\n" * 40
+    spill = tmp_path / "spill"
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 30)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    artifact = Path(payload["artifact_path"])
+    assert artifact.suffix == ".wat"
+    assert artifact.read_text(encoding="utf-8") == body
+
+
+def test_no_spill_when_output_fits_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short output must not write an artifact even with a spill dir given."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    spill = tmp_path / "spill"
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 5000)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"short output", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is False
+    assert "artifact_path" not in payload
+    assert not spill.exists() or not any(spill.iterdir())
+
+
 def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")
@@ -179,6 +266,10 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+    # The text tools spill to an artifact when truncated; say so where a caller
+    # would otherwise treat the preview as the whole output.
+    for name in ("js.deobfuscate", "js.beautify", "wasm.wat", "wasm.info"):
+        assert "artifact_path" in _tool_docstring(name), name
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:

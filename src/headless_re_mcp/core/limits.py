@@ -44,6 +44,11 @@ UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
 UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
 JSRE_UNPACK_MAX_ENTRIES = 8
 JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
+# js.deobfuscate / js.beautify / wasm.wat / wasm.info spill their full text to
+# a file when it overflows the inline cap; those files key by path, not a
+# session, so retention never sees them and this bounds the directory instead.
+JSRE_SPILL_MAX_ENTRIES = 16
+JSRE_SPILL_MAX_BYTES = 128 * 1024 * 1024
 _DIR_SIZE_FILE_CAP = 4096
 
 

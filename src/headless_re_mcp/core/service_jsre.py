@@ -18,6 +18,8 @@ from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import (
+    JSRE_SPILL_MAX_BYTES,
+    JSRE_SPILL_MAX_ENTRIES,
     JSRE_UNPACK_MAX_BYTES,
     JSRE_UNPACK_MAX_ENTRIES,
     prune_capped_dir,
@@ -72,11 +74,30 @@ class JsReAnalysisMixin:
         root.mkdir(parents=True, exist_ok=True)
         return root / f"{name}-{uuid4().hex}"
 
+    def _jsre_spill_dir(self) -> Path:
+        """Where the text tools write their full output when it overflows inline.
+
+        A sibling of the unpack trees, kept separate so prune_jsre_unpack_dirs
+        (which keys on the ``unpack-`` prefix) never touches these files.
+        """
+        root = self.settings.artifact_root.expanduser().resolve() / "jsre" / "spill"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _prune_spill(self, spill_dir: Path) -> None:
+        prune_capped_dir(
+            spill_dir,
+            max_entries=JSRE_SPILL_MAX_ENTRIES,
+            max_bytes=JSRE_SPILL_MAX_BYTES,
+        )
+
     def js_deobfuscate(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill = self._jsre_spill_dir()
             data = JsClient(getattr(self.settings, "webcrack", None)).deobfuscate(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill
             )
+            self._prune_spill(spill)
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
@@ -85,9 +106,11 @@ class JsReAnalysisMixin:
 
     def js_beautify(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill = self._jsre_spill_dir()
             data = JsClient(getattr(self.settings, "webcrack", None)).beautify(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill
             )
+            self._prune_spill(spill)
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
@@ -123,9 +146,11 @@ class JsReAnalysisMixin:
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill = self._jsre_spill_dir()
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill
             )
+            self._prune_spill(spill)
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
@@ -134,9 +159,11 @@ class JsReAnalysisMixin:
 
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill = self._jsre_spill_dir()
             data = WasmClient(getattr(self.settings, "wabt", None)).info(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill
             )
+            self._prune_spill(spill)
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
