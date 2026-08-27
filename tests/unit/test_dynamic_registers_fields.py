@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from headless_re_mcp.core.service_trace import normalize_register_signedness
 from headless_re_mcp.tools.dynamic import build_dynamic_tools
 
 
@@ -56,6 +57,46 @@ def test_dynamic_registers_read_puts_gprs_under_registers_not_rip() -> None:
     assert "no top-level rip" in described
     assert "gpr" in described
     assert "context" in described
+
+def test_high_bit_registers_are_reinterpreted_as_unsigned() -> None:
+    """A -1 return value in rax must read as 0xFFFF..., not a negative int.
+
+    The native shim can only put a 64-bit register on the wire through jansson's
+    signed json_int_t, so any register with the top bit set arrives negative.
+    A debugger presents register contents as unsigned; the argument decoder
+    reads them straight, so leaving rcx negative would hand the AI a negative
+    function argument instead of the pointer it holds.
+    """
+    payload = {
+        "registers": {
+            "rax": -1,
+            "rcx": -(1 << 63),
+            "rip": 0x140001000,
+            "eflags": 0x202,
+            "dr7": 0,
+        }
+    }
+
+    normalize_register_signedness(payload)
+
+    bank = payload["registers"]
+    assert bank["rax"] == 0xFFFFFFFFFFFFFFFF
+    assert bank["rcx"] == 1 << 63
+    assert bank["rip"] == 0x140001000
+    assert bank["eflags"] == 0x202
+    assert bank["dr7"] == 0
+
+
+def test_register_normalization_ignores_non_integer_and_boolean_values() -> None:
+    payload = {"registers": {"rax": True, "rbx": "0x10", "rcx": -2}}
+
+    normalize_register_signedness(payload)
+
+    bank = payload["registers"]
+    assert bank["rax"] is True
+    assert bank["rbx"] == "0x10"
+    assert bank["rcx"] == (1 << 64) - 2
+
 
 def test_dynamic_registers_write_schema_matches_native_register_name_cap() -> None:
     """The catalog accepted an unbounded register name.
