@@ -633,6 +633,17 @@ class AdbBackend:
                 "refusing to keep a pulled directory",
                 remote=remote_path,
             )
+        if not local_path.exists():
+            # adb sync can report a clean pull yet write nothing when the remote
+            # path does not exist -- older adbutils does not raise, and the
+            # pre-stat probe above is best-effort. capped_file_size returns 0 for
+            # a missing file, so without this the reply would be a size-0
+            # success the caller reads as a real empty file it can open.
+            raise AdbError(
+                "not_found",
+                "pull wrote no local file; the remote path may not exist",
+                remote=remote_path,
+            )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:
             raise AdbError(

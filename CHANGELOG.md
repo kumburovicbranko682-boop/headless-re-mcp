@@ -70,6 +70,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
+
+- `device.pull` 过去在 adb sync“干净返回却没写出本地文件”时（远端路径不存在，较旧 adbutils 不抛异常，
+  前置 stat 探测又是尽力而为）会走到 `capped_file_size`——它对不存在的文件返回 0——于是回一个
+  `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
+  `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
+  空的合法远端文件仍会作为 0 字节正常返回。
+
 ### 修复（proxy.export_har 报告环形缓冲已丢弃的 flow 数）
 
 - `proxy.export_har` 过去只回 `path` 与 `entry_count`，而抓包环形缓冲只保留最新 `_MAX_FLOWS`（2000）
