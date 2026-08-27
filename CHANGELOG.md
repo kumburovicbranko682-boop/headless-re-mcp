@@ -1040,6 +1040,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`apk.xrefs` 只数「本应用自己那个同名方法」的调用者，由异构方法集直测固定**：`apk.xrefs`
+  遍历 `analysis.get_methods()`，`if method.is_external() or method.name != target: continue`——
+  外部（框架/库）方法节点跳过、名字对不上的跳过，只收活下来那些方法的 `get_xref_from`。两半都要紧：
+  漏掉 `is_external()` 会把与目标同名的框架方法的调用点算进来（污染「谁调了本应用的这个方法」）；
+  漏掉名字判断则会返回 DEX 里*每个*方法的调用者，`apk.xrefs("decrypt")` 变成整张调用图。此前
+  `test_apk_fields.py` / `test_android_backends.py` / `test_apk_page_clamp.py` 的 xrefs 用例都只喂
+  一个内部、精确同名的方法（`is_external` 恒 False），两个 `continue` 分支从不触发——把整条 `if`
+  删掉那些用例照绿，它们钉的是分页/`has_more` 而非选择。新增用例喂进同名的外部 `decrypt`、内部
+  `decrypt`、内部 `other`，断言只回内部 `decrypt` 的调用者：漏掉外部判断会放回框架调用者、漏掉名字
+  判断会放回 `other` 的调用者；另一例钉住同名的两个内部重载都要计入，修过滤器时不会过头成「命中第一个即止」。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
