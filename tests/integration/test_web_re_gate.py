@@ -305,6 +305,87 @@ _WASM_MODULE = (
     b"\x0a\x06\x01\x04\x00\x41\x2a\x0b"  # code section: i32.const 42; end
 )
 
+_WASM_PAGE_HTML = (
+    b"<!doctype html><html><head><title>wasm-gate</title></head><body>"
+    b"<script>"
+    b"fetch('mini.wasm').then(r=>r.arrayBuffer())"
+    b".then(b=>WebAssembly.instantiate(b))"
+    b".then(m=>{window.__wasm=m.instance.exports.add();"
+    b"console.log('wasm-ready:'+window.__wasm);})"
+    b".catch(e=>console.log('wasm-err:'+e));"
+    b"</script></body></html>"
+)
+
+
+class _WasmPageHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path.startswith("/mini.wasm"):
+            body, ctype = _WASM_MODULE, "application/wasm"
+        else:
+            body, ctype = _WASM_PAGE_HTML, "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: object) -> None:  # keep the gate output quiet
+        del args
+
+
+@pytest.mark.integration
+def test_web_cdp_lists_an_instantiated_wasm_module(tmp_path: Path) -> None:
+    """web.wasm.list reports a module the page actually instantiated.
+
+    web.wasm.list filters the parsed-script buffer to language == WebAssembly, a
+    path no live gate reached: the other CDP gates load only HTML/JS, so a page
+    that never instantiates WASM leaves that filter with nothing to return. This
+    serves the minimal valid module (the same bytes the wabt gates disassemble),
+    has the page fetch and WebAssembly.instantiate it, then asserts CDP reported
+    it as a WebAssembly script so wasm.list returns it -- the whole point of the
+    tool, and the browser-side counterpart to the wabt wat/info gates.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web WASM list Gate not run (skip != pass)")
+    server = HTTPServer(("127.0.0.1", 0), _WasmPageHandler)
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, name="web-wasm-gate", daemon=True)
+    thread.start()
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        created = service.create_session(f"http://127.0.0.1:{port}/", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                "chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # Instantiation runs after the load event, so poll wasm.list until CDP
+            # has reported the module (or give up with a clear message).
+            deadline = time.monotonic() + 20.0
+            modules: list[dict[str, Any]] = []
+            while time.monotonic() < deadline:
+                listed = service.web_wasm_list(session_id)
+                assert listed.ok, listed.error
+                modules = listed.data["scripts"]
+                if modules:
+                    break
+                time.sleep(0.25)
+            assert modules, "CDP never reported an instantiated WebAssembly module"
+            # wasm.list's whole contract is that every entry it returns is WASM.
+            assert all(
+                str(m.get("language", "")).lower() == "webassembly" for m in modules
+            ), modules
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        server.shutdown()
+
 
 @pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
