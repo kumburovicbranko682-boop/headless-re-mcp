@@ -12,6 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class Architecture(StrEnum):
     X86 = "x86"
     X64 = "x64"
+    # ARM members exist to *label* ELF sessions the static backends (radare2,
+    # Ghidra) analyze cross-platform. They never reach the PE/x64dbg code, which
+    # branches ``if X86 else <64-bit>``: x64dbg refuses non-PE targets, PE
+    # detection only ever yields X86/X64, and the r2 mapping derives arch from
+    # the PE header (None for ELF). So a session may be labelled ARM/ARM64, but
+    # no 64-bit-vs-32-bit PE branch is asked to interpret those values.
+    ARM = "arm"
+    ARM64 = "arm64"
 
 
 class SessionState(StrEnum):

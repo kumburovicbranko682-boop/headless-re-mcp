@@ -463,11 +463,17 @@ def detect_pe_architecture(path: Path) -> Architecture:
     raise ValueError(f"unsupported PE machine 0x{machine:04x}: {path}")
 
 
-# ELF e_machine values the Architecture enum can name. ARM (0x28) and AArch64
-# (0xB7) are analyzable by the static backends but have no enum member, so they
-# stay architecture=None -- the r2 mapping derives the real arch per call from
-# the binary anyway, so a missing session label costs nothing there.
-_ELF_MACHINE_TO_ARCH = {0x03: Architecture.X86, 0x3E: Architecture.X64}
+# ELF e_machine values the Architecture enum can name: x86 (EM_386), x86-64
+# (EM_X86_64), ARM (EM_ARM) and AArch64 (EM_AARCH64). A machine outside this map
+# (MIPS, PPC, RISC-V, ...) still opens as a working ELF session with no label --
+# radare2 and Ghidra read the true architecture themselves, so the missing
+# session label costs nothing downstream.
+_ELF_MACHINE_TO_ARCH = {
+    0x03: Architecture.X86,
+    0x3E: Architecture.X64,
+    0x28: Architecture.ARM,
+    0xB7: Architecture.ARM64,
+}
 
 
 def detect_elf_architecture(path: Path) -> Architecture | None:
@@ -475,7 +481,7 @@ def detect_elf_architecture(path: Path) -> Architecture | None:
 
     Unlike ``detect_pe_architecture`` this never raises: ``classify_target``
     only routes real ``\\x7fELF`` files here, and a header too short or a machine
-    the enum cannot name (ARM, AArch64, MIPS, ...) must still open as a working
+    the enum cannot name (MIPS, PPC, RISC-V, ...) must still open as a working
     ELF session -- radare2 and Ghidra read the true architecture themselves.
     e_machine is read with the endianness EI_DATA declares, so a big-endian ELF
     is decoded correctly rather than byte-swapped into a bogus value.
