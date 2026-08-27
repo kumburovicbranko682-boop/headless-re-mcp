@@ -126,13 +126,23 @@ def build_uia_tree(
         nodes += 1
         item = _describe_control(ctrl)
         item["children"] = []
-        if depth >= max_depth:
-            return item
         try:
             children = ctrl.GetChildren()
         except Exception:
             children = []
-        for child in children or []:
+        children = children or []
+        if depth >= max_depth:
+            # Stopping at the depth bound. A bare children: [] here reads as a
+            # genuine leaf; if this control actually has children in scope, say
+            # so with children_truncated and flip the top-level truncated flag
+            # rather than passing the depth cut off as the bottom of the tree.
+            # Children outside allowed_pids would not have been shown anyway, so
+            # only an in-scope child counts as hidden.
+            if any(int(getattr(c, "ProcessId", 0) or 0) in allowed_pids for c in children):
+                item["children_truncated"] = True
+                truncated = True
+            return item
+        for child in children:
             if nodes >= max_nodes:
                 truncated = True
                 break

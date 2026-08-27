@@ -75,6 +75,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with nodes (each carrying children), count, truncated,
         max_depth and max_nodes. There is no tree or windows field.
+        truncated is true whenever the walk was cut short -- by max_nodes or
+        by max_depth -- and a node stopped at the depth bound that still has
+        children below carries children_truncated so its empty children list
+        is not read as a genuine leaf.
         """
         return _dump(
             analysis.ui_tree(

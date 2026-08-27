@@ -214,9 +214,19 @@ def build_window_tree(
         if nodes >= max_nodes:
             truncated = True
             return item
-        if depth >= max_depth:
-            return item
         hwnd = int(node["hwnd"])
+        if depth >= max_depth:
+            # Stopping at the depth bound. A bare children: [] here is
+            # indistinguishable from a genuine leaf, so a caller walking the tree
+            # for a control gives up at a window that actually has children below
+            # the cut. Probe for one in-scope child (max_callbacks=1, so no full
+            # enumeration) so the depth cut announces itself with
+            # children_truncated and flips the top-level truncated flag, rather
+            # than posing as the bottom of the tree.
+            if list_child_windows(hwnd, allowed_pids, max_callbacks=1):
+                item["children_truncated"] = True
+                truncated = True
+            return item
         remaining = max_nodes - nodes
         for child in list_child_windows(
             hwnd,
