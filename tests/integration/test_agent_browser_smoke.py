@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import uvicorn
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
@@ -104,10 +105,23 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # launches. Pinning an absolute system-Chrome path made this gate
             # Windows-only by accident: it could never find a browser on Linux CI,
             # which is exactly where the portable Web line most needs proving.
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=["--disable-gpu", "--no-first-run"],
-            )
+            try:
+                browser = playwright.chromium.launch(
+                    headless=True,
+                    args=["--disable-gpu", "--no-first-run"],
+                )
+            except PlaywrightError as exc:
+                # The pip package can be present while the browser binary is not
+                # (it is a separate `playwright install chromium` download). Skip
+                # cleanly like every other backend gate rather than hard-failing
+                # with a launch error that reads like a real regression.
+                message = str(exc)
+                if "Executable doesn't exist" in message or "playwright install" in message:
+                    pytest.skip(
+                        "Playwright Chromium not installed — run 'playwright install "
+                        "chromium' (skip != pass)"
+                    )
+                raise
             page = browser.new_page()
 
             def capture(response: Response) -> None:
