@@ -7,7 +7,13 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +23,56 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
+
+# A page that pulls one external script and fetches one JSON document, so the
+# CDP capture has a real subresource and a real response body to retrieve —
+# not just the top document a data: URL would give.
+_LOCAL_APP_JS = b"window.__probe = function () { return 42; };\nconsole.log('app-loaded');\n"
+_LOCAL_DATA_JSON = b'{"marker":"webre-gate","n":123}'
+_LOCAL_PAGE = (
+    b"<!doctype html><html><head><title>gate-local</title>"
+    b'<script src="/app.js"></script>'
+    b"<script>fetch('/data.json').then(r=>r.json()).then(j=>console.log('got',j.marker));</script>"
+    b"</head><body>hello</body></html>"
+)
+
+
+@contextmanager
+def _local_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:  # keep the gate output quiet
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            if self.path.startswith("/app.js"):
+                body, ctype = _LOCAL_APP_JS, "application/javascript"
+            elif self.path.startswith("/data.json"):
+                body, ctype = _LOCAL_DATA_JSON, "application/json"
+            else:
+                body, ctype = _LOCAL_PAGE, "text/html"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+def _poll(predicate: Callable[[], Any], *, timeout: float = 10.0) -> Any:
+    deadline = time.monotonic() + timeout
+    found = predicate()
+    while not found and time.monotonic() < deadline:
+        time.sleep(0.1)
+        found = predicate()
+    return found
 
 _DATA_URL = (
     "data:text/html,"
@@ -66,6 +122,64 @@ def test_web_cdp_open_and_inspect() -> None:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_network_and_script_source() -> None:
+    """The core Web RE loop: capture a subresource body and a script's source.
+
+    The data-URL gate only proves scripts/console/dom exist. This drives a real
+    request against a local server and asserts the two capabilities that carry
+    the actual bytes an analyst needs -- network_get returning the exact
+    response body, and script_source returning real script text -- both of
+    which spill to registered artifacts. Neither had live coverage before.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP capture Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _app_script() -> dict[str, Any] | None:
+                listing = service.web_scripts(session_id)
+                assert listing.ok, listing.error
+                for script in listing.data["scripts"]:
+                    if str(script.get("url", "")).endswith("/app.js"):
+                        return script
+                return None
+
+            script = _poll(_app_script)
+            assert script is not None, "the /app.js script was never reported over CDP"
+            source = service.web_script_source(session_id, script["scriptId"])
+            assert source.ok, source.error
+            assert source.data["bytes"] > 0
+            assert "__probe" in source.data["source"]
+
+            def _data_request() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id, limit=1000)
+                assert listing.ok, listing.error
+                for request in listing.data["requests"]:
+                    if str(request.get("url", "")).endswith("/data.json"):
+                        return request
+                return None
+
+            request = _poll(_data_request)
+            assert request is not None, "the /data.json request was never captured"
+            body = service.web_network_get(session_id, request["requestId"])
+            assert body.ok, body.error
+            assert body.data["body"] == _LOCAL_DATA_JSON.decode("utf-8")
+        finally:
+            service.close_all()
 
 
 @pytest.mark.integration
