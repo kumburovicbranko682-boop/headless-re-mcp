@@ -152,6 +152,51 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-frida-java-template-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with frida
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" "frida>=16.5"
+
+      - name: Allow local ptrace
+        # frida attaches to a sibling process via ptrace; Yama's ptrace_scope=1
+        # would refuse that. Opening it (a no-op where Yama is absent) keeps the
+        # gate about frida, not the host's ptrace policy.
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
+        # Proves the android_* hook templates are refused with target_mismatch on
+        # a non-ART target instead of the false loaded:True they used to return.
+      - name: frida java-template guard gate runs for real (skip != pass)
+        run: |
+          python -c "import frida; print('frida', frida.__version__)"
+          python -m pytest tests/integration/test_frida_java_template_guard_live_gate.py \
+            -rs --tb=short --junitxml=frida-java-template-guard-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("frida-java-template-guard-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # frida was just installed and ptrace opened, so a skip here means the
+          # guard could not attach a real agent -- the false-green "skip != pass"
+          # warns about.
+          if not cases:
+              sys.exit("no frida java-template guard gate was collected")
+          if skipped:
+              sys.exit(f"frida java-template guard gate skipped despite an installed frida: {skipped}")
+          print(f"frida java-template guard gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

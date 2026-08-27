@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+修正 frida 插桩入口 `frida.hook.template` 的一处假绿：Android Java 层模板（`android_ssl_unpin`/
+`android_crypto_monitor`/`android_root_bypass`）在 `Java.perform` 里用 `try/catch` 包住 `Java.use`，
+所以在没有 ART 运行时的目标上会静默什么都不装、脚本照样加载成功——frida 于是对一个什么都没 hook 的
+模板报 `loaded: True`；旧注释甚至声称此时 load 会抛错并回 `backend_error`，实测两者都不成立。现在
+`hook_template`（本地与 device 两条路径）在加载这类模板前先向目标注入一段极小的 rpc 探针读取
+`Java.available`（顶层 throw 在 frida 16/17 不会经由 `script.load()` 冒出来，故必须用 rpc 取值），目标
+没有活的 Java VM 时以 `target_mismatch` 拒绝，附带 `template` 与 `java_templates` 明细；`noop` 不需要
+ART、任意目标照常加载。新增 `tests/integration/test_frida_java_template_guard_live_gate.py`：spawn 一个
+本地非 ART 进程，断言 `noop` 仍真机加载、三个 `android_*` 模板均以 `target_mismatch` 拒绝（即探针真的在
+目标里跑过并报告无 VM），未知模板仍 `invalid_params`、非会话 pid 仍 `permission_denied`。新增
+`linux-frida-java-template-guard` CI job：装 frida、开放 ptrace、跑该 gate 并解析 junitxml，frida 已装却
+skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

@@ -36,8 +36,14 @@ _PROBE_DISCLOSURE = {
 
 _HOOK_TEMPLATES = {
     "noop": "rpc.exports = { ping: function () { return 'pong'; } };",
-    # Android Java-layer canned hooks. They no-op on non-ART processes (the
-    # script load raises and the caller receives a backend_error envelope).
+    # Android Java-layer canned hooks. Each wraps its Java.use calls in a
+    # try/catch, so on a target with no ART runtime the body silently installs
+    # nothing while the script still loads clean -- frida would then report
+    # loaded:True for a hook that touched nothing (an early comment here claimed
+    # the load raises and the caller gets a backend_error; it does not). To keep
+    # that false green from reaching the caller, hook_template probes the target
+    # for a live Java VM first and refuses these templates with target_mismatch
+    # when it is absent (see _JAVA_TEMPLATES / _guard_java_template).
     "android_ssl_unpin": """
 Java.perform(function () {
   try {
@@ -90,6 +96,61 @@ Java.perform(function () {
 rpc.exports = { ping: function () { return 'root_bypass_loaded'; } };
 """,
 }
+
+# The templates whose bodies run inside Java.perform: they only instrument an
+# Android/ART process, and off ART their own try/catch swallows the failure, so
+# they load clean and hook nothing. hook_template refuses these unless the
+# target has a live Java VM (see _guard_java_template). "noop" is deliberately
+# absent -- it hooks nothing anywhere and loads on any target.
+_JAVA_TEMPLATES = frozenset(
+    {"android_ssl_unpin", "android_crypto_monitor", "android_root_bypass"}
+)
+
+# A tiny probe that reports whether the attached target exposes a live Java
+# runtime. The answer has to come back as an rpc value: a top-level throw in the
+# probe would not surface through script.load() on frida 16/17, and off ART
+# ``typeof Java`` is 'undefined' while ``Java.available`` is the runtime's flag.
+_JAVA_PROBE_SCRIPT = (
+    "rpc.exports = { ready: function () { "
+    "return typeof Java !== 'undefined' && Java.available === true; } };"
+)
+
+
+def _target_has_java(session: Any) -> bool:
+    """Report whether the attached target exposes a live Java/ART runtime."""
+    probe = session.create_script(_JAVA_PROBE_SCRIPT)
+    probe.load()
+    try:
+        exports = getattr(probe, "exports_sync", None) or probe.exports
+        return bool(exports.ready())
+    finally:
+        with contextlib.suppress(Exception):
+            probe.unload()
+
+
+def _guard_java_template(template: str, session: Any, *, pid: int, device: str) -> None:
+    """Refuse an Android Java template when the target has no ART runtime.
+
+    The canned android_* templates catch their own Java.use failure, so off ART
+    they load clean and install nothing -- frida would then report loaded:True
+    for a hook that touched nothing. Rather than hand back that false green,
+    probe the target and fail with target_mismatch so the caller learns the
+    template needs an Android/ART process.
+    """
+    if template not in _JAVA_TEMPLATES:
+        return
+    if _target_has_java(session):
+        return
+    raise FridaError(
+        "target_mismatch",
+        "hook template targets the Android/ART Java runtime; the target has no "
+        "live Java VM, so the template would install nothing",
+        template=template,
+        pid=pid,
+        device=device,
+        java_templates=sorted(_JAVA_TEMPLATES),
+    )
+
 
 _ENUM_SCRIPT = """
 rpc.exports = {
@@ -443,6 +504,7 @@ class FridaClient:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
             sessions.append(session)
             try:
+                _guard_java_template(template, session, pid=pid, device="local")
                 script = session.create_script(source)
                 script.load()
                 return {
@@ -765,6 +827,9 @@ class FridaClient:
                 raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
             sessions.append(session)
             try:
+                _guard_java_template(
+                    template, session, pid=pid, device=str(device_id or "local")
+                )
                 script = session.create_script(source)
                 script.load()
                 return {
