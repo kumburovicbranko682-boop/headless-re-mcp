@@ -60,6 +60,16 @@ class _OriginHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        _ = self.rfile.read(length) if length else b""
+        body = _ORIGIN_MARKER.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
 
 @contextlib.contextmanager
 def _origin_site() -> Iterator[str]:
@@ -234,9 +244,21 @@ def test_proxy_har_export_is_spec_compliant_har_1_2(tmp_path: Path) -> None:
             with opener.open(request, timeout=15.0) as response:
                 assert _ORIGIN_MARKER in response.read().decode("utf-8", "replace")
 
+            # A urlencoded form POST so the HAR must parse postData.params.
+            post_req = urllib.request.Request(
+                f"{origin}/login",
+                data=b"user=alice&pw=s3cret",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            with opener.open(post_req, timeout=15.0) as post_resp:
+                assert _ORIGIN_MARKER in post_resp.read().decode("utf-8", "replace")
+
             _poll(
                 lambda: backend.flows("har", limit=100),
-                lambda r: any("/hello" in str(f.get("url", "")) for f in r["flows"]),
+                lambda r: (
+                    any("/hello" in str(f.get("url", "")) for f in r["flows"])
+                    and any("/login" in str(f.get("url", "")) for f in r["flows"])
+                ),
             )
             har_path = tmp_path / "capture.har"
             result = backend.export_har("har", har_path)
@@ -288,6 +310,18 @@ def test_proxy_har_export_is_spec_compliant_har_1_2(tmp_path: Path) -> None:
             assert resp_cookie is not None, resp["cookies"]
             assert resp_cookie["value"] == _ORIGIN_COOKIE_VALUE, resp_cookie
             assert resp_cookie.get("httpOnly") is True, resp_cookie
+
+            # The form POST's body is parsed into postData.params, not left as an
+            # opaque text blob (params and text are mutually exclusive in HAR).
+            login = next(
+                (e for e in log["entries"] if "/login" in e["request"]["url"]), None
+            )
+            assert login is not None, [e["request"]["url"] for e in log["entries"]]
+            post = login["request"].get("postData")
+            assert post is not None, login["request"]
+            assert "text" not in post, post
+            form = {p["name"]: p["value"] for p in post["params"]}
+            assert form == {"user": "alice", "pw": "s3cret"}, post["params"]
     finally:
         backend.close_all()
 

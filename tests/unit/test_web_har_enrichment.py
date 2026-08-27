@@ -296,6 +296,33 @@ class TestExtraInfoMergesHeadersAndCookies:
         assert "ghost" not in handle.requests
 
 
+class TestPostDataParams:
+    def test_urlencoded_post_body_becomes_params(self) -> None:
+        # The web path must feed the request content-type through so a form POST
+        # exports as postData.params, not one opaque text blob.
+        handle = _Handle()
+        WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+        handle.cdp.handlers["Network.requestWillBeSent"](
+            {
+                "requestId": "p1",
+                "wallTime": 1_700_000_000.0,
+                "timestamp": 500.0,
+                "type": "XHR",
+                "request": {
+                    "url": "https://api.test/login",
+                    "method": "POST",
+                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                    "postData": "user=alice&pw=s3cret",
+                },
+            }
+        )
+        har_entry = _cdp_entry_to_har(handle.requests["p1"])
+        post = har_entry["request"]["postData"]
+        assert "text" not in post, post
+        form = {p["name"]: p["value"] for p in post["params"]}
+        assert form == {"user": "alice", "pw": "s3cret"}
+
+
 class TestHarExportIsRichAndListStaysLean:
     def test_export_is_rich_but_network_list_hides_internal_har(
         self, tmp_path: Path, monkeypatch: Any
