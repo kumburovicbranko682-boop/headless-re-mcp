@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住会话水合的降级契约：单条坏行/坏存储不拖垮整队恢复，含 web 会话按 URL 恢复）
+
+- 控制台重启时,上一轮遗留为 `unclean` 的会话(PE / APK / web 一视同仁)要从 sessions.db 行里重新绑定;\
+  该恢复在其它一切之前运行、且面对的是崩溃可能留下的半截数据,故单条坏行——或整个存储读不出来——必须降级为\
+  “跳过它、继续走”,绝不能抛异常把其余会话一起丢掉。既有 test_session 只钉了正常路径与“文件已不在”,新增\
+  `test_session_hydration_robustness.py` 钉住降级面:存储读取抛错时注册表留空但仍照常启动;非 mapping 行、\
+  路径穿越/空 id、无 locator 的行被逐一跳过而周围好行仍恢复;无法识别的 state 字符串回退为 `CREATED` 而非\
+  丢弃(只有真正终态 closed/failed/closing 才跳过);恢复的 **web** 会话保留其 http locator 且不被误标\
+  `missing_file`(URL 在磁盘上没有文件);无法解析的架构或时间戳被容忍而非致命。core/session.py 的\
+  `hydrate_persisted_sessions` / `session_from_store_row` 降级支由此覆盖。(纯测试补充,无行为变更。)
+
 ### 测试（钉住 frida.spawn 的失败分类与“绝不泄漏被挂起进程”的清理契约，不依赖 frida）
 
 - `frida.spawn` 先挂起启动一个 Android 包再 resume 它;其成功路径、包名 fail-fast 与 resume 卡死的\
