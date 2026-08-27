@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import logging
 import os
 import socket
@@ -40,6 +41,29 @@ class ProxyError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+async def _stop_proxy_servers(master: Any) -> None:
+    """Ask the proxyserver addon to close its listeners, mode by mode.
+
+    mitmproxy's own entrypoints never need this: the process exits right after
+    ``run()`` returns, so leaked listeners cost nothing there. Embedded in a
+    long-lived service the listener must be closed explicitly -- since
+    mitmproxy 12 it lives in mitmproxy_rs's own runtime on Linux, where
+    unwinding our asyncio loop cannot reach it and the port stays bound until
+    the whole process dies.
+    """
+    proxyserver = master.addons.get("proxyserver")
+    servers = getattr(proxyserver, "servers", None)
+    if servers is None:
+        return
+    for server in list(servers):
+        stop = getattr(server, "stop", None)
+        if stop is None:
+            continue
+        result = stop()
+        if inspect.isawaitable(result):
+            await result
 
 
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -358,6 +382,13 @@ class _ProxyInstance:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            # Close the listeners before asking the master to exit: "stopped"
+            # with the capture port still accepting means the next start() on
+            # that port is refused forever.
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(
+                    _stop_proxy_servers(master), loop
+                ).result(timeout=10.0)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
