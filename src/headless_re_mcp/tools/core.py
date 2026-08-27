@@ -35,15 +35,19 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
     def session_create(
         binary: str,
         target: Annotated[
-            Literal["pe", "apk", "web"] | None,
+            Literal["pe", "elf", "macho", "apk", "web"] | None,
             Field(description="Force a target kind instead of inferring it"),
         ] = None,
     ) -> dict[str, Any]:
-        """Create a session for a local PE, a local APK, or a web target.
+        """Create a session for a local PE, ELF or Mach-O, a local APK, or a web target.
 
         binary is a local file path, or an http(s) URL when target is web. The
-        target kind is inferred from the extension and magic bytes when omitted,
-        so a PE path behaves exactly as before.
+        target kind is inferred from the extension and magic bytes when omitted:
+        MZ is a PE, \\x7fELF an ELF, the Mach-O magics a Mach-O (fat/universal
+        included, validated structurally to tell it from a Java class), a zip
+        holding AndroidManifest.xml an APK. PE, ELF and Mach-O are the three
+        local-binary kinds; radare2 and Ghidra analyze all three, while the
+        PE-only debugger tools (IDA, x64dbg) refuse the others explicitly.
 
         Answers with session holding id, target, binary, locator, sha256,
         architecture, state, created_at, updated_at, backends and metadata.

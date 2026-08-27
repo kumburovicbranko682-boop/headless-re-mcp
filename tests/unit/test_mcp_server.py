@@ -453,14 +453,16 @@ async def test_stdio_reader_drains_oversized_records_without_buffering_them() ->
     assert following_oversized is False
 
 
-def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
+def test_server_instructions_cover_every_target_kind_not_just_pe() -> None:
     """The initialize payload told the model it could only open a PE.
 
     Measured: instructions were 290 characters, mentioned PE and IDA,
     mentioned neither APK nor web, while session.create already accepts
     both and the live catalog had 42 apk-family tools and 25 web-family
     tools. A caller that follows the instructions will not start those
-    sessions.
+    sessions. ELF and Mach-O later became first-class local-binary targets
+    too, so the instructions must name all three binary kinds -- otherwise a
+    caller with an ELF or a Mach-O reads the server as PE-only.
     """
     analysis = AnalysisService()
     try:
@@ -469,6 +471,8 @@ def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
         text = (server.instructions or "").casefold()
         assert "apk" in text
         assert "web" in text
+        assert "elf" in text
+        assert "mach-o" in text
         assert "authorized local pe, then open its static ida" not in text
         tools = server._tool_manager._tools
         apk = [name for name in tools if name.startswith(("apk.", "device."))]
@@ -1011,6 +1015,31 @@ async def test_session_create_description_names_the_nested_object() -> None:
         text = tool.description or ""
         assert "Answers with session" in text
         assert "no top-level session_id" in text
+    finally:
+        analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_session_create_target_override_exposes_every_kind() -> None:
+    """The forced-target enum lagged behind what the service accepts.
+
+    create_session does TargetKind(target), so it already coerces any of the
+    five kinds, but the tool's target Literal listed only pe/apk/web -- a
+    caller could not force elf or macho even though the service, backends and
+    coordinate system all support them. The input schema must offer all five
+    so the omission cannot silently return.
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "session.create")
+        target = tool.inputSchema["properties"]["target"]
+        # Optional param: the enum sits under one of the anyOf branches.
+        options = target.get("anyOf", [target])
+        enums = [set(branch["enum"]) for branch in options if "enum" in branch]
+        assert any({"pe", "elf", "macho", "apk", "web"} == choices for choices in enums), target
     finally:
         analysis.close_all()
 
