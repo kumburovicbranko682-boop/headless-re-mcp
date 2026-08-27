@@ -175,6 +175,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   这里看不到的原因缺类」。退出码为 0 时这些字段一概不出现;「非零退出且磁盘无源码」仍照旧抛 `backend_error`。
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
+- **`apk.decompile` 只回 `truncated` 布尔，不说这个类到底多大。**单类源码在 `_MAX_SOURCE_BYTES`
+  处截断时，回包此前只带 `source` 与 `truncated`——一个在缓冲区处被切的类，无论丢了 1 KiB 还是
+  10 MiB 都长一个样，`apk.manifest` 与 `wasm.info` 却早已在前缀旁给出全量字节数。现在补上 `bytes`
+  字段（对已打开的句柄 `os.fstat`，与读体同一次系统调用取全长，不再多一次可能竞态的查表）：`source`
+  是前缀、`bytes` 是全长、两者之差即被丢弃的量。新增回归覆盖小类不截断且 `bytes` 等于全长、
+  大类被切时 `bytes` 报真实全长而 `source` 只到上限，以及工具描述点名 `bytes`。
 
 ### 修复（frida 设备解析卡死不再永占 worker）
 
