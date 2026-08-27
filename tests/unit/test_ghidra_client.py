@@ -81,6 +81,61 @@ def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     assert listed["export_path"]
 
 
+def test_has_dot_element_detects_hidden_path_components() -> None:
+    assert ghidra_client._has_dot_element(Path("/home/u/.local/share/x/proj"))
+    assert ghidra_client._has_dot_element(Path("/srv/.hidden/proj"))
+    assert not ghidra_client._has_dot_element(Path("/tmp/pytest/proj"))
+    assert not ghidra_client._has_dot_element(Path("/var/lib/app/ghidra/abc"))
+
+
+def test_ghidra_runs_the_project_off_a_dot_path_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghidra 12 aborts on a project location with a dot-prefixed element.
+
+    The default artifact root on Linux is ~/.local/share, so the per-session
+    project dir carries a ``.local`` element and every service-level ghidra.*
+    call failed at startup with "Path element starting with '.' is not
+    permitted". The project is a throwaway, so it must run from a dot-free
+    location instead -- while the export JSON still lands under the requested
+    project dir. Guards the version-drift fix without a real analyzeHeadless.
+    """
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+    # A project dir that contains a dot-prefixed element, like the real default.
+    project = tmp_path / ".local" / "share" / "ghidra" / "sess"
+    binary = _binary(tmp_path)
+
+    listed = client.functions(binary, project)
+
+    assert len(calls) == 1
+    # cmd = [analyzeHeadless, <location>, HeadlessRE, -import, <binary>, ...]
+    location = calls[0][1]
+    assert not ghidra_client._has_dot_element(Path(location)), location
+    assert location != str(project)
+    # The export JSON is still written under the requested (dot) project dir.
+    assert listed["export_path"].startswith(str(project)), listed["export_path"]
+    assert listed["project_dir"] == str(project)
+    # The throwaway location is removed after the run.
+    assert not Path(location).exists(), location
+
+
+def test_ghidra_keeps_a_clean_project_dir_as_the_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dot-free project dir is used as-is, so nothing changes where it worked."""
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+    project = tmp_path / "clean" / "ghidra" / "sess"
+    binary = _binary(tmp_path)
+
+    client.functions(binary, project)
+
+    assert len(calls) == 1
+    assert calls[0][1] == str(project)
+    assert project.is_dir()
+
+
 def test_ghidra_serializes_clients_using_the_same_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

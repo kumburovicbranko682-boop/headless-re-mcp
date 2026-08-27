@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -28,6 +30,43 @@ _PLUGIN_INSTALL_LOCK = RLock()
 def _project_lock(project_dir: Path) -> Any:
     key = os.path.normcase(str(project_dir.expanduser().resolve()))
     return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
+
+
+def _has_dot_element(path: Path) -> bool:
+    """True if any element of the path starts with '.', excluding . and ..
+
+    Ghidra's project-path validator (NamingUtilities.checkName) refuses a
+    project location where any element begins with a dot.
+    """
+    return any(part.startswith(".") and part not in {".", ".."} for part in path.parts)
+
+
+def _project_location(project_dir: Path) -> tuple[Path, Callable[[], None]]:
+    """A project location analyzeHeadless will accept, and how to clean it up.
+
+    Ghidra 12 rejects any project path with a dot-prefixed element -- it aborts
+    at startup with "Path element starting with '.' is not permitted". The
+    default artifact root on Linux lives under ``~/.local/share``, so the natural
+    per-session project dir (``<artifact_root>/ghidra/<id>``) is refused and
+    every service-level ghidra.* call fails before importing anything -- a
+    version drift from earlier Ghidra, which accepted it.
+
+    The project is a throwaway either way (every export runs with
+    ``-deleteProject`` and re-imports), and the export JSON is written to an
+    absolute path under ``project_dir`` by the postScript, independent of where
+    the project itself lives. So when ``project_dir`` carries a dot element, host
+    the project in a fresh temp dir with none and delete it afterwards; when it
+    is already clean, use it as-is so behaviour is unchanged where it worked
+    (e.g. tests under ``/tmp``). Returns ``(location, cleanup)``.
+    """
+    project_dir.mkdir(parents=True, exist_ok=True)
+    if not _has_dot_element(project_dir):
+        return project_dir, lambda: None
+    tmp = Path(tempfile.mkdtemp(prefix="headless-re-ghidra-"))
+    if _has_dot_element(tmp):  # pragma: no cover - TMPDIR under a dotdir is degenerate
+        shutil.rmtree(tmp, ignore_errors=True)
+        return project_dir, lambda: None
+    return tmp, lambda: shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _install_extension(home: Path | None, plugin: Path | None) -> Path | None:
@@ -356,9 +395,13 @@ class GhidraClient:
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.
         env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        # Ghidra refuses a project location with a dot-prefixed path element, so
+        # the throwaway project may have to live somewhere other than project_dir
+        # (see _project_location). The export JSON still lands under project_dir.
+        location, cleanup = _project_location(project_dir)
         cmd = [
             str(self.analyze),
-            str(project_dir),
+            str(location),
             "HeadlessRE",
             "-import",
             str(binary),
@@ -375,6 +418,7 @@ class GhidraClient:
             # analyzeHeadless is a script that starts a JVM. Killing the script
             # alone left that JVM analysing a large binary with nobody waiting
             # for it, holding a core and the project directory.
+            cleanup()
             raise GhidraError(
                 "timeout",
                 "ghidra analyzeHeadless timed out",
@@ -387,10 +431,12 @@ class GhidraClient:
             # OSError. Uncaught, that surfaces as an internal_error incident
             # instead of a backend problem, unlike the sibling run_bounded
             # adapters (jadx, apktool, jsre, windbg) which all map it here.
+            cleanup()
             raise GhidraError(
                 "backend_error",
                 f"failed to launch analyzeHeadless: {exc}",
             ) from exc
+        cleanup()
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
