@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from headless_re_mcp.unpack.iat_rank import (
+    _rebuild_block_reason,
     analyze_import_entries,
     gate_iat_rebuild,
     rank_iat_candidates,
@@ -146,3 +147,37 @@ def test_stub_ratio_forces_vm_coupled() -> None:
     gate = gate_iat_rebuild(analysis, still_vm_stub_count=40)
     assert gate["rebuild_allowed"] is False
     assert gate["recoverability"] == "vm_coupled_dump_only"
+
+
+def test_high_unresolved_ratio_blocks_a_dense_table() -> None:
+    """Pin the explicit ``unresolved_ratio_high`` guard in ``_rebuild_block_reason``.
+
+    ``analyze_import_entries`` can never reach this arm: it only labels a table
+    ``dense`` when ``unresolved_ratio <= 0.25``, so a dense layout paired with a
+    high unresolved ratio cannot arise through the public path. The check is kept
+    as a belt-and-suspenders block so that if the dense threshold is ever loosened
+    (or a caller hands the helper a hand-built layout), a table that is nominally
+    dense yet mostly unresolved is still refused rather than waved through. Drive
+    the helper directly to hold that intent.
+    """
+    assert (
+        _rebuild_block_reason(
+            layout="dense", api=16, ime_only=False, unresolved_ratio=0.6
+        )
+        == "unresolved_ratio_high"
+    )
+
+
+def test_half_sparse_is_exempt_from_the_unresolved_ratio_block() -> None:
+    """A half-sparse (API, null) table is expected to read as mostly unresolved.
+
+    The ``and layout != "half_sparse"`` clause keeps the high-unresolved block
+    from firing on the very shape it is designed to accept, so a half-sparse table
+    with the same otherwise-blocking ratio must return no block reason.
+    """
+    assert (
+        _rebuild_block_reason(
+            layout="half_sparse", api=16, ime_only=False, unresolved_ratio=0.9
+        )
+        is None
+    )
