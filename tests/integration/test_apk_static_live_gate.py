@@ -772,6 +772,23 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         leaf = service.apk_xrefs(session_id, _DEX_CALLEE, direction="callees")
         assert leaf.ok and leaf.data is not None, leaf.error
         assert leaf.data["callees"] == []
+
+        # Pivot from the string constant to the code that loads it: "hello world"
+        # is referenced only by main.
+        str_refs = service.apk_string_xrefs(session_id, _DEX_STRING)
+        assert str_refs.ok and str_refs.data is not None, str_refs.error
+        assert str_refs.data["found"] is True, str_refs.data
+        assert str_refs.data["total"] == 1, str_refs.data
+        ref = str_refs.data["xrefs"][0]
+        assert ref["class"] == _DEX_CLASS_SMALI, ref
+        assert ref["method"] == _DEX_CALLER, ref
+
+        # A constant the DEX never defines is found False -- not an empty hit on a
+        # string that is present but unreferenced.
+        absent = service.apk_string_xrefs(session_id, "no-such-constant-zzz")
+        assert absent.ok and absent.data is not None, absent.error
+        assert absent.data["found"] is False, absent.data
+        assert absent.data["xrefs"] == []
     finally:
         service.close_all()
 
