@@ -49,7 +49,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with debuggee_windows, children, child_candidates, debuggee_pid,
         debugger_pid, debuggee_image and note. There is no tree field and
-        no processes field.
+        no processes field. children is a bounded page: children_count and
+        children_truncated say whether the debuggee has more direct children
+        than shown, and each child carries top_level_windows_total plus
+        top_level_windows_truncated for its own window list.
         """
         return _dump(
             analysis.ui_process_tree(
