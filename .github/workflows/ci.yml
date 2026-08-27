@@ -146,10 +146,11 @@ jobs:
 
   linux-integration:
     # Real-backend gates for the portable lines (Web, Android, HTTP(S) proxy,
-    # radare2). These backends install on a stock GitHub-hosted runner, so unlike
-    # the Windows debugger gates they can run on every commit rather than only on
-    # the manual self-hosted job -- which is what keeps "skip != pass" honest for
-    # the non-PE lines instead of letting them rot untested off Windows.
+    # radare2, Ghidra). These backends install on a stock GitHub-hosted runner,
+    # so unlike the Windows debugger gates they can run on every commit rather
+    # than only on the manual self-hosted job -- which is what keeps "skip !=
+    # pass" honest for the non-PE lines instead of letting them rot untested off
+    # Windows.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -163,11 +164,38 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # Ghidra 11.2.x requires JDK 21; the Jython export script runs inside it.
+          java-version: "21"
+
       - name: Install portable backends (radare2, wabt, webcrack)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends radare2 wabt
           sudo npm install -g webcrack
+
+      - name: Cache Ghidra
+        id: cache-ghidra
+        uses: actions/cache@v4
+        with:
+          path: ~/ghidra
+          # 11.2.1 is the last line that bundles Jython, which ExportJson.py needs;
+          # 11.3+ dropped it for PyGhidra. Bump the key with the version when moving.
+          key: ghidra-11.2.1-public
+
+      - name: Install Ghidra
+        if: steps.cache-ghidra.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ghidra
+          curl -fsSL -o /tmp/ghidra.zip \
+            https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip
+          unzip -q /tmp/ghidra.zip -d ~/ghidra
+          rm /tmp/ghidra.zip
+
+      - name: Point the Ghidra gate at the install
+        run: echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra/ghidra_11.2.1_PUBLIC" >> "$GITHUB_ENV"
 
       - name: Install package with portable extras
         run: |
@@ -182,6 +210,8 @@ jobs:
           r2 -v
           wasm2wat --version
           webcrack --version
+          "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" -help >/dev/null 2>&1 || true
+          test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" && echo "ghidra analyzeHeadless present"
           python -c "import androguard, adbutils, mitmproxy, playwright; print('android/proxy/web imports ok')"
 
       - name: Non-PE integration gates
