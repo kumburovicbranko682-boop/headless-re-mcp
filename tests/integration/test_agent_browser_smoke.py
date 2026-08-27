@@ -12,7 +12,14 @@ from typing import Any
 
 import pytest
 import uvicorn
-from playwright.sync_api import Response, expect, sync_playwright
+
+# Collection must skip, not error, when the browser extra is absent: a bare
+# module-level import interrupts the whole integration run with a collection
+# error, so every other integration test goes unreported on a host without
+# playwright. importorskip downgrades exactly this file to a skip.
+pytest.importorskip("playwright.sync_api", reason="playwright is not installed (skip != pass)")
+
+from playwright.sync_api import Response, expect, sync_playwright  # noqa: E402
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
