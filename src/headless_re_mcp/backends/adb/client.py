@@ -496,10 +496,15 @@ class AdbBackend:
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
-        dev = self._device(serial)
+        # Check the local APK before resolving the device: a missing file is a
+        # cheap local fact and the most common caller mistake, while _device
+        # reaches the adb server. Ordering it first means a bad path fails fast
+        # as not_found instead of being masked by a device error when the server
+        # or device is also unreachable.
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        dev = self._device(serial)
         try:
             extra = _accepted_kwargs(
                 dev.install,
@@ -723,7 +728,10 @@ class AdbBackend:
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
-        dev = self._device(serial)
+        # Validate the local file (exists, stat, size cap) before resolving the
+        # device: all cheap local facts, and a bad path or oversized file should
+        # fail fast rather than after a device round-trip -- or be masked by a
+        # device error when the adb server is unreachable.
         path = Path(local_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
@@ -742,6 +750,7 @@ class AdbBackend:
                 size=size,
                 cap=cap,
             )
+        dev = self._device(serial)
         try:
             _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:

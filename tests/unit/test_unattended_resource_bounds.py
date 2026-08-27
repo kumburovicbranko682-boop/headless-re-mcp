@@ -3719,6 +3719,34 @@ class TestDeviceInstallUninstallAreHonest:
         assert result["installed"] is True
         assert result["package"] == "com.example.app"
 
+    def test_install_checks_the_apk_before_touching_the_device(self, tmp_path: Any) -> None:
+        """install resolved the device before checking the local APK.
+
+        _device reaches the adb server; the is_file check is a cheap local fact.
+        With the check ordered last, a mistyped apk_path cost a device round-trip
+        and, when the server was unreachable, came back as a device error rather
+        than not_found. A resolver that always raises proves the file is judged
+        first: a missing apk still returns not_found, a real one reaches the
+        resolve and takes on its failure.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        def _boom(serial: str) -> Any:
+            raise AdbError("backend_error", "adb server unreachable")
+
+        backend = AdbBackend()
+        backend._device = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(AdbError) as missing:
+            backend.install("emulator-5554", str(tmp_path / "nope.apk"))
+        assert missing.value.code == "not_found"
+
+        real = tmp_path / "app.apk"
+        real.write_bytes(b"PK\x03\x04")
+        with pytest.raises(AdbError) as present:
+            backend.install("emulator-5554", str(real))
+        assert present.value.code == "backend_error"
+
     def test_uninstall_that_leaves_pm_path_is_not_success(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
 
@@ -3847,6 +3875,35 @@ class TestDevicePullRefusesTreesAndHugeFiles:
         with pytest.raises(mod.AdbError) as caught:
             backend.push("emulator-5554", str(huge), "/data/local/tmp/huge.bin")
         assert caught.value.code == "too_large"
+
+    def test_push_checks_the_local_file_before_touching_the_device(
+        self, tmp_path: Any
+    ) -> None:
+        """push resolved the device before checking the local file.
+
+        Same ordering fix as install: the existence, stat and size-cap checks are
+        cheap local facts, so a mistyped local_path or an oversized file should
+        fail fast rather than after a device round-trip -- and not be masked by a
+        device error when the adb server is down. A resolver that always raises
+        proves the file is judged first.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        def _boom(serial: str) -> Any:
+            raise AdbError("backend_error", "adb server unreachable")
+
+        backend = AdbBackend()
+        backend._device = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(AdbError) as missing:
+            backend.push("emulator-5554", str(tmp_path / "nope.bin"), "/data/local/tmp/x")
+        assert missing.value.code == "not_found"
+
+        real = tmp_path / "ok.bin"
+        real.write_bytes(b"data")
+        with pytest.raises(AdbError) as present:
+            backend.push("emulator-5554", str(real), "/data/local/tmp/x")
+        assert present.value.code == "backend_error"
 
     def test_a_huge_screenshot_is_deleted_not_kept(
         self, tmp_path: Any, monkeypatch: Any
