@@ -92,6 +92,71 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_il_switch_jump_table_is_skipped_not_read_as_code() -> None:
+    """switch has a variable-length operand; its table is not instructions.
+
+    switch (0x45) carries a u32 case count followed by that many i32 target
+    deltas. Decoded as a bare one-byte opcode the table was walked as code, so
+    everything after a switch disassembled to nonsense and a delta whose first
+    byte was 0x28/0x6f/0x73 surfaced in call_tokens as a method the function
+    never calls. The fix skips the whole table and reports the case count.
+    """
+    il = (
+        bytes([0x45])
+        + (2).to_bytes(4, "little")  # two cases
+        + (0).to_bytes(4, "little", signed=True)  # target[0] delta
+        + (0x28).to_bytes(4, "little")  # target[1] delta: a call opcode byte if misread
+        + bytes([0x2A])  # ret, at the real continuation offset 13
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["operand"], insn["ip"]) for insn in instructions] == [
+        ("switch", 2, 0),
+        ("ret", None, 13),
+    ]
+    assert partial is False
+    harvested = [
+        insn["operand"]
+        for insn in instructions
+        if insn["mnemonic"] in {"call", "callvirt", "newobj"}
+    ]
+    assert harvested == []
+
+
+def test_il_switch_truncated_table_is_reported_partial() -> None:
+    """A switch whose declared table runs off the captured IL is not complete."""
+    il = bytes([0x45]) + (4).to_bytes(4, "little") + (0).to_bytes(4, "little", signed=True)
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["operand"]) for insn in instructions] == [("switch", 4)]
+    assert partial is True
+
+
+def test_il_switch_with_hostile_count_does_not_hang_or_allocate() -> None:
+    """A u32 count of 0xFFFFFFFF must fail closed as partial, not materialize."""
+    il = bytes([0x45]) + (0xFFFFFFFF).to_bytes(4, "little") + bytes(4)
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert instructions == [{"ip": 0, "mnemonic": "switch", "operand": 0xFFFFFFFF}]
+    assert partial is True
+
+
+def test_il_switch_opcode_at_eof_is_partial() -> None:
+    """A switch opcode with no room for its count is truncated, not a 1-byte op."""
+    il = bytes([0x16, 0x45])  # ldc.i4.0 then a bare switch at the end
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["operand"]) for insn in instructions] == [
+        ("ldc.i4.0", None),
+        ("switch", None),
+    ]
+    assert partial is True
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)

@@ -696,6 +696,26 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             i += 1
             partial = True
             continue
+        if op == 0x45:
+            # switch carries a variable-length operand: a u32 case count then
+            # that many i32 target deltas. Decoded as a 1-byte unknown opcode
+            # the jump table was read back as instructions, so the bytes after
+            # a switch disassembled to nonsense and, worse, a delta beginning
+            # 0x28/0x6f/0x73 was harvested into call_tokens as a method the
+            # function never calls. Skip the whole table and expose the case
+            # count as the operand, which is a count and not a metadata token.
+            if i + 5 > len(il):
+                rebuilt.append({"ip": start, "mnemonic": "switch", "operand": None})
+                partial = True
+                break
+            count = int.from_bytes(il[i + 1 : i + 5], "little")
+            rebuilt.append({"ip": start, "mnemonic": "switch", "operand": count})
+            table_end = i + 5 + count * 4
+            if table_end > len(il):
+                partial = True
+                break
+            i = table_end
+            continue
         info = _OPCODES.get(op)
         if info is None:
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})

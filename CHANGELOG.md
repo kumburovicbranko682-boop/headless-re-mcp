@@ -24,6 +24,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（.NET IL 反汇编越过 switch 后错位、并把跳转表字节当成 call_tokens）
+
+- `dotnet/metadata_enum.py` 的 `_disassemble_il` 只覆盖一小撮 opcode，`switch`（0x45）不在表里，于是被当成 1 字节未知 opcode 处理——但 `switch` 带变长操作数：一个 u32 case 数，后接同样数量的 i32 目标偏移。结果 `switch` 之后的整张跳转表被当作指令继续解码，`switch` 后的反汇编全是垃圾；更糟的是某个目标偏移只要首字节恰为 0x28/0x6f/0x73，就会被 `call_tokens` 收成一条“此方法调用了某方法”的假记录，且整个结果仍以 `partial=false` 上报，把错的东西当完整结果给出。
+- 现按 ECMA-335 正确处理 `switch`：读出 case 数、整段跳过 `1 + 4 + N*4` 字节的跳转表，把 case 数作为 operand 暴露（是计数、不是 metadata token，故不会进 `call_tokens`）；跳转表被截断（含敌意的超大 N，如 0xFFFFFFFF）或 opcode 落在 IL 末尾无处读计数时，如实标记 `partial=true` 而不再臆造指令或分配内存。
+- 新增 4 项针对 `_disassemble_il` 的回归用例：验证 switch 之后从正确偏移续解码且不产生假 call_tokens、截断跳转表报 partial、敌意计数不挂起不分配、以及末尾裸 switch 报 partial。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
