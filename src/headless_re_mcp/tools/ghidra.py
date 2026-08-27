@@ -82,8 +82,10 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         Answers with decompiled, and truncated when the C was cut at the
-        buffer. A second reading of code IDA decompiled differently, or of
-        code it could not.
+        buffer. When truncated is true the full C is spilled to a file:
+        artifact_path and artifact_bytes give its location and size, and
+        artifact_full_id registers it for retrieval. A second reading of code
+        IDA decompiled differently, or of code it could not.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

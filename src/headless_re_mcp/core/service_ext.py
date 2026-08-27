@@ -1183,6 +1183,21 @@ def _ghidra_export(
                 size=exported.stat().st_size,
             )
             data["artifact_id"] = art["id"]
+        # A truncated decompile spills the full C to a sidecar; track it too so
+        # the complete function body is retrievable and GC'd like any artifact.
+        full_path = data.get("artifact_path")
+        if isinstance(full_path, str) and Path(full_path).is_file():
+            spilled = Path(full_path)
+            full_art = _record_artifact(
+                service,
+                session_id=session_id,
+                kind=f"ghidra_{mode}_full",
+                path=full_path,
+                sha256=file_sha256(spilled),
+                source=f"ghidra.{mode}",
+                size=spilled.stat().st_size,
+            )
+            data["artifact_full_id"] = full_art["id"]
         return _success(data, session_id=session_id, backend="ghidra")
     except GhidraError as exc:
         return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)

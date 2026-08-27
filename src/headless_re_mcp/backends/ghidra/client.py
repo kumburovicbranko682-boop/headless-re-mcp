@@ -209,6 +209,7 @@ class GhidraClient:
         *,
         timeout: float = 180.0,
         max_heap: str = "2G",
+        max_decompiled: int | None = None,
     ) -> JsonObject:
         return self._export(
             binary,
@@ -218,6 +219,7 @@ class GhidraClient:
             address=address,
             timeout=timeout,
             max_heap=max_heap,
+            max_decompiled=max_decompiled,
         )
 
     def _export(
@@ -230,6 +232,7 @@ class GhidraClient:
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
+        max_decompiled: int | None = None,
     ) -> JsonObject:
         with _project_lock(project_dir):
             return self._export_unlocked(
@@ -240,6 +243,7 @@ class GhidraClient:
                 address=address,
                 timeout=timeout,
                 max_heap=max_heap,
+                max_decompiled=max_decompiled,
             )
 
     def _export_unlocked(
@@ -252,6 +256,7 @@ class GhidraClient:
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
+        max_decompiled: int | None = None,
     ) -> JsonObject:
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
@@ -263,6 +268,12 @@ class GhidraClient:
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
             out_path.unlink()
+        # The decompile spill sidecar (ExportJson.java writes "<out>.full.c" when
+        # a body is capped). Clear a stale one so a later, shorter decompile
+        # never leaves an unrelated full-C file behind.
+        sidecar = out_path.with_name(out_path.name + ".full.c")
+        if sidecar.exists():
+            sidecar.unlink()
         addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
         capped = max(1, min(int(limit), 1024))
         extra = [
@@ -275,6 +286,8 @@ class GhidraClient:
             str(capped),
             addr,
         ]
+        if max_decompiled is not None:
+            extra.append(str(max(1, int(max_decompiled))))
         stdout, stderr, code = self._run_headless(
             project_dir,
             binary=binary,

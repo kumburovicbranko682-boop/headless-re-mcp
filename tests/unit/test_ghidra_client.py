@@ -210,6 +210,51 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "truncated" in decompile
 
 
+def test_ghidra_decompile_passes_max_decompiled_cap_to_the_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap has to reach ExportJson as the trailing postScript arg (arg[4]).
+
+    Without it the Java default (200 KB) applies and the spill path is never
+    exercised; the client must append the number after the address.
+    """
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+    client.decompile(_binary(tmp_path), tmp_path / "project", "0x1000", max_decompiled=64)
+    argv = calls[0]
+    # -deleteProject is appended last by the launcher; the cap is the final
+    # postScript arg, right before it, after the address.
+    tail = argv[argv.index("-deleteProject") - 1]
+    assert tail == "64"
+    assert "0x1000" in argv
+
+
+def test_ghidra_decompile_omits_the_cap_when_not_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    calls = _capture_run(monkeypatch)
+    client.decompile(_binary(tmp_path), tmp_path / "project", "0x1000")
+    argv = calls[0]
+    # No cap appended, so the address stays the last postScript arg and Java
+    # keeps its 200 KB default.
+    assert argv[argv.index("-deleteProject") - 1] == "0x1000"
+
+
+def test_ghidra_export_clears_a_stale_decompile_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shorter later decompile must not leave an unrelated full-C file behind."""
+    client = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir(parents=True)
+    stale = project / "export_decompile.json.full.c"
+    stale.write_text("OLD FULL BODY", encoding="utf-8")
+    _capture_run(monkeypatch)
+    client.decompile(_binary(tmp_path), project, "0x1000")
+    assert not stale.exists()
+
+
 def test_ghidra_refuses_an_oversized_export_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -237,3 +237,41 @@ def test_ghidra_decompiles_a_wasm_module_via_the_configured_plugin(tmp_path: Pat
     # The module adds its two parameters; the exact parameter names vary, the
     # addition does not.
     assert "+" in body, body[:200]
+
+
+@pytest.mark.integration
+def test_ghidra_decompile_spills_full_c_when_truncated(tmp_path: Path) -> None:
+    """A capped decompile must still surface the complete function body.
+
+    Ghidra caps one function's decompiled C at 200 KB inline; the overflow used
+    to be dropped, leaving only truncated=true and no way to get the rest.
+    Forcing a tiny cap drives the same spill contract js/wasm use: the inline
+    text is cut to the cap, and the full C lands in artifact_path with
+    artifact_bytes. Uses the committed PE, so no plugin/compiler needed.
+    skip != pass.
+    """
+    client = _client()
+    fixture = _gate_fixture()
+
+    funcs = client.functions(fixture, tmp_path / "fn", limit=64, timeout=_TIMEOUT)
+    entry = funcs["items"][0]["entry"]
+    full = client.decompile(fixture, tmp_path / "dc_full", entry, timeout=_TIMEOUT)
+    full_c = full.get("decompiled") or ""
+    assert full.get("truncated") is False
+    cap = 16
+    if len(full_c) <= cap:
+        pytest.skip("first function's decompiled C is too short to force truncation")
+
+    capped = client.decompile(
+        fixture, tmp_path / "dc_cap", entry, timeout=_TIMEOUT, max_decompiled=cap
+    )
+    assert capped.get("truncated") is True
+    inline = capped.get("decompiled") or ""
+    assert len(inline) == cap
+    assert inline == full_c[:cap]
+
+    sidecar = capped.get("artifact_path")
+    assert isinstance(sidecar, str) and Path(sidecar).is_file(), capped
+    disk = Path(sidecar).read_text(encoding="utf-8")
+    assert disk == full_c, "spilled C must be the complete, untruncated body"
+    assert capped.get("artifact_bytes") == len(disk.encode("utf-8"))

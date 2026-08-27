@@ -12,7 +12,8 @@
 // JSON is emitted by hand rather than via a bundled library so the script does
 // not depend on gson/jackson being present in a given distribution. The shape
 // matches what backends/ghidra/client.py parses: an object with mode, items,
-// count and has_more, plus the decompile-only decompiled/truncated fields.
+// count and has_more, plus the decompile-only decompiled/truncated fields and,
+// when truncated, artifact_path/artifact_bytes pointing at the full spilled C.
 // @category HeadlessRE
 
 import java.io.FileOutputStream;
@@ -49,6 +50,16 @@ public class ExportJson extends GhidraScript {
         }
         String addressArg =
             (args.length > 3 && args[3] != null && !args[3].isEmpty()) ? args[3] : null;
+        // Optional cap override (arg[4]) lets a caller bound decompiled C size;
+        // absent, the 200 KB default applies. Used to exercise the spill path.
+        int maxDecompiled = MAX_DECOMPILED;
+        if (args.length > 4 && args[4] != null && !args[4].isEmpty()) {
+            try {
+                maxDecompiled = Math.max(1, Integer.parseInt(args[4]));
+            } catch (NumberFormatException e) {
+                maxDecompiled = MAX_DECOMPILED;
+            }
+        }
 
         StringBuilder json = new StringBuilder();
         json.append('{');
@@ -61,7 +72,7 @@ public class ExportJson extends GhidraScript {
         } else if ("xrefs".equals(mode)) {
             emitXrefs(json, limit, addressArg);
         } else if ("decompile".equals(mode)) {
-            emitDecompile(json, addressArg);
+            emitDecompile(json, addressArg, outPath, maxDecompiled);
         } else {
             emitEmpty(json);
             json.append(',');
@@ -152,7 +163,8 @@ public class ExportJson extends GhidraScript {
         appendInt(json, "count", n);
     }
 
-    private void emitDecompile(StringBuilder json, String addressArg) {
+    private void emitDecompile(
+            StringBuilder json, String addressArg, String outPath, int maxDecompiled) {
         emitEmpty(json);
         String text = "";
         String function = null;
@@ -173,11 +185,29 @@ public class ExportJson extends GhidraScript {
                 decomp.dispose();
             }
         }
-        boolean truncated = text.length() > MAX_DECOMPILED;
+        boolean truncated = text.length() > maxDecompiled;
         json.append(',');
         appendKey(json, "decompiled")
-            .append(quote(truncated ? text.substring(0, MAX_DECOMPILED) : text));
+            .append(quote(truncated ? text.substring(0, maxDecompiled) : text));
         appendBool(json, "truncated", truncated);
+        // Spill the full C when the inline body is capped, so a large function
+        // is still fully recoverable -- the same contract js/wasm truncation
+        // uses. Best-effort: a write failure leaves only the truncated inline
+        // text, never a broken export.
+        if (truncated && outPath != null) {
+            String sidecar = outPath + ".full.c";
+            try (Writer w =
+                new OutputStreamWriter(new FileOutputStream(sidecar), StandardCharsets.UTF_8)) {
+                w.write(text);
+                long fullBytes = text.getBytes(StandardCharsets.UTF_8).length;
+                json.append(',');
+                appendKey(json, "artifact_path").append(quote(sidecar));
+                json.append(',');
+                appendKey(json, "artifact_bytes").append(fullBytes);
+            } catch (Exception e) {
+                // Fall through with the truncated inline text only.
+            }
+        }
         if (function != null) {
             json.append(',');
             appendKey(json, "function").append(quote(function));
