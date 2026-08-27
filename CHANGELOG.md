@@ -43,6 +43,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（unpack.plan Gate：零副作用地把检测落成一份有序路线计划）
+
+- `unpack.plan` 把检测结果落成一份非权威、可执行样式的计划：跑 `packer.classify` 加内置 PE 扫描，
+  选出 route 与 backend，并铺开操作者将逐步执行的工具序列——但**自身不执行任何一步**。它是
+  `unpack.start` 的只读姊妹，是 agent 用来决定下一步做什么的工具，却完全没有集成覆盖：唯二的端到端
+  脱壳门（`test_unpack_live_gate.py`、`test_m5_unpack_live_gate.py`）要 x64dbg + IDA + DIE 且是
+  Windows-only，而检测分诊门止步于 `unpack.recommend`，从不产出 `unpack.plan` 额外给出的有序 `steps`
+  与 `backend`。
+- 新增 `tests/integration/test_unpack_plan_gate.py`：在所有后端均未配置的情况下对提交的 UPX 孪生夹具对
+  驱动 `unpack.plan` 并断言——真实 UPX 加壳件规划出有序 UPX 路线（`m3_upx`：detect → upx.test →
+  upx.unpack → verify → reanalyze，逐步的 required 标志逐一比对），其未加壳孪生规划出惰性的 `none`
+  路线（detect → static.open）；计划确属零副作用——事后 `unpack.status` 仍报 `unpack_not_started`，
+  制品根下也没有任何 unpack 产物；`force_route` 覆盖检测判定并按被强制的 backend 重建步骤列表
+  （对未加壳孪生强制 `generic_dynamic` → `m4_generic` 且不再含 UPX 步骤，对加壳件强制
+  `bounded_dynamic` → `m4_bounded` 且带上唯此路线独有的 `iat_validate` 门步骤）；未知 `force_route`
+  以错误信封被拒。x86/x64 双架构各断言一遍，全程零外部工具，任何平台都不应跳过；夹具缺失时按
+  skip != pass 明确跳过。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
