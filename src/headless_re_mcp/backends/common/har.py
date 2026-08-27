@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
+from urllib.parse import parse_qsl, urlsplit
 
 from headless_re_mcp import __version__
 
@@ -31,6 +32,10 @@ JsonObject = dict[str, Any]
 
 HAR_VERSION = "1.2"
 HAR_CREATOR_NAME = "headless-re-mcp"
+# A URL with a pathological number of parameters must not inflate one entry.
+# The upstream captures already bound the URL to 16 KiB, so this only guards
+# the degenerate case; a real request is far below it.
+_MAX_QUERY_PARAMS = 256
 
 # HAR wants a millisecond count for each timing phase; -1 is the spec's own
 # "does not apply / was not measured" sentinel. These captures record which
@@ -56,6 +61,23 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _query_string(url: str) -> list[JsonObject]:
+    """Parse the URL's query into HAR ``name``/``value`` pairs, bounded.
+
+    HAR consumers render a "Query String Parameters" pane straight from this
+    list; filling it from the URL the capture already holds costs nothing and
+    makes the export useful to tools that do not re-parse the URL themselves.
+    """
+    try:
+        query = urlsplit(url).query
+    except (ValueError, TypeError):
+        return []
+    if not query:
+        return []
+    pairs = parse_qsl(query, keep_blank_values=True)
+    return [{"name": name, "value": value} for name, value in pairs[:_MAX_QUERY_PARAMS]]
+
+
 def har_entry(
     *,
     method: str | None,
@@ -64,26 +86,35 @@ def har_entry(
     mime_type: str | None,
     started_date_time: str | None = None,
     resource_type: str | None = None,
+    response_body_size: int | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
     Members the captures never recorded are filled with the spec's placeholders
-    -- empty cookie/header/query arrays, -1 sizes, unknown timings -- because
-    omitting them makes a strict consumer reject the entire log rather than the
-    one absent field. ``resource_type`` rides along as Chrome's ``_resourceType``
-    extension so the browser capture keeps that hint.
+    -- empty cookie/header arrays, -1 sizes, unknown timings -- because omitting
+    them makes a strict consumer reject the entire log rather than the one
+    absent field. ``queryString`` is parsed from the URL, and when the capture
+    knows the decoded response body length (``response_body_size``) it fills
+    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
+    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
+    browser capture keeps that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
+    url_text = str(url or "")
+    if isinstance(response_body_size, int) and response_body_size >= 0:
+        content_size = response_body_size
+    else:
+        content_size = _UNKNOWN_SIZE
     entry: JsonObject = {
         "startedDateTime": started_date_time or _iso_now(),
         "time": 0,
         "request": {
             "method": str(method or ""),
-            "url": str(url or ""),
+            "url": url_text,
             "httpVersion": "",
             "cookies": [],
             "headers": [],
-            "queryString": [],
+            "queryString": _query_string(url_text),
             "headersSize": _UNKNOWN_SIZE,
             "bodySize": _UNKNOWN_SIZE,
         },
@@ -93,10 +124,10 @@ def har_entry(
             "httpVersion": "",
             "cookies": [],
             "headers": [],
-            "content": {"size": _UNKNOWN_SIZE, "mimeType": str(mime_type or "")},
+            "content": {"size": content_size, "mimeType": str(mime_type or "")},
             "redirectURL": "",
             "headersSize": _UNKNOWN_SIZE,
-            "bodySize": _UNKNOWN_SIZE,
+            "bodySize": content_size,
         },
         "cache": {},
         "timings": dict(_UNKNOWN_TIMINGS),

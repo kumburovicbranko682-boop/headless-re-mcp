@@ -221,6 +221,11 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        # The decoded response body length is known here, before the flow may be
+        # dropped from the retain ring, so the summary keeps it even for a flow
+        # whose body was not retained -- and the HAR export can report a real
+        # content size instead of the -1 "unknown" sentinel.
+        response_size = _content_len(resp)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -250,6 +255,7 @@ class _FlowRecorder:
                 "host": host,
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
+                "response_size": response_size,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -571,6 +577,7 @@ class ProxyBackend:
                 url=f.get("url"),
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
+                response_body_size=f.get("response_size"),
             )
             for f in inst.recorder.snapshot()
         ]

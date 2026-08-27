@@ -70,6 +70,9 @@ def _assert_valid_har(text: str) -> dict[str, Any]:
         assert _REQUIRED_RESPONSE.issubset(entry["response"])
         assert {"size", "mimeType"}.issubset(entry["response"]["content"])
         assert _REQUIRED_TIMINGS.issubset(entry["timings"])
+        # Each queryString member must carry the spec's name/value pair.
+        for param in entry["request"]["queryString"]:
+            assert {"name", "value"}.issubset(param), f"malformed queryString: {param}"
         # startedDateTime must be a real ISO 8601 instant, not a placeholder.
         datetime.fromisoformat(entry["startedDateTime"])
     return doc
@@ -97,7 +100,42 @@ def test_har_entry_tolerates_missing_status_and_url() -> None:
     _assert_valid_har(json.dumps(build_har([entry])))
     assert entry["response"]["status"] == 0
     assert entry["request"]["url"] == ""
+    assert entry["request"]["queryString"] == []
     assert "_resourceType" not in entry
+
+
+def test_har_entry_parses_the_query_string_from_the_url() -> None:
+    """A HAR viewer reads request params from queryString, not just the URL.
+
+    parse_qsl keeps repeated keys and blank values, so a consumer that does not
+    re-split the URL itself still sees every parameter the request carried.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://example.com/search?q=hello+world&tag=a&tag=b&flag=",
+        status=200,
+        mime_type="text/html",
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    params = [(p["name"], p["value"]) for p in entry["request"]["queryString"]]
+    assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
+
+
+def test_har_entry_reports_a_known_response_body_size() -> None:
+    """When the capture knows the decoded body length it must not emit -1."""
+    known = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=200,
+        mime_type="application/json",
+        response_body_size=1234,
+    )
+    assert known["response"]["content"]["size"] == 1234
+    assert known["response"]["bodySize"] == 1234
+    # Absent or negative size falls back to the spec's -1 "not available".
+    unknown = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    assert unknown["response"]["content"]["size"] == -1
+    assert unknown["response"]["bodySize"] == -1
 
 
 def test_serialize_har_drops_newest_entries_until_it_fits_the_cap() -> None:
@@ -182,7 +220,7 @@ def test_web_har_export_refuses_when_even_an_empty_har_exceeds_the_cap(
     assert info.value.code == "too_large"
 
 
-def _proxy_backend_with_flows(count: int, *, url_pad: int = 0) -> ProxyBackend:
+def _proxy_backend_with_flows(count: int, *, url_pad: int = 0, body_len: int = 0) -> ProxyBackend:
     recorder = _FlowRecorder()
     for index in range(count):
         request = SimpleNamespace(
@@ -190,7 +228,11 @@ def _proxy_backend_with_flows(count: int, *, url_pad: int = 0) -> ProxyBackend:
             pretty_url=f"http://x/{'q' * url_pad}/{index}",
             host="x",
         )
-        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        response = SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            raw_content=b"x" * body_len if body_len else None,
+        )
         recorder.response(
             SimpleNamespace(id=str(index), request=request, response=response)
         )
@@ -207,6 +249,25 @@ def test_proxy_export_har_writes_a_valid_har(tmp_path: Path) -> None:
     assert payload["truncated"] is False
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     assert len(doc["log"]["entries"]) == 4
+
+
+def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path) -> None:
+    """The proxy knows each decoded body length; the HAR must report it.
+
+    The recorder computes the response body length when the flow arrives, even
+    for a flow whose body is later dropped from the retain ring, so the export
+    can fill content.size and bodySize with a real number instead of -1. The
+    same number surfaces on proxy.flows as response_size.
+    """
+    backend = _proxy_backend_with_flows(3, body_len=512)
+    flows = backend.flows("s", offset=0, limit=10)
+    assert all(row["response_size"] == 512 for row in flows["flows"])
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    for entry in doc["log"]["entries"]:
+        assert entry["response"]["content"]["size"] == 512
+        assert entry["response"]["bodySize"] == 512
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
