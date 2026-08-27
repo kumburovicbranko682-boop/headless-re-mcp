@@ -243,3 +243,56 @@ def test_apk_static_analysis_runs_against_a_real_dex(tmp_path: Path) -> None:
         assert opened.data["native_abis"] == ["arm64-v8a"]
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_manifest_readers_degrade_on_an_unparseable_manifest(tmp_path: Path) -> None:
+    """Every manifest reader must degrade, not file an internal_error incident.
+
+    apk.open was fixed to null its identity fields when androguard cannot parse
+    the manifest rather than letting a getter's KeyError reach the envelope as an
+    incident. The sibling readers share that hazard -- androguard's getters raise
+    on some malformed manifests and return empty on others -- so this pins the
+    whole surface against the same invalid-AXML APK: permissions / components /
+    certificates return empty-but-ok, native_libs still reads the abis off the
+    lib/ paths (which do not depend on the manifest), and manifest fails with the
+    clean backend_error it raises for an undecodable file, never internal_error.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK static gate not run (skip != pass)")
+
+    apk = _build_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        permissions = service.apk_permissions(session_id)
+        assert permissions.ok, permissions.error
+        assert permissions.data["permissions"] == []
+        assert permissions.data["count"] == 0
+
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert components.data["activities"] == []
+        assert components.data["services"] == []
+        # get_main_activity is called raw here (open guards it with _safe); on an
+        # unparseable manifest it must yield None, not raise.
+        assert components.data["main_activity"] is None
+
+        certificates = service.apk_certificates(session_id)
+        assert certificates.ok, certificates.error
+        assert certificates.data["certificates"] == []
+
+        native = service.apk_native_libs(session_id)
+        assert native.ok, native.error
+        assert native.data["abis"] == ["arm64-v8a"]
+        assert native.data["count"] == 1
+
+        manifest = service.apk_manifest(session_id)
+        assert not manifest.ok
+        assert manifest.error is not None
+        assert manifest.error.code == "backend_error"
+    finally:
+        service.close_all()
