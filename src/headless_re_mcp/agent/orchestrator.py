@@ -15,7 +15,11 @@ import anyio.to_thread
 
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
-from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
+from headless_re_mcp.agent.context import (
+    bounded_tool_result,
+    compact_messages,
+    rebuild_provider_messages,
+)
 from headless_re_mcp.agent.models import (
     RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
@@ -381,10 +385,15 @@ class AgentOrchestrator:
         if thread is None:
             raise KeyError(run.thread_id)
         stored_messages = self.store.list_messages(run.thread_id)
-        conversation: list[JsonObject] = [
-            {"role": message.role, "content": message.content, **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {})}
-            for message in stored_messages
-        ]
+        # Reattach the assistant tool_calls the store does not keep, so a
+        # continued mission does not replay orphaned tool results the provider
+        # 400s on. See rebuild_provider_messages.
+        conversation: list[JsonObject] = rebuild_provider_messages(
+            [
+                {"role": message.role, "content": message.content, **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {})}
+                for message in stored_messages
+            ]
+        )
         conversation.insert(0, {"role": "system", "content": thread_system_prompt(thread.session_id, self.persona_provider() if self.persona_provider else None)})
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})

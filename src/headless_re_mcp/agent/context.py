@@ -132,6 +132,88 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
     return system + [_omission_notice(omitted)] + tail
 
 
+# The store keeps a tool result as a role="tool" row with its tool_call_id, but
+# has no column for the assistant tool_calls that produced it. A generated name
+# is enough to rebuild a structurally valid turn: an OpenAI-compatible API
+# validates that each historical tool message answers a preceding assistant
+# tool_call by id, not that the call's function name still exists in the tools
+# list. See rebuild_provider_messages.
+_SYNTHETIC_TOOL_NAME = "recorded_tool_call"
+
+
+def _plain_message(item: JsonObject) -> JsonObject:
+    """Copy a non-tool message, keeping only provider-meaningful fields."""
+    rebuilt: JsonObject = {"role": item.get("role"), "content": item.get("content")}
+    calls = item.get("tool_calls")
+    if isinstance(calls, list) and calls:
+        rebuilt["tool_calls"] = calls
+    return rebuilt
+
+
+def _synthetic_tool_calls(ids: list[str]) -> list[JsonObject]:
+    return [
+        {
+            "id": tid,
+            "type": "function",
+            "function": {"name": _SYNTHETIC_TOOL_NAME, "arguments": "{}"},
+        }
+        for tid in ids
+    ]
+
+
+def rebuild_provider_messages(messages: list[JsonObject]) -> list[JsonObject]:
+    """Make a thread's stored messages a provider-valid request again.
+
+    A run's assistant turn is stored as its visible text, and each tool result
+    as a separate role="tool" row carrying only its tool_call_id -- the
+    assistant tool_calls that named those ids are not persisted. Replayed
+    verbatim on a mission's *next* run, every one of those tool rows is an
+    orphan: a tool message with no preceding assistant tool_calls, which an
+    OpenAI-compatible API rejects with 400. That is not an edge case -- it is
+    every continued mission whose earlier run called a tool, so the mechanism
+    the scheduler exists for died on its second run.
+
+    Reattach what the store dropped: a run of consecutive tool rows is the
+    answer to one assistant turn, so it is preceded by an assistant message
+    offering exactly their ids. When the turn left visible text (the row just
+    before the group), the ids are merged onto it; when it did not, a
+    content-free assistant turn is inserted to carry them. A tool row with no
+    id -- which the store does not produce, but a caller might -- is given a
+    generated one so the pairing still holds.
+    """
+    out: list[JsonObject] = []
+    index = 0
+    total = len(messages)
+    synthetic = 0
+    while index < total:
+        if messages[index].get("role") != "tool":
+            out.append(_plain_message(messages[index]))
+            index += 1
+            continue
+        group: list[JsonObject] = []
+        ids: list[str] = []
+        while index < total and messages[index].get("role") == "tool":
+            item = messages[index]
+            raw_id = item.get("tool_call_id")
+            tid = str(raw_id) if raw_id else ""
+            if not tid:
+                tid = f"recovered_call_{synthetic}"
+                synthetic += 1
+            ids.append(tid)
+            group.append(
+                {"role": "tool", "tool_call_id": tid, "content": item.get("content") or ""}
+            )
+            index += 1
+        if out and out[-1].get("role") == "assistant" and not out[-1].get("tool_calls"):
+            out[-1]["tool_calls"] = _synthetic_tool_calls(ids)
+        else:
+            out.append(
+                {"role": "assistant", "content": None, "tool_calls": _synthetic_tool_calls(ids)}
+            )
+        out.extend(group)
+    return out
+
+
 def bounded_tool_result(value: Any, *, max_bytes: int = 262_144) -> tuple[JsonObject, bool]:
     if isinstance(value, dict):
         normalized: JsonObject = value
