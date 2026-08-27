@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -236,6 +237,101 @@ def terminate_process_group(pgid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    return killed
+
+
+def _pid_is_live(pid: int) -> bool:
+    """True when ``pid`` is a running process -- not gone, not a zombie.
+
+    A SIGKILL is asynchronous and a survivor reparented to init cannot be
+    ``waitpid()``-ed by us, so a caller that must not race the teardown polls
+    this instead. A killed-but-unreaped process (state 'Z'/'X' on POSIX, exited
+    on Windows) reads as dead, which is the honest answer: it will do no more
+    work and holds no more locks.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            return False
+        close = stat.rfind(")")
+        if close < 0:
+            return False
+        fields = stat[close + 2 :].split()
+        return bool(fields) and fields[0] not in {"Z", "X", "x"}
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _wait_pids_dead(pids: list[int], *, deadline_s: float = 2.0) -> None:
+    """Block (bounded) until every pid in ``pids`` is dead or a zombie.
+
+    The kill signal has already been sent; this only closes the window where a
+    caller checking liveness the instant a reap returns would see a process the
+    kernel has signalled but not yet torn down.
+    """
+    deadline = time.monotonic() + deadline_s
+    pending = [pid for pid in pids if isinstance(pid, int) and pid > 0]
+    while pending and time.monotonic() < deadline:
+        pending = [pid for pid in pending if _pid_is_live(pid)]
+        if pending:
+            time.sleep(0.02)
+
+
+def reap_detached_group(
+    process: Any,
+    *,
+    group_id: int = 0,
+    readers_blocked: bool = False,
+) -> list[int]:
+    """Reap descendants a normally-exited capture process left running.
+
+    ``subprocess`` reaps only the immediate child, so a helper the tool started
+    in the background -- an orphaned JVM, a node worker, or a wrapper's child --
+    is reparented to init and keeps holding a core and a lock on the sample
+    after the call already returned success. The timeout path already sweeps the
+    tree; the success path used to trust that a zero exit meant nothing was left,
+    which is not true for a launcher that detaches a worker before it returns.
+
+    On POSIX the capture starts the child with ``start_new_session`` so it leads
+    its own group; survivors are found by that group id even after reparenting,
+    when the parent/child walk sees nothing. On Windows the Toolhelp descendant
+    walk finds them. Never raises: this is cleanup on a path with somewhere
+    better to be.
+
+    ``readers_blocked`` is a second signal that a survivor inherited a pipe: a
+    reader thread still blocked on read() means the write end is open in a child
+    that outlived the launcher.
+    """
+    killed: list[int] = []
+    pid = getattr(process, "pid", None)
+    if os.name == "nt":
+        descendants = (
+            collect_descendants(int(pid)) if isinstance(pid, int) and pid > 0 else []
+        )
+        if readers_blocked or descendants:
+            for child in reversed(descendants):
+                with suppress(Exception):
+                    _kill_pid(child)
+                    killed.append(child)
+        if killed:
+            _wait_pids_dead(killed)
+        return killed
+    if isinstance(group_id, int) and group_id > 0 and (readers_blocked or collect_process_group(group_id)):
+        killed.extend(terminate_process_group(group_id))
+    if killed:
+        _wait_pids_dead(killed)
     return killed
 
 
