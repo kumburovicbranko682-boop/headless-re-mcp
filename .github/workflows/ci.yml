@@ -199,6 +199,12 @@ jobs:
         # (x64dbg/WinDbg/Win32/IDA) skip themselves through the conftest, so the
         # whole directory is safe to run and any new Linux-capable gate is
         # picked up here automatically.
+        #
+        # Step timeout under the job timeout, same reason as the quality jobs: a
+        # wedged live backend (a browser or proxy that never comes up) fails this
+        # step with its logs intact instead of the job timeout cancelling
+        # everything. --timeout=300 already bounds any single gate.
+        timeout-minutes: 25
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
 
   webui:
