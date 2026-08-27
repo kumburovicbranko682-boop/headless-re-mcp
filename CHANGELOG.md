@@ -102,6 +102,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（consume_module_events 在事件把模块标 STALE 后仍谎报 stream_reliable）
+
+- 模块生命周期的 `stream_reliable` 由四个变更点维护，其中 `track_module`、`untrack_module`、
+  `refresh_modules` 三处一致地把它算成「没有 STALE 模块」（前两者
+  `state.stream_reliable and not any(status==STALE)`，后者 `not has_stale`——drop 后完整刷新
+  会据此把它复位为 True，`test_refresh_must_cover_all_stale_modules` 就固定了这条恢复语义）。
+  唯独 `consume_module_events` 只在 `batch.dropped` 那一支把它压成 False，事件循环里
+  `module.loaded` / `debug.init` / `process.created` 把某个被跟踪模块标成 STALE 时却不动它。
+  于是一条命中的 `module.loaded`（被跟踪模块在新基址重载）走完后，同一份工作流状态既报
+  `module.status == stale`、`refresh_required == {该模块}`，又报 `stream_reliable == True`——
+  自相矛盾；而紧接着调一次 `track_module`/`untrack_module`，同样的 STALE 条件又会把
+  `stream_reliable` 翻成 False，取决于最后跑的是哪个变更点。该标志经 `runtime.py`
+  的 `_workflow_state_json` 与每个模块的 `status` 并排下发给调用方，这个前后不一的快照直接
+  误导使用者。已实测复现：命中的 `module.loaded` 后 `payload.status=stale` 但
+  `stream_reliable=True`，再 `track_module` 则变 False。现让 `consume_module_events` 在事件循环
+  结束后同样重算 `stream_reliable = stream_reliable and not any(status==STALE)`，与另外三处口径
+  一致（更 fail-closed、且与 drop 分支叠加时保持 False）。无关模块加载（不命中、不产生 STALE）
+  仍保持 True；成功刷新后仍复位为 True。新增回归
+  `test_event_marked_stale_module_lowers_stream_reliable`：命中的 `module.loaded` 后断言
+  `stream_reliable is False`，并断言随后 `track_module` 对同一 STALE 条件给出同值；去掉修复后它
+  以 `assert True is False` 失败。既有生命周期/引擎/执行器/动态测试（92 条工作流用例）不受影响。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
