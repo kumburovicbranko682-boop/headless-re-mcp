@@ -859,6 +859,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   接受(实测已验证 `main→helper` 的 CALL 边能被正确解析)。`run()` 拆出 `_exec()` 以便一次 xrefs 里
   跑两趟分析而各自独立解析(空的一侧保持空列表,不被另一侧输出吞掉)。
   `tests/integration/test_m11_r2_live_gate.py` 新增对真实 CALL 边的断言钉住。
+  (补记:上面「裸 `axj` 不再接受」当初只落到了注释和本条描述里——`axj` 其实仍误留在允许集 `_ALLOWED`
+  中,与该策略相悖;虽然没有任何工具会构造裸 `axj`、无实际暴露,但为让白名单名副其实,现已把它从允许集移除,
+  并在 `test_r2_command_whitelist.py` 补一条断言钉住裸 `axj` 被拒,防其回潜。)
 - **Ghidra 在 Linux/macOS 上选错启动器,装对了也一个工具都跑不起来**。Ghidra 发行版里
   `support/analyzeHeadless`(Unix 脚本)与 `support/analyzeHeadless.bat`(Windows 批处理)并排都在,
   而 `_find_analyze_headless` 把 `.bat` 排在最前——POSIX 上永远选中不可执行的批处理,spawn 即

@@ -29,8 +29,11 @@ def _client_and_binary(tmp_path: Path) -> tuple[R2Client, Path]:
         "i anything",
         "pdj 513 @ 0",
         # Bare axj is "add jmp reference" in modern radare2, not a listing, so
-        # xrefs no longer uses (or accepts) it.
+        # xrefs no longer uses (or accepts) it. Both the address form and the
+        # bare token must be rejected -- the bare token was mistakenly left in the
+        # allow-set after the axtj/axfj fix, so pin it here so it cannot creep back.
         "axj @ 0x401000",
+        "axj",
     ],
 )
 def test_r2_whitelist_rejects_composed_commands_before_launch(
