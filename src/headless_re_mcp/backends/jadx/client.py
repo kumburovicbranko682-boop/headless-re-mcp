@@ -68,7 +68,7 @@ class JadxClient:
         no_imports: bool = False,
     ) -> JsonObject:
         """Decompile the whole APK into ``out_dir`` and summarise the tree."""
-        self._run(
+        _stdout, stderr, code = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
             out_dir,
@@ -78,13 +78,22 @@ class JadxClient:
         java_files, java_file_count, has_more = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
-        return {
+        # jadx exits non-zero on a partial decompile but still writes the
+        # classes it could; _run keeps that output (it only fails when nothing
+        # landed). Surface exit_code/clean_exit so a caller does not read a
+        # tree that jadx itself flagged as incomplete as a full decompile.
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
+            "exit_code": code,
+            "clean_exit": code == 0,
         }
+        if code != 0 and stderr:
+            result["stderr"] = stderr[:_MAX_STDERR]
+        return result
 
     def decompile(
         self,
@@ -98,7 +107,7 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        self.export_sources(apk, out_dir, timeout=timeout)
+        export = self.export_sources(apk, out_dir, timeout=timeout)
         rel = _class_to_java_path(target)
         output_root = out_dir.expanduser().resolve()
         sources = (output_root / "sources").resolve()
@@ -138,12 +147,21 @@ class JadxClient:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
         source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
-        return {
+        # The class read back is real, but if the whole-APK decompile that
+        # produced it exited non-zero, sibling classes may be missing. Carry
+        # that signal so a partial run is not read as a clean one.
+        clean_exit = bool(export.get("clean_exit", True))
+        result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source,
             "truncated": truncated,
+            "exit_code": export.get("exit_code", 0),
+            "clean_exit": clean_exit,
         }
+        if not clean_exit and export.get("stderr"):
+            result["stderr"] = export["stderr"]
+        return result
 
     def _run(
         self,

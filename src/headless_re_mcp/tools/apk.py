@@ -153,7 +153,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile one class to Java via jadx (requires jadx + JRE).
 
         Answers with class_name, path and source, plus truncated when the
-        Java was cut at the buffer. There is no java, code or text field.
+        Java was cut at the buffer, and exit_code with clean_exit: jadx exits
+        non-zero on a partial decompile, so clean_exit false means sibling
+        classes may be missing even though this one read back. There is no
+        java, code or text field.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
@@ -221,8 +224,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile the whole APK to a Java source tree via jadx.
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
-        plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field.
+        plus has_more when the listed files were cut at the buffer, and
+        exit_code with clean_exit: jadx exits non-zero on a partial decompile
+        while still writing what it could, so clean_exit false means the tree
+        is incomplete. There is no files or sources field.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)

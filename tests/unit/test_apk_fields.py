@@ -293,3 +293,82 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+    # A clean run reports clean_exit True and does not carry a stderr key.
+    assert payload["exit_code"] == 0
+    assert payload["clean_exit"] is True
+    assert "stderr" not in payload
+    assert "clean_exit" in doc
+
+
+def test_apk_export_sources_flags_a_partial_jadx_run(tmp_path: Path, monkeypatch: Any) -> None:
+    """jadx exits non-zero on a partial decompile but still writes sources.
+
+    Measured: exit 1 with .java on disk returns the tree (that is the whole
+    point of jadx's partial output) but now also carries clean_exit False and
+    a stderr excerpt, so the tree is not read as a full decompile.
+    """
+    from headless_re_mcp.backends.jadx import client as mod
+
+    out = tmp_path / "out"
+    sources = out / "sources"
+    sources.mkdir(parents=True)
+    (sources / "C0.java").write_text("class C {}", encoding="utf-8")
+    client = mod.JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(
+        client, "_run", lambda *a, **k: ("", "ERROR: failed to decompile Other.java", 1)
+    )
+    payload = client.export_sources(tmp_path / "app.apk", out)
+    assert payload["java_file_count"] == 1
+    assert payload["exit_code"] == 1
+    assert payload["clean_exit"] is False
+    assert "failed to decompile" in payload["stderr"]
+
+
+def test_apk_decompile_carries_the_partial_signal_from_the_whole_apk_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A class read back from a partial decompile must not read as clean.
+
+    The class file exists, so decompile returns its source; but the whole-APK
+    run that produced it exited non-zero, so sibling classes may be missing.
+    clean_exit False and the propagated stderr say so.
+    """
+    from headless_re_mcp.backends.jadx.client import JadxClient
+
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    out = tmp_path / "out"
+    src_dir = out / "sources" / "com" / "example"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Foo.java").write_text("class Foo {}", encoding="utf-8")
+    client = JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(
+        client,
+        "export_sources",
+        lambda *a, **k: {"exit_code": 1, "clean_exit": False, "stderr": "partial: Bar.java"},
+    )
+    payload = client.decompile(apk, out, "com.example.Foo")
+    assert payload["class_name"] == "com.example.Foo"
+    assert payload["clean_exit"] is False
+    assert payload["exit_code"] == 1
+    assert payload["stderr"] == "partial: Bar.java"
+
+
+def test_apk_decompile_defaults_to_clean_when_export_omits_the_signal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An export payload without the honesty keys is treated as a clean run."""
+    from headless_re_mcp.backends.jadx.client import JadxClient
+
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    out = tmp_path / "out"
+    src_dir = out / "sources" / "com" / "example"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Foo.java").write_text("class Foo {}", encoding="utf-8")
+    client = JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "export_sources", lambda *a, **k: {"ok": True})
+    payload = client.decompile(apk, out, "com.example.Foo")
+    assert payload["clean_exit"] is True
+    assert payload["exit_code"] == 0
+    assert "stderr" not in payload

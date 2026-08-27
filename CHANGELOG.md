@@ -70,6 +70,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（jadx 部分反编译不再冒充完整源码树）
+
+- `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时
+  会以非零码退出但仍写出能反编译出来的类（适配器有意只在“一个类都没落地”时才硬失败）。于是一次
+  部分反编译会返回和干净整包反编译一模一样的载荷——无 `exit_code`、无任何“不完整”的信号，调用方
+  会把缺了若干类的树当成完整源码。现按 js/wasm 与 WinDbg 的同一范式，把 `exit_code` 与 `clean_exit`
+  放进 `export_sources` 载荷（非零退出再附有界 `stderr` 摘录），并把该信号透传进 `decompile`：某个
+  类即便读回成功，只要整包反编译非零退出，也以 `clean_exit=false` 提示同批其他类可能缺失。
+
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
 - `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
