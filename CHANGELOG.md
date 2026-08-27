@@ -245,21 +245,6 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
-### 修复（`dotnet.il` switch 跳转表令其后整段反汇编错位）
-
-- 与上面的有符号操作数同属控制流解码：`switch`（0x45）是 CIL 里唯一变长操作数的指令，
-  `uint32 count` 后跟 `count` 个 `int32` 分支目标，因此无法放进定长的 `_OPCODES` 表。
-  它于是落到未知操作码分支——只前进 1 字节，然后把 `4 + 4*count` 字节的操作数当成后续
-  操作码逐一解码。跳转表本身被解成垃圾指令，更糟的是线性扫描此后一直错位：switch 之后
-  的 `ret`、agent 用来跟踪控制流的 `call` 全部按操作数宽度整体偏移，而 `partial` 仍是
-  false，读者毫无信号。
-- 现在 `_disassemble_il` 单独识别 `switch`：读出 `count`、整体跳过 `4 + 4*count` 字节的
-  跳转表让扫描重新对齐，并按 ECMA-335 以有符号 int32 解出目标放进 `targets`。跳转表
-  越过方法体（含 `count` 字本身被截断）按既有截断口径记为 `partial` 并停下，不再把
-  残缺表当短表继续。新增四条直测：两臂 switch 后 `ret` 落在正确 ip、空 switch 也跨过
-  count 字、目标数超过剩余字节判 partial、count 字被截断判 partial。已做变异验证：去掉
-  该分支后四条中的失配即触发。
-
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
@@ -270,6 +255,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `android` extra 声明的 `>=16.5` 全区间）。真机验证：修复后读模块基址前 4 字节返回 ELF 魔数
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
+
+### 修复（`dotnet.il` switch 跳转表令其后整段反汇编错位）
+
+- 与 `dotnet.il` 的有符号操作数修复同属控制流解码：`switch`（0x45）是 CIL 里唯一变长
+  操作数的指令，`uint32 count` 后跟 `count` 个 `int32` 分支目标，因此无法放进定长的
+  `_OPCODES` 表。它于是落到未知操作码分支——只前进 1 字节，然后把 `4 + 4*count` 字节的
+  操作数当成后续操作码逐一解码。跳转表本身被解成垃圾指令，更糟的是线性扫描此后一直
+  错位：switch 之后的 `ret`、agent 用来跟踪控制流的 `call` 全部按操作数宽度整体偏移，
+  而 `partial` 仍是 false，读者毫无信号。
+- 现在 `_disassemble_il` 单独识别 `switch`：读出 `count`、整体跳过 `4 + 4*count` 字节的
+  跳转表让扫描重新对齐，并按 ECMA-335 以有符号 int32 解出目标放进 `targets`。跳转表
+  越过方法体（含 `count` 字本身被截断）按既有截断口径记为 `partial` 并停下，不再把
+  残缺表当短表继续。新增四条直测：两臂 switch 后 `ret` 落在正确 ip、空 switch 也跨过
+  count 字、目标数超过剩余字节判 partial、count 字被截断判 partial。已做变异验证：去掉
+  该分支后四条中的失配即触发。
 
 ### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
 
