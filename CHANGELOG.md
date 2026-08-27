@@ -70,6 +70,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
+
+- `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
+  函数体”无从区分，无人值守的一遍会把空串当成函数体。postScript 只有在 `getFunctionContaining`
+  命中时才写 `function`/`entry`。现由脚本显式写出 `found` 布尔，客户端在解析这份跨解释器 JSON 时
+  也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
+  空的 `decompiled` 是这个原因而非空函数体。
+
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 
 - `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时
