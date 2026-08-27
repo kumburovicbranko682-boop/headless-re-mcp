@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。278 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
+Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。279 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -135,7 +135,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
 - Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
 - Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
-- Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）、`wasm.sections/functions/globals/imports/exports/names/strings`（纯 Python 读二进制，免 wabt）；WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin
+- Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）、`wasm.sections/functions/globals/elements/imports/exports/names/strings`（纯 Python 读二进制，免 wabt）；WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin
 - Web 动态：`web.open/navigate/close/network.list/network.get/console/scripts/script.source/wasm.list/dom.snapshot/screenshot/har.export`（Playwright 驱动 CDP）
 - 抓包（Web 与 Android 共用）：`proxy.start/stop/status/flows/flow.get/replay/export_har/ca.install_android`（mitmproxy 进程内）
 - 工作方向：`workspace.mode.get/set`（`full|pe|android|web`）
@@ -206,7 +206,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-278 个工具的读写归类（161 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+279 个工具的读写归类（162 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 
@@ -395,7 +395,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
-- 277 个工具（全部 278 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
+- 278 个工具（全部 279 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
   敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的

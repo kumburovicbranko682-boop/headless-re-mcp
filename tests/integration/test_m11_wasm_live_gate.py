@@ -256,3 +256,39 @@ def test_m11_wasm_globals_read_from_bytes(tmp_path: Path) -> None:
             "init": {"op": "i32.const", "value": 0},
         },
     ]
+
+
+@pytest.mark.integration
+def test_m11_wasm_elements_read_from_bytes(tmp_path: Path) -> None:
+    """wasm.elements reads the Element section and decodes a funcidx list, no wabt.
+
+    Builds a module with one active element segment (table 0, offset 0) that
+    writes function indices [0, 1, 2] into the table, and asserts the parser
+    recovers the segment's mode, table, offset and the funcidx list end to end,
+    all in-process (never skips on a wabt-less host).
+    """
+    magic = bytes.fromhex("0061736d01000000")
+    # Element section (id 9): count 1, then a flags-0 active segment as
+    # <0x00><offset expr: i32.const 0, end><vec funcidx: count 3, then 0,1,2>.
+    segment = b"\x00" + b"\x41\x00\x0b" + bytes([3, 0, 1, 2])
+    body = bytes([1]) + segment
+    module = magic + bytes([9, len(body)]) + body
+
+    fixture = tmp_path / "elements.wasm"
+    fixture.write_bytes(module)
+    client = WasmClient(None)  # deliberately no wabt: elements never needs it
+
+    result = client.elements(fixture)
+    assert result["incomplete"] is False
+    assert result["total"] == 1
+    assert result["elements"] == [
+        {
+            "index": 0,
+            "flags": 0,
+            "mode": "active",
+            "table": 0,
+            "offset": 0,
+            "func_count": 3,
+            "funcs": [0, 1, 2],
+        }
+    ]

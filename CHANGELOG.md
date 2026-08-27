@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **279（162 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1445,6 +1445,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   工具面 276→**277**(159→**160** 只读,写不变)。单测(`test_wasm_imports_exports.py`):类型/可变性/整型初值、负 i32 初值(证带符号 LEB128 的符号扩展)、i64 超 2^32 与 f64 字面量、非有限浮点保 op 丢 value、索引在被导入全局之后偏移、
   `global.get` 初值报被引用索引、无 Global 段为空而非报错、段截断置 incomplete、无法解码的初值(0x00 非常量操作码)置 incomplete 且不臆造下一条起点、非模块硬报错、WasmClient 无 wabt 也能分页读盘且列表字段名为 globals、缺文件报 `not_found`。
   实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对手工装配、含两枚 i32 全局(一枚 const 初值 66560 即栈指针量级、一枚 mutable 初值 0)的模块读回各自的索引/类型/可变性与解码初值,初值 66560 为三字节 LEB128 故一并端到端验证带符号 LEB 解码。
+
+- **新增 `wasm.elements`:列出一个 `.wasm` 模块的元素段(element segments)——即写进表(table)、供 `call_indirect` 间接调用取目标的那份函数索引表。** 一枚 WASM 的间接调用(C++ 虚函数分派、函数指针)都走 `call_indirect` 从某张表里按下标取目标,
+  而表由元素段填充;`wasm.sections` 能看到「有个元素段、N 条」,但「这张表里到底放了哪些函数」——把「间接调用到表槽 N」还原成一个具体函数所必需的那份清单——没有一个工具给出。新工具直接读 Element 段(id 9),
+  故与 `wasm.imports`/`sections`/`functions`/`globals` 同为**纯 Python 读二进制、免 wabt、不随其版本漂移**;输入超 16 MiB 按 `too_large` 拒绝。元素段用 bulk-memory 的 flags(0–7)编码,新读器覆盖全部八种:主动/被动/声明式三种 mode、
+  显式或缺省的表索引、offset 常量表达式,以及既可为裸 funcidx 向量(flags 0–3)也可为元素表达式向量(flags 4–7)的载荷。每行含 `index`(段在节内的位次)、`flags`(原始 0–7)、`mode`(active/passive/declarative)与 `funcs`
+  ——该段写入表的函数索引,取自模块的**绝对函数索引空间**(先导入后定义,故与 `wasm.functions` 及 call 指令的编号对齐),`ref.null` 槽读作 `null`;主动段另含 `table`(目标表索引)与(当 offset 为普通常量时)`offset`(其 funcs 起始的表位置)。
+  `func_count` 为声明的槽数,单段列表触达每段上限时置 `funcs_truncated`。回 `elements`/`count`/`total`/`offset`/`declared`/`has_more`/`incomplete`:`total`/`declared` 因截断、触达条目上限或某段无法解码而背离时 `incomplete` 为真;预算裁剪落到 `has_more`,可继续翻页。
+  flags>7 属未知编码,就地停下并置 incomplete 而非臆测其布局。工具面 278→**279**(161→**162** 只读,写不变)。单测(`test_wasm_imports_exports.py`):flags 0 的偏移+funcidx 向量、flags 2 的显式表索引与偏移、flags 1 被动无表无偏移、
+  flags 3 声明式、flags 4 表达式向量读回 ref.func 索引与 ref.null 空槽、flags 5 被动表达式向量、无 Element 段为空而非报错、flags>7 置 incomplete、段截断置 incomplete、单段超上限截断并置 funcs_truncated、非模块硬报错、
+  WasmClient 无 wabt 也能分页读盘且列表字段名为 elements、缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对手工装配、含一枚主动段(表 0、偏移 0、写入函数索引 [0,1,2])的模块端到端读回其 mode/table/offset/funcs。
 
 - **新增 `apk.class_info`:给出单个类的继承与形状——父类、实现的接口、访问标志、方法数与字段数。** `apk.classes` 只列类名、`apk.methods` 只列某类的方法,而「这个类*是什么*」——它继承谁、实现了哪些接口——没有一个工具结构化给出;
   逆向一枚 APK 时,继承与接口正是导航图:`implements` 里出现 `Ljavax/net/ssl/X509TrustManager;` 就是自定义信任管理器(SSL 校验绕过的高发点)、`Ljava/lang/Runnable;` 就是后台线程,`superclass` 把一个被混淆的类系到它真正的父类

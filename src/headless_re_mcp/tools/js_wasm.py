@@ -179,6 +179,39 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_globals(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.elements")
+    def wasm_elements(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a .wasm module's element segments (its indirect-call table).
+
+        Reads the Element section directly, so it needs no wabt and cannot drift
+        with a wabt version; an input over 16 MiB is refused as too_large. Element
+        segments populate the module's tables, and a table is what a call_indirect
+        instruction dispatches through -- so this is the list a reverse engineer
+        reads to turn "indirect call to table slot N" into a concrete function,
+        the way C++ virtual dispatch and function pointers compile to WASM.
+        Answers with elements, count, total, offset, declared, has_more and
+        incomplete. Each row has index (its position in the section), flags (the
+        raw 0-7 bulk-memory encoding), mode (active/passive/declarative) and funcs
+        -- the function indices the segment writes into the table, in the module's
+        absolute function-index space (imported functions counted first, so a
+        value lines up with wasm.functions and with call instructions); a ref.null
+        slot reads as null. An active segment also carries table (the table index
+        it targets) and, when the offset is a plain constant, offset (the table
+        position its funcs begin at). func_count is the declared slot count and
+        funcs_truncated is true when a single segment's list hit the per-segment
+        cap. total is the number of segments parsed and pageable; declared is the
+        count the section header claimed; incomplete is true when they diverge
+        because the module was truncated, the entry cap was hit, or a segment could
+        not be decoded. count may be below limit when the result-size budget
+        trimmed the page, so read count, not limit, and page on has_more. The list
+        field is elements, not items.
+        """
+        return _dump(analysis.wasm_elements(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,

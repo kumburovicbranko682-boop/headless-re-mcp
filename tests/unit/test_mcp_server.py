@@ -304,6 +304,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "wasm.wat",
         "wasm.functions",
         "wasm.globals",
+        "wasm.elements",
         "wasm.imports",
         "wasm.exports",
         "wasm.names",

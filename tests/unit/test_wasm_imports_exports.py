@@ -793,6 +793,185 @@ def test_wasm_globals_docstring_names_its_fields() -> None:
         assert token in doc
 
 
+_OFFSET0 = b"\x41\x00\x0b"  # (i32.const 0) end -- an offset expr at table position 0
+
+
+def _elem_section(*segments: bytes) -> bytes:
+    return _section(9, _vec(list(segments)))
+
+
+def _funcvec(indices: list[int]) -> bytes:
+    return _vec([bytes([index]) for index in indices])
+
+
+def _reffunc_expr(index: int) -> bytes:
+    return b"\xd2" + bytes([index]) + b"\x0b"  # (ref.func index) end
+
+
+_REFNULL_EXPR = b"\xd0\x70\x0b"  # (ref.null func) end
+
+
+def test_parse_elements_active_flag0_reads_offset_and_funcidx_vec() -> None:
+    """The classic active segment: table 0, an offset, then a raw funcidx list.
+
+    Measured: flags 0 with offset 0 and funcs [1,2,3] -> mode active, table 0,
+    offset 0, func_count 3; declared 1, not incomplete.
+    """
+    module = _module(_elem_section(b"\x00" + _OFFSET0 + _funcvec([1, 2, 3])))
+    entries, declared, incomplete = wf.parse_elements(module)
+    assert declared == 1
+    assert incomplete is False
+    assert entries == [
+        {
+            "index": 0,
+            "flags": 0,
+            "mode": "active",
+            "table": 0,
+            "offset": 0,
+            "func_count": 3,
+            "funcs": [1, 2, 3],
+        }
+    ]
+
+
+def test_parse_elements_active_flag2_has_table_index_and_offset() -> None:
+    """flags 2 carries an explicit table index and its own offset expression."""
+    segment = b"\x02" + bytes([1]) + b"\x41\x05\x0b" + b"\x00" + _funcvec([7])
+    entries, _declared, incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert incomplete is False
+    assert entries[0]["mode"] == "active"
+    assert entries[0]["table"] == 1
+    assert entries[0]["offset"] == 5
+    assert entries[0]["funcs"] == [7]
+
+
+def test_parse_elements_passive_flag1_has_no_table_or_offset() -> None:
+    """A passive segment names no table and no offset -- just its funcidx list."""
+    segment = b"\x01" + b"\x00" + _funcvec([4, 5])
+    entries, _declared, _incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert entries[0]["mode"] == "passive"
+    assert entries[0]["funcs"] == [4, 5]
+    assert "table" not in entries[0]
+    assert "offset" not in entries[0]
+
+
+def test_parse_elements_declarative_flag3_reads_as_declarative() -> None:
+    """flags 3 is a declarative segment (forward-declares funcs, fills no table)."""
+    segment = b"\x03" + b"\x00" + _funcvec([9])
+    entries, _declared, _incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert entries[0]["mode"] == "declarative"
+    assert entries[0]["funcs"] == [9]
+    assert "table" not in entries[0]
+
+
+def test_parse_elements_expr_vec_flag4_reads_ref_func_and_null_slots() -> None:
+    """flags 4 gives each slot as an expression: ref.func -> index, ref.null -> None."""
+    segment = b"\x04" + _OFFSET0 + _vec([_reffunc_expr(2), _REFNULL_EXPR, _reffunc_expr(8)])
+    entries, _declared, incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert incomplete is False
+    assert entries[0]["mode"] == "active"
+    assert entries[0]["offset"] == 0
+    assert entries[0]["func_count"] == 3
+    assert entries[0]["funcs"] == [2, None, 8]
+
+
+def test_parse_elements_passive_expr_vec_flag5() -> None:
+    """flags 5 is a passive expression vector prefixed by a reftype byte."""
+    segment = b"\x05" + b"\x70" + _vec([_reffunc_expr(3)])
+    entries, _declared, _incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert entries[0]["mode"] == "passive"
+    assert entries[0]["funcs"] == [3]
+    assert "offset" not in entries[0]
+
+
+def test_parse_elements_no_element_section_is_empty_not_incomplete() -> None:
+    """A module lacking an Element section yields an empty, complete answer."""
+    assert wf.parse_elements(_module(_TYPE_SECTION)) == ([], 0, False)
+
+
+def test_parse_elements_unknown_flags_is_incomplete() -> None:
+    """A flags value above 7 is an encoding we do not know: stop and flag it."""
+    entries, declared, incomplete = wf.parse_elements(_module(_elem_section(b"\x08\x00")))
+    assert entries == []
+    assert declared == 1
+    assert incomplete is True
+
+
+def test_parse_elements_truncated_segment_is_incomplete() -> None:
+    """A section claiming more segments than its bytes hold stops and flags it."""
+    # declares 2, carries one whole flag-0 segment then a dangling flags byte.
+    body = bytes([2]) + (b"\x00" + _OFFSET0 + _funcvec([1])) + b"\x00"
+    entries, declared, incomplete = wf.parse_elements(_module(_section(9, body)))
+    assert declared == 2
+    assert incomplete is True
+    assert [row["index"] for row in entries] == [0]
+
+
+def test_parse_elements_caps_a_segment_and_flags_funcs_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One over-cap segment yields a partial funcs list flagged funcs_truncated."""
+    monkeypatch.setattr(wf, "_MAX_ELEM_FUNCS", 2)
+    segment = b"\x00" + _OFFSET0 + _funcvec([1, 2, 3, 4])
+    entries, _declared, _incomplete = wf.parse_elements(_module(_elem_section(segment)))
+    assert entries[0]["func_count"] == 4
+    assert entries[0]["funcs"] == [1, 2]
+    assert entries[0]["funcs_truncated"] is True
+
+
+def test_parse_elements_rejects_a_non_module() -> None:
+    """Bytes without the wasm magic are not a module at all (hard error)."""
+    for bad in (b"", b"not wasm here", b"\x00asm"):
+        with pytest.raises(wf.WasmParseError):
+            wf.parse_elements(bad)
+
+
+def test_wasm_client_elements_pages_and_needs_no_wabt(tmp_path: Path) -> None:
+    """WasmClient.elements reads a file, pages segments, and works with no wabt.
+
+    Measured: a three-segment module through WasmClient(None) -> total 3,
+    declared 3, incomplete False; limit 2 -> count 2, has_more True, list field
+    elements (not items); offset 2 -> the last segment, has_more False.
+    """
+    module = _module(
+        _elem_section(
+            b"\x00" + _OFFSET0 + _funcvec([1]),
+            b"\x00" + _OFFSET0 + _funcvec([2]),
+            b"\x00" + _OFFSET0 + _funcvec([3]),
+        )
+    )
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+
+    client = WasmClient(None)  # no wabt path; elements must still work
+    first = client.elements(path, limit=2)
+    assert first["total"] == 3
+    assert first["declared"] == 3
+    assert first["incomplete"] is False
+    assert first["count"] == 2
+    assert len(first["elements"]) == 2
+    assert first["has_more"] is True
+    assert "items" not in first
+    second = client.elements(path, offset=2, limit=2)
+    assert second["count"] == 1
+    assert second["offset"] == 2
+    assert second["has_more"] is False
+    assert second["elements"][0]["funcs"] == [3]
+
+
+def test_wasm_client_elements_missing_file_is_not_found(tmp_path: Path) -> None:
+    """A missing module is not_found, not a crash or a fabricated empty table."""
+    with pytest.raises(JsReError) as info:
+        WasmClient(None).elements(tmp_path / "nope.wasm")
+    assert info.value.code == "not_found"
+
+
+def test_wasm_elements_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.elements")
+    for token in ("elements", "flags", "mode", "funcs", "func_count", "table", "incomplete"):
+        assert token in doc
+
+
 def _bytevec(payload: bytes) -> bytes:
     # A WASM byte vector: a LEB length prefix (single byte for len < 128) then
     # the raw bytes. All data-segment payloads here stay under that.

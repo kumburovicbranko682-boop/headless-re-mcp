@@ -18,6 +18,7 @@ from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_
 from headless_re_mcp.backends.jsre.wasm_format import (
     WasmParseError,
     parse_data_strings,
+    parse_elements,
     parse_exports,
     parse_functions,
     parse_globals,
@@ -321,6 +322,24 @@ class WasmClient:
         return _paged_entries(
             entries, "functions", declared, incomplete, offset=offset, limit=limit
         )
+
+    def elements(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured element segments (the indirect-call table population).
+
+        Reads the Element section directly, so it needs no wabt and cannot drift
+        with a wabt version; an input over 16 MiB is refused as too_large. Each
+        segment's funcs are the function indices it writes into a table -- the
+        call_indirect dispatch targets, in the module's absolute function-index
+        space (imported functions first, matching wasm.functions).
+        """
+        data = self._read_module(path)
+        try:
+            entries, declared, incomplete = parse_elements(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        return _paged_entries(entries, "elements", declared, incomplete, offset=offset, limit=limit)
 
     def globals(
         self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT

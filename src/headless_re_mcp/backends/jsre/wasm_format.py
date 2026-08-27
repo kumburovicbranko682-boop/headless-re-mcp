@@ -4,8 +4,10 @@
 engineer asks first -- what host functions/globals/memories/tables the module
 depends on, and what it exposes back to the host -- while ``wasm.sections`` maps
 the module's layout, ``wasm.functions`` lists the defined-function table with
-resolved signatures and names, ``wasm.names`` symbolises it from the custom name
-section, and ``wasm.strings`` pulls the Data-section literal pool. All read the
+resolved signatures and names, ``wasm.globals`` decodes the global-variable
+table, ``wasm.elements`` lists the element segments that populate the indirect-
+call table, ``wasm.names`` symbolises it from the custom name section, and
+``wasm.strings`` pulls the Data-section literal pool. All read the
 module's binary sections directly. Reading the bytes (the format is a stable spec)
 instead of scraping ``wasm-objdump`` text means these work with no wabt install
 and cannot drift with a wabt version.
@@ -89,6 +91,12 @@ _MAX_DATA_STRINGS = 4096
 _END_OP = 0x0B
 _CONST_LEB_OPS = frozenset({0x41, 0x42, 0x23, 0xD2})  # i32/i64.const, global.get, ref.func
 _CONST_FIXED_OPS = {0x43: 4, 0x44: 8, 0xD0: 1}  # f32.const, f64.const, ref.null
+
+# Element-section bounds. A single segment's function list is capped so one
+# hostile segment cannot allocate unboundedly; the segment count rides the
+# shared _MAX_ENTRIES / _MAX_VEC caps like every other vector section.
+_ELEMENT_SECTION_ID = 9
+_MAX_ELEM_FUNCS = 8192
 
 
 class WasmParseError(Exception):
@@ -592,6 +600,102 @@ def parse_globals(data: bytes) -> tuple[list[JsonObject], int, bool]:
             if init is not None:
                 entry["init"] = init
             entries.append(entry)
+    except _Truncated:
+        incomplete = True
+    return entries, declared, incomplete
+
+
+def _element_func_from_expr(reader: _Reader) -> int | None:
+    """One element expression -> the function index it names, or None.
+
+    Flags 4-7 give each table slot as a const expression rather than a raw
+    funcidx: in practice ``ref.func <idx>`` (a real target) or ``ref.null`` (an
+    empty slot). Reuse the global-init decoder and keep only the funcidx.
+    """
+    init = _read_global_init(reader)
+    if init is not None and init.get("op") == "ref.func":
+        return int(init["value"])
+    return None
+
+
+def _read_element_segment(reader: _Reader, index: int) -> JsonObject:
+    """Decode one element segment per the bulk-memory flags encoding (0-7).
+
+    The leading flags byte selects the mode (active/passive/declarative), whether
+    a table index and an offset expression are present, and whether the payload is
+    a raw funcidx vector (flags 0-3) or a vector of element expressions (flags
+    4-7). A flags value above 7 is an encoding we do not know, so bail.
+    """
+    flags = reader.uleb()
+    if flags > 7:
+        raise _Truncated
+    if flags in (1, 5):
+        mode = "passive"
+    elif flags in (3, 7):
+        mode = "declarative"
+    else:
+        mode = "active"
+    entry: JsonObject = {"index": index, "flags": flags, "mode": mode}
+    # flags 2 and 6 carry an explicit table index; 0 and 4 target table 0.
+    table = reader.uleb() if flags in (2, 6) else 0
+    if mode == "active":
+        entry["table"] = table
+        offset = _read_global_init(reader)
+        if offset is not None and offset.get("op") == "i32.const":
+            entry["offset"] = offset["value"]
+    # An elemkind (flags 1/2/3) or reftype (flags 5/6/7) byte precedes the
+    # payload for every flag except the two bare-funcref forms (0 and 4).
+    uses_expr = flags in (4, 5, 6, 7)
+    if flags not in (0, 4):
+        reader.byte()
+    count = reader.uleb()
+    if count > _MAX_VEC:
+        raise _Truncated
+    take = min(count, _MAX_ELEM_FUNCS)
+    funcs: list[int | None] = []
+    for _ in range(take):
+        funcs.append(_element_func_from_expr(reader) if uses_expr else reader.uleb())
+    entry["func_count"] = count
+    entry["funcs"] = funcs
+    if count > take:
+        entry["funcs_truncated"] = True
+    return entry
+
+
+def parse_elements(data: bytes) -> tuple[list[JsonObject], int, bool]:
+    """``(entries, declared_count, incomplete)`` for the module's element segments.
+
+    The Element section (id 9) initialises the module's tables -- the indirect-
+    call dispatch surface a ``call_indirect`` selects a target from, so this is
+    how function pointers / C++ vtables are reconstructed from a WASM binary. Each
+    entry carries index (its position in the section), flags (the raw 0-7
+    encoding), mode (active/passive/declarative), and funcs -- the function
+    indices the segment puts in the table, in the module's absolute function-index
+    space (imported functions first, so they line up with wasm.functions and call
+    instructions); a ref.null slot reads as null. An active segment also carries
+    table (the table index it targets) and, when the offset is a plain constant,
+    offset (the table position its funcs start at). func_count is the declared
+    number of slots; funcs_truncated flags a segment whose list hit the per-
+    segment cap. ``incomplete`` is set like the sibling parsers when the section
+    was truncated, the segment count exceeded the entry cap, or a segment could
+    not be decoded.
+    """
+    sections = _walk_sections(data)
+    body = sections.get(_ELEMENT_SECTION_ID)
+    if not body:
+        return [], 0, False
+    reader = _Reader(body)
+    entries: list[JsonObject] = []
+    declared = 0
+    incomplete = False
+    try:
+        declared = reader.uleb()
+        if declared > _MAX_VEC:
+            raise _Truncated
+        limit = min(declared, _MAX_ENTRIES)
+        incomplete = declared > limit
+        for index in range(limit):
+            entries.append(_read_element_segment(reader, index))
     except _Truncated:
         incomplete = True
     return entries, declared, incomplete
