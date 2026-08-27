@@ -150,6 +150,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "ghidra.decompile",
         "frida.attach",
         "frida.modules",
+        "frida.threads",
         "frida.exports",
         "frida.memory.read",
         "frida.hook.template",

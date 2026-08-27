@@ -116,6 +116,23 @@ rpc.exports = {
     }
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
+  threads: function (limit) {
+    var all = Process.enumerateThreads();
+    var items = [];
+    var cap = Math.max(0, limit);
+    for (var i = 0; i < all.length && items.length < cap; i++) {
+      var t = all[i];
+      // pc/sp are the cross-arch context aliases frida guarantees; a thread
+      // whose context cannot be read still lists with empty pc/sp rather than
+      // dropping the row (a running thread is still a thread).
+      var pc = "";
+      var sp = "";
+      try { pc = t.context.pc.toString(); } catch (e) {}
+      try { sp = t.context.sp.toString(); } catch (e) {}
+      items.push({id: t.id, state: t.state, pc: pc, sp: sp});
+    }
+    return {threads: items, total: all.length};
+  },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
     // functions: frida 17 removed those globals, so the old form raised
@@ -353,6 +370,40 @@ class FridaClient:
             ]
             return {
                 "modules": items,
+                "count": len(items),
+                "total": total,
+                "has_more": total > len(items),
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def threads(self, pid: int, *, allowed_pid: int, limit: int = 128) -> JsonObject:
+        self._require(pid, allowed_pid)
+        session = self._attach_local(pid)
+        try:
+            script = session.create_script(_ENUM_SCRIPT)
+            script.load()
+            capped = max(1, min(int(limit), 512))
+            raw = script.exports_sync.threads(capped)
+            if isinstance(raw, dict):
+                held = list(raw.get("threads") or [])
+                total = int(raw.get("total") or len(held))
+            else:
+                held = list(raw or [])
+                total = len(held)
+            items = [
+                {
+                    "id": int(item.get("id", 0) or 0),
+                    "state": str(item.get("state", "")),
+                    "pc": str(item.get("pc", "")),
+                    "sp": str(item.get("sp", "")),
+                }
+                for item in held[:capped]
+                if isinstance(item, dict)
+            ]
+            return {
+                "threads": items,
                 "count": len(items),
                 "total": total,
                 "has_more": total > len(items),

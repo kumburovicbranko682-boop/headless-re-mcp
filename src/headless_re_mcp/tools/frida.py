@@ -42,6 +42,24 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
+    @tools.tool(name="frida.threads")
+    def frida_threads(
+        session_id: str, limit: Annotated[int, Field(ge=1, le=512)] = 128
+    ) -> dict[str, Any]:
+        """List the live threads in the session debuggee via a short-lived Frida probe.
+
+        Runs Process.enumerateThreads on the running process, the dynamic
+        companion to the static listers: which threads exist right now and
+        where each is executing. Answers with threads, each carrying id, state
+        (the OS scheduling state, e.g. running/waiting) and pc/sp (the program
+        counter and stack pointer, empty when the thread's context could not be
+        read), plus count for this page, total, and has_more so a page that
+        filled the limit is not read as every thread. A thread whose context is
+        unreadable still lists with empty pc/sp rather than being dropped.
+        Limited to the debuggee pid.
+        """
+        return _dump(analysis.frida_threads(session_id, limit=limit))
+
     @tools.tool(name="frida.exports")
     def frida_exports(
         session_id: str,
