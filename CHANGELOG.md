@@ -211,6 +211,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归：卡死的 USB 解析与卡死的 host:port `add_remote_device` 都在截止时间内抛 `timeout`
   而非空等(把 `_PROBE_TIMEOUT_S` 打小后计时断言)。
 
+### 修复（`frida.spawn` 的 resume 同步失败清理分支无测试守住）
+
+- `frida.spawn` 把目标以**挂起**态拉起,只有 `device.resume` 成功后才真正运行——spawn 与 resume 是两步,
+  第二步一旦失败,第一步已经造出一个冻结、占着槽、等着永不到来的 resume 的进程。`work()` 在自己的 `try`
+  里处理这种情况,与超时路径不同:`except FridaError` 先 `device.kill(spawned)` 再原样上抛(保留原 code),
+  `except Exception` 则 `kill` 后按非超时抛出点名 pid 的 `backend_error`(「spawned pid N but resume failed;
+  process was killed」并带 `pid` 明细)。唯一的既有 spawn 清理测试让 `resume` **挂起**(`sleep(10)`),命中的是
+  外层 deadline 的 `on_timeout=_kill_spawned`,从不进这段内层 `except`。而 resume **同步**失败(「进程无响应」、
+  权限被拒、设备掉线,远比挂起常见)走的正是这里,三条行为均未被守住:generic 失败要杀掉孤儿并点名 pid
+  (删掉 `device.kill` 每次失败的 resume 都泄漏一个冻结进程,调用方连该清哪个 pid 都不知道);resume 抛
+  `FridaError`(如设备拒绝 resume 的 `permission_denied`)要保留原 code 原样上抛,不能被拍平成泛化的
+  `backend_error` 让调用方盲目重试;`kill` 自身失败时 `contextlib.suppress` 要保证 resume 的真实错误仍能浮现,
+  而非被清理步骤的异常顶替。新增回归:以同步失败(充裕超时,确保非 deadline)的假设备逐条钉住 generic 杀+
+  点名 pid、结构化错误保留 `permission_denied`、以及 kill 失败不遮蔽真错;每条分支被破坏后各由且仅由一条测试捕获。
+
 ### 修复（js/wasm 工具非零退出不再伪装成干净结果）
 
 - `js.deobfuscate` / `js.beautify` / `js.unpack_bundle` / `wasm.wat` / `wasm.info` 走的是「工具死了也把
