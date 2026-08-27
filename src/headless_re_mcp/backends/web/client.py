@@ -538,13 +538,32 @@ class WebBackend:
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
+            # page.goto only raises on a transport-level failure (DNS, TLS, the
+            # nav timing out). An HTTP 404 or 500 resolves normally and loads
+            # the server's error page, so envelope success plus a url and title
+            # would otherwise read as "the requested page loaded" when the
+            # caller actually got an error body. Surface the main-document
+            # status so a 4xx/5xx is not mistaken for the real content. goto
+            # returns None for same-document/fragment navigations that carry no
+            # response; then there is no status to report.
+            status = getattr(response, "status", None)
+            if isinstance(status, int):
+                result["status"] = status
+                if status >= 400:
+                    result["note"] = (
+                        f"navigation loaded an HTTP {status} response; the page shown is "
+                        "the server's error response, not the requested content"
+                    )
+            return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 

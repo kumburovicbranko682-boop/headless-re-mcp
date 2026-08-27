@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.navigate 不再把 HTTP 错误页谎报为成功导航）
+
+- `web.navigate` 过去只回 `url` 与 `title`。Playwright 的 `page.goto` 只在传输层失败(DNS、TLS、
+  导航超时)时抛错;HTTP 404 或 500 会正常解析并载入服务器的错误页——于是一次落到 404 的导航仍
+  以成功信封回 `url`+`title`,读起来就是「目标页已加载」,爬取据此把错误页正文当成真实内容记
+  录,后续 dom/截图/HAR 全建立在错误页上。现捕获 `page.goto` 返回的主文档响应并回 `status`;
+  `status>=400` 时附 `note`,明说页面是服务器的错误响应而非目标内容。信封成功只代表导航完成,
+  不代表站点交付了页面。`goto` 对同文档/锚点跳转返回 None,此时没有 `status` 可报,不臆造。按既
+  有约定不新增 `ok`/`navigated` 布尔(信封已表达成败),只补披露性的 `status`。回归测试覆盖错误
+  状态、健康状态与无响应三种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

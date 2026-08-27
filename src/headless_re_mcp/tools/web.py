@@ -47,7 +47,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url and title. There is no navigated, ok or page field.
+        Answers with url and title, plus status (the HTTP status of the main
+        document) when the browser reported one. A status of 400 or more means
+        the page shown is the server's error response, not the requested
+        content, and carries a note saying so; envelope success only means the
+        navigation resolved, not that the site served the page. There is no
+        navigated, ok or page field.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
