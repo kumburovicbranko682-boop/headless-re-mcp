@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（MCP 工具超时后被放弃的 worker 线程会无界累积）
+
+- MCP 的 `offload` 把每个工具处理器丢到 AnyIO worker 线程上跑,配 `abandon_on_cancel` 与
+  `fail_after(timeout)`:catalog 超时触发或客户端断开时,调用会立刻返回,但**被放弃的处理器线程仍在跑**,
+  直到它自己真正退出。既有的软限流(`CapacityLimiter`)槽在超时那一刻就被释放、可复用了,于是每一次超时都可能
+  多留一条卡住的 AnyIO worker——长跑服务里无上限地累积。
+- 现新增一道**硬槽** `BoundedSemaphore(_TOOL_THREADS=16)`,只在处理器**真正退出**时释放:开工前非阻塞地取槽,
+  16 个都被卡住的处理器占着时,新工具调用直接回可重试的 `tool_concurrency_limit`,而不是再起一条卡住的线程。
+  用 `owned`/`started` 两个状态位加锁精确处理竞态:取消早于 AnyIO 调度时不跑陈旧的活、槽恰好释放一次(处理器
+  跑起来就由其 `finally` 释放,没跑起来则由外层 `finally` 释放),线程启动异常也照样归还。新增回归覆盖槽耗尽即拒、
+  处理器退出后槽被回收、并发上限。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
