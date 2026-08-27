@@ -51,6 +51,10 @@ def test_android_apk_static_happy_path() -> None:
         assert set(meta["native_abis"]) == {"arm64-v8a", "x86_64"}
         assert meta["dex_count"] == 1
         assert meta["signed_v1"] is True
+        # Stdlib DEX header facts: the fixture's one-class, one-method DEX.
+        assert meta["dex"]["versions"] == ["035"]
+        assert meta["dex"]["class_count"] == 1
+        assert meta["dex"]["method_count"] == 1
 
         opened = service.apk_open(session_id)
         assert opened.ok, opened.error

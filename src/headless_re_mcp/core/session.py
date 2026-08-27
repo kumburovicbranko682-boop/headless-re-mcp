@@ -412,6 +412,17 @@ _AXML_ATTR_BY_RES_ID = {
     0x01010003: "name",
 }
 
+# A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
+# strings) and format version are at known offsets, so how much code an APK
+# carries is a stdlib-only fact -- no androguard, no reading the whole member.
+_DEX_HEADER_SIZE = 0x70
+_DEX_MAGIC = b"dex\n"
+_DEX_ENDIAN_TAG = 0x12345678
+_DEX_MAX_FILES = 256
+# u32 fields; a real DEX stays well under this, so a larger value is a corrupt
+# header we refuse rather than sum into a nonsense total.
+_DEX_MAX_COUNT = 64_000_000
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -491,7 +502,65 @@ def describe_apk(path: Path) -> dict[str, Any]:
             "signed_v2": signed_v2,
             "signed_v3": signed_v3,
             "manifest": _apk_manifest_facts_from_apk(path),
+            "dex": _apk_dex_facts(path),
         }
+    }
+
+
+def _apk_dex_facts(path: Path) -> dict[str, Any]:
+    """Sum the DEX header counts across every ``*.dex`` in the package, or {}.
+
+    Reads only each member's 0x70-byte header. Fail-closed: an unreadable member
+    or an implausible header is skipped, and a package with no readable DEX
+    header yields {} rather than raising.
+    """
+    versions: set[str] = set()
+    class_count = method_count = string_count = 0
+    found = False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            dex_names = sorted(n for n in archive.namelist() if n.endswith(".dex"))
+            for name in dex_names[:_DEX_MAX_FILES]:
+                try:
+                    with archive.open(name) as handle:
+                        header = handle.read(_DEX_HEADER_SIZE)
+                except (OSError, zipfile.BadZipFile):
+                    continue
+                facts = _parse_dex_header(header)
+                if facts is None:
+                    continue
+                found = True
+                versions.add(facts["version"])
+                string_count += facts["string_count"]
+                method_count += facts["method_count"]
+                class_count += facts["class_count"]
+    except (OSError, zipfile.BadZipFile):
+        return {}
+    if not found:
+        return {}
+    return {
+        "versions": sorted(versions),
+        "class_count": class_count,
+        "method_count": method_count,
+        "string_count": string_count,
+    }
+
+
+def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
+    if len(header) < _DEX_HEADER_SIZE or header[0:4] != _DEX_MAGIC:
+        return None
+    if int.from_bytes(header[40:44], "little") != _DEX_ENDIAN_TAG:
+        return None
+    string_count = int.from_bytes(header[56:60], "little")
+    method_count = int.from_bytes(header[88:92], "little")
+    class_count = int.from_bytes(header[96:100], "little")
+    if max(string_count, method_count, class_count) > _DEX_MAX_COUNT:
+        return None
+    return {
+        "version": header[4:7].decode("ascii", errors="replace"),
+        "string_count": string_count,
+        "method_count": method_count,
+        "class_count": class_count,
     }
 
 

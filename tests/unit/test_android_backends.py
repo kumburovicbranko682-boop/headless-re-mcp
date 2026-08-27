@@ -176,6 +176,66 @@ class TestManifestFactsWithoutAndroguard:
         assert session.metadata["apk"]["manifest"]["package"] == "com.example.headless"
 
 
+def _dex_header(version: bytes, strings: int, methods: int, classes: int) -> bytes:
+    """A minimal but well-formed 0x70-byte DEX header carrying the counts."""
+    header = bytearray(0x70)
+    header[0:8] = b"dex\n" + version + b"\x00"
+    struct.pack_into("<I", header, 40, 0x12345678)  # endian tag
+    struct.pack_into("<I", header, 56, strings)  # string_ids_size
+    struct.pack_into("<I", header, 88, methods)  # method_ids_size
+    struct.pack_into("<I", header, 96, classes)  # class_defs_size
+    return bytes(header)
+
+
+class TestDexFactsWithoutAndroguard:
+    """describe_apk sums the DEX header counts stdlib-only.
+
+    How many classes, methods and strings an APK carries -- the first read on how
+    big and how obfuscated it is -- otherwise needs androguard's full parse. The
+    counts sit at fixed offsets in each member's 0x70-byte header, so reading just
+    those headers gives every session the totals for free.
+    """
+
+    def test_reads_the_committed_fixture_dex(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        dex = describe_apk(_APK_FIXTURE)["apk"]["dex"]
+        assert dex["versions"] == ["035"]
+        assert dex["class_count"] == 1
+        assert dex["method_count"] == 1
+        assert dex["string_count"] == 7
+
+    def test_sums_counts_and_collects_versions_across_multidex(self, tmp_path: Path) -> None:
+        path = tmp_path / "multidex.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", _dex_header(b"035", 10, 20, 3))
+            archive.writestr("classes2.dex", _dex_header(b"038", 5, 7, 2))
+        dex = describe_apk(path)["apk"]["dex"]
+        assert dex["versions"] == ["035", "038"]
+        assert dex["string_count"] == 15
+        assert dex["method_count"] == 27
+        assert dex["class_count"] == 5
+
+    def test_dex_facts_are_empty_when_no_header_is_readable(self, tmp_path: Path) -> None:
+        # A member named .dex whose magic is wrong is skipped; with no readable
+        # header the facts are empty rather than raising.
+        path = tmp_path / "bogus.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", b"not a dex file")
+        assert describe_apk(path)["apk"]["dex"] == {}
+
+    def test_a_corrupt_count_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", _dex_header(b"035", 0xFFFFFFFF, 1, 1))
+        # The absurd string count fails the sanity ceiling, so this DEX is
+        # skipped entirely rather than reported with a nonsense total.
+        assert describe_apk(path)["apk"]["dex"] == {}
+
+
 class TestNoShellPassthrough:
     def test_catalog_exposes_no_generic_device_shell(self) -> None:
         """The debugger surface has no dynamic.command; devices get the same rule."""
