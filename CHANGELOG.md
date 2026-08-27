@@ -60,6 +60,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（`web.network.get` 取不到响应体时仍保持形状）
+
+- `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
+  对某个请求没有响应体时(重定向,或响应体已被其缓存淘汰,`Network.getResponseBody` 抛
+  「No resource with given identifier found」),失败分支只回 `{**entry, body_error}`——恰恰在
+  这条路径上把承诺的三个字段全丢了,读 `result["body"]` 的调用方直接缺键。现失败分支补齐
+  `body=""`、`base64_encoded=false`、`body_truncated=false` 与 `body_error`(说明原因),成功
+  与失败两条路径形状一致;空体不落盘。文档串补上 `body_error`,并新增该失败路径的回归测试。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

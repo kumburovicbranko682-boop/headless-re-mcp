@@ -541,7 +541,17 @@ class WebBackend:
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            # CDP has no body for some requests -- a redirect, or a body already
+            # evicted from its cache. Keep the documented shape (empty body, not
+            # base64, not truncated) with body_error explaining why, so a caller
+            # reading result["body"] does not hit a missing key on this path.
+            return {
+                **entry,
+                "body": "",
+                "base64_encoded": False,
+                "body_truncated": False,
+                "body_error": str(exc),
+            }
         if not isinstance(body, str):
             body = str(body)
         inline, spill, cut = _spill_text(
