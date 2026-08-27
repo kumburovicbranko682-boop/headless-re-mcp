@@ -49,22 +49,6 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（device.force_stop 把设备离线的主机错误读成「已干净停止」）
-
-- 与 `device.install/uninstall` 的 `_pm_path` 同型：`_pids_for_package` 也没做
-  `_is_host_error_output` 判定。adbutils 会把 adb 主机端自己的 `error:` / `adb:` 行
-  当 stdout 返回而不抛异常，设备离线时 `pidof` 回的正是 `adb: device 'X' not found`。
-  这里比 `_pm_path` 更隐蔽：该串**包含 "not found"**，于是落进「pidof 不存在」的
-  `ps -A` 兜底分支；`ps -A` 同样回主机错误串，没有一行匹配包名，pid 列表为空，
-  `force_stop` 便把 `stopped` 报成 `True`——设备根本没连上、复核从未真正跑过，却
-  报成「已干净停止」。正是三态 null 分支要避免的假成功。
-- 现在 `_pids_for_package` 对 `pidof` 与 `ps -A` 两处输出都先过 `_is_host_error_output`，
-  命中即返回 None，`force_stop` 的 `stopped` 保持 null（“could not read process list”）。
-  真正未运行的包 `pidof` 回空文本（不算主机错误），仍如实为 `[]` / `stopped=True`。
-  新增两条直测：离线主机错误（含 "not found"、走 ps 兜底）令 `stopped` 为 null；
-  `error:` 前缀但无缺失措辞的主机错误也判为不可核实。已做变异验证：去掉判定即
-  回到 `stopped=True` 的假成功。
-
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
@@ -76,6 +60,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
+
+### 修复（device.force_stop 把设备离线的主机错误读成「已干净停止」）
+
+- 与上面 `_pm_path` 同型：`_pids_for_package` 也没做 `_is_host_error_output` 判定。
+  adbutils 会把 adb 主机端自己的 `error:` / `adb:` 行当 stdout 返回而不抛异常，设备
+  离线时 `pidof` 回的正是 `adb: device 'X' not found`。这里比 `_pm_path` 更隐蔽：该串
+  **包含 "not found"**，于是落进「pidof 不存在」的 `ps -A` 兜底分支；`ps -A` 同样回
+  主机错误串，没有一行匹配包名，pid 列表为空，`force_stop` 便把 `stopped` 报成
+  `True`——设备根本没连上、复核从未真正跑过，却报成「已干净停止」。正是三态 null
+  分支要避免的假成功。
+- 现在 `_pids_for_package` 对 `pidof` 与 `ps -A` 两处输出都先过 `_is_host_error_output`，
+  命中即返回 None，`force_stop` 的 `stopped` 保持 null（“could not read process list”）。
+  真正未运行的包 `pidof` 回空文本（不算主机错误），仍如实为 `[]` / `stopped=True`。
+  新增两条直测：离线主机错误（含 "not found"、走 ps 兜底）令 `stopped` 为 null；
+  `error:` 前缀但无缺失措辞的主机错误也判为不可核实。已做变异验证：去掉判定即
+  回到 `stopped=True` 的假成功。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
