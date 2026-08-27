@@ -44,6 +44,21 @@ versionInfo:
   versionName: '1.0'
 """
 
+# A manifest declaring permissions and components so the permissions/components
+# accessors have real values to read back, not just the metadata the plain
+# manifest carries. apktool compiles these into the binary AXML.
+_RICH_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.gate">
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="33"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <application android:label="Gate">
+        <activity android:name="com.example.gate.MainActivity"/>
+        <service android:name="com.example.gate.SyncService"/>
+    </application>
+</manifest>
+"""
+
 # A smali class apktool assembles into a real classes.dex on build. It carries
 # exactly the facts the DEX surface must read back: a class name, three named
 # methods, a unique string constant, and an internal call site (run -> add) so
@@ -195,6 +210,83 @@ def test_androguard_reads_a_real_compiled_manifest(tmp_path: Path) -> None:
         assert manifest.ok, manifest.error
         assert manifest.data["package"] == "com.example.gate"
         assert "uses-sdk" in manifest.data["manifest_xml"]
+    finally:
+        service.close_all()
+
+
+def _build_apk_with_manifest_extras(tmp_path: Path) -> Path:
+    """Compile an APK declaring permissions, components, and native libs.
+
+    apktool preserves a ``lib/<abi>/*.so`` tree into the archive and compiles the
+    permission/component declarations into the binary manifest, so androguard has
+    real values to recover. Skips (not fails) when apktool is missing or cannot
+    build here, like the other real-APK helper.
+    """
+    apktool = shutil.which("apktool")
+    if apktool is None:
+        pytest.skip("apktool not installed — cannot compile a real manifest (skip != pass)")
+    skeleton = tmp_path / "rich"
+    (skeleton / "lib" / "arm64-v8a").mkdir(parents=True)
+    (skeleton / "lib" / "x86_64").mkdir(parents=True)
+    (skeleton / "AndroidManifest.xml").write_text(_RICH_MANIFEST, encoding="utf-8")
+    (skeleton / "apktool.yml").write_text(_REAL_APKTOOL_YML, encoding="utf-8")
+    # Content is irrelevant to the enumeration; the paths are what matter.
+    (skeleton / "lib" / "arm64-v8a" / "libgate.so").write_bytes(b"\x7fELF-arm64-stub")
+    (skeleton / "lib" / "x86_64" / "libgate.so").write_bytes(b"\x7fELF-x86-stub")
+    out = tmp_path / "rich.apk"
+    proc = subprocess.run(
+        [apktool, "b", str(skeleton), "-o", str(out)],
+        capture_output=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or not out.is_file():
+        pytest.skip(
+            f"apktool build failed here — Gate not run (skip != pass): "
+            f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
+        )
+    return out
+
+
+@pytest.mark.integration
+def test_androguard_reads_permissions_components_and_native_libs(tmp_path: Path) -> None:
+    """The permission/component/native-lib accessors must read real values.
+
+    The manifest test proves package and SDK levels decode; these three
+    accessors read different parts of the same APK -- the permission list and
+    component tags from the binary AXML, and the abi set from the zip's lib/
+    entries -- and only ever ran against the synthetic archive's backend_error
+    path. Declare two permissions, an activity, a service, and two native libs,
+    then assert each accessor returns exactly what was compiled in, so an
+    androguard change to any of these surfaces fails instead of silently
+    under-reporting an app's capabilities.
+    """
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — success path not exercised (skip != pass)")
+    apk = _build_apk_with_manifest_extras(tmp_path)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        perms = service.apk_permissions(session_id)
+        assert perms.ok, perms.error
+        assert "android.permission.INTERNET" in perms.data["permissions"]
+        assert "android.permission.CAMERA" in perms.data["permissions"]
+
+        comps = service.apk_components(session_id)
+        assert comps.ok, comps.error
+        assert "com.example.gate.MainActivity" in comps.data["activities"]
+        assert "com.example.gate.SyncService" in comps.data["services"]
+
+        libs = service.apk_native_libs(session_id)
+        assert libs.ok, libs.error
+        assert set(libs.data["abis"]) == {"arm64-v8a", "x86_64"}
+        assert "lib/arm64-v8a/libgate.so" in libs.data["native_libs"]
+        assert libs.data["count"] == 2
     finally:
         service.close_all()
 
