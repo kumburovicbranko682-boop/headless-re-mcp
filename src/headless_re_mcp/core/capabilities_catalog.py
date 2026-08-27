@@ -140,7 +140,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "web.cdp",
         "backend": "web",
         "status_probe": "playwright",
-        "tools": ["web.open", "web.navigate", "web.network.list", "web.network.get", "web.scripts", "web.script.source", "web.cookies", "web.screenshot"],
+        "tools": ["web.open", "web.navigate", "web.network.list", "web.network.get", "web.scripts", "web.script.source", "web.cookies", "web.storage", "web.screenshot"],
         "summary": "Chrome DevTools Protocol driving via Playwright",
         "optional": True,
     },

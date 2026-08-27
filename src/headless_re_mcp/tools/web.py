@@ -117,6 +117,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.storage")
+    def web_storage(
+        session_id: str,
+        which: Annotated[str, Field(pattern="^(local|session)$")] = "local",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Read the page's localStorage or sessionStorage (which=local|session).
+
+        Answers with which, storage (each a key and value), count, total,
+        offset, has_more and scan_capped. The list field is storage, not
+        items or entries; a value cut at the per-key cap is marked
+        value_truncated, and scan_capped is true when the store held more
+        keys than were collected. A sandboxed origin (a data: page) returns
+        an empty storage with a note rather than an error.
+        """
+        return _dump(
+            analysis.web_storage(session_id, which=which, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

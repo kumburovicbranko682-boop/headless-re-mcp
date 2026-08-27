@@ -44,6 +44,38 @@ _MAX_METADATA_BYTES = 1024
 # list is capped and each value is bounded like every other captured field.
 _MAX_COOKIES = 1000
 _MAX_COOKIE_VALUE_BYTES = 8 * 1024
+# localStorage / sessionStorage: a page can write an unbounded number of keys
+# and a single value can be megabytes (SPAs park whole state trees there), so
+# the collection is capped and each value bounded like every other read field.
+# The fixed reader clips values in-page too, so a huge value never crosses the
+# bridge just to be trimmed here.
+_MAX_STORAGE_ITEMS = 1000
+_MAX_STORAGE_VALUE_BYTES = 8 * 1024
+# A canned reader, not caller JS: the surface withholds web.evaluate, but the
+# backend reads storage with a fixed script the same way dom_snapshot reads the
+# document. Values are clipped to the byte cap (counted generously as chars)
+# so the page never ships megabytes across the CDP bridge.
+_STORAGE_SCRIPT = """
+(args) => {
+  try {
+    const store = args.which === 'session' ? window.sessionStorage : window.localStorage;
+    const total = store.length;
+    const n = Math.min(total, args.maxItems);
+    const items = [];
+    for (let i = 0; i < n; i++) {
+      const key = store.key(i);
+      let value = store.getItem(key);
+      value = typeof value === 'string' ? value : (value == null ? '' : String(value));
+      let clipped = false;
+      if (value.length > args.maxChars) { value = value.slice(0, args.maxChars); clipped = true; }
+      items.push({ key: String(key), value: value, value_clipped: clipped });
+    }
+    return { items: items, total: total };
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+"""
 # What page.goto is allowed to navigate to. http(s) are the real targets;
 # ``data:`` loads controlled inline content (the web gates use it) in an opaque,
 # sandboxed origin that cannot touch the local disk. Everything else is refused:
@@ -650,6 +682,73 @@ class WebBackend:
             "offset": start,
             "has_more": start + len(window) < len(items),
         }
+
+    def storage(
+        self, session_id: str, *, which: str = "local", offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        handle = self._get(session_id)
+        kind = (which or "local").strip().lower()
+        if kind not in ("local", "session"):
+            raise WebError(
+                "invalid_params", "which must be 'local' or 'session'", which=which
+            )
+
+        def work() -> Any:
+            try:
+                return handle.page.evaluate(
+                    _STORAGE_SCRIPT,
+                    {
+                        "which": kind,
+                        "maxItems": _MAX_STORAGE_ITEMS,
+                        "maxChars": _MAX_STORAGE_VALUE_BYTES,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError(
+                    "backend_error", f"failed to read {kind}Storage: {exc}"
+                ) from exc
+
+        raw = self._runner(handle).call(work)
+        if not isinstance(raw, dict):
+            raw = {}
+        note: str | None = None
+        if raw.get("error"):
+            # A sandboxed origin (a data: page, or storage disabled) throws on
+            # window.localStorage. That is not this tool failing -- it is the
+            # page having no reachable store -- so it reports an empty jar with
+            # a note rather than a backend_error the caller has to special-case.
+            note = f"storage not accessible for this origin: {raw.get('error')}"
+            raw = {"items": [], "total": 0}
+        collected = raw.get("items")
+        store_total = int(raw.get("total") or 0)
+        items: list[JsonObject] = []
+        for pair in (collected if isinstance(collected, list) else [])[:_MAX_STORAGE_ITEMS]:
+            if not isinstance(pair, dict):
+                continue
+            key, _ = _bounded_metadata(pair.get("key"), _MAX_METADATA_BYTES)
+            value, value_cut = _bounded_metadata(pair.get("value"), _MAX_STORAGE_VALUE_BYTES)
+            entry: JsonObject = {"key": key, "value": value}
+            if value_cut or bool(pair.get("value_clipped")):
+                entry["value_truncated"] = True
+            items.append(entry)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_STORAGE_ITEMS))
+        window = items[start : start + cap]
+        result: JsonObject = {
+            "which": kind,
+            "storage": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
+            # store_total is the page's real key count; when it exceeds what was
+            # collected the caller is not seeing every key, the same disclosure
+            # apk.classes makes with scan_capped.
+            "scan_capped": store_total > len(items),
+        }
+        if note is not None:
+            result["note"] = note
+        return result
 
     def scripts(
         self,
