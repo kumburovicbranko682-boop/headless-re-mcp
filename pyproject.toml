@@ -213,6 +213,8 @@ module = [
   "adbutils.*",
   "androguard",
   "androguard.*",
+  "loguru",
+  "loguru.*",
   "mitmproxy",
   "mitmproxy.*",
   "playwright",
