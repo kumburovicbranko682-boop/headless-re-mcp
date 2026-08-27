@@ -64,6 +64,8 @@ def test_describe_wasm_reads_a_real_add_module(tmp_path: Path) -> None:
     # The one export is surfaced by name and kind, not just counted.
     assert info["exports"] == [{"name": "add", "kind": "func"}]
     assert info["imports"] == []
+    # No producers custom section at all reads as None, not an empty record.
+    assert info["producers"] is None
 
 
 def test_describe_wasm_lists_import_and_export_names_with_kinds(tmp_path: Path) -> None:
@@ -121,7 +123,59 @@ def test_describe_wasm_surfaces_every_vector_count_and_custom_name(tmp_path: Pat
     assert info["export_count"] == 7
     assert info["has_start"] is True
     assert info["custom_sections"] == ["producers"]
+    # The section is present but declares zero fields: an empty record, which
+    # is distinct from the None an absent section reads as.
+    assert info["producers"] == {}
     assert info["well_formed"] is True
+
+
+def _producers_section(fields: list[tuple[str, list[tuple[str, str]]]]) -> bytes:
+    body = _name("producers") + _leb(len(fields))
+    for field, values in fields:
+        body += _name(field) + _leb(len(values))
+        for name, version in values:
+            body += _name(name) + _name(version)
+    return _section(0, body)
+
+
+def test_describe_wasm_reads_the_producers_toolchain(tmp_path: Path) -> None:
+    """The producers section names what built the module -- rustc, bindgen, ...
+
+    This is the WASM analogue of an ELF .comment: the first triage fact about
+    provenance, and exactly what rustc/wasm-bindgen and Emscripten emit.
+    """
+    module = _module(
+        [
+            _producers_section(
+                [
+                    ("language", [("Rust", "")]),
+                    ("processed-by", [("rustc", "1.76.0"), ("wasm-bindgen", "0.2.92")]),
+                ]
+            )
+        ]
+    )
+    path = tmp_path / "built.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["producers"] == {
+        "language": ["Rust"],  # an empty version joins away rather than dangling
+        "processed-by": ["rustc 1.76.0", "wasm-bindgen 0.2.92"],
+    }
+    assert info["well_formed"] is True
+
+
+def test_producers_with_a_hostile_count_keeps_what_parsed(tmp_path: Path) -> None:
+    # The field declares 1000 values but carries one; the reader keeps the real
+    # pair and stops rather than misreading past the section (or allocating for
+    # the claim), and the rest of the module walk is unaffected.
+    body = _name("producers") + _leb(1) + _name("processed-by") + _leb(1000)
+    body += _name("clang") + _name("17.0.0")
+    module = _module([_section(0, body), _section(1, _leb(3) + b"\x00" * 6)])
+    path = tmp_path / "liar.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["producers"] == {"processed-by": ["clang 17.0.0"]}
+    assert info["type_count"] == 3  # the section after the liar still parsed
 
 
 def test_describe_wasm_is_fail_closed_on_a_malformed_tail(tmp_path: Path) -> None:

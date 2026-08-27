@@ -1202,6 +1202,13 @@ _WASM_COUNTED_SECTIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11})
 # we surface so a hostile module cannot make session creation allocate freely.
 _WASM_MAX_NAMES = 1024
 _WASM_EXTERNAL_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
+# The "producers" custom section (a tool-conventions standard) records which
+# language and toolchain built the module. A real section carries a handful of
+# fields (language / processed-by / sdk) with a few entries each, so small caps
+# bound a hostile section without losing anything from an honest one.
+_WASM_MAX_PRODUCER_FIELDS = 8
+_WASM_MAX_PRODUCER_VALUES = 8
+_WASM_MAX_PRODUCER_CHARS = 256
 
 
 def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
@@ -1249,6 +1256,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     custom_sections: list[str] = []
     exports: list[dict[str, Any]] = []
     imports: list[dict[str, Any]] = []
+    producers: dict[str, list[str]] | None = None
     has_start = False
     well_formed = True
     pos = 8
@@ -1279,14 +1287,15 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             has_start = True
         elif section_id == 0:
             name_len, name_pos, named = _read_leb_u32(data, body_start)
-            if (
-                named
-                and name_pos + name_len <= body_end
-                and len(custom_sections) < _WASM_MAX_CUSTOM_NAMES
-            ):
-                custom_sections.append(
-                    data[name_pos : name_pos + name_len].decode("utf-8", errors="replace")
-                )
+            if named and name_pos + name_len <= body_end:
+                cname = data[name_pos : name_pos + name_len].decode("utf-8", errors="replace")
+                if len(custom_sections) < _WASM_MAX_CUSTOM_NAMES:
+                    custom_sections.append(cname)
+                # "producers" names the toolchain that built the module -- the
+                # WASM analogue of an ELF .comment: rustc/wasm-bindgen,
+                # Emscripten/clang and friends all emit it.
+                if cname == "producers" and producers is None:
+                    producers = _wasm_producers(data, name_pos + name_len, body_end)
         pos = body_end
         walked += 1
     return {
@@ -1302,6 +1311,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "memory_count": vector_counts.get("memory_count"),
             "has_start": has_start,
             "custom_sections": custom_sections,
+            "producers": producers,
             "exports": exports,
             "imports": imports,
             "well_formed": well_formed and not truncated,
@@ -1595,6 +1605,45 @@ def _read_wasm_name(data: bytes, pos: int) -> tuple[str | None, int]:
     if not ok or pos + length > len(data):
         return None, pos
     return data[pos : pos + length].decode("utf-8", errors="replace"), pos + length
+
+
+def _wasm_producers(data: bytes, pos: int, body_end: int) -> dict[str, list[str]]:
+    """Field -> ["name version", ...] from a producers custom section.
+
+    The layout (tool-conventions ProducersSection.md) is a vector of fields,
+    each a name plus a vector of (name, version) string pairs -- for example
+    ``language: [Rust]`` and ``processed-by: [rustc 1.76.0, wasm-bindgen ...]``.
+    Bounded and fail-closed like every other reader here: caps on fields,
+    values and string length, and a malformed tail keeps what parsed cleanly
+    rather than raising.
+    """
+    count, pos, ok = _read_leb_u32(data, pos)
+    if not ok:
+        return {}
+    out: dict[str, list[str]] = {}
+    for _ in range(min(count, _WASM_MAX_PRODUCER_FIELDS)):
+        field, pos = _read_wasm_name(data, pos)
+        if field is None or pos > body_end:
+            break
+        value_count, pos, ok = _read_leb_u32(data, pos)
+        if not ok:
+            break
+        values: list[str] = []
+        for _ in range(min(value_count, _WASM_MAX_PRODUCER_VALUES)):
+            name, pos = _read_wasm_name(data, pos)
+            if name is None or pos > body_end:
+                break
+            version, pos = _read_wasm_name(data, pos)
+            if version is None or pos > body_end:
+                break
+            values.append(f"{name} {version}".strip()[:_WASM_MAX_PRODUCER_CHARS])
+        out[field[:_WASM_MAX_PRODUCER_CHARS]] = values
+        if len(values) < value_count:
+            # Values were cut short (cap or malformed pair), so the stream
+            # position no longer sits at the next field; stop rather than
+            # misread the remainder as field names.
+            break
+    return out
 
 
 def _wasm_exports(data: bytes, body_start: int, body_end: int) -> list[dict[str, Any]]:
