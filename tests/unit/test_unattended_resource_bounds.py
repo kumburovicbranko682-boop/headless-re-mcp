@@ -868,6 +868,47 @@ class TestWebScriptBufferIsBounded:
         assert len(row["text"]) == _MAX_CONSOLE_TEXT
         assert row["text_truncated"] is True
 
+    def test_console_args_join_with_spaces_and_fall_back_per_argument(self) -> None:
+        """A console line is many CDP args, each a value/description/type shape.
+
+        They are joined into one string; a non-value arg falls back to its
+        description then its type, and an argument that is not an object is
+        skipped rather than stringified into the ring.
+        """
+        from headless_re_mcp.backends.web.client import _clip_console_text
+
+        text, truncated = _clip_console_text(
+            {
+                "args": [
+                    {"value": "hello"},
+                    {"description": "[object Object]"},
+                    {"type": "undefined"},
+                    "not-an-object",
+                    {"value": "end"},
+                ]
+            }
+        )
+        assert text == "hello [object Object] undefined end"
+        assert truncated is False
+
+    def test_console_args_are_cut_at_the_budget_across_arguments(self) -> None:
+        """The budget spans the whole joined line, not each argument.
+
+        A page that logs several big objects at once would otherwise store each
+        one up to the cap; the running budget (including the join spaces) stops
+        the combined text at _MAX_CONSOLE_TEXT and flags the truncation.
+        """
+        from headless_re_mcp.backends.web.client import _MAX_CONSOLE_TEXT, _clip_console_text
+
+        text, truncated = _clip_console_text(
+            {"args": [{"value": "x" * 5000}, {"value": "y" * 5000}]}
+        )
+        assert truncated is True
+        assert len(text) == _MAX_CONSOLE_TEXT
+        # The second argument is where the cut landed: budget carried across.
+        assert text.startswith("x" * 5000 + " ")
+        assert text.endswith("y")
+
     def test_a_response_body_over_the_capture_cap_is_not_written(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
