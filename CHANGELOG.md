@@ -82,6 +82,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（带工具历史的线程第二次 run 必发孤儿 tool 消息给 provider）
+
+- **用过一次工具的线程,下一个 run 从存储重建对话时必然携带「孤儿 tool 消息」**。存储只持久化
+  assistant 轮的可见文本,从不持久化它的 `tool_calls`(纯调工具、无文本的 assistant 轮更是什么都
+  不存),于是重建出的对话里每条 tool 结果都在应答一个请求中不存在的调用——OpenAI 兼容 API 对此
+  直接 400。`compact_messages` 里既有的防护只在线程**超出压缩预算**时才触发,且只剥 tail 开头的
+  tool 消息;而「一条短线程 + 一次工具调用 + 第二次 run」这个最常见的形态(调度器的每次 mission
+  续跑、控制台里的每个追问)完全走未压缩直通路径,请求原样发出,run 失败,调度器把 mission 记为
+  failed——败因是畸形请求,与工作本身无关。现在 `compact_messages` 入口先做一遍孤儿清洗:
+  只保留「最近一个带 `tool_calls` 的 assistant 轮所开启、且中间未被非 tool 消息隔断」的 tool
+  结果(这正是一轮多个并行调用的合法形态,按相邻性过滤会误伤第二条结果),其余丢弃——它们本就
+  无法合法上线,而续跑设计依赖的 assistant 文字总结原样保留。新增三条 context 单测(直通路径
+  丢孤儿 / 并行批次完整保留 / 非 tool 轮关闭应答窗口)与一条 orchestrator 端到端回归(带工具
+  历史的线程第二次 run,provider 收到的请求不含任何 tool 消息且携带前次总结)。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

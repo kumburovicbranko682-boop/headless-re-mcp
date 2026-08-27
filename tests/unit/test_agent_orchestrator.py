@@ -212,6 +212,75 @@ async def test_a_runaway_argument_is_refused_rather_than_stored_and_run(
 
 
 @pytest.mark.asyncio
+async def test_a_second_run_on_a_thread_with_tool_history_sends_no_orphans(
+    tmp_path: Path,
+) -> None:
+    """A thread that used a tool once must still be able to run again.
+
+    The store persists tool results with their tool_call_id, but never the
+    assistant tool_calls that opened them -- and persists nothing at all for
+    an assistant turn that only called tools. The conversation rebuilt for the
+    thread's next run therefore contains tool messages answering calls the
+    request no longer makes, which an OpenAI-compatible API rejects with 400.
+    Under the compaction budget nothing filtered them, so the second run of
+    essentially any thread with tool history -- every scheduler continuation,
+    every follow-up question in the console -- failed before the model spoke.
+    """
+    store = AgentStore(tmp_path / "rebuild.db")
+    thread = store.create_thread()
+    # What a prior run leaves behind after a tool-only assistant turn.
+    store.add_message(thread.id, "user", "unpack the sample")
+    store.add_message(
+        thread.id, "tool", '{"ok": true}', run_id="prior", tool_call_id="past-call"
+    )
+    store.add_message(thread.id, "assistant", "Unpacked; OEP at 0x401000.", run_id="prior")
+    store.add_message(thread.id, "user", "now list the imports")
+
+    seen: list[list[JsonObject]] = []
+
+    class RecordingProvider:
+        def stream_chat(
+            self,
+            *,
+            messages: Sequence[JsonObject],
+            tools: Sequence[JsonObject],
+            model: str,
+            enable_thinking: bool = False,
+            reasoning_effort: str | None = None,
+        ) -> AsyncIterator[ProviderEvent]:
+            del tools, model, enable_thinking, reasoning_effort
+            seen.append([dict(item) for item in messages])
+            return self._events()
+
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="imports listed")
+            yield ProviderEvent("completed", tool_calls=())
+
+        async def list_models(self) -> list[str]:
+            return ["fake"]
+
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: RecordingProvider(),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    request = seen[0]
+    # The stored tool result has no tool_calls turn to answer, so it must not
+    # be in the request at all; sending it is the 400.
+    assert all(item.get("role") != "tool" for item in request)
+    # The carry-forward context the continuation design relies on survives.
+    contents = [str(item.get("content")) for item in request]
+    assert any("OEP at 0x401000" in text for text in contents)
+    assert any("now list the imports" in text for text in contents)
+
+
+@pytest.mark.asyncio
 async def test_an_ordinary_argument_is_left_alone(tmp_path: Path) -> None:
     """The limit is far above anything the catalog actually takes."""
     executed: list[str] = []
