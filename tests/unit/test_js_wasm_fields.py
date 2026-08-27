@@ -216,6 +216,34 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
 
 
+def test_unpack_bundle_forces_overwrite_of_the_prepared_output_dir(tmp_path: Path) -> None:
+    """webcrack 2.x refuses an existing output dir without -f.
+
+    The client creates out_dir just before invoking webcrack, so on a real
+    webcrack every unpack died with "output directory already exists" (exit 1)
+    and surfaced as backend_error. Assert the force flag rides along; the
+    service always hands a fresh unpack-<uuid> tree, so overwriting is safe.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        mod.JsClient(tool).unpack_bundle(src, out)
+
+    assert launched, "webcrack was never launched"
+    assert "-f" in launched[0] or "--force" in launched[0]
+
+
 def test_js_deobfuscate_refuses_an_oversized_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

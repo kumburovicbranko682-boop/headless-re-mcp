@@ -101,6 +101,27 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_when_webcrack_present() -> None:
+    """Unpack drives webcrack -o against a service-owned output dir.
+
+    The client pre-creates that dir, and webcrack 2.x aborts on an existing
+    dir unless forced, so this ran green in unit mocks yet failed on every
+    real webcrack until the force flag was added. Assert a file lands.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1, "webcrack produced no output"
+        assert result.data["count"] >= 1
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
