@@ -626,6 +626,110 @@ async def test_tool_call_stream_caps_distinct_calls(
             pass
 
 
+@pytest.mark.asyncio
+async def test_message_snapshot_parallel_tool_calls_are_not_merged() -> None:
+    """A non-streamed message carries complete tool calls with no ``index``.
+
+    OpenAI's streaming ``delta.tool_calls`` tag each fragment with an ``index``,
+    but the whole-message shape a provider sends in one chunk (``message.
+    tool_calls``) is a positional list with no ``index`` member at all. The
+    assembler defaulted a missing index to 0, so two parallel calls both landed
+    in fragment slot 0: their ids, names and argument strings were concatenated
+    into one corrupt call (``{"a":1}{"b":2}`` is not valid JSON), and the whole
+    turn failed with "invalid tool arguments at index 0". Positional fallback
+    keeps them distinct.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-a",
+                                "type": "function",
+                                "function": {
+                                    "name": "session.get",
+                                    "arguments": '{"session_id":"s"}',
+                                },
+                            },
+                            {
+                                "id": "call-b",
+                                "type": "function",
+                                "function": {"name": "doctor", "arguments": "{}"},
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert [(call.id, call.name, call.arguments) for call in completed.tool_calls] == [
+        ("call-a", "session.get", {"session_id": "s"}),
+        ("call-b", "doctor", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_non_integer_tool_call_index_does_not_crash_the_stream() -> None:
+    """A provider that sends ``index: null`` must not raise an unhandled TypeError.
+
+    Every other field the assembler reads is type-checked before use, but the
+    index was fed straight to ``int(...)``. A JSON ``null`` there is ``int(None)``
+    -> TypeError, which escaped the stream as an opaque crash instead of the
+    tool call being placed by position like any other member the provider left
+    unhelpful.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": None,
+                                "id": "call-a",
+                                "function": {"name": "doctor", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert [(call.id, call.name, call.arguments) for call in completed.tool_calls] == [
+        ("call-a", "doctor", {}),
+    ]
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

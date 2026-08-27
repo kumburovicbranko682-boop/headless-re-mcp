@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from math import isfinite
 from threading import Lock
 from typing import Any
 
@@ -125,6 +126,37 @@ def _sse_payload(line: str) -> str | None:
     return None
 
 
+def _tool_call_index(value: Any, position: int) -> int:
+    """Fragment slot a tool call goes into, robust to the message shape.
+
+    Streaming ``delta.tool_calls`` tag each fragment with an integer ``index``,
+    but the whole-message ``message.tool_calls`` a provider sends in one chunk
+    is a positional list with no ``index`` member at all. Defaulting a missing
+    index to 0 merged every call of such a snapshot into slot 0 -- their ids,
+    names and argument strings concatenated into one corrupt call whose
+    ``{"a":1}{"b":2}`` arguments fail to parse -- so parallel tool calls broke
+    the whole turn. A JSON ``null`` was worse still: it reached ``int(None)`` ->
+    TypeError and crashed the stream, the one field here not type-checked before
+    use. Take the provider's index when it is a real number and otherwise fall
+    back to the item's position, which is exactly what a positional snapshot
+    means. ``bool`` is excluded because ``True``/``False`` are ``int`` subclasses
+    that would otherwise masquerade as slots 1 and 0; non-finite floats and
+    non-numeric strings fall back rather than raise from ``int()``.
+    """
+    if isinstance(value, bool):
+        return position
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if isfinite(value) else position
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return position
+    return position
+
+
 def _ingest_tool_calls(
     calls: Any,
     tool_fragments: dict[int, dict[str, str]],
@@ -134,10 +166,10 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        index = _tool_call_index(raw_call.get("index"), position)
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "
