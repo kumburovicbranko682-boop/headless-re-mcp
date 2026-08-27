@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -167,19 +168,41 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+
+        def _safe(getter: Callable[[], Any], default: Any = None) -> Any:
+            """Degrade a manifest getter that androguard cannot answer.
+
+            androguard is inconsistent on a manifest it failed to parse (which
+            it constructs an APK for anyway, logging an error rather than
+            raising): get_min_sdk_version / get_main_activity return None, but
+            get_androidversion_name / get_androidversion_code raise
+            KeyError('Name' / 'Code'). A malformed-but-zippable APK -- an
+            entirely plausible hostile input -- therefore made apk.open leak a
+            raw KeyError, which the service files as an internal_error with a
+            logged incident, casting a bad manifest as a tool bug. Every sibling
+            (permissions / components / certificates) already degrades to empty
+            on exactly this input; open now does the same, reporting what parses
+            and a default for what does not, so it stays a structured overview
+            and never a crash.
+            """
+            try:
+                return getter()
+            except Exception:  # noqa: BLE001 - androguard raises many types
+                return default
+
         return {
             "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
+            "package": _safe(apk.get_package, ""),
+            "version_name": _safe(apk.get_androidversion_name),
+            "version_code": _safe(apk.get_androidversion_code),
+            "min_sdk": _safe(apk.get_min_sdk_version),
+            "target_sdk": _safe(apk.get_target_sdk_version),
+            "main_activity": _safe(apk.get_main_activity),
+            "permission_count": len(_safe(apk.get_permissions, []) or []),
             "native_abis": sorted(
                 {
                     name.split("/")[1]
-                    for name in apk.get_files()
+                    for name in (_safe(apk.get_files, []) or [])
                     if name.startswith("lib/") and len(name.split("/")) >= 3
                 }
             ),

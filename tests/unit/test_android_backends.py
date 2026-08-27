@@ -268,6 +268,52 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkOpenDegradesOnUnparseableManifest:
+    """apk.open must not leak a raw exception on a malformed-but-zippable APK.
+
+    androguard tolerates a manifest it cannot parse -- it constructs the APK and
+    logs an error rather than raising -- but its version getters are inconsistent
+    there: get_min_sdk_version returns None while get_androidversion_name /
+    get_androidversion_code raise KeyError('Name' / 'Code'). apk.open called them
+    unguarded, so a hostile APK with a valid zip and a junk AndroidManifest.xml
+    made open leak a raw KeyError, which the service files as an internal_error
+    with a logged incident -- a bad manifest miscast as a tool bug. The sibling
+    ops (permissions / components / certificates) already degrade to empty on the
+    same input; this pins open to the same rule: a structured overview with the
+    zip-derived native_abis intact and None for the manifest fields androguard
+    could not read. It needs the real library, since a stub would not reproduce
+    the KeyError; it skips honestly when androguard is absent (skip != pass).
+    """
+
+    def test_open_returns_a_degraded_overview_instead_of_raising(self, tmp_path: Path) -> None:
+        pytest.importorskip(
+            "androguard",
+            reason="androguard not installed — apk.open degrade regression needs it (skip != pass)",
+        )
+        from headless_re_mcp.backends.apk import ApkClient
+
+        apk = tmp_path / "malformed.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            # Junk AXML: androguard opens the zip but cannot parse this manifest.
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/arm64-v8a/libx.so", b"\x7fELF")
+            archive.writestr("lib/x86_64/liby.so", b"\x7fELF")
+
+        client = ApkClient()
+        assert client.available  # importorskip above guarantees androguard is present
+
+        result = client.open(apk)  # the bug made this raise KeyError('Name')
+
+        assert result["opened"] is True
+        # zip-derived, so it survives the unparseable manifest -- the useful part.
+        assert set(result["native_abis"]) == {"arm64-v8a", "x86_64"}
+        # the getters that used to KeyError now degrade to None, not a crash.
+        assert result["version_name"] is None
+        assert result["version_code"] is None
+        assert result["package"] == ""
+        assert result["permission_count"] == 0
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

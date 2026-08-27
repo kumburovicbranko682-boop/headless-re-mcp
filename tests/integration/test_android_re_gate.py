@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -54,7 +55,22 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         # answer with a structured envelope rather than raising.
         opened = service.apk_open(session_id)
         assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        if ApkClient().available:
+            # Real androguard tolerates the unparseable synthetic manifest and
+            # opens the zip, so apk.open must degrade to a structured overview --
+            # zip-derived native_abis intact, None for the manifest fields it
+            # cannot read -- and never leak a raw KeyError from
+            # get_androidversion_name/code as an internal_error incident.
+            assert opened.ok, opened.error
+            assert opened.data["opened"] is True
+            assert set(opened.data["native_abis"]) == {"arm64-v8a", "x86_64"}
+            assert opened.data["version_name"] is None
+            assert opened.data["version_code"] is None
+        else:
+            # No androguard: a clean capability_unavailable, not a crash.
+            assert opened.ok is False
+            assert opened.error is not None
+            assert opened.error.code == "capability_unavailable"
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
