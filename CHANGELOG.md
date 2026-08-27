@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
+
+- `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
+  长分支(`br`/`brfalse`/`brtrue`)与 `ldc.i4` 常量却按无符号解码。按 ECMA-335 这些都是
+  有符号 int32,于是一次向后跳转 `-10` 打成 `4294967286`、`ldc.i4 -1` 打成 `4294967295`——
+  agent 读来判断循环走向的正是这个补码位型而非真实偏移。现把有符号操作数集中到
+  `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
+  无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
