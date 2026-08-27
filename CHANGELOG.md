@@ -24,6 +24,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 frida 授权窗口 _append_recent 的\"中段目标重生即成最近\"契约：Java 工具默认目标随之更新且不重复占位）
+
+- frida 的 Java 工具默认作用于 `_last_pid`(授权窗口末位)。此前的测试钉住了两不同值的近时序、封顶、以及\
+  连续同值去重成 `[777]`,却漏了一个真实场景:一个已在窗口**中段**的 pid 被重新 spawn 时,必须被**移到**末位\
+  (从而成为 Java 工具的新默认目标),而不是留在原位让某个不相关的最新 pid 当默认;且必须是移动而非追加——重复\
+  会在有界窗口里白占一个槽,把仍存活的授权更早挤出。新增一例:`(111,222,333)` 后再 append `222` → `[111,333,222]`,\
+  末位为 `222`、`222` 只出现一次。(纯测试补充,无行为变更。)
+
 ### 清理（删除 adb/client 里的死常量 _MANIFEST_PROBE_BYTES：与 _MAX_MANIFEST_BYTES 完全重复且无人引用）
 
 - adb 客户端里有两个值相同(`64 * 1024`)、注释都在讲\"只读 AndroidManifest.xml 前缀、挡住解压炸弹撑爆内存\"的\

@@ -936,6 +936,24 @@ class TestFridaAuthorizationWindow:
             pids = _append_recent(pids, 777)
         assert pids == [777]
 
+    def test_respawning_a_middle_target_makes_it_the_default_without_dropping_peers(
+        self,
+    ) -> None:
+        """Re-touching a pid already mid-window moves it to most-recent.
+
+        The Java tools default to _last_pid, so re-spawning an earlier target
+        must make *it* the default -- not leave the newest unrelated pid there.
+        And it must do so by moving, not appending: a duplicate would waste a
+        slot in the bounded window and evict a still-live authorization sooner.
+        """
+        pids: Any = []
+        for pid in (111, 222, 333):
+            pids = _append_recent(pids, pid)
+        pids = _append_recent(pids, 222)
+        assert pids == [111, 333, 222]
+        assert pids[-1] == 222
+        assert pids.count(222) == 1
+
     def test_packages_follow_the_same_recency_rule(self) -> None:
         packages: Any = []
         packages = _append_recent(packages, "com.b")
