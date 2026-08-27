@@ -138,10 +138,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
         """Fetch one script's source (large sources spill to an artifact).
 
-        Answers with scriptId, bytes and source, plus truncated and
-        source_path when the text was cut at the buffer. There is no code
-        or text field. A source over the capture cap is refused rather
-        than written to disk.
+        Answers with scriptId, bytes and source, plus truncated, source_path
+        and artifact_id when the text was cut at the buffer. bytes is the full
+        source length, so a truncated source says how much was cut, and the
+        whole source is retrievable with artifacts.read on artifact_id (page
+        offset forward) -- not just the on-disk source_path, which nothing on
+        the surface opens. There is no code or text field. A source over the
+        capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 

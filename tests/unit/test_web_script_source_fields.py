@@ -68,3 +68,8 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+    # The service registers the spilled file and returns artifact_id, the only
+    # field that lets a caller read the cut-off remainder back through
+    # artifacts.read; the description must name it, not just the dead-end path.
+    assert "artifact_id" in doc
+    assert "artifacts.read" in doc

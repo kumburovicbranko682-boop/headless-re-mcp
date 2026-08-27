@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.script.source` 已回 `artifact_id` 却漏在描述里,截断的脚本看着只剩死路径）
+
+- `web.script.source` 的脚本源码超过内联上限时会溢写到磁盘,后端回 `source_path`,服务层再用
+  `_register_capture` 把该文件登记成制品、把 `artifact_id` 并进结果——完整源码本就能用
+  `artifacts.read(artifact_id)` 按 `offset` 翻页取回(测试早已覆盖这条:`web_script_source` 回
+  `artifact_id`、`artifacts_read` 能据此读回字节)。可**工具描述只字未提 `artifact_id`**,只列了
+  `source_path`。裸路径在工具面上没有任何工具能打开,于是照描述办事的无人值守 agent 看到一个
+  `truncated=true` 的脚本、只见 `source_path`,便以为截掉的部分是取不回的死路——而真正的取回把手
+  `artifact_id` 就在同一份结果里,白白错过。这正是 `artifacts.read` 描述所承诺的「大到无法内联的产物
+  登记成制品并回 `artifact_id`」:代码已兑现,唯独这条工具自己的描述没说。
+- 现在 `web.script.source` 描述点名截断时同时回 `source_path` 与 `artifact_id`,并说明 `bytes` 是完整
+  源码长度(故截断时能知道被截了多少)、完整源码用 `artifacts.read` 就着 `artifact_id` 翻页取回,而非
+  守着打不开的 `source_path`。纯文档订正,行为不变。
+- 回归:在既有 `web.script.source` 字段测试里补断言——描述必须点名 `artifact_id` 与 `artifacts.read`
+  (服务层回 `artifact_id`、`artifacts_read` 能读回,早有端到端测试覆盖)。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
