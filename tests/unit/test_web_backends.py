@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -14,6 +15,7 @@ from headless_re_mcp.backends.web.client import (
     _MAX_NAV_TIMEOUT_S,
     _bound_nav_timeout,
     _Runner,
+    _WebSession,
 )
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
@@ -44,6 +46,67 @@ class TestWebSessionScoping:
     def test_status_on_unopened_session_does_not_launch(self) -> None:
         backend = WebBackend()
         assert backend.status("never-opened") == {"open": False}
+
+    def test_status_on_a_wedged_session_reports_unresponsive_not_an_error(self) -> None:
+        """A wedged worker thread must not turn the health probe into an error.
+
+        Once a call has timed out the runner is marked wedged and every later
+        .call() raises. status is meant to report state safely, so it answers
+        open-but-unresponsive -- the caller closes the session instead of
+        reading a transient failure to retry -- and never touches the page.
+        """
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+
+        class _WedgedRunner:
+            @property
+            def wedged(self) -> bool:
+                return True
+
+            def call(self, work: object, **kwargs: object) -> object:
+                raise AssertionError("status must not dispatch to a wedged runner")
+
+        handle.runner = _WedgedRunner()  # type: ignore[assignment]
+        backend._sessions["s"] = handle
+        assert backend.status("s") == {"open": True, "responsive": False}
+
+    def test_status_on_a_healthy_session_reports_responsive_with_identity(self) -> None:
+        backend = WebBackend()
+        page = SimpleNamespace(url="https://example.com/app", title=lambda: "App")
+        handle = _WebSession(object(), object(), object(), page, object())
+
+        class _LiveRunner:
+            @property
+            def wedged(self) -> bool:
+                return False
+
+            def call(self, work: Any, **kwargs: object) -> object:
+                return work()
+
+        handle.runner = _LiveRunner()  # type: ignore[assignment]
+        backend._sessions["s"] = handle
+        payload = backend.status("s")
+        assert payload["open"] is True
+        assert payload["responsive"] is True
+        assert payload["url"] == "https://example.com/app"
+        assert payload["title"] == "App"
+
+    def test_status_survives_a_fresh_timeout_during_the_probe(self) -> None:
+        """A hang that first appears mid-probe is reported, not raised."""
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+
+        class _TimingOutRunner:
+            @property
+            def wedged(self) -> bool:
+                return False
+
+            def call(self, work: object, **kwargs: object) -> object:
+                raise WebError("timeout", "browser did not respond within 5s")
+
+        handle.runner = _TimingOutRunner()  # type: ignore[assignment]
+        backend._sessions["s"] = handle
+        assert backend.status("s") == {"open": True, "responsive": False}
 
     def test_close_on_unopened_session_is_not_an_error(self) -> None:
         backend = WebBackend()
