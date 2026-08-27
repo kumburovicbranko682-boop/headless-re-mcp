@@ -81,10 +81,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large bodies spill to an artifact).
 
-        Answers with body, base64_encoded, plus body_truncated and body_path
-        when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        Answers with the request's captured metadata (url, method, status,
+        resourceType, mimeType) alongside body, base64_encoded, and
+        body_truncated with body_path when the text was cut at the buffer. The
+        cut flag is body_truncated, not truncated. A body over the capture cap
+        is refused rather than written to disk. When the browser cannot return
+        the body -- a redirect, a 204, or a response already evicted from the
+        CDP buffer -- the reply carries body_error and no body key; a missing
+        body is that, not an empty one.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

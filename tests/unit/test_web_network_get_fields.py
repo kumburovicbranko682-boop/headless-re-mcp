@@ -46,6 +46,26 @@ class _Handle:
     cdp = _Cdp()
 
 
+class _FailingCdp:
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("No resource with given identifier found")
+
+
+class _NoBodyHandle:
+    lock = Lock()
+    requests = {
+        "r1": {
+            "requestId": "r1",
+            "url": "https://x/redirect",
+            "method": "GET",
+            "resourceType": "Document",
+            "status": 302,
+            "mimeType": None,
+        }
+    }
+    cdp = _FailingCdp()
+
+
 def test_web_network_get_names_body_truncated_not_truncated(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -70,3 +90,28 @@ def test_web_network_get_names_body_truncated_not_truncated(
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
+
+
+def test_web_network_get_reports_body_error_and_no_body_when_the_browser_has_none(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A redirect/204/evicted response yields body_error, not an empty body.
+
+    CDP's getResponseBody raises for requests that never had a retained body;
+    the backend then returns the request's metadata plus body_error and omits
+    the body key entirely. An agent that only reads body would take a failed
+    fetch for an empty response, so the description names body_error and the
+    reply must not fabricate a body.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _NoBodyHandle())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert "body" not in payload
+    assert "body_truncated" not in payload
+    assert payload["body_error"]
+    # The request's captured metadata is echoed alongside the error.
+    assert payload["url"] == "https://x/redirect"
+    assert payload["status"] == 302
+    doc = _tool_docstring("web.network.get")
+    assert "body_error" in doc
