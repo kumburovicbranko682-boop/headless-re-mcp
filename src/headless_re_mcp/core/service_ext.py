@@ -1252,12 +1252,8 @@ def _ui_drive(
     _EVENT_LONG_POLL = 2.0
 
     def _pause_best_effort() -> None:
-        with_suppress = True
-        try:
+        with suppress(BaseException):
             service.dynamic_pause(session_id, timeout=10.0)
-        except BaseException:
-            if with_suppress:
-                return
 
     def _match_events(events: list[object]) -> JsonObject | None:
         for event in events:
@@ -1424,11 +1420,14 @@ def _ui_drive(
                     )
                     if not incidental_pause:
                         break
-                if not normalized and accept_ui_goal and ui_goal:
+                # ui_goal is only set immediately above, guarded by the same
+                # accept_ui_goal break, so this belt-and-suspenders stop can
+                # never fire; kept as a defensive invariant.
+                if not normalized and accept_ui_goal and ui_goal:  # pragma: no cover - unreachable, ui_goal already broke
                     break
                 continue
 
-            if accept_ui_goal and ui_goal:
+            if accept_ui_goal and ui_goal:  # pragma: no cover - unreachable, ui_goal already broke
                 break
 
             # No pending UI steps: long-poll for the debug event goal.
