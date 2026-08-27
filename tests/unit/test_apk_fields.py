@@ -78,9 +78,55 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
+    assert payload["found"] is True
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+
+
+def test_apk_xrefs_says_found_true_for_a_method_that_has_no_callers(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A real but uncalled method must read as found, not as a bad name.
+
+    Measured: decrypt exists with zero xrefs -> found True, callers []. Without
+    found this is byte-for-byte identical to a name that never matched, so an
+    agent cannot tell "dead code" from "I mistyped the method".
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeMethod("decrypt", 0)]),
+    )
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
+    assert payload["found"] is True
+    assert payload["callers"] == []
+    assert payload["count"] == 0
+    assert payload["has_more"] is False
+
+
+def test_apk_xrefs_says_found_false_when_no_method_by_that_name_exists(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A name that matched nothing must not read as an uncalled method.
+
+    Measured: the DEX holds only 'other', a query for 'decrypt' -> found
+    False, callers []. The empty list is the same shape as an existing method
+    with no callers, so found is the only signal that the name was wrong.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeMethod("other", 5)]),
+    )
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
+    assert payload["found"] is False
+    assert payload["callers"] == []
+    assert payload["count"] == 0
+    doc = " ".join(_tool_docstring("apk.xrefs").split())
+    assert "found is false when no method by that name exists" in doc
 
 
 def test_apk_xrefs_names_method_name_on_the_payload(

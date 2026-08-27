@@ -142,6 +142,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with callers (class and method), method_name, count, and
         has_more so a page that filled the limit is not read as the whole list.
+        found is false when no method by that name exists (a typo or wrong
+        name), so an empty callers list is not misread as a real method that
+        simply has no callers.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
