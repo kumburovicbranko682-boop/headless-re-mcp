@@ -20,6 +20,7 @@ import pytest
 
 from headless_re_mcp.backends.proxy.client import (
     _MAX_METADATA_BYTES,
+    _MAX_STORED_BODY,
     _OMITTED_BODY,
     ProxyBackend,
     ProxyError,
@@ -57,6 +58,25 @@ def _errored_flow(flow_id: str, msg: str | None = "net::ERR_CONNECTION_REFUSED")
 def _ok_flow(flow_id: str) -> Any:
     request = SimpleNamespace(method="GET", pretty_url=f"http://x/{flow_id}", host="x")
     response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    return SimpleNamespace(id=flow_id, request=request, response=response)
+
+
+def _flow_with_body(flow_id: str, body: bytes) -> Any:
+    """A completed flow whose response body is a chosen size.
+
+    The recorder decides to retain or omit a flow by its stored byte count, so a
+    body over ``_MAX_STORED_BODY`` is the real trigger for the ``_OMITTED_BODY``
+    sentinel -- this drives that decision through the public ``response`` hook
+    rather than writing the sentinel into private state by hand.
+    """
+    request = SimpleNamespace(
+        method="POST", pretty_url=f"http://x/{flow_id}", host="x", raw_content=b""
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "application/octet-stream"},
+        raw_content=body,
+    )
     return SimpleNamespace(id=flow_id, request=request, response=response)
 
 
@@ -175,3 +195,64 @@ class TestFlowGetAndReplayErrorClassification:
         with pytest.raises(ProxyError) as replay_info:
             backend.replay("never-started", "x")
         assert replay_info.value.code == "invalid_state"
+
+    def test_flow_get_of_an_omitted_body_is_too_large(self, tmp_path: Path) -> None:
+        """A flow the ring dropped to stay under its memory cap is too_large, not a crash.
+
+        A body over ``_MAX_STORED_BODY`` is replaced in the raw store by the
+        ``_OMITTED_BODY`` sentinel so an overnight capture cannot OOM the host. flow_get
+        must recognise that sentinel and answer too_large: dereferencing it as a real
+        flow (``.request``) would raise AttributeError on a bare ``object()`` and be
+        filed as an internal_error incident, for what is a documented, benign retention
+        outcome. The summary still lists the row with body_omitted, so the caller learns
+        the flow existed and only its body is gone -- not a 404 for a row the list shows.
+        """
+        backend = self._backend_with_empty_session()
+        recorder = backend._instances["s"].recorder
+        recorder.response(_flow_with_body("big", b"\x00" * (_MAX_STORED_BODY + 1)))
+        # Premise: the oversized body really was dropped to the sentinel.
+        assert recorder.raw("big") is _OMITTED_BODY
+        assert recorder.snapshot()[0].get("body_omitted") is True
+        with pytest.raises(ProxyError) as info:
+            backend.flow_get("s", "big", tmp_path)
+        assert info.value.code == "too_large"
+        assert info.value.details.get("flow_id") == "big"
+
+    def test_replay_of_an_omitted_body_is_too_large(self) -> None:
+        """Replaying a flow whose body was dropped cannot reconstruct the request.
+
+        replay copies the stored flow and re-sends it; with only the ``_OMITTED_BODY``
+        sentinel there is nothing to copy, so it must answer too_large rather than call
+        ``.copy()`` on the sentinel object. This is the replay twin of the flow_get guard
+        above -- the same retention outcome, refused on the re-send path too, before any
+        attempt to reach the (here absent) master.
+        """
+        backend = self._backend_with_empty_session()
+        recorder = backend._instances["s"].recorder
+        recorder.response(_flow_with_body("big", b"\x00" * (_MAX_STORED_BODY + 1)))
+        assert recorder.raw("big") is _OMITTED_BODY
+        with pytest.raises(ProxyError) as info:
+            backend.replay("s", "big")
+        assert info.value.code == "too_large"
+        assert info.value.details.get("flow_id") == "big"
+
+    def test_replay_of_a_retained_flow_without_a_running_master_is_invalid_state(self) -> None:
+        """A retrievable flow still cannot be replayed once the proxy is not running.
+
+        Distinct from the no-session case: here the session exists and the flow is
+        retained, but the instance has no live master/loop -- it was started then
+        stopped, or is mid-teardown. replay needs a running event loop to hand the copy
+        to ``replay.client``, so with a None master it must report invalid_state 'proxy
+        is not running' rather than dereferencing None. ``_ProxyInstance`` carries a real
+        recorder but a None master until start() runs, which is exactly this state.
+        """
+        backend = self._backend_with_empty_session()
+        recorder = backend._instances["s"].recorder
+        recorder.response(_ok_flow("ok"))
+        # Premise: the flow is genuinely retrievable, so the refusal is about the
+        # missing master, not a missing or omitted flow.
+        assert recorder.raw("ok") not in (None, _OMITTED_BODY)
+        with pytest.raises(ProxyError) as info:
+            backend.replay("s", "ok")
+        assert info.value.code == "invalid_state"
+        assert "not running" in info.value.message
