@@ -164,7 +164,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "proxy.mitmproxy",
         "backend": "proxy",
         "status_probe": "mitmproxy",
-        "tools": ["proxy.start", "proxy.flows", "proxy.flow.get", "proxy.replay", "proxy.export_har", "proxy.ca.install_android"],
+        "tools": ["proxy.start", "proxy.flows", "proxy.flow.get", "proxy.ws.frames", "proxy.replay", "proxy.export_har", "proxy.ca.install_android"],
         "summary": "In-process HTTP(S) interception via mitmproxy (Web + Android)",
         "optional": True,
     },

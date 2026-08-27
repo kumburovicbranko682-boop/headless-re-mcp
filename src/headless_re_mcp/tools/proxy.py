@@ -79,11 +79,34 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         larger is response.body_path and there is no body key. There are no
         top-level headers or body fields. A WebSocket flow also carries
         websocket with the captured messages (direction sent or received, type
-        text or binary, payload, payload_len, ts), count, total and closed; a
-        binary message's payload is base64 and an oversized one is cut and
-        marked payload_truncated.
+        text or binary, payload, payload_len, ts), count, total, offset,
+        has_more and closed; a binary message's payload is base64 and an
+        oversized one is cut and marked payload_truncated. Only the first 500
+        messages ride along here -- page the whole conversation with
+        proxy.ws.frames.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
+
+    @tools.tool(name="proxy.ws.frames")
+    def proxy_ws_frames(
+        session_id: str,
+        flow_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Page the WebSocket frames captured for one flow.
+
+        Answers with flow_id, url, frames (each direction sent or received, type
+        text or binary, payload, payload_len, ts; a binary payload is base64 and
+        an oversized one is cut and marked payload_truncated), count, total,
+        offset, has_more and closed, plus close_code once the socket has closed.
+        Unlike proxy.flow.get, which only inlines the first 500 messages, this
+        walks the full conversation via offset/limit. A plain HTTP flow is
+        rejected with invalid_state; a flow whose body was dropped is too_large.
+        """
+        return _dump(
+            analysis.proxy_ws_frames(session_id, flow_id, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="proxy.replay")
     def proxy_replay(session_id: str, flow_id: str) -> dict[str, Any]:

@@ -20,6 +20,7 @@ import pytest
 
 from headless_re_mcp.backends.proxy.client import (
     _MAX_WS_PAYLOAD,
+    _OMITTED_BODY,
     ProxyBackend,
     ProxyError,
     _FlowRecorder,
@@ -169,6 +170,77 @@ def test_ws_frame_get_rejects_unknown_flow(monkeypatch: Any) -> None:
     assert excinfo.value.code == "not_found"
 
 
+def test_ws_frames_pages_the_full_conversation(monkeypatch: Any) -> None:
+    messages = [
+        _msg(from_client=True, content=str(i).encode(), opcode=1, ts=float(i)) for i in range(5)
+    ]
+    flow = _ws_flow(messages)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+
+    first = backend.ws_frames("s", "w1", offset=1, limit=2)
+    assert first["flow_id"] == "w1"
+    assert first["url"] == "http://x/ws"
+    assert first["total"] == 5
+    assert first["offset"] == 1
+    assert first["count"] == 2
+    assert first["has_more"] is True
+    assert first["closed"] is True
+    assert first["close_code"] == 1000
+    assert [f["payload"] for f in first["frames"]] == ["1", "2"]
+
+    tail = backend.ws_frames("s", "w1", offset=3, limit=10)
+    assert tail["offset"] == 3
+    assert tail["count"] == 2
+    assert tail["has_more"] is False
+    assert [f["payload"] for f in tail["frames"]] == ["3", "4"]
+
+
+def test_ws_frames_rejects_a_plain_http_flow(monkeypatch: Any) -> None:
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", headers={})
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    with pytest.raises(ProxyError) as excinfo:
+        backend.ws_frames("s", "f1")
+    assert excinfo.value.code == "invalid_state"
+
+
+def test_ws_frames_rejects_unknown_flow(monkeypatch: Any) -> None:
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return None
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    with pytest.raises(ProxyError) as excinfo:
+        backend.ws_frames("s", "missing")
+    assert excinfo.value.code == "not_found"
+
+
+def test_ws_frames_reports_a_dropped_flow_as_too_large(monkeypatch: Any) -> None:
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return _OMITTED_BODY
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    with pytest.raises(ProxyError) as excinfo:
+        backend.ws_frames("s", "w1")
+    assert excinfo.value.code == "too_large"
+
+
 def test_proxy_ws_descriptions_name_the_frame_fields() -> None:
     flows = _tool_docstring("proxy.flows")
     assert "websocket" in flows
@@ -178,3 +250,8 @@ def test_proxy_ws_descriptions_name_the_frame_fields() -> None:
     assert "websocket" in flow_get
     assert "payload_truncated" in flow_get
     assert "base64" in flow_get
+    assert "proxy.ws.frames" in flow_get
+
+    ws_frames = _tool_docstring("proxy.ws.frames")
+    for field in ("flow_id", "frames", "offset", "has_more", "invalid_state", "too_large"):
+        assert field in ws_frames

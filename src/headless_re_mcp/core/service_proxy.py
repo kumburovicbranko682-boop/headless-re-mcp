@@ -120,6 +120,13 @@ class ProxyAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def proxy_ws_frames(
+        self, session_id: str, flow_id: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id, "ws_frames", session_id, flow_id, offset=offset, limit=limit
+        )
+
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "replay", session_id, flow_id)
 

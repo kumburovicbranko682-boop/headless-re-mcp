@@ -219,51 +219,66 @@ def _ws_message_count(flow: Any) -> int:
     return len(messages)
 
 
-def _ws_messages_view(flow: Any, *, limit: int = _MAX_WS_MESSAGES) -> JsonObject | None:
+def _normalize_ws_message(msg: Any) -> JsonObject:
+    """Normalise one mitmproxy WebSocket message into a JSON-safe record.
+
+    A text message keeps a bounded text preview, a binary message is base64 so the
+    bytes survive, and direction is sent (client -> server) or received (server ->
+    client). Oversized payloads are capped and flagged with ``payload_truncated``.
+    """
+    content = getattr(msg, "content", b"") or b""
+    if not isinstance(content, bytes | bytearray):
+        content = str(content).encode(errors="replace")
+    content = bytes(content)
+    opcode = getattr(msg, "type", None)
+    opcode_int = int(opcode) if isinstance(opcode, int) else None
+    is_text = opcode_int == 0x1
+    if is_text:
+        payload, truncated = _bounded_metadata(
+            content.decode("utf-8", errors="replace"), _MAX_WS_PAYLOAD
+        )
+        kind = "text"
+    else:
+        payload = base64.b64encode(content[:_MAX_WS_PAYLOAD]).decode("ascii")
+        truncated = len(content) > _MAX_WS_PAYLOAD
+        kind = "binary"
+    record: JsonObject = {
+        "direction": "sent" if bool(getattr(msg, "from_client", False)) else "received",
+        "opcode": opcode_int,
+        "type": kind,
+        "payload": payload,
+        "payload_len": len(content),
+        "ts": getattr(msg, "timestamp", None),
+    }
+    if truncated:
+        record["payload_truncated"] = True
+    return record
+
+
+def _ws_messages_view(
+    flow: Any, *, offset: int = 0, limit: int = _MAX_WS_MESSAGES
+) -> JsonObject | None:
     """The WebSocket messages mitmproxy accumulated on a flow, bounded for a reply.
 
-    Returns None for a plain HTTP flow. For a WebSocket flow, each message is
-    normalised the same way the browser (CDP) capture is: a text message keeps a
-    bounded text preview, a binary message is base64 so the bytes survive, and
-    direction is sent (client -> server) or received (server -> client).
+    Returns None for a plain HTTP flow. For a WebSocket flow, a window of ``limit``
+    messages starting at ``offset`` is normalised (see ``_normalize_ws_message``),
+    with ``total``/``offset``/``has_more`` so a page that filled the limit is not
+    mistaken for the whole conversation.
     """
     ws = getattr(flow, "websocket", None)
     if ws is None:
         return None
     messages = list(getattr(ws, "messages", None) or [])
-    out: list[JsonObject] = []
-    for msg in messages[: max(0, int(limit))]:
-        content = getattr(msg, "content", b"") or b""
-        if not isinstance(content, bytes | bytearray):
-            content = str(content).encode("utf-8", errors="replace")
-        content = bytes(content)
-        opcode = getattr(msg, "type", None)
-        opcode_int = int(opcode) if isinstance(opcode, int) else None
-        is_text = opcode_int == 0x1
-        if is_text:
-            payload, truncated = _bounded_metadata(
-                content.decode("utf-8", errors="replace"), _MAX_WS_PAYLOAD
-            )
-            kind = "text"
-        else:
-            payload = base64.b64encode(content[:_MAX_WS_PAYLOAD]).decode("ascii")
-            truncated = len(content) > _MAX_WS_PAYLOAD
-            kind = "binary"
-        record: JsonObject = {
-            "direction": "sent" if bool(getattr(msg, "from_client", False)) else "received",
-            "opcode": opcode_int,
-            "type": kind,
-            "payload": payload,
-            "payload_len": len(content),
-            "ts": getattr(msg, "timestamp", None),
-        }
-        if truncated:
-            record["payload_truncated"] = True
-        out.append(record)
+    start = max(0, int(offset))
+    cap = max(0, int(limit))
+    window = messages[start : start + cap] if cap else []
+    out = [_normalize_ws_message(msg) for msg in window]
     view: JsonObject = {
         "messages": out,
         "count": len(out),
         "total": len(messages),
+        "offset": start,
+        "has_more": start + len(out) < len(messages),
         "closed": getattr(ws, "timestamp_end", None) is not None,
     }
     close_code = getattr(ws, "close_code", None)
@@ -809,6 +824,42 @@ class ProxyBackend:
         if websocket is not None:
             result["websocket"] = websocket
         return result
+
+    def ws_frames(
+        self, session_id: str, flow_id: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        inst = self._get(session_id)
+        flow = inst.recorder.raw(flow_id)
+        if flow is None:
+            raise ProxyError(
+                "not_found",
+                "unknown flow id (it may have been evicted from the capture ring)",
+                flow_id=flow_id,
+            )
+        if flow is _OMITTED_BODY:
+            raise ProxyError(
+                "too_large",
+                "flow body was not retained",
+                flow_id=flow_id,
+            )
+        view = _ws_messages_view(flow, offset=offset, limit=limit)
+        if view is None:
+            raise ProxyError(
+                "invalid_state",
+                "flow is not a websocket",
+                flow_id=flow_id,
+            )
+        return {
+            "flow_id": flow_id,
+            "url": getattr(flow.request, "pretty_url", None),
+            "frames": view["messages"],
+            "count": view["count"],
+            "total": view["total"],
+            "offset": view["offset"],
+            "has_more": view["has_more"],
+            "closed": view["closed"],
+            **({"close_code": view["close_code"]} if "close_code" in view else {}),
+        }
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
