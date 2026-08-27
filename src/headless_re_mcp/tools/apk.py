@@ -132,6 +132,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.read_file")
+    def apk_read_file(
+        session_id: str,
+        name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        max_bytes: Annotated[int, Field(ge=1, le=262144)] = 65536,
+    ) -> dict[str, Any]:
+        """Read the raw bytes of one named entry packaged in the APK zip.
+
+        The content companion to apk.files' listing: pull a specific packaged
+        file -- a bundled config JSON, an embedded cert or key, resources.arsc,
+        the header of a native .so -- without unpacking the whole archive.
+        Answers with name, size (the entry's full uncompressed length), the
+        base64 data of the window read (offset plus up to max_bytes, capped at
+        262144), returned (its byte length), truncated when more bytes remain
+        past the window, encoding, and sha256 over the whole entry (so a
+        bundled cert or key can be fingerprinted without paging it all). A
+        missing entry is not_found, not an empty read; an entry larger than
+        16 MiB is refused as too_large rather than pulled into memory.
+        """
+        return _dump(
+            analysis.apk_read_file(session_id, name, offset=offset, max_bytes=max_bytes)
+        )
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

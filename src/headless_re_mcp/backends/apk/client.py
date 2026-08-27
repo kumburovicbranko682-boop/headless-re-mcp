@@ -8,6 +8,8 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -34,6 +36,41 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# get_file decompresses the whole entry into memory, so an unbounded read of a
+# large bundled asset would blow the process; refuse entries past this ceiling.
+_MAX_FILE_TOTAL = 16 * 1024 * 1024
+# Largest slice returned inline per call (base64 grows it ~4/3 on the wire).
+_MAX_FILE_WINDOW = 262_144
+
+
+def _entry_uncompressed_size(apk: Any, name: str) -> int | None:
+    """Uncompressed size of one zip entry, read from the central directory.
+
+    Read from the parsed directory, never by decompressing: the size check that
+    guards get_file must not itself pull the entry into memory. Returns None
+    when the source does not expose the size (androguard 4.x infolist is a dict
+    of central-directory entries keyed by name; an older stdlib ZipFile returns
+    a list of ZipInfo), so "unknown" is never read as a specific size.
+    """
+    try:
+        info = apk.zip.infolist()
+    except Exception:  # noqa: BLE001 - zip internal shape varies by androguard
+        return None
+    entry = None
+    if isinstance(info, dict):
+        entry = info.get(name)
+    else:
+        for candidate in info or []:
+            if getattr(candidate, "filename", None) == name:
+                entry = candidate
+                break
+    if entry is None:
+        return None
+    for attr in ("uncompressed_size", "file_size"):
+        value = getattr(entry, attr, None)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
 
 
 class ApkError(RuntimeError):
@@ -415,6 +452,58 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+        }
+
+    def read_file(
+        self, path: Path, name: str, *, offset: int = 0, max_bytes: int = 65536
+    ) -> JsonObject:
+        from androguard.core.apk import FileNotPresent
+
+        if not isinstance(name, str) or not name.strip():
+            raise ApkError("invalid_params", "name is required")
+        apk = self._apk(path)
+        start = max(0, int(offset))
+        window = max(1, min(int(max_bytes), _MAX_FILE_WINDOW))
+        declared = _entry_uncompressed_size(apk, name)
+        if declared is not None and declared > _MAX_FILE_TOTAL:
+            raise ApkError(
+                "too_large",
+                "apk entry exceeds read ceiling",
+                name=name,
+                size=declared,
+                cap=_MAX_FILE_TOTAL,
+            )
+        try:
+            data = apk.get_file(name)
+        except FileNotPresent as exc:
+            raise ApkError("not_found", "apk entry not found", name=name) from exc
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read apk entry: {exc}") from exc
+        if not isinstance(data, (bytes, bytearray)):
+            data = bytes(data or b"")
+        total = len(data)
+        # A directory that under-reported (or did not report) the size is caught
+        # here, after the decompress; the ceiling still holds either way.
+        if total > _MAX_FILE_TOTAL:
+            raise ApkError(
+                "too_large",
+                "apk entry exceeds read ceiling",
+                name=name,
+                size=total,
+                cap=_MAX_FILE_TOTAL,
+            )
+        chunk = bytes(data[start : start + window])
+        return {
+            "name": name,
+            "size": total,
+            "offset": start,
+            "returned": len(chunk),
+            # start beyond EOF yields an empty chunk, not an error: it reads as
+            # "no more bytes here", the same as any past-the-end page.
+            "truncated": start + len(chunk) < total,
+            "encoding": "base64",
+            "data": base64.b64encode(chunk).decode("ascii"),
+            "sha256": hashlib.sha256(data).hexdigest(),
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
