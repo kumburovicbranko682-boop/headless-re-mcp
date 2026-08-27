@@ -80,6 +80,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `backend_error`（附 `size` 与 stderr 摘录）。
 
 
+### 修复（ghidra.xrefs 区分“地址没解析出来”与“没有引用”）
+
+- `ghidra.xrefs` 过去在给定地址字符串 `AddressFactory.getAddress` 解析失败(返回 null)时,返回
+  `items: []`、`count: 0`,与「地址有效但没有任何入向引用」无从区分——无人值守的一遍会把「地址没解析
+  出来」误读成「这段代码是死代码」。这与刚修的 `ghidra.decompile` `found` 是同一形状:postScript 现
+  显式写出 `resolved` 布尔(仅在 `getAddress` 命中时置真),客户端在解析这份跨解释器 JSON 时也会在缺
+  字段时按是否有 `items` 补齐(有项即证明地址解析成功)。`resolved=false` 明确表示「没有这个地址」,
+  此时空的 `items` 是这个原因而非「没有引用」。
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空

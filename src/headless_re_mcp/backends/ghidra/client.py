@@ -265,6 +265,14 @@ class GhidraClient:
             # a foreign-interpreter boundary, so derive it here when the script
             # did not emit it rather than trusting the field to be present.
             payload.setdefault("found", bool(payload.get("function")))
+        elif mode == "xrefs":
+            # Same shape as decompile's `found`: an address the AddressFactory
+            # could not parse comes back with an empty item list, which reads
+            # exactly like a resolved address that simply has no references.
+            # Surface `resolved` so a caller can tell those apart. Across the
+            # foreign-interpreter boundary, derive a lower bound when the script
+            # did not emit it: any item proves the address resolved.
+            payload.setdefault("resolved", bool(payload.get("items")))
         return payload
 
     def _run_headless(

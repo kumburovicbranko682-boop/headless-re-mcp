@@ -62,9 +62,13 @@ elif mode == "symbols":
     payload["items"] = items
 elif mode == "xrefs":
     items = []
+    resolved = False
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
+            # The AddressFactory returns None for a string it cannot parse; an
+            # empty item list then means "no such address", not "no references".
+            resolved = True
             for ref in refmgr.getReferencesTo(addr):
                 if len(items) >= limit:
                     payload["has_more"] = True
@@ -77,6 +81,7 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["resolved"] = resolved
 elif mode == "decompile":
     text = ""
     found = False
