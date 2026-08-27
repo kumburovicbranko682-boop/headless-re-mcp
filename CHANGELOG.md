@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（provider `get()` 对不存在的 profile 静默伪造默认，而非报 not-found）
+
+- `ProviderConfigStore.get()` 用 `profiles.get(selected, {})` 取值，缺失键落到 `{}`——它是 dict，
+  下面那句 `if not isinstance(raw, dict): raise KeyError` 对"profile 不存在"这一情形从不触发，于是
+  `get("typo")` 悄悄合成一个指向 `api.openai.com`、没有 key 的默认 profile。而 Web 层有三处 `except
+  KeyError` 正是靠它抛错才能给出 404：`save_provider`（新建 id 时应得 `existing=None`）、`probe_models`
+  （应回 404 `profile_not_found`）、以及 run-start 路由（应回 404 `thread_or_profile_not_found`）。结果
+  探测一个不存在的 profile 会真的向 OpenAI 公网发请求，run 会以无 key 的合成 profile 静默启动。现在
+  查找对任何显式请求但不存在的 id、以及记录的 `current` 指向已不存在的 profile（如手改 providers.json）
+  一律抛 `KeyError`；只有真正的首启（未指定 id、没有记录 current、一个 profile 都没有）才仍返回合成默认，
+  让空控制台还能构造出 provider 对象。回归测试钉住：显式缺失 id 抛错而已存的可解析、悬空 current 抛错、
+  空首启仍得到无 key 的 `default`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

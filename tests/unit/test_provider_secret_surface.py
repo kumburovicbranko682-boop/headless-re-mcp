@@ -102,6 +102,58 @@ def test_the_zerofall_preview_masks_every_credential_it_would_import(tmp_path: P
     assert "somethingUnknown" in result["ignored"]
 
 
+def test_getting_a_profile_that_was_never_saved_raises_not_fabricates(
+    tmp_path: Path,
+) -> None:
+    """An explicit id that isn't stored must raise, not become a keyless default.
+
+    profiles.get defaulted to {}, a dict, so the missing-profile guard never
+    fired: get("typo") returned a synthetic api.openai.com profile with no key.
+    The web layer's `except KeyError` handlers (404 profile_not_found, the
+    run-start 404) were therefore dead for the case they exist to catch -- a
+    model probe would reach OpenAI, a run would start keyless. The lookup now
+    raises for any explicit id that isn't present.
+    """
+    store = _store(tmp_path)
+    store.save(_profile(id="real"))
+
+    with pytest.raises(KeyError):
+        store.get("does-not-exist")
+    # The one that was saved still resolves.
+    assert store.get("real").id == "real"
+
+
+def test_a_recorded_current_that_no_longer_resolves_raises(tmp_path: Path) -> None:
+    """A dangling ``current`` (e.g. hand-edited) must not run against a fake default.
+
+    With profiles present, get(None) follows the recorded current; when that id
+    was removed from the file out of band it used to fall through to the keyless
+    synthetic default and a run would proceed silently against it.
+    """
+    store = _store(tmp_path)
+    store.save(_profile(id="real"))
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw["current"] = "removed"
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        store.get()
+
+
+def test_the_empty_first_run_still_yields_a_default_profile(tmp_path: Path) -> None:
+    """The untouched console (no file, nothing configured) keeps its bootstrap.
+
+    Nothing is asked for and nothing is stored, so a synthetic default still lets
+    the empty UI construct a provider object rather than 404 before setup.
+    """
+    store = _store(tmp_path)
+
+    default = store.get()
+
+    assert default.id == "default"
+    assert default.api_key is None
+
+
 def test_the_environment_key_overrides_the_file_and_still_never_leaks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
