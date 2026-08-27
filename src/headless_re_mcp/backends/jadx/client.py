@@ -30,24 +30,34 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+    """Return the alphabetically-first ``cap`` .java paths, plus the total.
+
+    rglob yields in arbitrary filesystem order, so capping before sorting used
+    to keep the first ``cap`` files *as encountered* and then sort only those --
+    an arbitrary, non-reproducible subset for any tree with more than ``cap``
+    files, which a real app easily has (thousands of classes). A caller listing
+    sources to find a class could then get a different set on a different
+    machine or run, and never the alphabetical head it would expect. Collect the
+    names first (bounded by ``_MAX_COUNTED_FILES`` so a pathological tree cannot
+    exhaust memory), sort, then take the first ``cap`` -- the sort-before-cap
+    rule the apk listings already follow.
+    """
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    total = 0
+    counted_more = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            counted_more = True
             break
+        total += 1
+        names.append(str(path.relative_to(root)))
     names.sort()
-    return names, total, has_more
+    has_more = counted_more or len(names) > cap
+    return names[:cap], total, has_more
 
 
 class JadxError(RuntimeError):

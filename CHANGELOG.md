@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.export_sources 的 .java 列表先截断后排序，返回任意子集）
+
+- jadx 解出源码树后，客户端 `_capped_java_listing` 列出其中的 `.java` 文件并封顶 2000 个。
+  但它是**先按 rglob 顺序取前 2000、再对这 2000 个排序**。rglob 的遍历顺序由文件系统决定
+  （非字母序），于是对任何超过 2000 个类的树——真实 App 动辄数千类——返回的就是一个任意的
+  2000 子集：换台机器、换次运行都可能不同，且永远不是调用方期望的“字母序开头”。想靠列目录
+  找某个类的调用方可能永远看不到它。
+- 改为先收集（以 `_MAX_COUNTED_FILES` 封顶，避免病态树撑爆内存）、排序、再取前 `cap`——
+  与 apk 权限/组件/原生库列表早已遵循的“先排序后封顶”一致。`total`（`java_file_count`）语义不变。
+- 单测用一个“逆序 rglob”桩把契约钉死：无论文件系统给出什么顺序，返回的都是字母序开头且跨运行
+  稳定；旧代码在此桩下必然返回逆序尾部而失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
