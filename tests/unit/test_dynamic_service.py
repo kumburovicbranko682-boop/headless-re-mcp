@@ -2254,6 +2254,128 @@ def test_pause_still_fails_when_the_target_keeps_running(tmp_path: Path) -> None
     assert paused.error.code == "debugger_command_failed"
 
 
+def test_dynamic_request_times_out_acquiring_a_busy_runtime_lock(tmp_path: Path) -> None:
+    """A 100 ms run-control timeout never applied while waiting for the lock."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    worker.current_state = _state("running")
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcomes: list[Result[JsonObject]] = []
+    request = Thread(
+        target=lambda: outcomes.append(service.dynamic_pause(session_id, timeout=0.1)),
+        daemon=True,
+    )
+    request.start()
+    request.join(timeout=0.4)
+    returned_within_bound = not request.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    request.join(timeout=2)
+
+    assert returned_within_bound, "dynamic request remained blocked acquiring the runtime lock"
+    (result,) = outcomes
+    assert not result.ok and result.error is not None
+    assert result.error.code == "timeout"
+    assert result.error.retryable is True
+
+
+class BudgetRecordingStepWorker(FakeDynamicWorker):
+    """Spends simulated time per stage and records the budget each stage got."""
+
+    def __init__(self, clock: dict[str, float]) -> None:
+        super().__init__()
+        self.clock = clock
+        self.request_timeouts: list[tuple[str, float]] = []
+
+    def read_events(
+        self,
+        cursor: int,
+        *,
+        limit: int = 100,
+        timeout: float = 10.0,
+    ) -> DebugEventBatch:
+        batch = super().read_events(cursor, limit=limit, timeout=timeout)
+        if limit == 1:  # the run-control transition marker read
+            self.clock["now"] += 4.0
+        return batch
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        self.request_timeouts.append((command, timeout))
+        result = super().request(command, params, timeout=timeout)
+        if command == "debug.step_into":
+            self.clock["now"] += 3.0
+        return result
+
+
+def test_dynamic_request_stages_share_one_wall_clock_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Marker read, RPC, and state wait must split the timeout, not re-spend it."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    clock = {"now": 0.0}
+    worker = BudgetRecordingStepWorker(clock)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    worker.current_state = _state("running")
+    monkeypatch.setattr("headless_re_mcp.core.service.monotonic", lambda: clock["now"])
+
+    stepped = service.dynamic_step_into(session_id, timeout=10.0)
+
+    assert stepped.ok, stepped.error
+    # The marker read is capped at 5 of the 10 available and burns 4 simulated
+    # seconds; the RPC must then see the 6 left rather than the full 10, and
+    # burns 3 more; the state wait gets the last 3 rather than the full 10.
+    marker_reads = [read for read in worker.event_reads if read[1] == 1]
+    assert marker_reads and marker_reads[-1][2] == 5.0
+    assert worker.request_timeouts[-1] == ("debug.step_into", 6.0)
+    assert worker.waits[-1][1] == 3.0
+
+
+def test_dynamic_request_rejects_timeouts_outside_the_tool_boundary(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    requests_before = list(worker.requests)
+
+    for timeout in (0, -1.0, 300.5, float("inf"), float("nan"), True):
+        rejected = service.dynamic_pause(session_id, timeout=timeout)
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    assert worker.requests == requests_before
+
+    # The widest timeout the MCP tool boundary can pass must stay accepted.
+    accepted = service.dynamic_pause(session_id, timeout=300.0)
+    assert accepted.ok, accepted.error
+
+
 def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_kept(
     tmp_path: Path,
 ) -> None:
