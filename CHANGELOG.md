@@ -64,6 +64,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   返回），store 的 `propose_tool_call` 独立可达处也以自己的口径拒绝而非裸抛编码错误。
   五条新回归测试在未修复代码上全部复现原崩溃。
 
+### 修复（web 出口:一个坏值把整个面板炸成 500;persona 导入留孤儿文件）
+
+- Starlette 的 `JSONResponse.render` 用 `ensure_ascii=False, allow_nan=False` 序列化再
+  `.encode("utf-8")`,且渲染发生在 `__init__` 里:载荷中一个未配对代理项(后端 JSON 解析
+  会从敌意二进制的字符串把孤立 `\ud800` 转义透传成代理项)抛 `UnicodeEncodeError`、一个
+  非有限浮点(后端 JSON 默认接受 `NaN`/`Infinity`)抛 `ValueError`——一个坏字段令整个
+  路由 500,控制台面板整块死掉。新增 `web/responses.py` 的降级子类:快路径与 Starlette
+  逐字节一致,失败时对载荷做一次修复走查(代理项按传输层同款 replace 策略替换、非有限
+  浮点变 `null`、带深度帽)后重渲染,两个路由模块换用该类。
+- persona 导入路由直接把 JSON 请求体喂给 `import_markdown`,孤立代理项在 body 里时炸在
+  导入自己的体积检查;只在 title 里时更糟——`.md` 文件已落盘、`_write_index` 的
+  `write_text` 才炸,留下索引不认识的孤儿 persona,用户拿到一条 codec 报错当"校验失败"。
+  现于入口按 replace 策略消毒 title 与 body。HTTP 全链路测试证实未修复时该导入回 400、
+  修复后 200 且列表中无代理项。
+
 ### 修复（一个含代理项的工具结果杀死整个 MCP stdio 会话 / 炸掉下一轮 provider 请求）
 
 - 同一注入源(`json.loads` 放行孤立 `\ud800` 转义)在两条出口上各有一处致命点,均已实证:

@@ -84,12 +84,15 @@ def register_legacy_routes(
         from fastapi.responses import (
             FileResponse,
             HTMLResponse,
-            JSONResponse,
             PlainTextResponse,
             StreamingResponse,
         )
         from fastapi.staticfiles import StaticFiles
         from starlette.datastructures import MutableHeaders
+
+        # Starlette's own render 500s on unpaired surrogates and non-finite
+        # floats, both of which backend JSON parses let into tool payloads.
+        from headless_re_mcp.web.responses import JSONResponse
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("web extra required: pip install 'headless-re-mcp[web]'") from exc
 

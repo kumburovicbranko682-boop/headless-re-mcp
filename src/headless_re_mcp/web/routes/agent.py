@@ -69,7 +69,11 @@ def register_agent_routes(
     catalog: CommandCatalog = COMMAND_CATALOG,
 ) -> None:
     from fastapi import Header, HTTPException, Query
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import StreamingResponse
+
+    # Starlette's own render 500s on unpaired surrogates and non-finite
+    # floats; the degrading subclass repairs the payload instead.
+    from headless_re_mcp.web.responses import JSONResponse
 
     # Bind handlers and schemas directly from protocol-independent tool domains.
     bind_all_tools(service, catalog)

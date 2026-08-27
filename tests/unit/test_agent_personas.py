@@ -34,6 +34,32 @@ def test_persona_store_seeds_default_and_optional_seagull(tmp_path: Path) -> Non
     assert store.current_id() in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}
 
 
+def test_import_with_surrogates_in_title_and_body_stays_whole(tmp_path: Path) -> None:
+    """The web route feeds import_markdown straight from a JSON request body.
+
+    json.loads accepts a lone \\ud800 escape, so both fields can carry an
+    unpaired surrogate. A body surrogate raised in the import's own size
+    check; a title surrogate was worse -- it raised inside _write_index's
+    write_text after the .md file was already on disk, leaving an orphaned
+    persona the index never learned about and a codec error as the
+    "validation" message.
+    """
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+
+    listed = store.import_markdown(title="bad \ud800 title", body="keep \ud800 hashes")
+
+    current = listed["current"]
+    assert any(item["id"] == current for item in listed["personas"])
+    prompt = store.prompt_for(current)
+    assert "\ud800" not in prompt
+    assert "keep" in prompt and "hashes" in prompt
+    titles = {item["id"]: item["title"] for item in listed["personas"]}
+    assert "\ud800" not in titles[current]
+    on_disk = {path.stem for path in store.root.glob("*.md")}
+    indexed = {item["id"] for item in listed["personas"]}
+    assert on_disk <= indexed, "no orphaned persona files"
+
+
 def test_oversized_optional_seed_is_not_copied_into_the_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -147,3 +173,21 @@ def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:
         )
         assert imported.status_code == 200
         assert imported.json()["current"].startswith("custom-")
+
+        # A lone \ud800 escape passes the server's json.loads as an unpaired
+        # surrogate (sent pre-encoded because the client's own encoder rightly
+        # refuses it). The import used to answer 400 with a codec error and,
+        # for a title-only surrogate, leave an orphaned .md behind.
+        import json as json_module
+
+        hostile = client.post(
+            "/api/agent/personas/import",
+            headers={**headers, "Content-Type": "application/json"},
+            content=json_module.dumps(
+                {"title": "bad \ud800 title", "content": "body \ud800 text"}
+            ),
+        )
+        assert hostile.status_code == 200
+        assert all(
+            "\ud800" not in item["title"] for item in hostile.json()["personas"]
+        )

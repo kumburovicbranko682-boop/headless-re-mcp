@@ -239,6 +239,15 @@ class PersonaStore:
         return self.list_public()
 
     def import_markdown(self, *, title: str, body: str, source: str | None = None) -> JsonObject:
+        # The web route feeds this straight from a JSON request body, and
+        # json.loads accepts a lone \ud800 escape, so title and body can hold
+        # unpaired surrogates. The body's own size check below raised on one;
+        # a surrogate in only the title failed later, inside _write_index's
+        # write_text, after the .md file was already on disk -- an orphaned
+        # persona and a codec error as the "validation" message. Same replace
+        # policy as the transport's byte decode.
+        title = title.encode("utf-8", "replace").decode("utf-8")
+        body = body.encode("utf-8", "replace").decode("utf-8")
         text = body.replace("\r\n", "\n").strip()
         if not text:
             raise ValueError("persona_empty")
