@@ -196,6 +196,56 @@ def post_data(body: bytes, mime: str) -> JsonObject | None:
     return entry
 
 
+def request_cookies(cookie_header: str) -> list[JsonObject]:
+    """Parse a request ``Cookie`` header into HAR ``[{name, value}]`` cookies."""
+    out: list[JsonObject] = []
+    for pair in (cookie_header or "").split(";"):
+        text = pair.strip()
+        if not text or "=" not in text:
+            continue
+        name, _, value = text.partition("=")
+        out.append({"name": name.strip(), "value": value.strip()})
+        if len(out) >= _MAX_HEADERS:
+            break
+    return out
+
+
+def response_cookies(set_cookie_header: str) -> list[JsonObject]:
+    """Parse ``Set-Cookie`` header(s) into HAR cookies with common attributes.
+
+    CDP joins multiple Set-Cookie headers with a newline, so each line is one
+    cookie: ``name=value; Path=/; HttpOnly; ...``. Only the leading pair is the
+    cookie itself; a few standard attributes are surfaced when present.
+    """
+    out: list[JsonObject] = []
+    for line in (set_cookie_header or "").split("\n"):
+        text = line.strip()
+        if not text:
+            continue
+        first, _, attrs = text.partition(";")
+        if "=" not in first:
+            continue
+        name, _, value = first.partition("=")
+        cookie: JsonObject = {"name": name.strip(), "value": value.strip()}
+        for attr in attrs.split(";"):
+            key, _, val = attr.strip().partition("=")
+            key_l = key.strip().lower()
+            if key_l == "path":
+                cookie["path"] = val.strip()
+            elif key_l == "domain":
+                cookie["domain"] = val.strip()
+            elif key_l == "expires":
+                cookie["expires"] = val.strip()
+            elif key_l == "httponly":
+                cookie["httpOnly"] = True
+            elif key_l == "secure":
+                cookie["secure"] = True
+        out.append(cookie)
+        if len(out) >= _MAX_HEADERS:
+            break
+    return out
+
+
 def request_entry(
     *,
     method: Any,
@@ -205,12 +255,13 @@ def request_entry(
     body: bytes = b"",
     mime: str = "",
     body_size: int | None = None,
+    cookies: list[JsonObject] | None = None,
 ) -> JsonObject:
     entry: JsonObject = {
         "method": str(method or ""),
         "url": str(url or ""),
         "httpVersion": str(http_version or "HTTP/1.1"),
-        "cookies": [],
+        "cookies": cookies or [],
         "headers": header_list(headers),
         "queryString": query_string(str(url or "")),
         "headersSize": -1,
@@ -232,6 +283,7 @@ def response_entry(
     mime: str = "",
     redirect_url: str = "",
     body_size: int | None = None,
+    cookies: list[JsonObject] | None = None,
 ) -> JsonObject:
     try:
         code = int(status)
@@ -241,7 +293,7 @@ def response_entry(
         "status": code,
         "statusText": str(status_text or ""),
         "httpVersion": str(http_version or "HTTP/1.1"),
-        "cookies": [],
+        "cookies": cookies or [],
         "headers": header_list(headers),
         "content": content(body, mime, size=body_size),
         "redirectURL": str(redirect_url or ""),

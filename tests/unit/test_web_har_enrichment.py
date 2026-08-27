@@ -166,6 +166,91 @@ class TestCdpEntryToHar:
         assert har_entry["_resourceType"] == "XHR"
 
 
+def _drive_with_extra_info(handle: _Handle) -> None:
+    """One exchange where the *ExtraInfo events add Host/Cookie and Set-Cookie."""
+    handlers = handle.cdp.handlers
+    handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r2",
+            "wallTime": 1_700_000_000.0,
+            "timestamp": 2000.0,
+            "type": "Document",
+            "request": {
+                "url": "https://shop.test/login",
+                "method": "GET",
+                "headers": {"Accept": "text/html"},
+            },
+        }
+    )
+    handlers["Network.requestWillBeSentExtraInfo"](
+        {
+            "requestId": "r2",
+            "headers": {"Host": "shop.test", "Cookie": "sid=abc; theme=dark"},
+        }
+    )
+    handlers["Network.responseReceived"](
+        {
+            "requestId": "r2",
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "mimeType": "text/html",
+                "protocol": "h2",
+                "headers": {"Content-Type": "text/html"},
+            },
+        }
+    )
+    handlers["Network.responseReceivedExtraInfo"](
+        {
+            "requestId": "r2",
+            "headers": {
+                "Content-Type": "text/html",
+                "Set-Cookie": "token=xyz; Path=/; HttpOnly\nab=1; Secure",
+            },
+        }
+    )
+    handlers["Network.loadingFinished"](
+        {"requestId": "r2", "timestamp": 2000.1, "encodedDataLength": 64}
+    )
+
+
+class TestExtraInfoMergesHeadersAndCookies:
+    def test_extra_info_fills_host_cookie_and_set_cookie(self) -> None:
+        handle = _Handle()
+        WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+        _drive_with_extra_info(handle)
+
+        har_entry = _cdp_entry_to_har(handle.requests["r2"])
+
+        req_headers = {h["name"] for h in har_entry["request"]["headers"]}
+        # The base Accept survives and the on-the-wire Host/Cookie are merged in.
+        assert {"Accept", "Host", "Cookie"} <= req_headers
+        req_cookies = {c["name"]: c["value"] for c in har_entry["request"]["cookies"]}
+        assert req_cookies == {"sid": "abc", "theme": "dark"}
+
+        resp_headers = {h["name"] for h in har_entry["response"]["headers"]}
+        assert "Set-Cookie" in resp_headers
+        resp_cookies = har_entry["response"]["cookies"]
+        by_name = {c["name"]: c for c in resp_cookies}
+        assert by_name["token"]["value"] == "xyz"
+        assert by_name["token"]["path"] == "/"
+        assert by_name["token"]["httpOnly"] is True
+        assert by_name["ab"]["secure"] is True
+
+    def test_extra_info_without_a_known_request_is_dropped_not_crashed(self) -> None:
+        # ExtraInfo can, rarely, arrive before requestWillBeSent created the
+        # entry; that is merged best-effort, so an orphan event is ignored.
+        handle = _Handle()
+        WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+        handle.cdp.handlers["Network.requestWillBeSentExtraInfo"](
+            {"requestId": "ghost", "headers": {"Host": "x.test"}}
+        )
+        handle.cdp.handlers["Network.responseReceivedExtraInfo"](
+            {"requestId": "ghost", "headers": {"Set-Cookie": "a=b"}}
+        )
+        assert "ghost" not in handle.requests
+
+
 class TestHarExportIsRichAndListStaysLean:
     def test_export_is_rich_but_network_list_hides_internal_har(
         self, tmp_path: Path, monkeypatch: Any

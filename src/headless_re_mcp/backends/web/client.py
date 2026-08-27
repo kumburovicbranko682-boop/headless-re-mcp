@@ -91,6 +91,21 @@ def _bounded_header_map(headers: Any) -> dict[str, str]:
     return out
 
 
+def _merge_capped(existing: Any, incoming: Any) -> dict[str, str]:
+    """Union a stored header map with a freshly-bounded incoming one, capped.
+
+    Extra-info events carry the authoritative on-the-wire headers, so their
+    values win on conflict; keys the base already held are preserved, and new
+    keys are added only until the retention cap is reached.
+    """
+    out: dict[str, str] = dict(existing) if isinstance(existing, dict) else {}
+    for name, value in _bounded_header_map(incoming).items():
+        if name not in out and len(out) >= _MAX_HAR_HEADERS:
+            continue
+        out[name] = value
+    return out
+
+
 def _map_header(headers: Any, name: str) -> str:
     """Case-insensitive lookup in a CDP header map (plain ``{name: value}``)."""
     if not isinstance(headers, dict):
@@ -184,6 +199,7 @@ def _cdp_entry_to_har(entry: JsonObject) -> JsonObject:
         headers=request_headers,
         body=post_text.encode("utf-8", "replace"),
         mime=_map_header(request_headers, "content-type"),
+        cookies=har_builder.request_cookies(_map_header(request_headers, "cookie")),
     )
     response = har_builder.response_entry(
         status=entry.get("status") or 0,
@@ -193,6 +209,7 @@ def _cdp_entry_to_har(entry: JsonObject) -> JsonObject:
         mime=entry.get("mimeType") or "",
         redirect_url=_map_header(response_headers, "location"),
         body_size=body_size,
+        cookies=har_builder.response_cookies(_map_header(response_headers, "set-cookie")),
     )
     time_ms, timings = _cdp_timings(har_meta)
     ent = har_builder.entry(
@@ -690,6 +707,36 @@ class WebBackend:
                     har_meta["finished_ts"] = params.get("timestamp")
                     har_meta["body_size"] = params.get("encodedDataLength")
 
+        def on_request_extra_info(params: JsonObject) -> None:
+            # The *actual* on-the-wire request headers (Host, Cookie, ...), which
+            # requestWillBeSent's headers omit. Merged over what that event had so
+            # the HAR carries the real request, not the pre-send guess.
+            headers = params.get("headers")
+            if not isinstance(headers, dict):
+                return
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["request_headers"] = _merge_capped(
+                        har_meta.get("request_headers"), headers
+                    )
+
+        def on_response_extra_info(params: JsonObject) -> None:
+            # The complete raw response headers, including every Set-Cookie (CDP
+            # joins them with newlines here); responseReceived's headers can be a
+            # filtered/parsed view. Merge so cookies and duplicates survive.
+            headers = params.get("headers")
+            if not isinstance(headers, dict):
+                return
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["response_headers"] = _merge_capped(
+                        har_meta.get("response_headers"), headers
+                    )
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -725,7 +772,9 @@ class WebBackend:
                 handle.console.append(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)
+        cdp.on("Network.requestWillBeSentExtraInfo", on_request_extra_info)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.responseReceivedExtraInfo", on_response_extra_info)
         cdp.on("Network.loadingFinished", on_loading_finished)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event

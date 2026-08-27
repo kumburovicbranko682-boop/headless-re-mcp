@@ -221,6 +221,25 @@ def _header_value(part: Any, name: str) -> str:
     return str(value or "")
 
 
+def _header_all(part: Any, name: str) -> str:
+    """All values for one header, newline-joined so Set-Cookie stays splittable.
+
+    mitmproxy's ``headers.get`` comma-joins duplicates, which corrupts cookies
+    (an Expires date contains commas); ``get_all`` keeps each value intact.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is not None:
+        getter = getattr(headers, "get_all", None)
+        if callable(getter):
+            try:
+                values = getter(name)
+            except (AttributeError, TypeError):
+                values = None
+            if values:
+                return "\n".join(str(v) for v in values)
+    return _header_value(part, name)
+
+
 def _har_body(part: Any) -> bytes:
     """The exchange body for HAR: mitmproxy's decoded ``content`` when available.
 
@@ -277,6 +296,7 @@ def _flow_to_har_entry(summary: JsonObject, flow: Any) -> JsonObject:
         body=_har_body(req),
         mime=_header_value(req, "content-type"),
         body_size=_content_len(req) if req is not None else -1,
+        cookies=har.request_cookies(_header_value(req, "cookie")),
     )
     response = har.response_entry(
         status=status if status is not None else 0,
@@ -287,6 +307,7 @@ def _flow_to_har_entry(summary: JsonObject, flow: Any) -> JsonObject:
         mime=content_type,
         redirect_url=_header_value(resp, "location"),
         body_size=_content_len(resp) if resp is not None else -1,
+        cookies=har.response_cookies(_header_all(resp, "set-cookie")),
     )
     return har.entry(
         started=req_start,

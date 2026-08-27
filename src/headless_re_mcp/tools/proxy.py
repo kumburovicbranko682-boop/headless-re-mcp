@@ -96,7 +96,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         artifact field. path is the file; looking for har after a successful
         export reads as a missing capture. The file is valid HAR 1.2 that a HAR
         viewer or Chrome DevTools can import: each entry carries request and
-        response headers, query string, a bounded body preview, status and
+        response headers, query string, request/response cookies (parsed from
+        the Cookie and Set-Cookie headers), a bounded body preview, status and
         real timings for every flow still retained.
         """
         return _dump(analysis.proxy_export_har(session_id))

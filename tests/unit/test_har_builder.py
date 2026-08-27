@@ -117,6 +117,27 @@ class TestHarPrimitives:
         empty = har.content(b"", "text/html")
         assert empty == {"size": 0, "mimeType": "text/html"}
 
+    def test_request_cookies_parse_the_cookie_header(self) -> None:
+        cookies = har.request_cookies("sid=abc; theme=dark; broken")
+        assert cookies == [
+            {"name": "sid", "value": "abc"},
+            {"name": "theme", "value": "dark"},
+        ]
+        assert har.request_cookies("") == []
+
+    def test_response_cookies_parse_set_cookie_with_attributes(self) -> None:
+        cookies = har.response_cookies(
+            "token=xyz; Path=/; Domain=.host; HttpOnly; Secure\nab=1"
+        )
+        by_name = {c["name"]: c for c in cookies}
+        assert by_name["token"]["value"] == "xyz"
+        assert by_name["token"]["path"] == "/"
+        assert by_name["token"]["domain"] == ".host"
+        assert by_name["token"]["httpOnly"] is True
+        assert by_name["token"]["secure"] is True
+        # A bare pair with no attributes is still a valid, minimal cookie.
+        assert by_name["ab"] == {"name": "ab", "value": "1"}
+
 
 class TestHarDocument:
     def test_document_of_a_minimal_entry_is_valid_har(self) -> None:
@@ -190,6 +211,17 @@ class TestProxyFlowEntry:
         assert entry["time"] > 0
         # startedDateTime reflects the request's own start time, not "now".
         assert datetime.fromisoformat(entry["startedDateTime"]).timestamp() == 1000.0
+
+    def test_flow_cookies_come_from_cookie_and_set_cookie_headers(self) -> None:
+        flow = self._flow()
+        flow.request.headers = {"cookie": "sid=abc; theme=dark"}
+        flow.response.headers = {"set-cookie": "token=xyz; Path=/; HttpOnly"}
+        entry = _flow_to_har_entry(self._summary(), flow)
+        req_cookies = {c["name"]: c["value"] for c in entry["request"]["cookies"]}
+        assert req_cookies == {"sid": "abc", "theme": "dark"}
+        resp_cookie = entry["response"]["cookies"][0]
+        assert resp_cookie["name"] == "token"
+        assert resp_cookie["httpOnly"] is True
 
     def test_summary_only_flow_still_yields_a_valid_entry(self) -> None:
         """A flow whose body was evicted (no raw object) must not break export."""
