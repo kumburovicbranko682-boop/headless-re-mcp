@@ -352,16 +352,24 @@ def remap_dump_to_file(
         struct.pack_into("<I", out, opt + 16, entry_point_rva)
         report.changes.append(f"AddressOfEntryPoint={entry_point_rva:#x}")
 
-    # Clear volatile directories that are usually stale after dump.
+    # Clear volatile directories that are usually stale after dump. size_of_headers
+    # is derived from the dump's declared SizeOfOptionalHeader, so a dump that
+    # understates it (and whose sections add no payload) can leave the data
+    # directory array past the end of ``out``. parse_runtime_headers already
+    # clamped what it read, but this re-reads NumberOfRvaAndSizes straight from
+    # the header, so bound it to the entries that fit rather than faulting struct
+    # on best-effort cleanup.
     dir_count_off = opt + (108 if pe32_plus else 92)
     dir_off = opt + (112 if pe32_plus else 96)
-    dir_count = min(_u32(out, dir_count_off), 16)
-    for index in (_DIR_BOUND_IMPORT, _DIR_SECURITY, _DIR_BASERELOC):
-        if index < dir_count:
-            base = dir_off + index * 8
-            if _u32(out, base) or _u32(out, base + 4):
-                struct.pack_into("<II", out, base, 0, 0)
-                report.changes.append(f"cleared data directory[{index}]")
+    if dir_off <= len(out):
+        available = (len(out) - dir_off) // 8
+        dir_count = min(_u32(out, dir_count_off), 16, max(0, available))
+        for index in (_DIR_BOUND_IMPORT, _DIR_SECURITY, _DIR_BASERELOC):
+            if index < dir_count:
+                base = dir_off + index * 8
+                if _u32(out, base) or _u32(out, base + 4):
+                    struct.pack_into("<II", out, base, 0, 0)
+                    report.changes.append(f"cleared data directory[{index}]")
 
     report.unfixed.append("checksum not recalculated")
     report.unfixed.append("TLS / exception / delay-import directories not rebuilt")

@@ -275,6 +275,50 @@ def test_a_truncated_optional_header_is_refused_not_faulted() -> None:
         remap_dump_to_file(truncated)
 
 
+def _understated_optional_header_dump() -> bytes:
+    """A dump whose SizeOfOptionalHeader is smaller than the real header.
+
+    size_of_headers is computed from that declared size, so the rebuilt file's
+    header area is too small to hold the 16 data directories NumberOfRvaAndSizes
+    still advertises. The single section carries no payload, so ``out`` never
+    grows past that short header -- exactly the shape that made the volatile
+    directory cleanup read past the end of the buffer.
+    """
+    pe_offset = 0x180
+    optional_size = 16
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    data = bytearray(512)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x14C)  # machine i386
+    struct.pack_into("<H", data, file_header + 2, 1)  # NumberOfSections
+    struct.pack_into("<H", data, file_header + 16, optional_size)  # SizeOfOptionalHeader
+    struct.pack_into("<H", data, optional, 0x10B)  # PE32 magic
+    struct.pack_into("<I", data, optional + 92, 16)  # NumberOfRvaAndSizes
+    section = optional + optional_size
+    data[section : section + 8] = b".s0\0\0\0\0\0"  # empty section, no payload
+    return bytes(data)
+
+
+def test_an_understated_optional_header_does_not_fault_the_directory_cleanup() -> None:
+    """remap re-reads NumberOfRvaAndSizes when clearing volatile directories.
+
+    parse_runtime_headers clamps what it reads, but the cleanup pass read the
+    count straight from the header and indexed the data directory array in the
+    rebuilt buffer, which the understated SizeOfOptionalHeader left too short.
+    Before the guard this faulted struct.unpack_from mid-rebuild; it now bounds
+    the cleanup to the entries that fit and rebuilds without leaking a
+    struct.error.
+    """
+    dump = _understated_optional_header_dump()
+
+    rebuilt, _report = remap_dump_to_file(dump)
+
+    assert len(rebuilt) > 0
+
+
 def test_a_truncated_optional_header_never_raises_struct_error() -> None:
     """Whatever the image length, the parser never leaks a bare struct.error.
 
