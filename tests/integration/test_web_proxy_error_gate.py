@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import socket
 import time
+from contextlib import suppress
 
 import pytest
 
@@ -32,10 +33,38 @@ def _playwright_available() -> bool:
     return True
 
 
+def _chromium_launchable() -> bool:
+    """The module import is not enough for this gate: it drives a real browser.
+
+    ``_check_available`` only proves the playwright package imports, so a
+    checkout that has the package but not the chromium binary would pass that
+    check and then this test would misread the "executable doesn't exist"
+    failure as its own dead-proxy assertion. Probe a trivial data: URL launch
+    (no network, no proxy) and skip honestly when the browser cannot come up --
+    the "skip != pass when chromium is missing" contract this file promises.
+    """
+    backend = WebBackend()
+    try:
+        backend.open(
+            "chromium-probe",
+            "data:text/html,<title>probe</title>",
+            headless=True,
+            timeout=30.0,
+        )
+        return True
+    except WebError:
+        return False
+    finally:
+        with suppress(BaseException):
+            backend.close_all()
+
+
 @pytest.mark.integration
 def test_web_open_with_dead_proxy_fails_cleanly_and_frees_the_session() -> None:
     if not _playwright_available():
         pytest.skip("playwright not installed — proxy error Gate not run (skip != pass)")
+    if not _chromium_launchable():
+        pytest.skip("chromium binary not installed — proxy error Gate not run (skip != pass)")
 
     backend = WebBackend()
     dead_proxy_port = _free_port()  # bound then released: nothing is listening
