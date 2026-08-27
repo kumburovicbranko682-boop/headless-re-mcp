@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -48,46 +48,71 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     the request from completing is reported as unreachable. The distinction
     matters because only one of them means the process is still serving.
 
-    ``urlopen(..., timeout=)`` is the socket timeout. A child that accepts the
+    The socket timeout alone is not the bound. A child that accepts the
     connection and delivers one header byte inside that window resets it, so
-    the probe never returns and the supervisor cannot count a strike. Measured:
-    timeout 0.5s, one ``H`` every 250ms, returned after 4.016s when the
-    listener finally hung up (BadStatusLine) -- the full hold, not the bound.
-    The join is the overall deadline; a late answer is still used if it
-    arrived before we gave up.
+    the request never returns on its own. Measured: timeout 0.5s, one ``H``
+    every 250ms, held until the listener hung up 4s later. The join is the
+    overall deadline; a late answer is still used if it arrived before we gave
+    up. When the deadline passes, the connection is closed out from under the
+    worker so the blocked read raises and the thread exits with its socket.
+    Left open, every probe against such a child kept one thread and one file
+    descriptor: at the default 10s interval the supervisor ran out of
+    descriptors in hours, spawn started failing, and the crash-loop bound
+    stopped the one process whose job was keeping the service alive -- the
+    wedged child outlived its supervisor.
     """
     bound = max(0.05, float(timeout))
-    box: list[tuple[bool, str] | BaseException] = []
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return (False, "unreachable: ValueError")
+    connection_class = (
+        http.client.HTTPSConnection
+        if parts.scheme == "https"
+        else http.client.HTTPConnection
+    )
+    # http.client instead of urlopen because the probe must own something it
+    # can close from outside the worker thread; urlopen's socket is unreachable
+    # until the response headers -- exactly what a wedged child never finishes
+    # sending -- are complete.
+    connection = connection_class(parts.hostname, parts.port, timeout=bound)
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+    box: list[tuple[bool, str]] = []
 
     def work() -> None:
         try:
-            with urllib.request.urlopen(url, timeout=bound) as response:  # noqa: S310 - fixed loopback URL
-                code = int(response.status)
-                box.append((200 <= code < 300, f"http {code}"))
-        except urllib.error.HTTPError as exc:
-            box.append((False, f"http {exc.code}"))
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-            # A child wedged badly enough to answer with a malformed response
-            # raises this, and it is not an OSError. That is the case a
-            # readiness check exists to catch, so it must read as unreachable
-            # rather than escape.
-            http.client.HTTPException,
-        ) as exc:
+            connection.request("GET", path)
+            code = int(connection.getresponse().status)
+            box.append((200 <= code < 300, f"http {code}"))
+        except BaseException as exc:  # noqa: BLE001 - reported through the box
+            # TimeoutError, ConnectionRefusedError, and a malformed response
+            # from a wedged child (BadStatusLine) all mean the same thing
+            # here: the process did not answer, only the name says why.
             box.append((False, f"unreachable: {type(exc).__name__}"))
-        except BaseException as exc:  # noqa: BLE001 - handed to the join
-            box.append(exc)
+        finally:
+            with suppress(Exception):
+                connection.close()
 
     thread = threading.Thread(target=work, name="ready-probe", daemon=True)
     thread.start()
     thread.join(bound)
+    if not box:
+        # shutdown, not just close: close() only drops this reference to the
+        # file descriptor, and the reader getresponse() wrapped around the
+        # socket holds another, so the blocked recv would sleep on. Measured:
+        # with close() alone the worker survived the full second join below.
+        raw = getattr(connection, "sock", None)
+        if raw is not None:
+            with suppress(OSError):
+                raw.shutdown(socket.SHUT_RDWR)
+        with suppress(Exception):
+            connection.close()
+        # The shutdown makes the worker's blocked read raise at once; the
+        # short join collects its verdict instead of racing it.
+        thread.join(1.0)
     if box:
-        result = box[0]
-        if isinstance(result, BaseException):
-            return (False, f"unreachable: {type(result).__name__}")
-        return result
+        return box[0]
     return (False, "unreachable: TimeoutError")
 
 
