@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（APK 静态分页在后端边界夹取越界输入）
+
+- **`apk.classes` / `apk.methods` / `apk.strings` 把调用方的 `offset`/`limit` 直接塞进切片**，
+  而 web/proxy/jsre/adb 等每一个分页后端都在后端边界先把它们夹回合法区间。MCP schema 虽声明
+  `offset>=0`，但 Agent 传输是拿模型给的参数**不经 schema 校验**直接调处理器
+  （`CommandCatalog.invoke` → `spec.handler(**arguments)`）——一个负 `offset` 会切出错位的窗口，
+  还照它算出错误的 `has_more`，而分页出来的类/方法/字符串恰恰是 agent 据以下结论的东西。现按
+  同一范式夹取（`start=max(0, offset)`、`cap=max(1, limit)`）并回夹取后的 `offset`。补回归测试
+  钉住三条路径的负偏移都归零、非正 `limit` 仍回一页。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

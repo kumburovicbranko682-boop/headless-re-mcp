@@ -268,6 +268,113 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _FakeClass:
+    def __init__(self, name: str, methods: list[Any] | None = None) -> None:
+        self.name = name
+        self._methods = methods or []
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_methods(self) -> list[Any]:
+        return self._methods
+
+
+class _FakeMethodRow:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.descriptor = "()V"
+        self.access = "public"
+
+
+class _FakeString:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_value(self) -> str:
+        return self._value
+
+
+class _FakeAnalysis:
+    def __init__(
+        self, classes: list[Any] | None = None, strings: list[Any] | None = None
+    ) -> None:
+        self._classes = classes or []
+        self._strings = strings or []
+
+    def get_classes(self) -> list[Any]:
+        return self._classes
+
+    def get_strings(self) -> list[Any]:
+        return self._strings
+
+
+class _FakeParsedStatic:
+    def __init__(self, analysis: _FakeAnalysis) -> None:
+        self.analysis = analysis
+
+
+class TestApkStaticPagingClampsOutOfRangeInputs:
+    """The MCP schema declares offset>=0, but the agent transport invokes tool
+    handlers straight from model arguments with no schema enforcement. A negative
+    offset used to slice a wrong window and report has_more against it, unlike the
+    web/proxy/jsre/adb paginated surfaces, which all clamp at the backend.
+    """
+
+    @staticmethod
+    def _patch(monkeypatch: pytest.MonkeyPatch, analysis: _FakeAnalysis) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        monkeypatch.setattr(
+            ApkClient, "_parsed", lambda self, path: _FakeParsedStatic(analysis)
+        )
+        return ApkClient()
+
+    def test_classes_clamps_a_negative_offset_to_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        classes = [_FakeClass(f"Lcom/example/C{index:02d};") for index in range(10)]
+        client = self._patch(monkeypatch, _FakeAnalysis(classes=classes))
+        result = client.classes(tmp_path / "app.apk", offset=-5, limit=3)
+        assert result["offset"] == 0
+        assert result["classes"] == [
+            "Lcom/example/C00;",
+            "Lcom/example/C01;",
+            "Lcom/example/C02;",
+        ]
+        assert result["has_more"] is True
+
+    def test_strings_clamps_a_negative_offset_to_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        strings = [_FakeString(f"s{index:02d}") for index in range(10)]
+        client = self._patch(monkeypatch, _FakeAnalysis(strings=strings))
+        result = client.strings(tmp_path / "app.apk", offset=-3, limit=2)
+        assert result["offset"] == 0
+        assert result["strings"] == ["s00", "s01"]
+        assert result["has_more"] is True
+
+    def test_methods_clamps_a_negative_offset_to_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        methods = [_FakeMethodRow(f"m{index:02d}") for index in range(10)]
+        klass = _FakeClass("Lcom/example/Foo;", methods=methods)
+        client = self._patch(monkeypatch, _FakeAnalysis(classes=[klass]))
+        result = client.methods(tmp_path / "app.apk", "Lcom/example/Foo;", offset=-4, limit=2)
+        assert result["offset"] == 0
+        assert [row["name"] for row in result["methods"]] == ["m00", "m01"]
+        assert result["has_more"] is True
+
+    def test_a_nonpositive_limit_still_returns_a_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        classes = [_FakeClass(f"Lcom/example/C{index:02d};") for index in range(5)]
+        client = self._patch(monkeypatch, _FakeAnalysis(classes=classes))
+        result = client.classes(tmp_path / "app.apk", offset=0, limit=0)
+        assert result["count"] == 1
+        assert result["offset"] == 0
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
