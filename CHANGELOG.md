@@ -43,6 +43,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（mitmproxy 抓包首个真跑真流量的 Gate）
+
+- `proxy.flows/flow.get/export_har/replay` 这条抓包读取面此前没有任何让流量真的穿过代理的测试：
+  唯一的代理 Gate（`test_proxy_lifecycle_gate.py`）只验进程契约——start 绑上、stop 释放端口、
+  端口被占要拒——一个字节都没经过代理,于是“拦下一次交换再把请求/响应交回给 agent”这个后端
+  存在的全部意义,一直没被真验证过。现新增 `tests/integration/test_proxy_capture_gate.py`：
+  起一个一次性的本机 `http.server` 作 origin,用显式 `ProxyHandler` 把一次 GET 与一次 POST
+  经进程内 mitmproxy 12.x 转发过去（纯 HTTP、无 TLS/CA、不依赖任何设备）,然后核的是“还原出的
+  内容”而非“非空信封”：`proxy.flow.get` 取回 GET 流的真实响应体与 POST 流的真实请求体（后者
+  正是逆一条 API 时最想看、也最容易被丢掉的“到底 POST 了什么”）、`proxy.export_har` 导出可解析
+  且一流一条的 HAR、`proxy.replay` 把请求重放回 origin 后被代理再次抓到、流量总数随之增长;未知
+  flow id 干净返回 `not_found`。缺 mitmproxy 时按明确的 skip != pass 跳过;关闭会话
+  （`invalid_request`,状态先于后端检查故无需代理）与库缺失降级（`capability_unavailable`）两条
+  始终运行。基于 mitmproxy 12.2.3 在 Linux 实测。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
