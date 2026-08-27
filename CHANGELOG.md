@@ -115,6 +115,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   HTTP 源站、再用 stdlib 经代理发一条 GET(无外网、无额外依赖),轮询直到流入环,断言方法/URL/状态码正确、
   `flow_get` 能取回响应状态与内联 body、`export_har` 至少导出一条。缺 mitmproxy 时如实 skip(skip 不等于 pass)。
 
+### 新增（APK 静态成功路径 Gate：纯 Python 现造一个合法 APK）
+
+- **`apk.*` 静态面此前没有任何「成功路径」的真机覆盖**:Android Gate 喂给 androguard 的是占位字节拼的
+  假 zip,只能断言「回信封、不崩」——manifest 解码、权限/组件枚举、DEX 类/方法/字符串/xref 分析这些
+  真正的解析管线,对不对全靠单测里的 fake。造一个真 APK 通常要 aapt + Java 工具链,CI 与开发机都没有,
+  所以新增 `fixtures/android/apk_fixture.py`:约 300 行 struct 打包,在测试运行时从零生成 androguard
+  真正解析的两种二进制格式——AXML 清单(字符串池、资源映射、命名空间/元素 chunk,带 launcher activity、
+  service、receiver、provider、uses-permission 与 sdk/version 属性)与单类 DEX(`entry()` 用
+  `const-string` 装载字符串、`invoke-static` 调 `leaf()`,节偏移/map_list/adler32/SHA-1 全部现算),
+  不落任何不透明二进制进仓——与 r2 Gate 用系统编译器现编 ELF 同一哲学。新 Gate
+  `test_apk_static_success_path_on_generated_valid_apk` 逐项断言 androguard 取回的就是 fixture 写进去的
+  事实:包名/版本/sdk/主 Activity、manifest XML、权限、四类组件、native 库,`apk.classes/methods`
+  (smali 与点号两种拼法都要解析到)、`apk.strings` 找回 DEX 里那条字符串、`apk.xrefs` 从字节码还原出
+  `entry -> leaf` 这条调用。缺 androguard 时如实 skip(skip 不等于 pass)。
+
 ### 新增（浏览器动态读取 Gate：拿回来的就是页面真发生的）
 
 - 浏览器动态线过去只有「开得起来、scripts/console/DOM 列得出」(`test_web_re_gate`)与「关得掉」
