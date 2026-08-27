@@ -41,6 +41,8 @@ def _mitmproxy_available() -> bool:
 
 
 _ORIGIN_MARKER = "proxy-origin-marker-9449"
+_ORIGIN_COOKIE_NAME = "proxysess"
+_ORIGIN_COOKIE_VALUE = "cookie-9449"
 
 
 class _OriginHandler(BaseHTTPRequestHandler):
@@ -52,6 +54,9 @@ class _OriginHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Set-Cookie", f"{_ORIGIN_COOKIE_NAME}={_ORIGIN_COOKIE_VALUE}; Path=/; HttpOnly"
+        )
         self.end_headers()
         self.wfile.write(body)
 
@@ -224,7 +229,9 @@ def test_proxy_har_export_is_spec_compliant_har_1_2(tmp_path: Path) -> None:
             target = f"{origin}/hello?q=1&x=2"
             handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
             opener = urllib.request.build_opener(handler)
-            with opener.open(target, timeout=15.0) as response:
+            # Send a Cookie header so the HAR must parse request cookies too.
+            request = urllib.request.Request(target, headers={"Cookie": "sid=abc; theme=dark"})
+            with opener.open(request, timeout=15.0) as response:
                 assert _ORIGIN_MARKER in response.read().decode("utf-8", "replace")
 
             _poll(
@@ -263,11 +270,24 @@ def test_proxy_har_export_is_spec_compliant_har_1_2(tmp_path: Path) -> None:
             names = {h["name"].lower() for h in hello["request"]["headers"]}
             assert "host" in names, names
 
+            # Request cookies are parsed from the Cookie header we sent.
+            req_cookies = {c["name"]: c["value"] for c in hello["request"]["cookies"]}
+            assert req_cookies.get("sid") == "abc", hello["request"]["cookies"]
+            assert req_cookies.get("theme") == "dark", hello["request"]["cookies"]
+
             resp = hello["response"]
             assert resp["status"] == 200, resp
             assert resp["headers"], resp
             assert _ORIGIN_MARKER in resp["content"].get("text", ""), resp["content"]
             assert resp["content"]["size"] > 0, resp["content"]
+            # Response cookies are parsed from the origin's Set-Cookie, attributes
+            # and all.
+            resp_cookie = next(
+                (c for c in resp["cookies"] if c["name"] == _ORIGIN_COOKIE_NAME), None
+            )
+            assert resp_cookie is not None, resp["cookies"]
+            assert resp_cookie["value"] == _ORIGIN_COOKIE_VALUE, resp_cookie
+            assert resp_cookie.get("httpOnly") is True, resp_cookie
     finally:
         backend.close_all()
 
