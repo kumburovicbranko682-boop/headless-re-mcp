@@ -152,6 +152,57 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-jadx-decompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install jadx
+        run: |
+          curl -fsSL -o jadx.zip \
+            https://github.com/skylot/jadx/releases/download/v1.5.1/jadx-1.5.1.zip
+          mkdir -p "$HOME/jadx"
+          unzip -oq jadx.zip -d "$HOME/jadx"
+          echo "$HOME/jadx/bin" >> "$GITHUB_PATH"
+
+      - name: Install the package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: jadx decompile gate runs for real (skip != pass)
+        run: |
+          jadx --version
+          python -m pytest tests/integration/test_jadx_decompile_live_gate.py \
+            -rs --tb=short --junitxml=jadx-decompile-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("jadx-decompile-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # jadx and a JDK were just installed, so a skip here means jadx could
+          # not decompile real bytecode -- the false-green "skip != pass" warns
+          # about. This is the only test that runs the export_sources/decompile
+          # pipeline against a class jadx can actually decompile.
+          if not cases:
+              sys.exit("no jadx-decompile gate was collected")
+          if skipped:
+              sys.exit(f"jadx-decompile gate skipped despite an installed jadx: {skipped}")
+          print(f"jadx-decompile gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

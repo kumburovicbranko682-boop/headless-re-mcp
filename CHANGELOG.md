@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+jadx 反编译主流程首次对真实字节码有了执行覆盖。Android gate 用的是合成 APK（手搓 zip），对
+jadx 支撑的调用只断言"ok 或有 error"——从没证明 jadx 真反编译出过东西，因为合成 zip 本就不是
+jadx 能反编译的输入；于是 `apk.export_sources`（遍历产出的 Java 树）与 `apk.decompile`（读回单个
+类的源码）只对 mock 和一个必失败的 stub 跑过。jadx 反编译 JVM 字节码与 Dalvik 一样在行，故新增
+`tests/integration/test_jadx_decompile_live_gate.py`：用 `javac`（仅需 JDK，无 Android SDK）编译一个
+含命名方法与独特字符串（`JADX_GATE_MARKER`）的类并打成 jar，驱动 `JadxClient` 的
+`export_sources`/`decompile`，断言 jadx 从真实字节码里恢复出这个类、两个方法名与字符串字面量。它覆盖
+反编译引擎与客户端的树遍历/读回，不覆盖 DEX 前端（那需要真实 APK 与 Android build tools）——该边界
+写进 docstring，避免把这里的 green 误读成"DEX 反编译已覆盖"。新增 `linux-jadx-decompile` CI job：
+装 JDK 21 + jadx、跑该 gate 并解析 junitxml，jadx 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
