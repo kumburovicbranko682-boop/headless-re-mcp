@@ -17,6 +17,7 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
+_WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
 
 _DATA_URL = (
     "data:text/html,"
@@ -84,10 +85,47 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
-def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
+def test_wasm_wat_when_wabt_present() -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_wat(str(_WASM_FIXTURE))
+        assert result.ok, result.error
+        wat = result.data["wat"]
+        # A real module round-trips to a function definition and its named export,
+        # not just the bare "(module" wrapper an empty module would yield.
+        assert "(func" in wat
+        assert '(export "add"' in wat
+        assert result.data["bytes"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present() -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM Gate not run (skip != pass)")
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(_WASM_FIXTURE))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        # wasm-objdump -h -x enumerates the section headers and details; the
+        # export table names the "add" function the module deliberately exposes.
+        assert "Export" in objdump
+        assert "add" in objdump
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_wat_accepts_minimal_module(tmp_path: Path) -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
+    # Boundary case: the smallest valid module is magic + version, no sections.
     module = tmp_path / "empty.wasm"
     module.write_bytes(b"\x00asm\x01\x00\x00\x00")
     service = AnalysisService()
