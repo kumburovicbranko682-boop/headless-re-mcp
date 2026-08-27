@@ -99,6 +99,57 @@ def test_ghidra_preserves_operator_java_tool_options(
     assert opts.index("-Xmx2G") < opts.index("-Xmx8G")
 
 
+def _capture_timeout(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
+    captured: dict[str, float] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        captured["timeout"] = kwargs.get("timeout")
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return captured
+
+
+def test_ghidra_clamps_an_agent_supplied_deadline_to_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent transport skips the schema le=600 bound; an unclamped deadline
+    would leave analyzeHeadless (a JVM) holding a core and the project dir after
+    the orchestrator abandoned the call."""
+    captured = _capture_timeout(monkeypatch)
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=10**9)
+    assert captured["timeout"] == ghidra_client._MAX_TIMEOUT_S == 600.0
+
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=float("inf"))
+    assert captured["timeout"] == 600.0
+
+
+def test_ghidra_leaves_an_in_range_deadline_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_timeout(monkeypatch)
+    client = _client(tmp_path)
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=120.0)
+    assert captured["timeout"] == 120.0
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan")])
+def test_ghidra_rejects_a_non_positive_or_nan_deadline_before_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project", timeout=bad)
+    assert caught.value.code == "invalid_params"
+    assert not calls, "a bad deadline must be rejected before analyzeHeadless is launched"
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
