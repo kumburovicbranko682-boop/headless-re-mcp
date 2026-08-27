@@ -33,6 +33,20 @@ _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
 _OMITTED_BODY = object()
 
+# mitmproxy keeps its addon context in process-global module attributes:
+# ``Master.__init__`` does ``mitmproxy.ctx.options = self.options`` (see
+# mitmproxy/master.py). Constructing a second master therefore repoints that
+# global while the first is still in its startup ``running()`` phase, and the
+# first master's ReadFile addon reads ``ctx.options.rfile`` off the half-built
+# second options object before that addon's ``load()`` has registered ``rfile``.
+# The AttributeError is swallowed by mitmproxy's ``safecall`` but still *logged*,
+# and its ``errorcheck`` addon escalates any error logged during startup into a
+# fatal exit -- so an unrelated concurrent proxy start would fail with a bogus
+# "mitmproxy failed to start". Serialising the ctx-sensitive startup window
+# (construction through "listening") keeps that global stable for one master at a
+# time; proxies still run concurrently once started, which needs no shared ctx.
+_STARTUP_LOCK = threading.Lock()
+
 
 class ProxyError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
@@ -298,11 +312,30 @@ class _FlowRecorder:
             return self._retained_bytes
 
 
+class _ReadySignal:
+    """A passive addon that fires once every earlier addon's ``running`` ran.
+
+    Added last, so its ``running`` hook is invoked after mitmproxy's default
+    addons have finished theirs -- i.e. after the ctx-sensitive startup phase is
+    over. ``start`` waits on this before releasing the startup lock, because the
+    listening port opens (in ``setup_servers``) *before* ``running`` fires, so
+    port-accept alone would drop the lock while another master could still cross
+    the global ctx during this master's ``running``.
+    """
+
+    def __init__(self) -> None:
+        self.running_done = threading.Event()
+
+    def running(self) -> None:
+        self.running_done.set()
+
+
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
         self.host = host
         self.port = port
         self.recorder = _FlowRecorder()
+        self._ready = _ReadySignal()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._master: Any = None
@@ -316,35 +349,49 @@ class _ProxyInstance:
         busy port fails a moment later, and reporting "running" for a proxy that
         is about to die is how an unattended capture silently records nothing.
         """
-        # Refuse up front if the port is already taken -- typically a proxy this
-        # service leaked on a previous run. Without this the readiness probe
-        # below would see the foreign listener and call it success, which is the
-        # same lie in a different disguise. Both questions have to be asked: a
-        # holder that never accepts is invisible to the connect probe.
-        if _port_accepts(self.host, self.port) or not _port_bindable(self.host, self.port):
-            raise ProxyError(
-                "invalid_state",
-                "port is already in use; stop the existing listener first",
-                host=self.host,
-                port=self.port,
+        # Hold the process-wide startup lock across construction and the wait
+        # for "listening": that is exactly the window in which mitmproxy's global
+        # ctx is written and then read by this master's startup hooks, and it
+        # must not be repointed by a second master booting in parallel. Once this
+        # master is listening its startup hooks are done and the lock is free for
+        # the next start; concurrent *running* proxies do not share ctx state.
+        with _STARTUP_LOCK:
+            # Refuse up front if the port is already taken -- typically a proxy
+            # this service leaked on a previous run. Without this the readiness
+            # probe below would see the foreign listener and call it success,
+            # which is the same lie in a different disguise. Both questions have
+            # to be asked: a holder that never accepts is invisible to the
+            # connect probe.
+            if _port_accepts(self.host, self.port) or not _port_bindable(self.host, self.port):
+                raise ProxyError(
+                    "invalid_state",
+                    "port is already in use; stop the existing listener first",
+                    host=self.host,
+                    port=self.port,
+                )
+            self._thread = threading.Thread(
+                target=self._run, name=f"mitmproxy-{self.port}", daemon=True
             )
-        self._thread = threading.Thread(
-            target=self._run, name=f"mitmproxy-{self.port}", daemon=True
-        )
-        self._thread.start()
-        deadline = time.monotonic() + max(1.0, timeout)
-        while time.monotonic() < deadline:
-            if self._error is not None:
-                raise ProxyError("backend_error", f"mitmproxy failed to start: {self._error}")
-            if not self._thread.is_alive():
-                raise ProxyError("backend_error", "mitmproxy exited during startup")
-            if _port_accepts(self.host, self.port):
-                return
-            time.sleep(0.05)
-        self.stop()
-        raise ProxyError(
-            "timeout", "mitmproxy did not begin listening in time", port=self.port
-        )
+            self._thread.start()
+            deadline = time.monotonic() + max(1.0, timeout)
+            while time.monotonic() < deadline:
+                if self._error is not None:
+                    raise ProxyError(
+                        "backend_error", f"mitmproxy failed to start: {self._error}"
+                    )
+                if not self._thread.is_alive():
+                    raise ProxyError("backend_error", "mitmproxy exited during startup")
+                # Both conditions matter: the port opens before running() fires,
+                # so waiting on running_done keeps the lock over the whole
+                # ctx-sensitive phase, and the accept probe confirms the listener
+                # is really up before we report success.
+                if self._ready.running_done.is_set() and _port_accepts(self.host, self.port):
+                    return
+                time.sleep(0.05)
+            self.stop()
+            raise ProxyError(
+                "timeout", "mitmproxy did not begin listening in time", port=self.port
+            )
 
     def _run(self) -> None:
         loop: asyncio.AbstractEventLoop | None = None
@@ -364,7 +411,10 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            # _ready is added after the recorder so its running hook fires last,
+            # signalling that the ctx-sensitive startup phase has completed.
             master.addons.add(self.recorder)
+            master.addons.add(self._ready)
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())
