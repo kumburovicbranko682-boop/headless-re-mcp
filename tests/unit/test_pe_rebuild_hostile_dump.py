@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    parse_runtime_headers,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -226,3 +231,65 @@ def test_overlapping_sections_that_multiply_the_dump_are_refused() -> None:
 
     assert "section table" in str(caught.value)
     assert time.perf_counter() - started < 5.0, "and refused before the copies"
+
+
+def _header_only_image(*, magic: int = 0x10B, length: int | None = None) -> bytes:
+    """A DOS+PE prefix whose optional header the caller can truncate.
+
+    optional_size is set honest-small (2 bytes, just the magic) so the declared
+    ``optional + optional_size`` window fits, but the fixed optional-header
+    fields the parser reads at absolute offsets (entry point, alignments, the
+    data directory table) sit past the end of ``length`` bytes.
+    """
+    pe_offset = 0x80
+    optional = pe_offset + 24
+    size = length if length is not None else optional + 2
+    data = bytearray(size)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, pe_offset + 4, 0x14C)  # machine
+    struct.pack_into("<H", data, pe_offset + 6, 1)  # NumberOfSections
+    struct.pack_into("<H", data, pe_offset + 20, 2)  # SizeOfOptionalHeader
+    struct.pack_into("<H", data, optional, magic)  # optional magic
+    return bytes(data)
+
+
+def test_a_truncated_optional_header_is_refused_not_faulted() -> None:
+    """The fixed optional-header fields are read past the declared size.
+
+    optional_size only covers the magic, so ``optional + optional_size`` fits,
+    but AddressOfEntryPoint, the alignments and the data directory table live at
+    fixed offsets the image is too short to hold. Before the guard this faulted
+    struct.unpack_from with a raw struct.error, which escapes as an internal
+    error; the parser now refuses the dump by name like every other unusable
+    header it sees.
+    """
+    truncated = _header_only_image()
+
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        parse_runtime_headers(truncated)
+    # remap_dump_to_file parses the same headers, so the refusal reaches the
+    # public entry point rather than faulting inside it.
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        remap_dump_to_file(truncated)
+
+
+def test_a_truncated_optional_header_never_raises_struct_error() -> None:
+    """Whatever the image length, the parser never leaks a bare struct.error.
+
+    Every prefix from just-the-magic up to a full PE32 optional header either
+    parses or is refused by name; none of them fault struct.unpack_from.
+    """
+    pe_offset = 0x80
+    optional = pe_offset + 24
+    for length in range(optional + 2, optional + 96 + 8):
+        image = _header_only_image(length=length)
+        try:
+            parse_runtime_headers(image)
+        except PeRebuildError:
+            continue
+        except struct.error as exc:  # pragma: no cover - the bug this guards
+            raise AssertionError(
+                f"parse faulted struct.error at length {length}: {exc}"
+            ) from exc

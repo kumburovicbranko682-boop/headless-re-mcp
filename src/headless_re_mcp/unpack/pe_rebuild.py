@@ -151,11 +151,23 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional = file_header + 20
     if optional + optional_size > len(image):
         raise PeRebuildError("optional header is truncated")
+    # optional_size is the target's declared size, but every field below is read
+    # at a fixed absolute offset regardless of it. A dump that understates
+    # optional_size -- or an image shorter than a real optional header -- would
+    # otherwise fault struct.unpack_from mid-parse and escape as an internal
+    # error instead of the named PeRebuildError refusal this module promises, so
+    # guard the fixed window (and the directory array) explicitly before reading.
+    if optional + 2 > len(image):
+        raise PeRebuildError("optional header is truncated")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
 
+    dir_count_off = optional + (108 if pe32_plus else 92)
+    dir_off = optional + (112 if pe32_plus else 96)
+    if dir_off > len(image):
+        raise PeRebuildError("optional header is truncated")
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
         _u64(image, optional + 24) if pe32_plus else _u32(image, optional + 28)
@@ -166,9 +178,9 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     size_of_headers = _u32(image, optional + 60)
     subsystem = _u16(image, optional + 68)
     dll_characteristics = _u16(image, optional + 70)
-    dir_count_off = optional + (108 if pe32_plus else 92)
-    dir_off = optional + (112 if pe32_plus else 96)
-    dir_count = min(_u32(image, dir_count_off), 16)
+    # The data directory array follows the fixed fields; a dump can declare more
+    # entries than it actually carries, so read only the ones that fit.
+    dir_count = min(_u32(image, dir_count_off), 16, max(0, (len(image) - dir_off) // 8))
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8
