@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`timeline.list` 用 splitlines() 把含 U+2028/U+2029/U+0085 的条目整条吞掉且谎报 has_more）
+
+- 时间线以 `json.dumps(entry, ensure_ascii=False)` 逐行落盘,故字符串里的非 ASCII 字符按原样
+  写入(如从不可信样本里抓到的字符串)。读取端 `_page` 用 `b"\n"` 计 `total`、也用 `b"\n"`
+  切分页窗口,但随后却拿 `str.splitlines()` 解码——而 splitlines() 除 `\n` 外还在 U+0085(NEL)、
+  U+2028(行分隔符)、U+2029(段分隔符)等处断行,这三者恰是 `ensure_ascii=False` 不会转义、又能
+  真实出现在被逆向二进制文本里的字符。于是某条 JSON 行被从这些字符处劈成碎片:碎片 `json.loads`
+  失败被丢弃,整条条目从列表里凭空消失(`count` 与 `total` 对不上),正是本项目反复修的“列表里没有
+  的动作与从未发生无从区分”;更糟的是碎片让行数虚高,`has_more = offset + len(chunk) < total` 在
+  仍有后续条目的页上误判为 `False`,翻页调用者据此停手,后面所有条目被永久漏读。实测三条 a/b/c、
+  中间条含 U+2028:整读只回 a、c(count=2、total=3),而 limit=2 的首页 `has_more=False` 让 c 被
+  永远错过。现读取端改为只按 `b"\n"` 切分页窗口(与计数/切窗一致)、去掉尾部空段后逐段解码,不再用
+  splitlines();含这三种分隔符的条目按整行保留并正常解析,`has_more` 亦如实反映 `\n` 计数。新增回归:
+  三种分隔符各自整读不丢条且 `count==total`、窗口页在含分隔符时仍报 `has_more=True` 并能翻到末条。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

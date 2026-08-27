@@ -180,7 +180,18 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split the window on b"\n" only -- the same delimiter total and the window
+    # bounds above are computed with. str.splitlines() splits on far more
+    # (U+0085 NEL, U+2028, U+2029, ...), and entries are written with
+    # ensure_ascii=False, so a captured string from an untrusted sample can
+    # carry one of those raw. splitlines() would then break that single JSON
+    # line into fragments: the entry fails to parse and vanishes, while the
+    # inflated line count makes has_more read False on a page that has more,
+    # silently stranding every later entry from a paging caller.
+    segments = raw[start:end].split(b"\n")
+    if segments and segments[-1] == b"":
+        segments.pop()
+    return total, [segment.decode("utf-8", errors="replace") for segment in segments]
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
