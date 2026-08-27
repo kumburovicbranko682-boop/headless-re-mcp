@@ -205,7 +205,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         # Web reverse-engineering (all optional).
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_webcrack(current),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
     ]
     return DoctorReport(
@@ -1127,6 +1127,35 @@ def probe_jvm_backed_tool(
         f"{probe.summary}, but java is not on PATH so it cannot run",
         details,
         "Install a JRE and put java on PATH before treating this tool as ready.",
+    )
+
+
+def probe_webcrack(settings: Settings) -> Probe:
+    """Report webcrack honestly: it is a Node CLI and cannot run without node.
+
+    webcrack is installed and launched under Node.js (the client runs the
+    launcher directly, which shells out to ``node``); it needs Node 22 or 24.
+    ``probe_optional_tool`` finds the ``webcrack`` launcher and stops, so a host
+    with webcrack but no ``node`` on PATH reads as "detected" while
+    ``js.deobfuscate`` / ``js.beautify`` / ``js.unpack_bundle`` all fail at launch.
+    Unlike java (which has its own probe), node is checked nowhere else, so this
+    is the only place the doctor can catch a webcrack that cannot actually run --
+    e.g. HEADLESS_RE_WEBCRACK set on a box whose service PATH has no node.
+    """
+    probe = probe_optional_tool("webcrack", settings, "webcrack", ("webcrack",))
+    if probe.status != ProbeStatus.DETECTED:
+        return probe
+    node = shutil.which("node")
+    details = dict(probe.details)
+    details["node"] = node
+    if node is not None:
+        return Probe("webcrack", ProbeStatus.DETECTED, probe.summary, details, probe.remediation)
+    return Probe(
+        "webcrack",
+        ProbeStatus.DETECTED,
+        f"{probe.summary}, but node is not on PATH so it cannot run",
+        details,
+        "Install Node.js 22 or 24 and put node on PATH before treating webcrack as ready.",
     )
 
 

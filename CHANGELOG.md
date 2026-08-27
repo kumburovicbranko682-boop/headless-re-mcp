@@ -165,6 +165,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   摘要里点明“java is not on PATH so it cannot run”并给出装 JRE 的建议。回归测试覆盖
   已配置/PATH 两种发现路径、有无 java 两种情形，以及 `run_doctor` 端到端确实走了新探针。
 
+### 修复（webcrack 少查了 Node 运行时）
+
+- **doctor 找到 webcrack 启动器就报 detected，却没查它真正要跑的 Node**。webcrack 是个
+  Node CLI：客户端直接拉起启动器，启动器再 shell 出 `node`（需 Node 22 或 24，见
+  `backends/jsre/client.py` 的注释与文档串）。而 `webcrack` 探针走的是通用的
+  `probe_optional_tool`，找到启动器就收工。于是只装了 webcrack、`node` 不在服务进程 PATH
+  上的宿主（典型如 `HEADLESS_RE_WEBCRACK` 指对了、但 MCP 服务看到的 PATH 与安装时的 shell
+  不同），doctor 把 webcrack 报成 detected，让人以为 `js.deobfuscate` / `js.beautify` /
+  `js.unpack_bundle` 可用，实际一调用就在启动阶段失败——这与 jadx/apktool/apksigner 少查
+  JRE 是同类的“只查了一半”。与 java 不同的是，node 在别处再无探针，所以 webcrack 探针是
+  doctor 唯一能提前示警的地方。现在改走新的 `probe_webcrack`：仍复用原有的路径/PATH 解析，
+  但找到启动器后再查 `node`，查到就把路径记进 details；查不到仍报 detected（不谎报
+  missing），但在摘要里点明“node is not on PATH so it cannot run”并给出装 Node.js 22/24
+  的建议（只查在场、不强判版本，避免误伤）。回归测试覆盖已配置/PATH 两种发现路径、有无
+  node 两种情形，以及 `run_doctor` 端到端确实走了新探针。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
