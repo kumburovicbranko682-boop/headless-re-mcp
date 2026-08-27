@@ -149,12 +149,24 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
+        messages = store.list_messages(thread_id)
+        events = store.list_thread_events(thread_id)
+        # Both lists are the most-recent window of their count and byte budgets,
+        # so a long mission thread returns its tail with the earliest turns
+        # dropped. Report the totals and whether the view is partial rather than
+        # letting the tail read as the whole conversation.
+        messages_total = store.count_messages(thread_id)
+        events_total = store.count_thread_events(thread_id)
         return JSONResponse(
             {
                 "ok": True,
                 "thread": item.dump(),
-                "messages": [message.dump() for message in store.list_messages(thread_id)],
-                "events": [event.dump() for event in store.list_thread_events(thread_id)],
+                "messages": [message.dump() for message in messages],
+                "messages_total": messages_total,
+                "messages_truncated": messages_total > len(messages),
+                "events": [event.dump() for event in events],
+                "events_total": events_total,
+                "events_truncated": events_total > len(events),
             }
         )
 
