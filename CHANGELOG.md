@@ -71,8 +71,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   绑定;停止时改为在 master 自己的事件循环上逐个 `server.stop()`(仅当循环仍在运行)再
   shutdown,端口才真正释放。
 
+### 修复（Web/Android 后端版本兼容与错误契约）
+
+- `js.unpack_bundle` 在当前版本 webcrack 上不再整条失效。webcrack 自己创建输出目录,并在
+  `-o` 指向的目录已存在时拒绝运行(`output directory already exists`,退出码 1);而客户端
+  过去先 `mkdir(exist_ok=True)` 建好叶子目录再交给 webcrack,于是每次 unpack 都报
+  `backend_error`,整条 bundle 拆包能力是死的。改为只建父目录、把叶子留给 webcrack 创建。
+  以打桩子进程、断言调用时 `-o` 路径尚不存在(而父目录已存在)的单元测试固化,缺 webcrack
+  的机器也能守住。
+- `apk.open` 对损坏的 APK 现在返回结构化 `backend_error`,不再是带事故记录的
+  `internal_error`。androguard 的 `APK()` 构造器遇到坏 manifest 不抛异常,只记日志并返回一个
+  getter 会抛的对象,于是 `_apk()` 成功、失败落在 `open()` 直接调用的 getter 上并逃逸到服务的
+  `BaseException` 兜底,把坏输入误报成服务端缺陷。像 `manifest()` 那样包住 getter。以打桩
+  抛异常 getter 的单元测试(不需装 androguard)+ 集成断言(合成非法 AXML 包上所有 `apk.*`
+  方法都不得报 `internal_error`)双重固化。
+
 ### 新增（Android/Web/可移植线的 CI 真机 Gate）
 
+- Web 静态 Gate 扩到之前没有活体覆盖的路径:`js.unpack_bundle` 对真实 webpack bundle 拆成
+  多个模块文件并校验服务分页(offset/limit/has_more/total)跨页自洽——正是这条端到端逮住上面
+  的 webcrack 预建目录回归;`wasm.info` 与用 `wat2wasm` 现编模块的 `wasm.wat`,断言往返文本
+  带回函数/导出、`wasm-objdump` 点名 Type/Export/Code 段;外加 `js.beautify` 冒烟。各能力仍
+  在对应后端缺失时各自 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
