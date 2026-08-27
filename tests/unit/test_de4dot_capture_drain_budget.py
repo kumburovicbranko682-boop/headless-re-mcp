@@ -58,9 +58,7 @@ def test_capture_cleanup_shares_one_drain_budget(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(de4dot_mod, "_terminate_process", lambda _p: None)
     monkeypatch.setattr(de4dot_mod.subprocess, "Popen", lambda *a, **k: _FakeProcess())
 
-    capture = de4dot_mod._capture_process(
-        ["de4dot"], timeout=0.1, max_output_size=1024
-    )
+    capture = de4dot_mod._capture_process(["de4dot"], timeout=0.1, max_output_size=1024)
 
     # readers_blocked drives the leftover-children branch, so every one of the
     # four joins runs -- and their budgets must still sum to a single window.
