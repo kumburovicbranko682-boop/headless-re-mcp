@@ -74,6 +74,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同样的方式透传 `detection_conclusion` / `signature_scan_completed` / `detection_inconclusive`
   / `scanners`，并在 inconclusive 时加 `note`，使“none”计划不被当成“确认未加壳”。新增两条
   直测：diec 未配置时 plan 标 inconclusive 且带 note，完成的干净扫描不标。
+- `unpack.start` 是这条链的末端消费者：它内部建计划、只取 `plan` 后丢掉判定，`route="none"`
+  时往时间线写死一条 `no_packer_route`“No packer route; prefer static analysis.”并成功返回——
+  在 inconclusive 检测下，这条“未加壳”的结论被固化进了会话的持久记录。现同样透传
+  `detection_conclusion` / `signature_scan_completed` / `detection_inconclusive`；当 `route="none"`
+  且检测 inconclusive 时，时间线条目改写为“候选为空但检测未完成、未加壳未经确认”，并在返回体
+  加 `note`。新增两条直测：diec 未配置时 start 标 inconclusive、带 note、时间线条目如实；完成的
+  干净扫描时间线仍是原文且不标 note。
+- 顺带收紧 recommend/plan 的 `note` 触发条件：`detection_inconclusive` 只要签名扫描没跑完就为真，
+  但 `pe_dotnet` / `pe_vm_like` / `force_route` 仍可能据 PE 信号给出非 none 路由（如 DIE 缺席的
+  .NET 样本走 dotnet）。此时“route 'none'／候选为空”的话术并不成立，故 `note` 改为仅在
+  `route=="none"` 时给出；披露字段仍无条件带上。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 

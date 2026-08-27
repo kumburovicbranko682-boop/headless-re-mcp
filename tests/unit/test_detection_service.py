@@ -276,6 +276,55 @@ def test_unpack_plan_clean_scan_is_not_flagged(tmp_path: Path) -> None:
     assert "note" not in result.data
 
 
+def _no_packer_event(unpack: dict) -> dict:
+    timeline = unpack["timeline"]
+    return next(item for item in timeline if item["event"] == "no_packer_route")
+
+
+def test_unpack_start_flags_inconclusive_detection(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _session_id(service.create_session(str(binary)))
+
+    result = service.unpack_start(session_id, execute_upx=False)
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == "detected"
+    assert result.data["detection_conclusion"] == "inconclusive"
+    assert result.data["detection_inconclusive"] is True
+    assert result.data["signature_scan_completed"] is False
+    assert "note" in result.data
+    assert "inconclusive" in result.data["note"]
+    # The durable timeline record must not read as a confirmed "no packer".
+    event = _no_packer_event(result.data["unpack"])
+    assert "inconclusive" in event["message"]
+    assert event["details"]["detection_inconclusive"] is True
+
+
+def test_unpack_start_clean_scan_is_not_flagged(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    diec = tmp_path / "diec.exe"
+    diec.write_bytes(b"placeholder")
+    service = AnalysisService(
+        _settings(tmp_path, diec),
+        die_scanner=lambda executable, path, *, mode, timeout: _die_result_clean(path),
+    )
+    session_id = _session_id(service.create_session(str(binary)))
+
+    result = service.unpack_start(session_id, execute_upx=False)
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == "detected"
+    assert result.data["detection_conclusion"] == "none_detected"
+    assert result.data["detection_inconclusive"] is False
+    assert result.data["signature_scan_completed"] is True
+    assert "note" not in result.data
+    event = _no_packer_event(result.data["unpack"])
+    assert event["message"] == "No packer route; prefer static analysis."
+
+
 def test_detection_service_uses_builtin_fallback_when_die_is_missing(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_pe(binary)
