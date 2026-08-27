@@ -152,6 +152,35 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-android-static:
+    # androguard is pure Python (no Android SDK needed), so the APK static gate
+    # can run on a hosted runner. It lives in tests/integration and the unit
+    # jobs never touch it, so without this job the gate -- which asserts the real
+    # contents of fixtures/android/gate.apk end to end -- would never execute.
+    # skip != pass: with the android extra installed the gate runs for real, and
+    # only skips explicitly if androguard is somehow absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,android]"
+
+      - name: APK static gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_android_re_gate.py -q -rs --tb=short --timeout=120
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

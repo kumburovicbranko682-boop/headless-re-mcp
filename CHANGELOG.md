@@ -24,6 +24,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（Android 静态 gate 改用真实可解析 APK 夹具，把 `apk.*` 全表面钉到已知内容；并进 CI 真跑）
+
+- **Android 静态分析 gate 过去用一个 androguard 根本解析不了的合成 APK，还允许 `apk.open`
+  返回成功*或*失败**——于是从 manifest 解析到 DEX 分析的整条 androguard 代码路径可以整个坏掉，
+  gate 依旧全绿。现新增确定性生成的真实夹具 `fixtures/android/gate.apk`：二进制
+  `AndroidManifest.xml`（用 `pyaxml` 从明文 XML 装配，`pyaxml` 只是构建期工具、不进运行时/测试
+  依赖）＋一段**手写的合法 DEX v035**（仅用标准库拼字节：一个 `com.example.gate.Secret` 类、
+  两个静态方法 `decrypt()`/`caller()`、一个被代码引用的字符串常量 `gate-secret-string`，以及
+  `caller` 调 `decrypt` 形成的**真实 method→method 交叉引用**）。生成器
+  `fixtures/android/build_gate_apk.py` 固定 zip 时间戳，字节可复现（连跑两次 sha256 一致），且
+  夹具里每个值都被 gate 断言，改一个值就会当场挂。
+- gate 重写成对整条栈（会话分类 → target 路由 → androguard 后端 → 结果信封）逐字段硬断言：
+  `apk.open` 的包名/版本/min-target SDK/主活动/权限数/`native_abis`，`apk.manifest` 解出的 XML
+  含包名与组件，`apk.permissions` 恰为 CAMERA+INTERNET，`apk.components` 的活动/服务/主活动，
+  `apk.native_libs` 的 ABI 与库路径，`apk.classes`/`apk.methods`（含小于总数的分页 `has_more`
+  收敛）、`apk.strings` 收到 `gate-secret-string`、`apk.xrefs` 对 `decrypt` 恰好一条来自
+  `caller` 的 caller、对无人调用的方法给出「空且完整」的列表；`apk.methods` 查不存在的类返回
+  结构化 `not_found`。占位签名不是合法 v1 块，`apk.certificates` 因此查不到证书——gate 只钉它
+  仍回一个良构信封（列表就是列表、`v1_signed` 是 bool）而非抛异常。变异校验过：把夹具换回旧的
+  不可解析 APK，`apk.open` 立刻以 `failed to read package name` 让 gate 失败。
+- 会话分类与 stdlib 元数据读取（`native_abis`/`dex_count`/`signed_v1`）不依赖 androguard，恒跑；
+  设备/Frida 枚举无真机时只断言结构化信封、绝不崩。androguard 是纯 Python（`android` extra），
+  过去托管 CI 里**没有任何作业**装它或跑这条集成 gate，等于 gate 从不执行；新增
+  `linux-android-static` 作业（3.11/3.12）装上 `android` extra 真跑它——skip != pass，只有
+  androguard 真缺失时才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
