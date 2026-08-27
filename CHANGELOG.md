@@ -40,6 +40,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `0 false`，钉住“按恒等而非相等映射、`0` 不与 `false` 混淆”。Skip != pass：Playwright/Chromium
   缺失时按原因显式 skip。新增 CI job `linux-web-console` 安装 `.[test,dev,web,browser]` 与
   `playwright install --with-deps chromium` 跑该 gate，带 skip 守卫，CI 里一旦 skip 即判失败。
+- 另加 `tests/unit/test_web_console_rendering.py` 作为始终运行的回归护栏：无需浏览器，直接用
+  合成的 CDP RemoteObject 形状钉住整条渲染契约——`_js_console_scalar` 的恒等映射、
+  `_clip_console_text` 的 `value`→`description`→`type` 取值优先级、空格拼接、跳过非 dict 参数、
+  以及 `_MAX_CONSOLE_TEXT` 截断。live gate 需要 Chromium 才跑，这层单测在主单测套件里始终覆盖该修复。
 
 ### 新增（监控台工作台）
 
