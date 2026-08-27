@@ -239,6 +239,73 @@ def test_ghidra_refuses_an_oversized_export_json(
     assert caught.value.code == "too_large"
 
 
+def test_ghidra_imports_passes_the_mode_and_returns_the_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """imports must drive analyzeHeadless with the imports mode and pass the JSON.
+
+    The mode is a bare postScript arg; assert it reaches analyzeHeadless and that
+    the external-function payload (name/entry/library) comes back through the
+    same parse path as the other list modes. Ghidra is not installed, so the run
+    is faked -- the Java side is covered by the static sync check below.
+    """
+    payload = (
+        '{"mode":"imports","items":['
+        '{"name":"strcmp","entry":"EXTERNAL:00000001","library":"libc.so.6"},'
+        '{"name":"malloc","entry":"EXTERNAL:00000002","library":"libc.so.6"}'
+        '],"count":2,"has_more":false}'
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"analyze ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    result = client.imports(_binary(tmp_path), tmp_path / "project")
+    assert result["mode"] == "imports"
+    assert result["count"] == 2
+    assert result["has_more"] is False
+    assert result["items"][0]["name"] == "strcmp"
+    assert result["items"][0]["library"] == "libc.so.6"
+    assert result["items"][0]["entry"] == "EXTERNAL:00000001"
+    assert result["export_path"].endswith("export_imports.json")
+    # The mode reaches analyzeHeadless as a bare postScript arg.
+    assert any("imports" in argv for argv in calls)
+
+
+def test_ghidra_imports_docstring_names_the_fields() -> None:
+    doc = _tool_docstring("ghidra.imports")
+    assert doc, "ghidra.imports is missing its docstring"
+    assert "name" in doc
+    assert "entry" in doc
+    assert "library" in doc
+    assert "has_more" in doc
+
+
+def test_ghidra_export_script_handles_the_imports_mode() -> None:
+    """The Java postScript and the Python mode must stay in sync.
+
+    Ghidra is not installed here, so imports() cannot be run end to end. Pin the
+    Java side statically instead: ExportJson.java must dispatch the imports mode
+    and iterate external functions, so a Python call passing mode=imports is not
+    silently answered with the script's "unknown mode" payload.
+    """
+    script = (
+        Path(ghidra_client.__file__).resolve().parent / "scripts" / "ExportJson.java"
+    ).read_text(encoding="utf-8")
+    assert '"imports".equals(mode)' in script
+    assert "getExternalFunctions()" in script
+    assert 'listPayload("imports"' in script
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [

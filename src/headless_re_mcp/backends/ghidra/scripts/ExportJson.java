@@ -52,6 +52,8 @@ public class ExportJson extends GhidraScript {
         String payload;
         if ("functions".equals(mode)) {
             payload = functions(limit);
+        } else if ("imports".equals(mode)) {
+            payload = imports(limit);
         } else if ("symbols".equals(mode)) {
             payload = symbols(limit);
         } else if ("xrefs".equals(mode)) {
@@ -93,6 +95,44 @@ public class ExportJson extends GhidraScript {
         }
         items.append(']');
         return listPayload("functions", items, count, hasMore);
+    }
+
+    private String imports(int limit) {
+        // External (imported) functions: the library APIs the binary calls, which
+        // functions() (defined code) and symbols() (everything) do not single out.
+        // Only getExternalFunctions and the ExternalLocation lookup are new here;
+        // the iterate/emit shape mirrors functions() exactly. The library lookup
+        // is guarded so a null ExternalLocation degrades to an empty name.
+        FunctionManager fm = currentProgram.getFunctionManager();
+        StringBuilder items = new StringBuilder("[");
+        int count = 0;
+        boolean hasMore = false;
+        for (Function fn : fm.getExternalFunctions()) {
+            if (count >= limit) {
+                hasMore = true;
+                break;
+            }
+            if (count > 0) {
+                items.append(',');
+            }
+            String library = "";
+            try {
+                if (fn.getExternalLocation() != null
+                        && fn.getExternalLocation().getLibraryName() != null) {
+                    library = fn.getExternalLocation().getLibraryName();
+                }
+            } catch (Exception ex) {
+                library = "";
+            }
+            items.append('{')
+                .append("\"name\":").append(quote(fn.getName()))
+                .append(",\"entry\":").append(quote(fn.getEntryPoint().toString()))
+                .append(",\"library\":").append(quote(library))
+                .append('}');
+            count++;
+        }
+        items.append(']');
+        return listPayload("imports", items, count, hasMore);
     }
 
     private String symbols(int limit) {

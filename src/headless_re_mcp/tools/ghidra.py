@@ -46,6 +46,25 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.imports")
+    def ghidra_imports(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """External (imported) functions Ghidra resolved -- the library APIs called.
+
+        Answers with items, each carrying name (the imported symbol, e.g.
+        strcmp/CreateFileW), entry (its address in Ghidra's EXTERNAL space) and
+        library (the source module when Ghidra knows it, e.g. KERNEL32.DLL or
+        libc.so.6; empty when it does not), plus count and has_more so a page
+        that filled the limit is not read as the whole list. This is the "what
+        does it call out to" view that ghidra.functions (defined code) and
+        ghidra.symbols (every symbol) do not single out. Requires
+        HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_imports(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.symbols")
     def ghidra_symbols(
         session_id: str,

@@ -490,6 +490,11 @@ class ExtAnalysisMixin(UiDriveMixin):
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "functions", limit=limit, timeout=timeout)
 
+    def ghidra_imports(
+        self, session_id: str, limit: int = 256, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(self, session_id, "imports", limit=limit, timeout=timeout)
+
     def ghidra_symbols(
         self, session_id: str, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
@@ -1187,6 +1192,8 @@ def _ghidra_export(
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
             data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)
+        elif mode == "imports":
+            data = client.imports(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "symbols":
             data = client.symbols(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "xrefs":

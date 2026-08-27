@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **284（164 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **285（165 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -554,6 +554,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `body` 选择器命中 1 个、tag 为 body、文本含 hello；`script` 选择器全部 tag 为 script；畸形选择器回 invalid_params。单测用桩
   page.evaluate 尊重后端传入的 maxItems/maxAttrs/maxValueChars，钉住 tag/属性/文本形状、元素 200 截断与 total、单元素属性 48
   截断、超大属性值按字节收紧、坏选择器与空选择器的 invalid_params、docstring。该工具计入读效果，工具面因此 283→284。
+- **Ghidra 线能列已定义函数（`ghidra.functions`）与全部符号（`ghidra.symbols`），却没有单独的「导入了哪些库 API」视角**。
+  外部（导入）函数——binary 调用的库 API，正是恶意样本三连问「它调了什么」的核心——被埋在符号表里，没有专门的一条。新增
+  只读的 `ghidra.imports`：`ExportJson.java` 新增 `imports` 模式，遍历 `FunctionManager.getExternalFunctions()`，回 `items`，
+  每条带 `name`（导入符号，如 strcmp/CreateFileW）、`entry`（Ghidra EXTERNAL 空间里的地址）与 `library`（来源模块，Ghidra 知道
+  时给出如 KERNEL32.DLL/libc.so.6，否则空），外加 `count`、`has_more`。Java 端新增面极小：迭代与取字段完全照抄 `functions()`，
+  只有 `getExternalFunctions()` 与带空值保护的 `getExternalLocation().getLibraryName()` 是新调用。Python 侧完整走桩测：伪造
+  analyzeHeadless 写出 imports 形状的 JSON，钉住 mode 作为裸 postScript 参数抵达、外部函数负载（name/entry/library）经既有解析
+  路径回来、`export_imports.json` 落盘；另有一条静态同步测试断言 `ExportJson.java` 确实分派 `imports` 模式并调 `getExternalFunctions`，
+  避免 Java 与 Python 走偏（本环境无 Ghidra，端到端跑不了）。活体门（装了 Ghidra 才跑，skip≠pass）在真 PE fixture 上断言导入表
+  至少解析出一条、每条带 name/entry/library。该工具计入读效果，工具面因此 284→285。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

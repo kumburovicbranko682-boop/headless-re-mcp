@@ -58,6 +58,14 @@ def test_ghidra_headless_drives_the_whole_line(
         assert symbols.data["count"] >= 1
         assert set(symbols.data["items"][0]) >= {"name", "address", "type"}
 
+        # imports exercises the new ExportJson mode (getExternalFunctions). A PE
+        # console binary links against the CRT/KERNEL32, so it must resolve at
+        # least one external function, each carrying name/entry/library.
+        imports = service.ghidra_imports(session_id, limit=64, timeout=400.0)
+        assert imports.ok, imports.error
+        assert imports.data["count"] >= 1
+        assert set(imports.data["items"][0]) >= {"name", "entry", "library"}
+
         decompiled = service.ghidra_decompile(session_id, entry, timeout=400.0)
         assert decompiled.ok, decompiled.error
         assert isinstance(decompiled.data["truncated"], bool)
