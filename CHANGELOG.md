@@ -30,7 +30,7 @@ Ghidra 这条线此前实为不可用，两处真机 Bug 都被 mock 掉的单�
 
 ### 新增（Ghidra 反编译实测 Gate：还原出的调用就是二进制里的调用）
 
-- Ghidra 这条线此前零真机覆盖——每个 `ghidra.*` 测试都在压 mock 子进程，上面那两处后端 Bug 才能一路绿灯溜过。`test_ghidra_native_gate` 用系统编译器现编一个不 strip 的小 ELF（`gate_root` 直接调 `gate_leaf`），驱动真的 `analyzeHeadless`：`ghidra.functions` 必须列出夹具自己的函数（`main`、`gate_root`，且带 `entry`/`body_size` 而非 address/size），`ghidra.decompile` 反编译 `gate_root` 必须在还原出的 C 里认出对 `gate_leaf` 的具名调用——证明 Java post-script 既加载成功、又真读到了被分析的程序，而不只是「`analyzeHeadless` 跑过了」。同一原生会话上 PE 专属工具仍以 `target_mismatch` 拒绝（原生 target kind 不放松调试器闸）。Ghidra（`HEADLESS_RE_GHIDRA_HOME`）或 C 编译器缺失时诚实 skip（skip != pass）。`linux-integration.yml` 装 Temurin JDK 21 + 固定版本 Ghidra 公开发行包、导出 `HEADLESS_RE_GHIDRA_HOME` 并把此 Gate 纳入运行清单。
+- Ghidra 这条线此前零真机覆盖——每个 `ghidra.*` 测试都在压 mock 子进程，上面那两处后端 Bug 才能一路绿灯溜过。`test_ghidra_native_gate` 用系统编译器现编一个不 strip 的小 ELF（`gate_root` 直接调 `gate_leaf`），驱动真的 `analyzeHeadless`，逐一压 Java post-script 的全部四种导出模式：`ghidra.functions` 必须列出夹具自己的函数（`main`、`gate_root`、`gate_leaf`，且带 `entry`/`body_size` 而非 address/size），`ghidra.decompile` 反编译 `gate_root` 必须在还原出的 C 里认出对 `gate_leaf` 的具名调用，`ghidra.symbols` 必须带 name/address/type 交回符号表，`ghidra.xrefs` 对被调用两次的 `gate_leaf` 必须解析出真实引用（每条带 from/to）——证明 Java post-script 既加载成功、又真读到了被分析的程序，而不只是「`analyzeHeadless` 跑过了」。同一原生会话上 PE 专属工具仍以 `target_mismatch` 拒绝（原生 target kind 不放松调试器闸）。Ghidra（`HEADLESS_RE_GHIDRA_HOME`）或 C 编译器缺失时诚实 skip（skip != pass）。`linux-integration.yml` 装 Temurin JDK 21 + 固定版本 Ghidra 公开发行包、导出 `HEADLESS_RE_GHIDRA_HOME` 并把此 Gate 纳入运行清单。
 
 ### 新增（监控台工作台）
 
