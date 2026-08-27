@@ -155,6 +155,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_xrefs(session_id, method_name, direction=direction, limit=limit)
         )
 
+    @tools.tool(name="apk.string_xrefs")
+    def apk_string_xrefs(
+        session_id: str,
+        value: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List methods that reference an exact string constant.
+
+        Pivots from a constant an agent found in apk.strings (a URL, a key, an
+        error message) to the code that uses it. Answers with value, found,
+        xrefs (each {class, method}), count, total, offset, has_more and
+        scan_capped. found is False when the string is absent and True with an
+        empty xrefs when it is present but unreferenced, so the two cases do not
+        look alike; scan_capped means the search stopped before every string was
+        examined. The match is exact, not a substring search.
+        """
+        return _dump(
+            analysis.apk_string_xrefs(session_id, value, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

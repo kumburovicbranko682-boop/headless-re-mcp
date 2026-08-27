@@ -105,6 +105,20 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert "method_name, direction, count, has_more" in doc
 
 
+def test_apk_string_xrefs_names_found_and_the_edge_fields() -> None:
+    """apk.string_xrefs must name found and xrefs so the two miss cases differ.
+
+    An absent string and a present-but-unreferenced one both return no edges;
+    only found tells them apart, and a caller that never learns the field name
+    cannot branch on it.
+    """
+    doc = " ".join(_tool_docstring("apk.string_xrefs").split())
+    assert "found" in doc
+    assert "xrefs" in doc
+    assert "scan_capped" in doc
+    assert "exact" in doc
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)

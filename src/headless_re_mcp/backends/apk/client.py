@@ -426,6 +426,59 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def string_xrefs(
+        self, path: Path, value: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Methods that reference an exact string constant.
+
+        Pivoting from an interesting constant (a URL, an API key, an error
+        message) to the code that uses it is a core triage move the string list
+        alone cannot answer. ``found`` separates "the string is not in the DEX"
+        (found False, total 0) from "it is present but nothing references it"
+        (found True, total 0); ``scan_capped`` says the search stopped before
+        examining every string. Edges share ``apk.xrefs``'s {class, method}
+        shape.
+        """
+        if not isinstance(value, str) or value == "":
+            raise ApkError("invalid_params", "value is required")
+        parsed = self._parsed(path)
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        edges: set[tuple[str, str]] = set()
+        scanned = 0
+        scan_capped = False
+        found = False
+        for sa in parsed.analysis.get_strings():
+            if scanned >= _MAX_STRINGS_COLLECT:
+                scan_capped = True
+                break
+            scanned += 1
+            if str(sa.get_value()) != value:
+                continue
+            found = True
+            for _klass, method in sa.get_xref_from():
+                edges.add(
+                    (
+                        str(getattr(method, "class_name", "")),
+                        str(getattr(method, "name", "")),
+                    )
+                )
+            # androguard keys its string table by value, so one exact match is
+            # the whole story -- no need to scan the rest.
+            break
+        ordered = sorted(edges)
+        window = ordered[start : start + cap]
+        return {
+            "value": value,
+            "found": found,
+            "xrefs": [{"class": cls, "method": name} for cls, name in window],
+            "count": len(window),
+            "total": len(ordered),
+            "offset": start,
+            "has_more": start + len(window) < len(ordered),
+            "scan_capped": scan_capped,
+        }
+
     def xrefs(
         self,
         path: Path,

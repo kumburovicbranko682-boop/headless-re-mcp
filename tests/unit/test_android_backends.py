@@ -332,6 +332,114 @@ class TestApkXrefsWalkBothDirections:
         assert excinfo.value.code == "invalid_params"
 
 
+class _FakeMethodRef:
+    def __init__(self, class_name: str, name: str) -> None:
+        self.class_name = class_name
+        self.name = name
+
+
+class _FakeStringAnalysis:
+    def __init__(self, value: str, refs: list[tuple[str, str]]) -> None:
+        self._value = value
+        self._refs = refs
+
+    def get_value(self) -> str:
+        return self._value
+
+    def get_xref_from(self) -> set[tuple[object, _FakeMethodRef]]:
+        return {(object(), _FakeMethodRef(cls, name)) for cls, name in self._refs}
+
+
+class _FakeStringParsed:
+    def __init__(self, strings: list[_FakeStringAnalysis]) -> None:
+        self.analysis = self
+        self._strings = strings
+
+    def get_strings(self) -> list[_FakeStringAnalysis]:
+        return self._strings
+
+
+class TestApkStringXrefs:
+    """Pivoting from a string constant to the methods that reference it."""
+
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, strings: list[_FakeStringAnalysis]
+    ) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        monkeypatch.setattr(
+            ApkClient, "_parsed", lambda self, path: _FakeStringParsed(strings)
+        )
+        return client
+
+    def test_a_found_string_lists_its_referencing_methods(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        strings = [
+            _FakeStringAnalysis("https://api.example.com", [("Lcom/example/App;", "main")]),
+            _FakeStringAnalysis("other", [("Lcom/example/App;", "onCreate")]),
+        ]
+        client = self._client(monkeypatch, strings)
+        result = client.string_xrefs(tmp_path / "app.apk", "https://api.example.com")
+
+        assert result["found"] is True
+        assert result["value"] == "https://api.example.com"
+        assert result["total"] == 1
+        assert result["xrefs"] == [{"class": "Lcom/example/App;", "method": "main"}]
+        assert result["has_more"] is False
+        assert result["scan_capped"] is False
+
+    def test_an_absent_string_is_found_false_with_no_xrefs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(
+            monkeypatch, [_FakeStringAnalysis("present", [("La;", "x")])]
+        )
+        result = client.string_xrefs(tmp_path / "app.apk", "missing")
+
+        assert result["found"] is False
+        assert result["total"] == 0
+        assert result["xrefs"] == []
+
+    def test_a_present_but_unreferenced_string_is_found_true_and_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, [_FakeStringAnalysis("lonely", [])])
+        result = client.string_xrefs(tmp_path / "app.apk", "lonely")
+
+        # found True with an empty list -- the opposite of an absent string.
+        assert result["found"] is True
+        assert result["total"] == 0
+        assert result["xrefs"] == []
+
+    def test_the_referencing_methods_paginate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        refs = [(f"Lc{index};", f"m{index}") for index in range(5)]
+        client = self._client(monkeypatch, [_FakeStringAnalysis("s", refs)])
+
+        page = client.string_xrefs(tmp_path / "app.apk", "s", offset=0, limit=2)
+        assert page["total"] == 5
+        assert page["count"] == 2
+        assert page["offset"] == 0
+        assert page["has_more"] is True
+
+        tail = client.string_xrefs(tmp_path / "app.apk", "s", offset=4, limit=2)
+        assert tail["count"] == 1
+        assert tail["has_more"] is False
+
+    def test_an_empty_value_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkError
+
+        client = self._client(monkeypatch, [])
+        with pytest.raises(ApkError) as excinfo:
+            client.string_xrefs(tmp_path / "app.apk", "")
+        assert excinfo.value.code == "invalid_params"
+
+
 class _FakeCert:
     def __init__(self, tag: str) -> None:
         self.subject = f"CN={tag}"
