@@ -410,6 +410,11 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
+        # Bounded here too, not only at the tool schema: a negative address
+        # would reach Frida's ptr() as a wrapped pointer and read the wrong
+        # memory, so refuse it the same way size is refused.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative integer")
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
