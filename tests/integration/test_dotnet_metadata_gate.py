@@ -89,6 +89,10 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # plus a per-build fingerprint. Both must come off the real tables.
         assert report["assembly_version"] == "1.0.0.0"
         assert report["mvid"] == "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+        # The platform the build targets, decoded from the CustomAttribute the
+        # fixture stamps on the assembly -- the monodis gate cross-checks this
+        # same string against Mono's own decode of the attribute.
+        assert report["target_framework"] == ".NETFramework,Version=v4.8"
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2
@@ -136,13 +140,14 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert run_ops == ["call", "ret"]
         assert 0x0A000001 in il_run["call_tokens"]
 
-        # xrefs: the weak MemberRef listing surfaces the call target's name.
+        # xrefs: the weak MemberRef listing surfaces the call target plus the
+        # TargetFrameworkAttribute ctor the fixture's CustomAttribute row uses.
         xrefs = _data(service.dotnet_xrefs(session_id, limit=16))
         assert xrefs["kind"] == "xrefs"
         assert xrefs["not_ida_idalib"] is True
-        assert xrefs["total"] == 1
-        assert xrefs["items"][0]["name"] == "WriteLine"
-        assert xrefs["items"][0]["token"] == 0x0A000001
+        assert xrefs["total"] == 2
+        by_token = {item["token"]: item["name"] for item in xrefs["items"]}
+        assert by_token == {0x0A000001: "WriteLine", 0x0A000002: ".ctor"}
     finally:
         service.close_all()
 

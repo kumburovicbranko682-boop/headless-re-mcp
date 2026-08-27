@@ -7,10 +7,12 @@ skip when it is absent. The other half -- ``dotnet.inspect`` /
 ECMA-335 metadata reader that needs no external tool at all. To exercise it
 end to end we need a genuine managed assembly, so this script hand-writes the
 smallest one that carries real metadata: a #~ tables stream with Module,
-TypeDef, Field, MethodDef, MemberRef, ModuleRef, Assembly and AssemblyRef rows,
-a #Strings heap, and two method bodies with actual CIL. No compiler is
-required; the output is deterministic and committed as ``minimal_assembly.exe``
-next to this file.
+TypeRef, TypeDef, Field, MethodDef, MemberRef, CustomAttribute, ModuleRef,
+Assembly and AssemblyRef rows, a #Strings heap, a #Blob heap carrying a real
+custom-attribute value (the TargetFrameworkAttribute every compiler stamps on
+an assembly), and two method bodies with actual CIL. No compiler is required;
+the output is deterministic and committed as ``minimal_assembly.exe`` next to
+this file.
 
 Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 """
@@ -47,6 +49,14 @@ RESOURCE_FLAGS = 0x0001  # Public
 # with this row present, the resource enumeration doubles as a regression test.
 ASSEMBLY_REF_NAME = "mscorlib"
 ASSEMBLY_REF_VERSION = (4, 0, 0, 0)
+# The TargetFrameworkAttribute value the CustomAttribute row (0x0C) carries:
+# a TypeRef (0x01) names System.Runtime.Versioning.TargetFrameworkAttribute in
+# mscorlib, a second MemberRef row is its .ctor(string), and the attribute's
+# value blob in #Blob serializes this framework string -- exactly how csc
+# stamps a real build's target platform onto the manifest assembly.
+TARGET_FRAMEWORK = ".NETFramework,Version=v4.8"
+TFA_TYPE_NAME = "TargetFrameworkAttribute"
+TFA_NAMESPACE = "System.Runtime.Versioning"
 METADATA_VERSION = "v4.0.30319"
 ENTRY_POINT_TOKEN = 0x06000002  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
@@ -100,8 +110,29 @@ def build() -> bytes:
     i_mod_ref = add_string(MODULE_REF_NAME)
     i_resource = add_string(RESOURCE_NAME)
     i_asm_ref = add_string(ASSEMBLY_REF_NAME)
+    i_tfa = add_string(TFA_TYPE_NAME)
+    i_tfa_ns = add_string(TFA_NAMESPACE)
+    i_ctor = add_string(".ctor")
     i_ns = 0
     strings_heap = _pad4(bytes(strings))
+
+    # ---- #Blob heap (index 0 is the empty blob; entries carry a packed len) ----
+    blob = bytearray(b"\x00")
+
+    def add_blob(content: bytes) -> int:
+        at = len(blob)
+        assert len(content) < 0x80, "single-byte packed length only"
+        blob.append(len(content))
+        blob.extend(content)
+        return at
+
+    # .ctor(string) signature: HASTHIS, 1 parameter, returns void, param string.
+    b_ctor_sig = add_blob(bytes([0x20, 0x01, 0x01, 0x0E]))
+    # Custom-attribute value (II.23.3): prolog 0x0001, one SerString fixed
+    # argument (packed length + UTF-8), zero named arguments.
+    tfa_utf8 = TARGET_FRAMEWORK.encode("utf-8")
+    b_ca_value = add_blob(bytes([0x01, 0x00, len(tfa_utf8)]) + tfa_utf8 + b"\x00\x00")
+    blob_heap = _pad4(bytes(blob))
 
     # ---- method bodies (tiny format: (code_size << 2) | 0x02) ----
     il_add = bytes([0x1B, 0x2A])  # ldc.i4.5 ; ret
@@ -123,17 +154,20 @@ def build() -> bytes:
     # ---- #~ tables stream (HeapSizes=0 => 2-byte heap indices) ----
     valid = (
         (1 << 0x00)  # Module
+        | (1 << 0x01)  # TypeRef
         | (1 << 0x02)  # TypeDef
         | (1 << 0x04)  # Field
         | (1 << 0x06)  # MethodDef
         | (1 << 0x0A)  # MemberRef
+        | (1 << 0x0C)  # CustomAttribute
         | (1 << 0x1A)  # ModuleRef
         | (1 << 0x20)  # Assembly
         | (1 << 0x23)  # AssemblyRef
         | (1 << 0x28)  # ManifestResource
     )
     row_counts = {
-        0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1
+        0x00: 1, 0x01: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 2, 0x0C: 1,
+        0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1,
     }
 
     tables = bytearray()
@@ -148,6 +182,9 @@ def build() -> bytes:
             tables += _u32(row_counts[bit])
     # Module: Generation Name Mvid EncId EncBaseId (Mvid -> #GUID row 1)
     tables += _u16(0) + _u16(i_module) + _u16(1) + _u16(0) + _u16(0)
+    # TypeRef: ResolutionScope Name Namespace -- TargetFrameworkAttribute
+    # resolved from the mscorlib AssemblyRef (ResolutionScope tag 2, row 1).
+    tables += _u16((1 << 2) | 2) + _u16(i_tfa) + _u16(i_tfa_ns)
     # TypeDef x2: Flags Name Namespace Extends FieldList MethodList
     tables += _u32(0) + _u16(i_type_module) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
     tables += _u32(0x00100001) + _u16(i_type_sample) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
@@ -156,8 +193,16 @@ def build() -> bytes:
     # MethodDef x2: RVA ImplFlags Flags Name Signature ParamList
     tables += _u32(rva_add) + _u16(0) + _u16(0x0016) + _u16(i_add) + _u16(0) + _u16(1)
     tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(0) + _u16(1)
-    # MemberRef: Class Name Signature
+    # MemberRef x2: Class Name Signature. Row 1 is the WriteLine call target;
+    # row 2 is TargetFrameworkAttribute::.ctor(string), its Class the TypeRef
+    # above (MemberRefParent tag 1, row 1).
     tables += _u16(0) + _u16(i_memberref) + _u16(0)
+    tables += _u16((1 << 3) | 1) + _u16(i_ctor) + _u16(b_ctor_sig)
+    # CustomAttribute: Parent Type Value -- the TargetFramework stamp on the
+    # manifest assembly: Parent is Assembly row 1 (HasCustomAttribute tag 14),
+    # Type the .ctor MemberRef row 2 (CustomAttributeType tag 3), Value the
+    # serialized framework string in #Blob.
+    tables += _u16((1 << 5) | 14) + _u16((2 << 3) | 3) + _u16(b_ca_value)
     # ModuleRef: Name -- the unmanaged DLL a P/Invoke binds to.
     tables += _u16(i_mod_ref)
     # Assembly: HashAlgId Maj Min Build Rev Flags PublicKey Name Culture
@@ -185,7 +230,7 @@ def build() -> bytes:
         ("#~", tables_stream),
         ("#Strings", strings_heap),
         ("#GUID", uuid.UUID(MODULE_MVID).bytes_le),
-        ("#Blob", _pad4(b"\x00")),
+        ("#Blob", blob_heap),
     ]
 
     def meta_header(offsets: list[int]) -> bytes:

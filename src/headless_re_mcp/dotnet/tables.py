@@ -18,6 +18,38 @@ from __future__ import annotations
 
 TABLE_COUNT = 64
 
+# The table lists behind the ECMA-335 II.24.2.6 coded indexes, exported so a
+# reader that must *decode* one of these fields (not merely size a row) uses
+# the same authoritative list the sizing does. Order is irrelevant for sizing
+# (only the max row count matters); the tag values live with the decoders.
+RESOLUTION_SCOPE_TABLES = (0x00, 0x1A, 0x23, 0x01)
+MEMBER_REF_PARENT_TABLES = (0x02, 0x01, 0x1A, 0x06, 0x1B)
+CUSTOM_ATTRIBUTE_TYPE_TABLES = (0x06, 0x0A)
+HAS_CUSTOM_ATTRIBUTE_TABLES = (
+    0x06,
+    0x04,
+    0x01,
+    0x02,
+    0x08,
+    0x09,
+    0x0A,
+    0x00,
+    0x0E,
+    0x17,
+    0x14,
+    0x11,
+    0x1A,
+    0x1B,
+    0x20,
+    0x23,
+    0x26,
+    0x27,
+    0x28,
+    0x2A,
+    0x2C,
+    0x2B,
+)
+
 
 def coded_index_size(row_counts: dict[int, int], tables: tuple[int, ...], tag_bits: int) -> int:
     """Width of a coded index over ``tables`` with ``tag_bits`` tag bits."""
@@ -44,43 +76,16 @@ def table_row_size(
     g = guid_index_size
     type_def_or_ref = coded_index_size(rc, (0x02, 0x01, 0x1B), 2)
     has_constant = coded_index_size(rc, (0x04, 0x08, 0x17), 2)
-    has_custom_attribute = coded_index_size(
-        rc,
-        (
-            0x06,
-            0x04,
-            0x01,
-            0x02,
-            0x08,
-            0x09,
-            0x0A,
-            0x00,
-            0x0E,
-            0x17,
-            0x14,
-            0x11,
-            0x1A,
-            0x1B,
-            0x20,
-            0x23,
-            0x26,
-            0x27,
-            0x28,
-            0x2A,
-            0x2C,
-            0x2B,
-        ),
-        5,
-    )
+    has_custom_attribute = coded_index_size(rc, HAS_CUSTOM_ATTRIBUTE_TABLES, 5)
     has_field_marshal = coded_index_size(rc, (0x04, 0x08), 1)
     has_decl_security = coded_index_size(rc, (0x02, 0x06, 0x20), 2)
-    member_ref_parent = coded_index_size(rc, (0x02, 0x01, 0x1A, 0x06, 0x1B), 3)
+    member_ref_parent = coded_index_size(rc, MEMBER_REF_PARENT_TABLES, 3)
     has_semantics = coded_index_size(rc, (0x14, 0x17), 1)
     method_def_or_ref = coded_index_size(rc, (0x06, 0x0A), 1)
     member_forwarded = coded_index_size(rc, (0x04, 0x06), 1)
     implementation = coded_index_size(rc, (0x26, 0x23, 0x27), 2)
-    custom_attribute_type = coded_index_size(rc, (0x06, 0x0A), 3)
-    resolution_scope = coded_index_size(rc, (0x00, 0x1A, 0x23, 0x01), 2)
+    custom_attribute_type = coded_index_size(rc, CUSTOM_ATTRIBUTE_TYPE_TABLES, 3)
+    resolution_scope = coded_index_size(rc, RESOLUTION_SCOPE_TABLES, 2)
     type_or_method_def = coded_index_size(rc, (0x02, 0x06), 1)
 
     sizes: dict[int, int] = {

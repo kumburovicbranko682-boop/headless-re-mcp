@@ -132,6 +132,9 @@ def test_inspect_verified_cor20_bsjb(tmp_path: Path) -> None:
     assert report.metadata_version == "v4.0.30319"
     assert report.entry_point_token == 0x06000001
     assert "ILONLY" in report.flags_decoded
+    # This synthetic image carries no TargetFrameworkAttribute; the fact is
+    # None rather than invented -- pre-4.0 and hand-built assemblies are real.
+    assert report.target_framework is None
 
 
 def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
@@ -170,6 +173,12 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     # ModuleRef row) both read correctly proves the new row is sized right.
     assert report.module_refs == ("kernel32.dll",)
     assert report.to_dict()["module_refs"] == ["kernel32.dll"]
+    # The TargetFrameworkAttribute the builder stamps on the assembly: reading
+    # it walks TypeRef -> MemberRef -> CustomAttribute and decodes the value
+    # blob's SerString from #Blob -- the platform the build targets, the
+    # managed analogue of Mach-O's LC_BUILD_VERSION.
+    assert report.target_framework == ".NETFramework,Version=v4.8"
+    assert report.to_dict()["target_framework"] == ".NETFramework,Version=v4.8"
 
 
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:
@@ -242,6 +251,45 @@ def test_a_lying_moduleref_count_stays_bounded(tmp_path: Path) -> None:
     report = inspect_dotnet(path)
     assert report.verified_clr is True
     assert len(report.module_refs) <= 64
+
+
+def test_a_lying_customattribute_count_stays_bounded(tmp_path: Path) -> None:
+    # The CustomAttribute row count is attacker-controlled like every other:
+    # a two-billion claim must not stall or crash the TargetFramework walk.
+    # The one honest row still reads (it comes first and the walk stops on the
+    # match), and everything the liar sits in front of still parses.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _rowcount_offset(bytes(raw), 0x0C), 0x7FFFFFFF)
+    path = tmp_path / "liar_customattrs.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert report.target_framework == ".NETFramework,Version=v4.8"
+
+
+def test_a_corrupt_framework_blob_reads_as_none(tmp_path: Path) -> None:
+    # A value blob whose SerString claims more bytes than the heap holds is
+    # hostile input, not a framework fact: the walk must answer None (and keep
+    # every other fact) rather than read out of bounds or crash.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    # The byte before the framework string in #Blob is its SerString packed
+    # length; inflating it makes the string overrun the blob's end.
+    string_at = raw.index(b".NETFramework,Version=")
+    raw[string_at - 1] = 0x7F
+    path = tmp_path / "corrupt_tfa.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert report.assembly_name == "MyAssembly"
+    assert report.target_framework is None
 
 
 def test_service_dotnet_inspect(tmp_path: Path) -> None:

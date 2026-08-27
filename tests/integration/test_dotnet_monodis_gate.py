@@ -8,9 +8,10 @@ unseen, and nothing proves the fixture is a genuine assembly rather than
 something only our reader accepts. This gate closes that loop with an
 independent parser: Mono's ``monodis`` must parse the same file and agree on
 every identity fact the reader surfaces -- assembly name and version, module
-name, MVID, and the type list. It is the .NET analogue of the native gate
-cross-checking the entry point against radare2 and Ghidra, and the proxy gate
-cross-checking the HAR reader against real mitmproxy output.
+name, MVID, the dependency lists, the target framework, and the type list. It
+is the .NET analogue of the native gate cross-checking the entry point against
+radare2 and Ghidra, and the proxy gate cross-checking the HAR reader against
+real mitmproxy output.
 
 monodis ships in Debian/Ubuntu's ``mono-utils``; skip != pass -- the gate skips,
 naming the missing tool, only when monodis is not installed.
@@ -41,6 +42,14 @@ _TYPEDEF_RE = re.compile(r"^\d+:\s+(.+?)\s+\(flist=", re.MULTILINE)
 _ASSEMBLYREF_RE = re.compile(r"^\d+:\s+Version=(\S+)\s*\n\s+Name=(\S+)", re.MULTILINE)
 # monodis --moduleref prints "1: kernel32.dll" per row under a header line.
 _MODULEREF_RE = re.compile(r"^\d+:\s+(\S+)\s*$", re.MULTILINE)
+# monodis --customattr fully decodes each CustomAttribute row -- parent, the
+# ctor resolved through TypeRef/AssemblyRef, and the value blob's string:
+# `1: Assembly: 1: instance void class [mscorlib]System.Runtime.Versioning
+#  .TargetFrameworkAttribute::'.ctor'(string) [".NETFramework,Version=v4.8"]`
+_TFA_CA_RE = re.compile(
+    r"^\d+:\s+Assembly:.*TargetFrameworkAttribute::'\.ctor'\(string\)\s+\[\"([^\"]+)\"\]",
+    re.MULTILINE,
+)
 
 
 def _monodis(*args: str) -> str:
@@ -137,6 +146,16 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
         assert reader_refs == mono_refs
         # The native P/Invoke dependency list must match Mono's ModuleRef decode.
         assert set(facts["module_refs"]) == mono_modrefs
+
+        # The target framework: Mono resolves the CustomAttribute row on the
+        # assembly through the ctor's MemberRef and TypeRef, parses the ctor
+        # signature blob, and decodes the value blob's SerString all by
+        # itself -- so this one string agreeing proves the whole attribute
+        # chain (coded indexes, ctor resolution, #Blob) reads identically.
+        customattr_dump = _monodis("--customattr")
+        mono_tfa = _TFA_CA_RE.search(customattr_dump)
+        assert mono_tfa, customattr_dump
+        assert facts["target_framework"] == mono_tfa.group(1)
 
         # The resource sits behind the AssemblyRef table in the walk, so its
         # name coming back clean proves the reader stepped over those rows at
