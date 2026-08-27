@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（每次 apk.* 调用都把 androguard 的 loguru DEBUG 洪流喷到 stderr）
+
+- androguard 4.x 通过 loguru 疯狂打日志：实测一次 `apk.strings` 在仅两个类的 APK 上就产生
+  **233 条 DEBUG 记录**，真实 App（数千类、全量 xref）成比例更多，且每次 apk.* 调用都往进程
+  stderr 喷一遍。对无人值守的 headless MCP server 这是操作员从没要过的 I/O 与噪声；在 stdio
+  传输下更会淹没 server 自身的诊断。此前仓库没有任何地方消音（相关改动只停在未合并分支）。
+- `ApkClient` 在成功导入 androguard 后调用 `_silence_androguard_logs()`：用 `loguru.disable()`
+  按记录名精确关掉 androguard（及其解析依赖 apkInspector）自己的日志，宿主应用的 loguru 日志
+  不受影响。调用方真正需要的错误本就经 `ApkError` 暴露，不靠这些日志。函数幂等且廉价，loguru
+  缺失时安全 no-op。实测：消音后同一次 `apk.strings` 的 androguard 日志行数从 233 降为 0。
+- 单测用假的 loguru/androguard 模块把契约钉死（按名 disable、幂等、loguru 缺失不抛、
+  `ApkClient()` 在 androguard 存在时触发消音），因而在未装 android extra 的 CI 里也能真跑。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
