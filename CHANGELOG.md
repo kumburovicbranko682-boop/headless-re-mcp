@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（ADB/device 面补一条“无设备”实机 gate，并纳入 CI）
+
+- 整条 `device.*`（`AdbBackend` + 服务层 `device_*`）此前没有任何集成 gate。adbutils 自带 adb
+  二进制并会自动拉起本地 adb server，因此对无人值守 agent 最要紧的契约可以在**不接任何手机**的
+  情况下验证。新增 `tests/integration/test_adb_device_deviceless_gate.py`：断言恶意参数在触达设备
+  前就被拒（端口越界、`tcp:70000` 这类五位非端口、畸形 forward spec、带空格的包名一律
+  `invalid_params`；本地文件缺失 `not_found`），无设备时 `list_devices` 返回干净空信封、对不存在的
+  序列号操作落结构化 `backend_error`/`not_found`（绝不抛裸异常或 `internal_error`），且服务层把
+  adbutils「连接失败但不抛」的 `connected:False` 升级成 `backend_error`——只读 `ok` 的调用方不会把
+  从未连上的设备当成已连接（对 adbutils 2.12.0 实测通过）。新增
+  `.github/workflows/device-gate.yml`：按 PR 路径触发、只装 `.[test,dev]`+adbutils（纯 pip、自带
+  adb，无需 Android SDK/Node/wabt/Java/浏览器）跑这条 gate——此前 `ci.yml` 只跑单测，唯一集成工作流
+  是手动自托管的 Windows PE job，device 面的回归无人看守。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

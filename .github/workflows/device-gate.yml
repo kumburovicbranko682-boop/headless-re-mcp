@@ -1,0 +1,59 @@
+# Per-PR ADB/device gate — makes the deviceless device.* contract real in CI.
+#
+# The whole device.* surface (AdbBackend + the service device_* layer) had no
+# integration gate. ci.yml runs unit tests only and the sole integration
+# workflow is a manual, self-hosted PE job, so nothing ever exercised the adb
+# argument checks, the empty-device-list path, or the "a dead connect is not a
+# success" upgrade. adbutils bundles its own adb binary and auto-starts a local
+# adb server, so all of that runs with no phone attached. This job installs
+# adbutils and runs the deviceless gate so a regression -- a validation dropped,
+# a missing-device op that starts raising, a dead connect that reads as ok --
+# fails here, on the PR.
+#
+# Light and path-scoped: adbutils is a pure pip install (it ships adb; no
+# Android SDK, Node, wabt, Java, or browser). Runs only when the adb backend,
+# its service/tools, or the gate changes.
+name: device-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/adb/**"
+      - "src/headless_re_mcp/core/service_device.py"
+      - "src/headless_re_mcp/tools/device.py"
+      - "tests/integration/test_adb_device_deviceless_gate.py"
+      - ".github/workflows/device-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  device-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package + adbutils (ships its own adb; no SDK needed)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" adbutils
+
+      - name: Tool sanity — adbutils must be usable by the backend, not skip the gate
+        # If adbutils is missing the gate skips and the job reads green on zero
+        # coverage. Fail loudly here instead so a broken install cannot pass.
+        run: |
+          python -c "import adbutils; print('adbutils', getattr(adbutils, '__version__', '?'))"
+          python -c "from headless_re_mcp.backends.adb.client import AdbBackend; assert AdbBackend().available, 'adbutils not available to the adb backend'; print('adb backend available')"
+
+      - name: ADB/device deviceless gate
+        # -rs prints skip reasons so a skip never reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_adb_device_deviceless_gate.py
