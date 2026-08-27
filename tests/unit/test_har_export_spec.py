@@ -315,3 +315,129 @@ def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
     with pytest.raises(ProxyError) as info:
         backend.export_har("s", tmp_path / "capture.har")
     assert info.value.code == "too_large"
+
+
+def test_har_entry_fills_the_http_version_when_known_and_stays_empty_otherwise() -> None:
+    """A known protocol fills the required httpVersion; unknown keeps it "".
+
+    httpVersion is a required HAR member the exporters left empty, so a viewer
+    could not tell an h2 exchange from a 1.1 one. When the capture recorded the
+    protocol it fills both request and response httpVersion; when it did not the
+    field stays the spec-valid empty string rather than a guess.
+    """
+    known = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=200,
+        mime_type="text/html",
+        http_version="HTTP/2.0",
+    )
+    _assert_valid_har(json.dumps(build_har([known])))
+    assert known["request"]["httpVersion"] == "HTTP/2.0"
+    assert known["response"]["httpVersion"] == "HTTP/2.0"
+    unknown = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    _assert_valid_har(json.dumps(build_har([unknown])))
+    assert unknown["request"]["httpVersion"] == ""
+    assert unknown["response"]["httpVersion"] == ""
+
+
+def test_proxy_flow_records_the_negotiated_http_version(tmp_path: Path) -> None:
+    """mitmproxy's response http_version becomes http_version and httpVersion.
+
+    The response's protocol is preferred so the value names what the exchange
+    completed on; it surfaces on proxy.flows and fills the HAR httpVersion.
+    """
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", host="x", http_version="HTTP/1.1"
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain"},
+        raw_content=b"ok",
+        http_version="HTTP/2.0",
+    )
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["http_version"] == "HTTP/2.0"
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["request"]["httpVersion"] == "HTTP/2.0"
+    assert entry["response"]["httpVersion"] == "HTTP/2.0"
+
+
+def test_proxy_errored_flow_falls_back_to_the_request_http_version() -> None:
+    """A flow that erred before a response still reports the request's protocol."""
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", host="x", http_version="HTTP/1.1"
+    )
+    recorder.error(SimpleNamespace(id="1", request=request, response=None, error="reset"))
+    row = recorder.snapshot()[0]
+    assert row["http_version"] == "HTTP/1.1"
+    assert row["error"] is True
+
+
+def test_proxy_flow_without_a_protocol_leaves_http_version_null(tmp_path: Path) -> None:
+    """No recorded protocol keeps http_version null and the HAR httpVersion empty."""
+    backend = _proxy_backend_with_flows(1)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["http_version"] is None
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["request"]["httpVersion"] == ""
+    assert entry["response"]["httpVersion"] == ""
+
+
+def test_web_capture_records_the_http_version_from_the_cdp_protocol(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CDP's response.protocol lands on the summary and the HAR httpVersion."""
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests: dict[str, Any] = {}
+            self.requests_dropped = 0
+            self.cdp = _Cdp()
+
+    handle = _Handle()
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    handle.cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://example.com/a", "method": "GET"},
+            "type": "Document",
+        }
+    )
+    handle.cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {"status": 200, "mimeType": "text/html", "protocol": "h2"},
+        }
+    )
+    assert handle.requests["r1"]["http_version"] == "h2"
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["request"]["httpVersion"] == "h2"
+    assert entry["response"]["httpVersion"] == "h2"

@@ -89,6 +89,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    http_version: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -98,11 +99,15 @@ def har_entry(
     absent field. ``queryString`` is parsed from the URL, and when the capture
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    ``http_version`` (the negotiated protocol, e.g. ``HTTP/1.1`` or ``h2``)
+    fills the required-but-otherwise-empty ``request``/``response`` httpVersion
+    so a viewer can tell an h2 exchange from a 1.1 one; it stays "" when the
+    capture did not record it. ``resource_type`` rides along as Chrome's
+    ``_resourceType`` extension so the browser capture keeps that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
+    protocol = str(http_version or "")
     if isinstance(response_body_size, int) and response_body_size >= 0:
         content_size = response_body_size
     else:
@@ -113,7 +118,7 @@ def har_entry(
         "request": {
             "method": str(method or ""),
             "url": url_text,
-            "httpVersion": "",
+            "httpVersion": protocol,
             "cookies": [],
             "headers": [],
             "queryString": _query_string(url_text),
@@ -123,7 +128,7 @@ def har_entry(
         "response": {
             "status": status_code,
             "statusText": "",
-            "httpVersion": "",
+            "httpVersion": protocol,
             "cookies": [],
             "headers": [],
             "content": {"size": content_size, "mimeType": str(mime_type or "")},

@@ -24,6 +24,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（HAR 导出补上 httpVersion，看得出每条请求走的是 HTTP/1.1 还是 h2）
+
+- HAR 1.2 把 `request.httpVersion` 与 `response.httpVersion` 列为必填，可两端的 HAR 导出
+  （`proxy.export_har` / `web.har.export`）一直把它们写成空串——字段在、但没信息，Chrome
+  DevTools「Import HAR」等查看器里每条请求都看不出走的是 HTTP/1.1 还是 h2/h3，而协议版本恰是逆向
+  一款 App 网络时想知道的一件事（这个 API 是不是升到了 h2？某条慢请求是不是还在 1.1？）。两端其实
+  都拿得到协商后的协议：mitmproxy 把线上版本解析到 `request.http_version` / `response.http_version`
+  （形如 `HTTP/1.1`、`HTTP/2.0`），CDP `Network.responseReceived` 的 `response.protocol` 是字符串
+  （形如 `h2`、`http/1.1`）。现 `har_entry` 新增 `http_version` 参数，在场时同时填进 entry 的
+  request 与 response 两处 `httpVersion`、缺失时仍如实留空串（空串是合法 HAR，绝不臆造）；proxy 的
+  `_FlowRecorder._record` 用新的 `_http_version` 从流里取（优先取响应的版本，好让值指向这条交换真正
+  完成所用的协议，出错早于响应的流退回请求的版本，两者皆无则为 null），web 的 `on_response` 从
+  `response.protocol` 取。该协议也如实出现在 `proxy.flows` 与 `web.network.list` 的
+  `http_version` 行上（proxy 未记到或 web 响应未到时为 null），并按既有 metadata 上限夹取、命中即
+  计入 `metadata_truncated`。工具文档串同步。\
+  新增五条直测：`har_entry` 有协议时两处 httpVersion 都填、无协议时留空串；proxy 从响应版本取到
+  （列表与 HAR 皆有）、出错流退回请求版本、无版本的流列表为 null 且 HAR 留空串；web 从 CDP 的
+  `protocol` 取到 h2（列表与 HAR 皆有）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

@@ -168,6 +168,23 @@ def _content_len(part: Any) -> int:
         return 0
 
 
+def _http_version(req: Any, resp: Any) -> str | None:
+    """The negotiated protocol for a flow, or None when mitmproxy did not set it.
+
+    mitmproxy parses the wire version onto both request and response (e.g.
+    ``HTTP/1.1``, ``HTTP/2.0``); the response's is preferred so the value names
+    the protocol the exchange actually completed on, and the request's is the
+    fallback for a flow that erred before any response. It becomes the HAR's
+    otherwise-empty httpVersion so a viewer can tell an h2 exchange from a 1.1
+    one.
+    """
+    for part in (resp, req):
+        version = getattr(part, "http_version", None)
+        if isinstance(version, str) and version:
+            return version
+    return None
+
+
 def _encoded_len(value: object) -> int:
     try:
         return len(str(value).encode("utf-8", errors="replace"))
@@ -369,6 +386,12 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # The negotiated protocol is known here; keep it on the summary so the
+        # flow list names each request's protocol and export_har can fill the
+        # HAR's otherwise-empty httpVersion.
+        http_version, http_version_truncated = _bounded_metadata(
+            _http_version(req, resp), _MAX_METADATA_BYTES
+        )
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -400,6 +423,7 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
                 "response_size": response_size,
+                "http_version": http_version or None,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -411,6 +435,7 @@ class _FlowRecorder:
                 or url_truncated
                 or host_truncated
                 or type_truncated
+                or http_version_truncated
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
@@ -730,6 +755,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                http_version=f.get("http_version"),
             )
             for f in inst.recorder.snapshot()
         ]

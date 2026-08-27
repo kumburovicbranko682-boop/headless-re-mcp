@@ -472,6 +472,7 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                "http_version": None,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -486,12 +487,19 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            # CDP reports the negotiated protocol (e.g. "h2", "http/1.1"); keep it
+            # so the request summary and the HAR's httpVersion name it.
+            http_version, version_truncated = _bounded_metadata(
+                resp.get("protocol"), _MAX_METADATA_BYTES
+            )
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
-                    if mime_truncated:
+                    if http_version:
+                        entry["http_version"] = http_version
+                    if mime_truncated or version_truncated:
                         entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
@@ -813,6 +821,7 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    http_version=e.get("http_version"),
                 )
                 for e in handle.requests.values()
             ]
