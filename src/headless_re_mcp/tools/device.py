@@ -71,6 +71,24 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.settings")
+    def device_settings(
+        serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+    ) -> dict[str, Any]:
+        """Read the Settings provider (global, secure, system namespaces).
+
+        A different data source from device.properties (getprop build props):
+        the runtime device configuration -- http_proxy, adb_enabled,
+        development_settings_enabled and the rest -- which is the security
+        posture an RE session cares about. Answers with settings (a map of
+        namespace to its key/value map), count, has_more, and unavailable (the
+        namespaces the device refused, when any) so a bounded read is not read
+        as the whole configuration and a refused namespace is not read as empty.
+        There is no props field. Only when every namespace fails is the call an
+        error rather than an empty configuration.
+        """
+        return _dump(analysis.device_settings(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

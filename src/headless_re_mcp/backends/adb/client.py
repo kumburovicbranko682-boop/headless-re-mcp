@@ -40,6 +40,8 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_SETTINGS = 2000
+_SETTINGS_NAMESPACES = ("global", "secure", "system")
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -495,6 +497,66 @@ class AdbBackend:
                 break
             props[match.group(1)] = match.group(2)
         return {"properties": props, "count": len(props), "has_more": has_more}
+
+    def settings(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """Read the Settings provider across global, secure and system.
+
+        This is a different data source from properties (getprop build props):
+        the Settings provider holds runtime device configuration -- http_proxy,
+        adb_enabled, development_settings_enabled, install_non_market_apps and
+        the rest -- which is exactly the security posture an RE session wants.
+        Each ``settings list <namespace>`` prints ``key=value`` lines; the three
+        namespaces come back as separate maps. A namespace that the device
+        refuses (permission, or an old build without it) is reported under
+        unavailable rather than silently dropped, and only when every namespace
+        fails is the whole call an error. The total entry count is capped with
+        has_more so a bounded read is not mistaken for the whole configuration.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_SETTINGS))
+        settings: dict[str, dict[str, str]] = {}
+        unavailable: list[str] = []
+        total = 0
+        has_more = False
+        for namespace in _SETTINGS_NAMESPACES:
+            if has_more:
+                break
+            try:
+                raw = _device_shell(dev, f"settings list {namespace}")
+            except AdbError:
+                unavailable.append(namespace)
+                continue
+            text = str(raw)
+            if _is_host_error_output(text):
+                unavailable.append(namespace)
+                continue
+            ns_map: dict[str, str] = {}
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or "=" not in stripped:
+                    continue
+                if total >= capped:
+                    has_more = True
+                    break
+                key, value = stripped.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                ns_map[key] = value
+                total += 1
+            settings[namespace] = ns_map
+        if not settings and unavailable:
+            raise AdbError(
+                "backend_error", "settings list failed", namespaces=unavailable
+            )
+        result: JsonObject = {
+            "settings": settings,
+            "count": total,
+            "has_more": has_more,
+        }
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
