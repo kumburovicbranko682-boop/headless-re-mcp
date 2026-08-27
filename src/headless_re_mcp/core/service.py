@@ -18,7 +18,7 @@ from headless_re_mcp.backends.adb import AdbBackend
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
 from headless_re_mcp.backends.proxy import ProxyBackend
-from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import (
     DEFAULT_PROFILE_ID,
@@ -1067,9 +1067,26 @@ class AnalysisService(
         # the service lock froze every other session; a throw after pop_session
         # also leaked the debugger workers. Both stay outside the lock and
         # cannot skip the worker-close loop below.
+        web_close_error: BaseException | None = None
         if web_backend is not None:
-            with suppress(BaseException):
-                web_backend.close(session_id)
+            try:
+                web_cleanup = web_backend.close(session_id)
+                # The driver was stopped but a wedged runner thread survives:
+                # that is a partial close, not the clean shutdown the suppressed
+                # call used to report to the caller.
+                if isinstance(web_cleanup, dict) and web_cleanup.get("clean") is False:
+                    web_close_error = WebError(
+                        "web_cleanup_incomplete",
+                        "browser driver stopped but its runner thread remains wedged",
+                    )
+            except WebError as exc:
+                web_close_error = exc
+            except BaseException as exc:  # noqa: BLE001 - recorded, not propagated
+                web_close_error = WebError(
+                    "web_cleanup_failed",
+                    f"browser cleanup failed: {type(exc).__name__}: {exc}",
+                    cause_type=type(exc).__name__,
+                )
         if proxy_backend is not None:
             with suppress(BaseException):
                 proxy_backend.stop(session_id)
@@ -1078,7 +1095,7 @@ class AnalysisService(
                 ApkClient.release(apk_binary)
         self._forget_session_work_dirs(session_id)
 
-        close_errors: list[tuple[BackendKind, BaseException]] = []
+        close_errors: list[tuple[str, BaseException]] = []
         for kind, runtime in runtimes:
             if kind == BackendKind.X64DBG:
                 self._stop_event_drain(runtime)
@@ -1086,7 +1103,7 @@ class AnalysisService(
                 try:
                     runtime.worker.close()
                 except BaseException as exc:
-                    close_errors.append((kind, exc))
+                    close_errors.append((kind.value, exc))
                     # Terminate is already the fallback for a failed close, and
                     # it can throw in its own right: on Windows the worker's
                     # temporary userdir is often still held when it runs. Letting
@@ -1100,6 +1117,13 @@ class AnalysisService(
                     session_id,
                     reason="session_closed" if not close_errors else "worker_close_failed",
                 )
+
+        if web_close_error is not None:
+            # Surfaced ahead of the runtime failures: browser teardown ran first
+            # and its incomplete or failed close is what the web caller waits on.
+            # Inserted after the loop so the trace-reason check above sees only
+            # the debugger workers it is finalising.
+            close_errors.insert(0, ("web", web_close_error))
 
         # Cleared only now: the loop above is what finalises and registers a
         # trace whose worker went away, and it needs the state to do it.
@@ -1126,11 +1150,11 @@ class AnalysisService(
             note_session_closed(self, session_id, result)
             return result
         if close_errors:
-            kind, error = close_errors[0]
+            backend, error = close_errors[0]
             result = _failure(
                 error,
                 session_id=session_id,
-                backend=kind.value,
+                backend=backend,
                 state=closed.state.value,
                 close_error_count=len(close_errors),
             )
