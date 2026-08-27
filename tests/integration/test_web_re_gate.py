@@ -173,3 +173,30 @@ def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
         assert "add" in objdump, "export name missing from objdump"
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_session_metadata_needs_no_wabt(tmp_path: Path) -> None:
+    """The tool-free WASM identity facts flow through session creation.
+
+    Unlike the wat/info gates above, this needs no wabt: create_session walks
+    the module's section table itself, so a bare machine still gets the version,
+    section list and vector counts. It is the WASM analogue of the APK metadata
+    a session already carries.
+    """
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_ADD_WASM)
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(module))
+        assert created.ok, created.error
+        session = created.data["session"]
+        assert session["target"] == "web"
+        wasm = session["metadata"]["wasm"]
+        assert wasm["version"] == 1
+        assert wasm["well_formed"] is True
+        assert wasm["function_count"] == 1
+        assert wasm["export_count"] == 1
+        assert set(wasm["section_counts"]) == {"type", "function", "export", "code"}
+    finally:
+        service.close_all()
