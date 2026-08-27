@@ -189,6 +189,7 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert payload["running"] is True
     assert payload["flow_count"] == 3
     assert payload["retained_max"] == _MAX_FLOWS
+    assert payload["dropped"] == 0
     assert payload["retained_bytes"] >= 0
     assert payload["retained_bytes_max"] > payload["retained_bytes"]
     idle = backend.status("missing")
@@ -196,8 +197,30 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     doc = _tool_docstring("proxy.status")
     assert "flow_count" in doc
     assert "retained_max" in doc
+    assert "dropped" in doc
     assert "retained_bytes" in doc
     assert "retained_bytes_max" in doc
+
+
+def test_proxy_status_dropped_counts_flows_evicted_from_the_ring() -> None:
+    """A flow_count plateaued at capacity must not read as the total seen.
+
+    Measured: capacity 2, 5 flows recorded -> flow_count 2 but dropped 3, so a
+    caller polling status alone learns the capture is lossy rather than reading
+    2 as every flow ever captured.
+    """
+    recorder = _FlowRecorder(capacity=2)
+    for index in range(5):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(host="127.0.0.1", port=8080, recorder=recorder)
+    payload = backend.status("s")
+    assert payload["flow_count"] == 2
+    assert payload["dropped"] == 3
 
 
 def test_proxy_export_har_names_path_and_entry_count(
