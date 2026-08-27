@@ -209,6 +209,11 @@ EXPECTED = {
     # run() calls greet(), so greet has an intra-DEX caller named run.
     "dex_xref_target": "greet",
     "dex_xref_caller": "run",
+    # jadx decompiles that same DEX back to Java; the dotted name is what the
+    # apk.decompile surface takes, and these are the source-level facts a real
+    # decompile must reproduce (the implicit <init> is not emitted as source).
+    "dex_class_dotted": "com.example.hello.Hello",
+    "dex_source_methods": {"add", "greet", "run"},
 }
 
 

@@ -6,8 +6,10 @@ degradation on a bare machine; a second, genuinely androguard-parseable APK
 (real binary manifest plus a real compiled ``classes.dex``, built by
 ``_apk_fixture``) exercises the androguard success path -- package, version,
 permissions, every component type, and the DEX code surface (classes, methods,
-strings, xrefs) -- skipping only where the ``android`` extra is absent. Parts
-that need a real device / jadx / adbutils are asserted only for a structured
+strings, xrefs) -- skipping only where the ``android`` extra is absent. When
+jadx is configured, a further gate decompiles that same DEX back to Java and
+asserts the class, its methods, and an embedded constant come back as source.
+Parts that need a real device / adbutils are asserted only for a structured
 envelope, never a crash (skip != pass for the live-device parts).
 """
 
@@ -19,6 +21,7 @@ from pathlib import Path
 import pytest
 from _apk_fixture import EXPECTED, build_valid_apk
 
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -162,6 +165,46 @@ def test_android_static_reads_dex_code(tmp_path: Path) -> None:
         assert xrefs.ok, xrefs.error
         callers = {(c["class"], c["method"]) for c in xrefs.data["callers"]}
         assert (EXPECTED["dex_class"], EXPECTED["dex_xref_caller"]) in callers, xrefs.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_jadx_decompiles_dex_to_java(tmp_path: Path) -> None:
+    """Exercise the jadx decompiler end to end against the real classes.dex.
+
+    androguard reads the DEX at the bytecode level; jadx is the separate
+    subprocess adapter that turns it back into Java, and nothing else in the
+    suite runs a real jadx (unit tests stub the CLI). With a genuine DEX in the
+    fixture we can prove ``apk.decompile`` shells out, jadx produces sources,
+    and the named class reads back with its methods and constant -- catching a
+    broken jadx invocation or output-layout change that mocks cannot. Skips
+    (skip != pass) where jadx is not configured on the host.
+    """
+    pytest.importorskip("androguard")
+    if Settings.load().jadx is None:
+        pytest.skip("jadx not configured — Android decompile Gate not run (skip != pass)")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        result = service.apk_decompile(session_id, EXPECTED["dex_class_dotted"])
+        assert result.ok, result.error
+        assert result.data["class_name"] == EXPECTED["dex_class_dotted"]
+        source = result.data["source"]
+        # A real decompile reproduces the class, its declared methods, and the
+        # embedded constant -- not just an empty stub.
+        assert "class Hello" in source, source
+        assert EXPECTED["dex_string"] in source, source
+        for method in EXPECTED["dex_source_methods"]:
+            assert f"{method}(" in source, (method, source)
+        # run()'s body calls the other two methods; seeing those calls proves
+        # jadx reconstructed method bodies, not merely signatures.
+        assert "greet(" in source and "add(" in source, source
     finally:
         service.close_all()
 
