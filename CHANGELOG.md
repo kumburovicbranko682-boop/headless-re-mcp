@@ -85,6 +85,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   CI 新增 `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该 gate（现同时断言 `proxy.flows`、
   `proxy.flow.get` 与导出的 HAR 里都抓到双向帧，且客户端以 1001 "going away" 关闭后行与 flow.get 都
   报出该关闭码与 closed_by_client），skip≠pass 守卫在两者已装却仍 skip 时判失败。
+  另修一处二进制帧的死角：此前短二进制帧一律报 `omitted: "binary"`，把负载整个丢掉——可二进制
+  WebSocket 协议（protobuf、msgpack、游戏私有格式）恰恰是逆向最要读的东西，而字节就在手上
+  （mitmproxy 持有原始 content）。现改为：短二进制帧（解码后不超过每帧 8 KiB 上限）以 `base64`
+  字段带回真实字节，超限的才仍报 `omitted: "too_large"`；`proxy.export_har` 里对应条目按 Chrome
+  DevTools 的 `_webSocketMessages` 格式写成 opcode 2、`data` 为该 base64——这本就是 Chrome 自己
+  对二进制帧的表示，故此举比先前写空串更贴合格式，也让 HAR 里二进制会话可还原。文本帧仍走 `text`。
+  live gate 现在额外互发一条含非 UTF-8 字节的二进制帧，断言其经真实 mitmproxy 往返后在 flow.get
+  与导出 HAR 里都能按 base64 完整取回（客户端原始字节与源端回显各一，4/4 稳定通过）。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

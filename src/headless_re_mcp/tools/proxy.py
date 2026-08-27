@@ -95,8 +95,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         headers or body field, and a binary body is never returned as a
         mojibake body string. A WebSocket flow also answers websocket=true,
         websocket_message_count, and websocket_messages: the first frames in
-        order, each with from_client and size, plus text for a short UTF-8 frame
-        or omitted (binary/too_large) otherwise; websocket_truncated is set when
+        order, each with from_client and size, plus text for a short UTF-8 frame,
+        base64 (the actual bytes) for a short binary frame, or omitted=too_large
+        for a frame past the per-frame cap; websocket_truncated is set when
         more frames existed than were returned. Once the socket has closed it
         also answers websocket_closed=true with websocket_close_code,
         websocket_closed_by_client and websocket_close_reason when the close

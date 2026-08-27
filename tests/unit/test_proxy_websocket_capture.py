@@ -12,6 +12,7 @@ with fake mitmproxy flows (no network) and assert the row advertises the traffic
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,10 +153,11 @@ def test_flow_get_returns_bounded_frames_with_text_and_omitted_flags(
 ) -> None:
     request = SimpleNamespace(method="GET", pretty_url="ws://x/chat", headers={}, raw_content=None)
     response = SimpleNamespace(status_code=101, headers={"upgrade": "websocket"}, raw_content=None)
+    binary = b"\x00\x01\x02\xff\xfe"
     frames = [
         _frame(b'{"op":"subscribe"}', from_client=True),
         _frame(b'{"tick":1}', from_client=False),
-        _frame(b"\x00\x01\x02\xff\xfe", from_client=False),  # binary
+        _frame(binary, from_client=False),  # short binary: kept as base64
         _frame(b"z" * 20000, from_client=False),  # over the per-frame inline cap
     ]
     flow = SimpleNamespace(
@@ -171,7 +173,11 @@ def test_flow_get_returns_bounded_frames_with_text_and_omitted_flags(
     msgs = payload["websocket_messages"]
     assert msgs[0] == {"from_client": True, "size": 18, "text": '{"op":"subscribe"}'}
     assert msgs[1] == {"from_client": False, "size": 10, "text": '{"tick":1}'}
-    assert msgs[2]["omitted"] == "binary" and "text" not in msgs[2]
+    # A short binary frame is retrievable as base64, not a dead "omitted".
+    assert "text" not in msgs[2] and "omitted" not in msgs[2]
+    assert base64.b64decode(msgs[2]["base64"]) == binary
+    assert msgs[2]["size"] == len(binary)
+    # Only a frame past the per-frame cap is dropped.
     assert msgs[3]["omitted"] == "too_large" and msgs[3]["size"] == 20000
 
 
@@ -262,12 +268,13 @@ def test_export_har_carries_ws_frames_as_websocketmessages(
     # A plain flow and a WebSocket in the same capture: only the socket entry
     # gets _webSocketMessages built from the frames on its raw flow, and the
     # plain one is untouched.
+    binary = b"\x00\x01\x02\xff"
     ws_flow = SimpleNamespace(
         websocket=SimpleNamespace(
             messages=[
                 _frame(b'{"op":"subscribe"}', from_client=True),
                 _frame(b'{"tick":1}', from_client=False),
-                _frame(b"\x00\x01\x02\xff", from_client=False),  # binary
+                _frame(binary, from_client=False),  # binary
             ]
         )
     )
@@ -314,8 +321,10 @@ def test_export_har_carries_ws_frames_as_websocketmessages(
 
     ws_entry = by_url["ws://x/chat"]
     assert ws_entry["response"]["status"] == 101
+    # Chrome's _webSocketMessages puts base64 in data for a binary (opcode 2)
+    # frame, so the binary payload rides along faithfully.
     assert ws_entry["_webSocketMessages"] == [
         {"type": "send", "opcode": 1, "data": '{"op":"subscribe"}'},
         {"type": "receive", "opcode": 1, "data": '{"tick":1}'},
-        {"type": "receive", "opcode": 2, "data": ""},
+        {"type": "receive", "opcode": 2, "data": base64.b64encode(binary).decode("ascii")},
     ]

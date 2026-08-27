@@ -12,9 +12,13 @@ This gate drives a real WebSocket conversation through a real mitmproxy: a
 `websockets` client connects *through* the started proxy and exchanges two
 messages. It then asserts the flow's row advertises the traffic
 (websocket=true, ws_messages counts both directions) and that flow.get returns
-the actual frames with their text and direction, and that proxy.export_har
-carries those frames as Chrome DevTools' _webSocketMessages array rather than
-leaving a bare 101 entry. The client then closes with a distinctive 1001
+the actual frames with their text and direction. A binary frame carrying
+non-UTF-8 bytes is exchanged too, and the gate asserts it comes back
+retrievable as base64 (not a dead "omitted") through both flow.get and the
+HAR -- a binary WebSocket protocol is what an RE session most needs to read.
+proxy.export_har carries those frames as Chrome DevTools' _webSocketMessages
+array (binary data base64, opcode 2) rather than leaving a bare 101 entry.
+The client then closes with a distinctive 1001
 "going away", and the gate asserts the close lands on the row (ws_closed,
 ws_close_code, ws_closed_by_client) and in flow.get -- how a socket ended is an
 RE signal too. Guarding the guard: the origin transforms each message
@@ -27,6 +31,7 @@ when mitmproxy or the websockets client is genuinely absent.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import socket
 import time
@@ -35,6 +40,8 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
+
+_BINARY_FRAME = b"\x00\x01\x02\xff\xfe\x80payload"
 
 
 def _free_port() -> int:
@@ -68,7 +75,10 @@ async def _exchange(origin_port: int, proxy_port: int) -> None:
 
     async def echo(ws: object) -> None:
         async for message in ws:  # type: ignore[attr-defined]
-            await ws.send("echo:" + message)  # type: ignore[attr-defined]
+            if isinstance(message, bytes):
+                await ws.send(b"echo:" + message)  # type: ignore[attr-defined]
+            else:
+                await ws.send("echo:" + message)  # type: ignore[attr-defined]
 
     async with serve(echo, "127.0.0.1", origin_port):
         uri = f"ws://127.0.0.1:{origin_port}/chat"
@@ -76,8 +86,11 @@ async def _exchange(origin_port: int, proxy_port: int) -> None:
         async with connect(uri, proxy=proxy, open_timeout=15) as ws:
             await ws.send("hello")
             assert await asyncio.wait_for(ws.recv(), timeout=15) == "echo:hello"
-            await ws.send("world")
-            assert await asyncio.wait_for(ws.recv(), timeout=15) == "echo:world"
+            # A binary frame carrying non-UTF-8 bytes: what a real binary
+            # protocol (protobuf, msgpack) looks like. It must come back
+            # retrievable, not as a dead "omitted".
+            await ws.send(_BINARY_FRAME)
+            assert await asyncio.wait_for(ws.recv(), timeout=15) == b"echo:" + _BINARY_FRAME
             # Close with a distinctive code so the capture's close metadata is
             # checkable below (1001 "going away", client-initiated).
             await ws.close(code=1001, reason="going away")
@@ -139,12 +152,20 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
 
         detail = backend.flow_get("ws-gate", ws_row["id"], tmp_path)
         assert detail["websocket"] is True
-        texts = {(m["from_client"], m.get("text")) for m in detail["websocket_messages"]}
+        msgs = detail["websocket_messages"]
+        texts = {(m["from_client"], m.get("text")) for m in msgs}
         # Guarding the guard: the client sent "hello"; the origin transformed it
         # to a distinct "echo:hello". Both being present proves both directions
         # crossed the real proxy and were captured, not one side reflected.
         assert (True, "hello") in texts, texts
         assert (False, "echo:hello") in texts, texts
+        # The binary frame is retrievable as base64, not dropped as "omitted":
+        # the client's raw bytes and the origin's echo of them both survive.
+        blobs = {
+            base64.b64decode(m["base64"]) for m in msgs if "base64" in m
+        }
+        assert _BINARY_FRAME in blobs, blobs
+        assert b"echo:" + _BINARY_FRAME in blobs, blobs
         assert detail["websocket_closed"] is True
         assert detail["websocket_close_code"] == 1001
         assert detail["websocket_closed_by_client"] is True
@@ -162,5 +183,12 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         pairs = {(m["type"], m.get("data")) for m in frames}
         assert ("send", "hello") in pairs, pairs
         assert ("receive", "echo:hello") in pairs, pairs
+        # Chrome's format stores a binary frame's payload base64 in data with
+        # opcode 2, so the binary payload survives the HAR round-trip too.
+        har_blobs = {
+            base64.b64decode(m["data"]) for m in frames if m.get("opcode") == 2 and m.get("data")
+        }
+        assert _BINARY_FRAME in har_blobs, har_blobs
+        assert b"echo:" + _BINARY_FRAME in har_blobs, har_blobs
     finally:
         backend.stop("ws-gate")

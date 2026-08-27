@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import logging
@@ -329,11 +330,13 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
     handing the whole list back would be unbounded. The first ``_MAX_WS_MESSAGES``
     frames are returned in order -- the start of a socket carries the auth /
     subscribe handshake an analyst most wants -- each with ``from_client`` and the
-    decoded ``size``; a short valid-UTF-8 frame also carries ``text``, while a
-    binary or oversized frame reports ``omitted`` ("binary" / "too_large") with
-    no lossy text, mirroring how bodies are handled. ``truncated`` is set when
-    more frames existed than were returned so a reader never mistakes the slice
-    for the whole conversation.
+    decoded ``size``; a short valid-UTF-8 frame also carries ``text``. A short
+    binary frame carries ``base64`` -- the actual bytes, base64-encoded -- so a
+    binary WebSocket protocol (protobuf, msgpack, a game's wire format) is
+    reverse-engineerable rather than a dead end; only an oversized frame reports
+    ``omitted`` ("too_large"), since inlining it would break the byte bound.
+    ``truncated`` is set when more frames existed than were returned so a reader
+    never mistakes the slice for the whole conversation.
     """
     ws = getattr(flow, "websocket", None)
     frames = getattr(ws, "messages", None)
@@ -356,7 +359,10 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
             try:
                 entry["text"] = content.decode("utf-8")
             except UnicodeDecodeError:
-                entry["omitted"] = "binary"
+                # Not text: keep the bytes instead of dropping them. base64
+                # under the same per-frame cap, the way CDP itself hands binary
+                # frames over, so the payload is retrievable and bounded.
+                entry["base64"] = base64.b64encode(content).decode("ascii")
         out.append(entry)
     return out, total, total > _MAX_WS_MESSAGES
 
@@ -364,18 +370,26 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
 def _har_ws_message(frame: JsonObject) -> JsonObject:
     """One bounded WS frame as Chrome DevTools' ``_webSocketMessages`` shape.
 
-    type is send/receive from the direction we recorded; opcode is derived from
-    the frame we kept (a frame marked omitted "binary" is opcode 2, everything
-    else is a text frame, opcode 1); data is the retained UTF-8 text, empty when
-    the frame was binary or clipped for size (we never stored its bytes, so there
-    is nothing faithful to write). No ``time`` is emitted because the capture
-    records no per-frame timestamp.
+    type is send/receive from the direction we recorded. Chrome's own format
+    puts the UTF-8 text of a text frame (opcode 1) in ``data`` and the
+    base64 of a binary frame (opcode 2) in ``data``, so a frame we kept as
+    ``base64`` maps straight to an opcode-2 entry -- the binary payload rides
+    along faithfully instead of as an empty string. An oversized frame we had
+    to omit has no bytes to write, so ``data`` is empty; its opcode is unknown
+    (we never decoded it) and defaults to 1. No ``time`` is emitted because the
+    capture records no per-frame timestamp.
     """
-    return {
-        "type": "send" if frame.get("from_client") else "receive",
-        "opcode": 2 if frame.get("omitted") == "binary" else 1,
-        "data": frame.get("text", ""),
-    }
+    entry: JsonObject = {"type": "send" if frame.get("from_client") else "receive"}
+    if "base64" in frame:
+        entry["opcode"] = 2
+        entry["data"] = frame["base64"]
+    elif frame.get("omitted") == "binary":
+        entry["opcode"] = 2
+        entry["data"] = ""
+    else:
+        entry["opcode"] = 1
+        entry["data"] = frame.get("text", "")
+    return entry
 
 
 class _FlowRecorder:
