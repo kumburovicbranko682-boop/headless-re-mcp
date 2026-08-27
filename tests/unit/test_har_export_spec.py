@@ -266,7 +266,7 @@ def test_proxy_export_har_writes_a_valid_har(tmp_path: Path) -> None:
 
 
 def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path) -> None:
-    """The proxy knows each decoded body length; the HAR must report it.
+    """The proxy measures each body as transferred; the HAR must report it.
 
     The recorder computes the response body length when the flow arrives, even
     for a flow whose body is later dropped from the retain ring, so the export
@@ -282,6 +282,50 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     for entry in doc["log"]["entries"]:
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+class _CompressedResponse:
+    """A response whose decoded form must never be materialised.
+
+    mitmproxy's ``content`` property inflates the body on access. Sizing a
+    hostile response through it would decompress an untrusted payload --
+    gigabytes for a gzip bomb -- inside the capture hook, so the recorder must
+    only ever look at ``raw_content``. The property raises to prove it.
+    """
+
+    status_code = 200
+    headers = {"content-type": "text/plain", "content-encoding": "gzip"}
+
+    def __init__(self, raw: bytes) -> None:
+        self.raw_content = raw
+
+    @property
+    def content(self) -> bytes:
+        raise AssertionError("sizing a response body must not decompress it")
+
+
+def test_sizing_a_compressed_body_reports_transfer_bytes_without_inflating() -> None:
+    """response_size is the bytes on the wire, and measuring must not decode.
+
+    The proxy flow ring is fed by whatever a hostile app's server sends, and a
+    tiny gzip member can declare a decoded length in the gigabytes. The
+    recorder therefore reports the transferred length -- exact for the spec's
+    ``bodySize``, an understatement for a compressed body's decoded length,
+    and the tool docs say so -- rather than inflating an untrusted payload
+    just to report a number.
+    """
+    raw = b"\x1f\x8b" + b"x" * 98  # gzip magic; recorder must not parse it
+    recorder = _FlowRecorder()
+    recorder.response(
+        SimpleNamespace(
+            id="flow-1",
+            request=SimpleNamespace(method="GET", pretty_url="http://x/z", host="x"),
+            response=_CompressedResponse(raw),
+        )
+    )
+    rows = recorder.snapshot()
+    assert len(rows) == 1
+    assert rows[0]["response_size"] == len(raw)
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
