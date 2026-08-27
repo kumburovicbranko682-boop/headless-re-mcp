@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import headless_re_mcp.error_boundary as boundary
+from headless_re_mcp.redaction import SECRET_KEY_KEYWORDS
 
 
 @pytest.fixture
@@ -71,13 +73,77 @@ def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
     ``record_exception`` and the envelope both run messages through this regex,
     so if an edit drops a keyword or a separator the matching secret starts
     reaching disk in the clear. Pin the whole matrix -- every keyword, both
-    ``:``/``=`` separators, the bearer header, and case-insensitivity -- and
-    keep it aligned with the structured redactor's key set in redaction.py.
+    ``:``/``=`` separators, the bearer header, and case-insensitivity.
     """
     redacted = boundary._redact_text(f"connect failed while sending {marker} to host")
 
     assert "sk-DEADBEEFsecret" not in redacted
     assert "[REDACTED]" in redacted
+
+
+def _keyword_literal(fragment: str) -> str:
+    """A concrete key name derived from one shared regex fragment.
+
+    The shared tuple deliberately sticks to plain words plus the ``[_-]?``
+    separator shorthand. A fancier fragment would make this derivation wrong,
+    so anything else fails the test instead of being skipped silently.
+    """
+    literal = fragment.replace("[_-]?", "_")
+    assert re.fullmatch(r"[A-Za-z_]+", literal), f"underivable keyword fragment: {fragment!r}"
+    return literal
+
+
+@pytest.mark.parametrize("separator", ["=", ": "])
+@pytest.mark.parametrize("fragment", SECRET_KEY_KEYWORDS)
+def test_every_shared_redaction_keyword_is_scrubbed_inline(
+    fragment: str, separator: str
+) -> None:
+    """Every key the structured redactor masks is also masked inline, by construction.
+
+    The inline scrubber and redaction.py used to carry hand-copied keyword
+    lists, and they drifted: four keywords the structured redactor masked in
+    payloads reached the incident log and the HTTP 500 body in the clear when
+    the same value landed in an exception message. The patterns are now built
+    from redaction's own tuple; this walks that tuple, so a keyword added there
+    is exercised here without anyone remembering to update a matrix.
+    """
+    keyword = _keyword_literal(fragment)
+    redacted = boundary._redact_text(
+        f"upstream refused {keyword}{separator}sk-DEADBEEFsecret during handshake"
+    )
+
+    assert "sk-DEADBEEFsecret" not in redacted, keyword
+    assert "[REDACTED]" in redacted, keyword
+
+
+def test_non_bearer_authorization_values_are_scrubbed() -> None:
+    """Basic auth is a base64 credential pair and must not outlive the scrubber.
+
+    The old inline pattern special-cased ``Authorization: Bearer`` and nothing
+    else, so a Basic header -- or a bare ``authorization=token`` pair -- went
+    into the incident log in the clear while the structured redactor masked the
+    same header in payloads.
+    """
+    basic = boundary._redact_text("origin replied 401 to Authorization: Basic dXNlcjpodW50ZXIy")
+    assert "dXNlcjpodW50ZXIy" not in basic
+    assert "Basic [REDACTED]" in basic
+
+    bare = boundary._redact_text("proxy saw authorization=sk-DEADBEEFsecret in flight")
+    assert "sk-DEADBEEFsecret" not in bare
+
+
+def test_a_bare_bearer_token_is_scrubbed_without_its_header_name() -> None:
+    """``Bearer x`` quoted on its own is still one recognisable secret.
+
+    Exception text often carries a header value with no key in front -- an
+    httpx error quoting the offending value, a repr() of a header tuple. The
+    structured redactor already masks that form inside payload strings; the
+    inline scrubber let it through.
+    """
+    redacted = boundary._redact_text("failed sending 'Bearer sk-DEADBEEFsecret' to origin")
+
+    assert "sk-DEADBEEFsecret" not in redacted
+    assert "Bearer [REDACTED]" in redacted
 
 
 def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
