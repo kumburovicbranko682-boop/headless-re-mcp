@@ -2359,7 +2359,10 @@ class TestATruncatedListSaysSo:
 
         from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS, enrich_r2_payload
 
-        entries = [{"offset": 0x140001000 + index} for index in range(_MAX_ITEMS + 250)]
+        # Tiny rows so the 4096 count cap is what bites here, not the encoded-size
+        # budget (which trims medium/large rows below the cap first -- covered by
+        # the r2 says-when-cut tests). This isolates the count-cap reporting.
+        entries = [{"i": index} for index in range(_MAX_ITEMS + 250)]
         payload = enrich_r2_payload(
             {"raw": json.dumps(entries), "commands": ["axtj"]},
             binary=_pe_with_stub(tmp_path / "t.exe", pe_offset=0x80),

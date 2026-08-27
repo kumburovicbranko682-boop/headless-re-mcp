@@ -98,7 +98,9 @@ def test_output_that_fits_is_not_labelled_truncated(
     payload = client.run(binary, ["aa"])
 
     assert "truncated" not in payload
-    assert payload["raw"] == "[]"
+    # "[]" parses as an (empty) item list, so raw is dropped as redundant.
+    assert "raw" not in payload
+    assert payload["count"] == 0
 
 
 def test_parse_r2_json_trailing_array() -> None:

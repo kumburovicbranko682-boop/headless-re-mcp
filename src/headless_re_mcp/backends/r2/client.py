@@ -96,11 +96,14 @@ class R2Client:
         if type(count) is not int or not 1 <= count <= 512:
             raise R2Error("invalid_params", "count must be 1..512")
         cmd = f"pdj {count} @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
-        data["address"] = address
-        data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        # Enrich once, with raw present. Going through run() would enrich first
+        # (dropping the now-redundant raw for a parsed list), leaving this second
+        # enrich no raw to parse -- so it would report parsed=False over the very
+        # items the first pass built. _run_raw hands back the unenriched payload.
+        payload = self._run_raw(binary, ["aa", cmd], timeout=timeout)
+        payload["address"] = address
+        payload["count"] = count
+        return enrich_r2_payload(payload, binary=binary)
 
     def xrefs(
         self,
@@ -184,6 +187,19 @@ class R2Client:
         return completed.stdout
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        """Run whitelisted commands and return the address-enriched payload."""
+        return enrich_r2_payload(
+            self._run_raw(binary, commands, timeout=timeout), binary=binary
+        )
+
+    def _run_raw(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        """Run the commands and build the raw payload (raw text + commands), unenriched.
+
+        Split from ``run`` so the address tools can add their request address and
+        enrich exactly once. Enriching twice would drop raw on the first pass (it
+        is redundant with the parsed items) and then read parsed=False on the
+        second, reporting no parse over items the first pass had already built.
+        """
         stdout = self._exec(binary, commands, timeout=timeout)
         produced = len(stdout)
         out = stdout[:_MAX_OUTPUT]
@@ -198,7 +214,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return payload
 
 
 def _discover() -> Path | None:

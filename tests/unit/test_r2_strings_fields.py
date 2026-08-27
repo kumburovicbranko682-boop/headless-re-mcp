@@ -6,6 +6,7 @@ import ast
 import json
 from pathlib import Path
 
+from headless_re_mcp.backends.common.json_budget import RESULT_BUDGET_BYTES
 from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS, enrich_r2_payload
 from headless_re_mcp.tools.r2 import build_r2_tools
 
@@ -51,14 +52,17 @@ def test_r2_strings_says_when_the_list_was_cut(tmp_path: Path) -> None:
         {"raw": json.dumps(entries), "commands": ["izj"]},
         binary=binary,
     )
-    assert payload["count"] == 4096
-    assert len(payload["items"]) == 4096
+    assert payload["count"] == len(payload["items"])
+    assert 0 < payload["count"] < _MAX_ITEMS  # the size budget bit before the count cap
     assert payload["items_truncated"] is True
     assert payload["items_total"] == 4099
     assert payload["items_limit"] == 4096
+    assert "raw" not in payload  # the same list unparsed; dropped, not doubled
     assert "truncated" not in payload
     assert "has_more" not in payload
     assert "strings" not in payload
+    encoded = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert encoded <= RESULT_BUDGET_BYTES
     doc = _tool_docstring("r2.strings")
     assert "items_truncated" in doc
     assert "no strings" in doc

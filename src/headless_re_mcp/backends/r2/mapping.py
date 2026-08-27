@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# Room left for the payload's other fields once the big one (items or raw) is
+# bounded: module/architecture/image_base, the request address map, the command
+# list, the count and items_* flags. All tiny, so a small reserve leaves the bulk
+# of the result budget for the listing itself.
+_R2_FIELD_RESERVE = 16 * 1024
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -183,20 +189,49 @@ def enrich_r2_payload(
                 if edge_mapped is not None:
                     item[f"{edge_key}_address"] = edge_mapped
             items.append(item)
+        # The parsed items already carry this listing's data, and a valid parse
+        # means raw was not the 1 MB-truncated stub (a cut array would not
+        # decode), so raw is the same content unparsed -- keeping both roughly
+        # doubles the payload for no gain. Drop it, then bound items by their
+        # JSON-encoded size: 4096 enriched rows encode well past the result
+        # budget on a real binary, and the transport would otherwise replace the
+        # whole payload -- items, counts, address map, and all -- with a ~16 KiB
+        # summary. The 4096 count cap above still guards enrichment work.
+        out.pop("raw", None)
+        items = fit_json_list(items, reserve=_R2_FIELD_RESERVE)[0]
         out["items"] = items
         out["count"] = len(items)
-        if available > _MAX_ITEMS:
-            # Said out loud, like the raw-output cut beside it. A list that
-            # stopped at the cap looks exactly like a list that ended, and a
+        if len(items) < available:
+            # Cut for either reason -- the 4096 count cap or the size budget.
+            # A list that stopped looks exactly like a list that ended, and a
             # caller deciding "these are all the xrefs" is deciding wrongly.
+            # count is how many came back; items_total how many r2 produced;
+            # items_limit the hard count ceiling (count is below it when the
+            # size budget bit first).
             out["items_truncated"] = True
             out["items_total"] = available
             out["items_limit"] = _MAX_ITEMS
         out["parsed"] = True
-    elif isinstance(parsed, dict):
-        out["info"] = parsed
-        out["parsed"] = True
     else:
-        out["parsed"] = False
+        # No item list: raw is the answer -- r2.info's identity text, or a
+        # listing whose JSON overran the 1 MB cap and no longer parses. Keep it,
+        # but bound it by the encoded budget so a large dump cannot nuke the whole
+        # result the way a redundant raw beside items would.
+        raw_text = out.get("raw")
+        if isinstance(raw_text, str):
+            bounded, raw_bytes, raw_cut = fit_json_text(raw_text, reserve=_R2_FIELD_RESERVE)
+            if raw_cut:
+                out["raw"] = bounded
+                out["truncated"] = True
+                # Preserve the produced size from the 1 MB cut when run() already
+                # recorded it; otherwise this encoded cut is the first, so the
+                # size we had is the produced size.
+                out.setdefault("output_bytes", raw_bytes)
+                out["returned_bytes"] = len(bounded.encode("utf-8"))
+        if isinstance(parsed, dict):
+            out["info"] = parsed
+            out["parsed"] = True
+        else:
+            out["parsed"] = False
     out["commands"] = commands
     return out

@@ -1078,6 +1078,33 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (`_MAX_ITEMS`=4096 条 dict)是同一类的下一个、且更常触网(真实二进制动辄数千函数/字符串),但它同时挂着一份可能很大的原始
   `raw` 字段、需要连带处理,留作独立一轮。
 
+- **r2 的 `functions`/`strings`/`imports`/`exports`/`disasm`/`xrefs` 几乎必被传输层整条丢弃——它把同一份数据装了两遍、还都没按预算裁。**
+  接上一条留的那轮:r2 的这几条工具走 `enrich_r2_payload`,而它 `out = dict(data)` 会把原始 r2 输出 `raw`(在 `client.run` 里
+  按**原始字节**截到 `_MAX_OUTPUT`=1_000_000)原样带进结果,同时又把这份 `raw` 解析成 `items`(至多 `_MAX_ITEMS`=4096 条、每条还
+  补了 `address` 地址映射)——**同一个列表既以未解析的 JSON 文本躺在 `raw`、又以解析后的 dict 躺在 `items`**,近乎翻倍。两个上限
+  (`raw` 的 1MB、`items` 的 4096 条)都不是按编码字节算的,而 `raw` 那 1MB 本身就是 262144 传输预算的近 4 倍:真实二进制随便
+  几千个函数/字符串,`raw`+`items` 合起来轻松几百 KB 到 1MB+,`agent.context.bounded_tool_result` 照旧把**整条**换成约 16KiB 摘要——
+  地址映射、计数、`items_truncated` 全没了,agent 拿到的不是「干净截断的前若干条」而是一段摘要。根因是这份 `raw` 对已解析成 `items`
+  的列表**纯属冗余**:能解析成 list 就说明 `raw` 不是那截在 1MB 的残片(截断的 JSON 解不出来),它和 `items` 是同一份数据。现在:
+  **①解析出 list 时直接丢掉 `raw`**(列表类工具的 catalog 描述本就只承诺 `items`/`count`/`items_*`、从没提 `raw`),再用
+  `fit_json_list` 按编码体积把 `items` 裁进「预算−16KiB 余量」(4096 条计数上限保留在前面,只为挡住把上百万条都 enrich 一遍的
+  活儿);`count` 报实际返回数、`items_total` 报解析出的总数、`items_truncated` 在 `count<总数` 时置真(计数上限或字节预算任一触发
+  都算)、`items_limit` 仍是 4096 硬计数天花板(字节先到时 `count` 会低于它)。**②没有 list 时**(`r2.info` 的 `i` 身份文本,或某个
+  `*j` 输出超 1MB 截断后解不出的残片)`raw` 才是正文——保留,但用 `fit_json_text` 按编码预算兜一层,`raw` 被裁则 `truncated` 置真、
+  `output_bytes` 用 `setdefault` 保住 run() 记下的真实产出大小、`returned_bytes` 改报实际返回字节。只有 `client.open` 读 `raw`,走的
+  是 `i`(非 list 分支),不受影响;没有别的调用方读 list 分支的 `raw`。**连带修一处双重 enrich 的隐性依赖**:`disasm` 过去先调
+  `run()`(已 enrich)、再把结果 `enrich_r2_payload` 一遍以补上请求地址映射,靠的正是第一遍 enrich 把 `raw` 留着好让第二遍重解析;
+  现在第一遍会丢 `raw`,第二遍便无从解析、把已建好的 `items` 误报成 `parsed=False`。改法是拆出 `_run_raw`(只跑命令、产原始 payload、
+  不 enrich):`run` = `enrich(_run_raw(...))`,`disasm` 则 `_run_raw` 后补 `address`/`count` 再 enrich 一次;`xrefs` 本就用 `_exec`
+  自行合并 axtj/axfj 后只 enrich 一次,不受影响。真实 r2(radare2 5.5.0)的 live gate——functions 地址映射、`disasm`/`izj`/`iij`/`iEj`
+  在本机 r2 上解析、`disasm` 干净不带 `tool_failed`——三条全过。六条工具的 catalog 描述同步更新:注明「不返回 raw」「`count`
+  可能因结果预算低于上限」。裁剪余量取 16KiB(丢掉 `raw` 后余下 module/architecture/address/commands/计数等标量都很小)。单测:原来
+  钉「4096 条计数上限」的 says-when-cut 系列(strings/imports/exports/xrefs)改成喂 4099 条中等行、断言字节预算把 `count` 裁到 4096
+  以下、`items_total`=4099、`items_limit`=4096、`raw` 不在、且整条 JSON 编码体不超 `RESULT_BUDGET_BYTES`;另加一条端到端断言——
+  4099 条 xref 过 `bounded_tool_result` 后仍带 `items`、不被换成摘要(修前必被摘要);再补一条「行足够小时 4096 计数上限仍生效」证明
+  计数上限没被字节预算完全取代;`r2.info` 截断测从「`raw` 恰好 1MB」改成「短于 1MB 且编码体不超预算、`returned_bytes` 与之一致、
+  `output_bytes` 仍为真实产出」;空 list(`"[]"`)测断言 `raw` 已被丢、`count`=0。地址映射与各 address_fields 测(小列表)不受影响。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
