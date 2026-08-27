@@ -349,6 +349,51 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def search_classes(
+        self, path: Path, query: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Find classes whose name contains query.
+
+        The companion to apk.method_search: apk.classes lists the whole class
+        table paginated, so locating one class by a fragment ("Login", "Crypto",
+        "okhttp") means paging all of it and grepping. This scans the same table
+        and keeps only the names containing query (case-insensitive substring on
+        the smali name Lcom/example/Foo;, not a regex), so the caller can hand an
+        exact name to apk.methods. Names are sorted for stable paging; total is
+        the match count, capped at 10000 with scan_capped when more matched than
+        the ceiling. External (framework) classes are excluded, matching
+        apk.classes.
+        """
+        parsed = self._parsed(path)
+        needle = query.strip()
+        if not needle:
+            raise ApkError("invalid_params", "query is required")
+        lowered = needle.lower()
+        names: list[str] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            name = str(klass.name)
+            if lowered not in name.lower():
+                continue
+            if len(names) >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            names.append(name)
+        names.sort()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = names[start : start + cap]
+        return {
+            "query": needle,
+            "classes": window,
+            "count": len(window),
+            "total": len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
+            "scan_capped": scan_more,
+        }
+
     def methods(
         self,
         path: Path,

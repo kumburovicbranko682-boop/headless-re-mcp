@@ -97,6 +97,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.class_search")
+    def apk_class_search(
+        session_id: str,
+        query: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find internal DEX classes whose name contains query.
+
+        The companion to apk.method_search: apk.classes lists the whole class
+        table, so locating one class by a fragment ("Login", "Crypto", "okhttp")
+        means paging all of it. Matches the smali class name (Lcom/example/Foo;)
+        by case-insensitive substring, not a regex, so the caller can hand an
+        exact name to apk.methods. Answers with classes, query, count, total,
+        offset, and has_more; total is the match count capped at 10000, with
+        scan_capped true when more matched than the ceiling. External (framework)
+        classes are excluded, matching apk.classes. has_more only means a larger
+        offset still has collected rows.
+        """
+        return _dump(
+            analysis.apk_class_search(session_id, query, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,
