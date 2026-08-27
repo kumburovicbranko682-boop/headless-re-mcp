@@ -374,11 +374,24 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    group_members: list[int] = []
     if kill_group and os.name != "nt" and isinstance(pid, int):
+        # Final sweep of the tool's own session group, for a member that
+        # reparented to init between the descendant walk above and the reap and
+        # so is no longer reachable by the ppid link. Done per member, matched on
+        # each survivor's recorded pgrp -- not a bare os.killpg(pid) -- because
+        # process.wait() above has by now reaped pid, freeing its number for
+        # reuse; a raw group signal on a recycled pid could take down an
+        # unrelated group. That is the exact hazard collect_process_group /
+        # terminate_process_group are written around, and the sweep
+        # terminate_leftover_process_tree already runs the safe way.
         with suppress(Exception):
-            os.killpg(pid, 9)
-    _reap_terminated(descendants, min(wait_s, 1.0))
-    return killed
+            group_members = terminate_process_group(pid)
+            killed.extend(group_members)
+    _reap_terminated([*descendants, *group_members], min(wait_s, 1.0))
+    # A survivor can appear both in the ppid walk and the group sweep; report
+    # each killed pid once, as terminate_leftover_process_tree already does.
+    return list(dict.fromkeys(killed))
 
 
 def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
