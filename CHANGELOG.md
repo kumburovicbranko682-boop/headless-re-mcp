@@ -59,6 +59,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（device.info 把 adb 主机错误当成设备型号/ABI 返回）
+
+- `device.info` 逐个 `getprop`(model/device/sdk/release/abi)后直接 `.strip()` 返回,唯独没做
+  `device.properties` / `device.packages` / `device.logcat` 都会做的 `_is_host_error_output` 判定。
+  而 adbutils 的 `shell` 有时把 adb 主机端自己的 `error:` / `adb:` 消息当 stdout 返回而不抛异常
+  (设备掉线时)。于是一台掉线设备会让 `model`/`abi` 等字段直接变成 `"error: device offline"`——
+  一段主机错误被冒充成真实的设备身份,无人值守的 agent 会把它当型号记录下来。
+- 现在 `info` 与兄弟接口一致:每次 getprop 读取都过 `_is_host_error_output`,主机错误抛 `backend_error`
+  (掉线即失败,而非一组幻影身份)。未设置的属性 getprop 回空行,不是主机错误,仍如实保留为 `""`。
+- 新增回归:掉线设备(getprop 回 `error: device offline`)→ `backend_error`;属性未设置(getprop 回空)
+  → 字段为 `""` 且不误判为掉线;并把 `device.info` 文档串点名“主机错误是失败、未设置属性是空串”。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
