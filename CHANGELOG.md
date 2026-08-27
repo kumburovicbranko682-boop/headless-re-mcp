@@ -65,6 +65,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   数两条 "tool round finished"。在装好 chromium 的 Linux 上该 gate 从必失败变为 3 秒
   真实跑通；无 playwright / 无浏览器时分别为收集期与运行期 skip。
 
+### 修复（拒绝写操作的提示写成了「拓绝」）
+
+- 批准卡点「拒绝」后，对话区的停轮提示此前显示「写操作被拓绝，本轮已停」（`拓` 为
+  `拒` 的形近错字，来自 `webui/src/agent/state.ts` 的 `runFailureHint`）。已改正并
+  重建提交的 SPA，新增 reducer 直测钉住该文案。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
