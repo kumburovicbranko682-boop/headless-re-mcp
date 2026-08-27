@@ -1555,6 +1555,46 @@ def test_workflow_operations_time_out_acquiring_a_busy_runtime_lock(tmp_path: Pa
     assert result.error.retryable is True
 
 
+def test_workflow_status_does_not_wait_for_a_busy_runtime_lock(tmp_path: Path) -> None:
+    """A read-only status call remained blocked behind an in-flight worker RPC."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcomes: list[Result[JsonObject]] = []
+    status = Thread(
+        target=lambda: outcomes.append(service.workflow_status(session_id)),
+        daemon=True,
+    )
+    status.start()
+    status.join(timeout=0.4)
+    returned_without_worker = not status.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    status.join(timeout=2)
+
+    assert returned_without_worker, "workflow.status remained blocked behind the runtime lock"
+    (result,) = outcomes
+    assert result.ok, result.error
+
+
 def test_workflow_acknowledges_breakpoint_already_removed_by_debugger(
     tmp_path: Path,
 ) -> None:
