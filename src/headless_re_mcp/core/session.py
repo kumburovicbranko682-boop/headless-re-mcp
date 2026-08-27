@@ -104,11 +104,15 @@ class SessionRegistry:
             # such as a downloaded .js/.wasm; only the latter has a binary.
             if not is_http_url(text) and candidate.is_file():
                 path = candidate.resolve()
+                # A local .wasm gets tool-free identity facts; describe_wasm
+                # returns {} for anything else (a .js/.html asset or a bad
+                # module), so this stays a no-op except for real modules.
                 session = Session(
                     target=kind,
                     binary=path,
                     locator=str(path),
                     sha256=file_sha256(path),
+                    metadata=describe_wasm(path),
                 )
             else:
                 session = Session(target=kind, locator=text)
@@ -524,6 +528,128 @@ def _apk_signing_block_ids(block: bytes) -> tuple[bool, bool]:
             signed_v3 = True
         cursor += 8 + pair_len
     return (signed_v2, signed_v3)
+
+
+_WASM_MAGIC = b"\x00asm"
+_WASM_MAX_PARSE_BYTES = 64 * 1024 * 1024
+_WASM_MAX_SECTIONS = 4096
+_WASM_MAX_CUSTOM_NAMES = 64
+_WASM_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+}
+# Sections whose payload begins with a LEB128 vector count we can surface as a
+# cheap "how many of X" fact. start (8) is a single index, data_count (12) is a
+# bare count, and custom (0) begins with a name, so those are handled apart.
+_WASM_COUNTED_SECTIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11})
+
+
+def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
+    """Read an unsigned LEB128 (max 5 bytes) -> (value, next_pos, ok)."""
+    result = 0
+    shift = 0
+    for _ in range(5):
+        if pos >= len(data):
+            return (0, pos, False)
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return (result & 0xFFFFFFFF, pos, True)
+        shift += 7
+    return (0, pos, False)
+
+
+def describe_wasm(path: Path) -> dict[str, Any]:
+    """Cheap, stdlib-only WebAssembly identity facts (no wabt).
+
+    The WASM line otherwise has no tool-free floor: every fact comes from wabt's
+    wasm2wat / wasm-objdump, so a module on a machine without wabt yields
+    nothing at all. This walks the module's own section table -- a well-defined
+    binary format -- to report the version, which sections are present, and the
+    vector counts (types, imports, functions, exports, ...) that identify what
+    the module is, the same way describe_apk does for a package.
+
+    Fail-closed and bounded: a non-WASM or unreadable file returns ``{}``; a
+    malformed tail stops the walk and is reported via ``well_formed`` rather
+    than raising, so session creation never fails on a bad module.
+    """
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(_WASM_MAX_PARSE_BYTES + 1)
+    except OSError:
+        return {}
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        return {}
+    truncated = len(data) > _WASM_MAX_PARSE_BYTES
+    version = int.from_bytes(data[4:8], "little")
+    section_counts: dict[str, int] = {}
+    vector_counts: dict[str, int] = {}
+    custom_sections: list[str] = []
+    has_start = False
+    well_formed = True
+    pos = 8
+    walked = 0
+    while pos < len(data) and walked < _WASM_MAX_SECTIONS:
+        section_id = data[pos]
+        pos += 1
+        payload_len, pos, ok = _read_leb_u32(data, pos)
+        if not ok:
+            well_formed = False
+            break
+        body_start = pos
+        body_end = pos + payload_len
+        if body_end > len(data):
+            well_formed = False
+            break
+        name = _WASM_SECTION_NAMES.get(section_id, f"unknown_{section_id}")
+        section_counts[name] = section_counts.get(name, 0) + 1
+        if section_id in _WASM_COUNTED_SECTIONS:
+            count, _, counted = _read_leb_u32(data, body_start)
+            if counted:
+                vector_counts[f"{name}_count"] = count
+        elif section_id == 8:
+            has_start = True
+        elif section_id == 0:
+            name_len, name_pos, named = _read_leb_u32(data, body_start)
+            if (
+                named
+                and name_pos + name_len <= body_end
+                and len(custom_sections) < _WASM_MAX_CUSTOM_NAMES
+            ):
+                custom_sections.append(
+                    data[name_pos : name_pos + name_len].decode("utf-8", errors="replace")
+                )
+        pos = body_end
+        walked += 1
+    return {
+        "wasm": {
+            "version": version,
+            "section_counts": section_counts,
+            "type_count": vector_counts.get("type_count"),
+            "import_count": vector_counts.get("import_count"),
+            "function_count": vector_counts.get("function_count"),
+            "export_count": vector_counts.get("export_count"),
+            "global_count": vector_counts.get("global_count"),
+            "table_count": vector_counts.get("table_count"),
+            "memory_count": vector_counts.get("memory_count"),
+            "has_start": has_start,
+            "custom_sections": custom_sections,
+            "well_formed": well_formed and not truncated,
+            "truncated": truncated,
+        }
+    }
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
