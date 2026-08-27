@@ -354,6 +354,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
+### 修复（Win32 长路径前缀让模块路径匹配失效）
+
+- `_normalize_windows_path` 此前只剥离 NT 对象管理器前缀 `\??\`，却漏掉 Win32 长路径
+  前缀 `\\?\`——而 `ntpath.normpath` 对 `\\?\` 路径原样返回，不做归一。x64dbg 用任一
+  形式上报模块路径都合法，但一旦运行时路径与选择器/会话路径的前缀写法不一致，同一个
+  文件会被判为不同路径：`RuntimeModuleCatalog.select(ModuleSelector(path=...))` 直接
+  `module_not_found`，`build_main_module_mapping` 则悄悄从 path 匹配降级为更弱的 name
+  匹配（重名模块下可能选错）。现按 `_resolve_runtime_module_path` 的既有做法同时剥离
+  两种前缀，使带前缀与不带前缀的同一路径归一后相等。新增回归覆盖两个方向（带前缀的
+  运行时路径 vs 裸选择器、裸运行时路径 vs 带前缀选择器）以及主模块 path 匹配不再降级。
 
 ### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
 
