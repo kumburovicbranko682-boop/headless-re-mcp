@@ -91,6 +91,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 修复（`apk.components` 按四类分别披露 total，单个 has_more 不再语义含糊）
+
+- `apk.components` 把 activities/services/receivers/providers 四份各自封顶 256 名的列表,汇成
+  **一个** `has_more`(四者的布尔或)。问题在于:调用方看到 `has_more=True` 时,既不知道是四份里
+  的哪一份填满了上限,也不知道该类到底有多少——而大型应用确实可能声明超过 256 个 activity。这
+  与相邻只读器的口径也不一致:`apk.classes`/`methods`/`strings`、`web.network.list`/`console`
+  等填满上限的列表都回 `total`,唯独组件把四类挤在一个布尔里。现新增一个按类计数的 `totals`
+  映射(`activities`/`services`/`receivers`/`providers` 各自的清单声明总数),调用方用
+  `totals["activities"]` 对比返回的 `activities` 长度,即可判定截断发生在哪一类、还差多少;未被
+  截断的类其 `total` 等于返回长度,`total == len()` 即读作完整。四份清单先各物化一次(androguard
+  已把 manifest 解析成列表,这里只是浅拷贝,不是二次遍历),既供 total 计数、又原样交给
+  `_cap_names` 封顶,单个 `has_more` 为向后兼容保留不变。工具文档串同步点名 `totals`;新增回归:
+  以 300 个 activity、其余各 1 的样本断言 `totals["activities"]==300` 且大于返回的 256,而未截断
+  的三类 `total==len()==1`。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）

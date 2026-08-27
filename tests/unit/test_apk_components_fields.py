@@ -65,3 +65,26 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+def test_apk_components_totals_name_the_capped_list_and_its_true_size() -> None:
+    """has_more is one OR across four lists; totals says which filled the cap.
+
+    Measured with the fake: 300 activities against the 256 cap, one each of
+    the other three. The returned activities list is capped at 256 and
+    has_more is True, but only totals["activities"] == 300 tells a caller the
+    truncation is in activities (not services/receivers/providers) and that 44
+    more exist -- the single has_more could not. The uncapped lists report a
+    total equal to their returned length, so total == len() reads as complete.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign, assignment]
+    payload = client.components(Path("dummy.apk"))
+    totals = payload["totals"]
+    assert totals["activities"] == 300
+    assert totals["activities"] > len(payload["activities"])
+    assert totals["services"] == len(payload["services"]) == 1
+    assert totals["receivers"] == len(payload["receivers"]) == 1
+    assert totals["providers"] == len(payload["providers"]) == 1
+    doc = _tool_docstring("apk.components")
+    assert "totals" in doc
