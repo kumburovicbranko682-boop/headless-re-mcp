@@ -21,13 +21,19 @@ not merely that a call returned:
     ``apk.components`` / ``apk.native_libs``;
   * DEX half -- ``apk.classes`` finds the internal class, ``apk.methods`` lists
     its method with the right descriptor and access, and ``apk.strings`` returns
-    the marker constant the method loads.
+    the marker constant the method loads;
+  * signature half -- ``apk.certificates`` returns the *verified* v1 signer of a
+    genuinely JAR-signed build (androguard checks the PKCS#7 signature over
+    ``CERT.SF`` before it hands one back), and reports the unsigned build as
+    unsigned. The signing key/cert are minted in-test with ``cryptography``, so no
+    keystore or Android SDK is needed.
 
 skip != pass: with androguard absent the gate skips loudly.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import struct
 import zipfile
@@ -401,14 +407,116 @@ def _build_classes_dex() -> bytes:
     return bytes(dex)
 
 
+def _apk_entries() -> dict[str, bytes]:
+    """The APK payload both the signed and unsigned fixtures share, in order."""
+    entries: dict[str, bytes] = {
+        "AndroidManifest.xml": _build_manifest_axml(),
+        "classes.dex": _build_classes_dex(),
+    }
+    for abi in _ABIS:
+        entries[f"lib/{abi}/libgate.so"] = b"\x7fELF" + b"\x00" * 60
+    entries["resources.arsc"] = b"\x02\x00\x0c\x00" + b"\x00" * 8
+    return entries
+
+
 def _build_valid_apk(path: Path) -> Path:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("AndroidManifest.xml", _build_manifest_axml())
-        archive.writestr("classes.dex", _build_classes_dex())
-        for abi in _ABIS:
-            archive.writestr(f"lib/{abi}/libgate.so", b"\x7fELF" + b"\x00" * 60)
-        archive.writestr("resources.arsc", b"\x02\x00\x0c\x00" + b"\x00" * 8)
+        for name, data in _apk_entries().items():
+            archive.writestr(name, data)
     return path
+
+
+# --- v1 (JAR) signature -----------------------------------------------------
+# The signer facts the fixture bakes in; the fingerprint is per-key, so the gate
+# computes it from the cert it built rather than hard-coding it.
+_CERT_CN = "Gate Test CA"
+_CERT_ORG = "GateOrg"
+_CERT_SERIAL = 0x0A1B2C3D
+
+
+def _build_signed_apk(path: Path) -> str:
+    """Write a genuinely v1 (JAR) signed APK; return the signer's SHA-256 fingerprint.
+
+    androguard verifies the PKCS#7 signature over ``CERT.SF`` before it will hand
+    back a v1 certificate: ``get_certificates`` -> ``get_certificates_v1`` ->
+    ``get_certificate_der`` runs the real apksig ``V1SchemeVerifier`` path, so a
+    bogus signature yields zero certs. The signature therefore has to check out --
+    RSA-PKCS1v15 over the exact ``CERT.SF`` bytes with no signed attributes, which
+    is precisely androguard's no-signed-attrs verification branch. cryptography is
+    imported lazily because it is only guaranteed present when androguard is (it is
+    androguard's own dependency), and this builder only runs past the skip guard.
+    """
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import pkcs7
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, _CERT_CN),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, _CERT_ORG),
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        ]
+    )
+    not_before = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)  # self-signed: subject == issuer
+        .public_key(key.public_key())
+        .serial_number(_CERT_SERIAL)
+        .not_valid_before(not_before)
+        .not_valid_after(not_before + datetime.timedelta(days=3650))
+        .sign(key, hashes.SHA256())
+    )
+
+    entries = _apk_entries()
+    manifest = b"Manifest-Version: 1.0\r\nCreated-By: gate-test\r\n\r\n"
+    for entry_name, data in entries.items():
+        digest = base64.b64encode(hashlib.sha256(data).digest()).decode()
+        manifest += f"Name: {entry_name}\r\nSHA-256-Digest: {digest}\r\n\r\n".encode()
+
+    sf = b"Signature-Version: 1.0\r\nCreated-By: gate-test\r\n"
+    sf += b"SHA-256-Digest-Manifest: " + base64.b64encode(hashlib.sha256(manifest).digest())
+    sf += b"\r\n\r\n"
+
+    signature = (
+        pkcs7.PKCS7SignatureBuilder()
+        .set_data(sf)
+        .add_signer(cert, key, hashes.SHA256())
+        .sign(
+            serialization.Encoding.DER,
+            [
+                pkcs7.PKCS7Options.DetachedSignature,
+                pkcs7.PKCS7Options.NoAttributes,
+                pkcs7.PKCS7Options.Binary,
+            ],
+        )
+    )
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for entry_name, data in entries.items():
+            archive.writestr(entry_name, data)
+        archive.writestr("META-INF/MANIFEST.MF", manifest)
+        archive.writestr("META-INF/CERT.SF", sf)
+        archive.writestr("META-INF/CERT.RSA", signature)
+
+    return " ".join(f"{b:02X}" for b in cert.fingerprint(hashes.SHA256()))
+
+
+def _service(tmp_path: Path) -> AnalysisService:
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+    )
+    return AnalysisService(settings)
 
 
 def _androguard_available() -> bool:
@@ -587,5 +695,64 @@ def test_apk_methods_rejects_an_unknown_class(tmp_path: Path) -> None:
         assert missing.ok is False
         assert missing.error is not None
         assert missing.error.code == "not_found"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_androguard_extracts_the_v1_signing_certificate(tmp_path: Path) -> None:
+    """apk.certificates must return the verified v1 signer, not just 'is signed'.
+
+    androguard only yields a v1 certificate after the PKCS#7 signature over
+    CERT.SF verifies, so a returned cert is proof the signature checked out. The
+    gate asserts the signer's identity (CN/O, self-signed issuer, serial) and the
+    exact SHA-256 fingerprint of the cert the fixture signed with.
+    """
+    if not _androguard_available():
+        pytest.skip("androguard not installed — Android static Gate not run (skip != pass)")
+    apk = tmp_path / "signed.apk"
+    fingerprint = _build_signed_apk(apk)
+    assert classify_target(apk) is TargetKind.APK
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        certs = service.apk_certificates(session_id)
+        assert certs.ok, certs.error
+        data = certs.data
+        assert data["v1_signed"] is True
+        assert data["signature_files"] == ["META-INF/CERT.RSA"]
+        assert len(data["certificates"]) == 1
+
+        cert = data["certificates"][0]
+        assert _CERT_CN in cert["subject"]
+        assert _CERT_ORG in cert["subject"]
+        assert _CERT_CN in cert["issuer"]  # self-signed
+        assert cert["serial"] == str(_CERT_SERIAL)
+        assert cert["sha256"] == fingerprint
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_certificates_absent_on_the_unsigned_apk(tmp_path: Path) -> None:
+    """The unsigned fixture must report no signature -- extraction reflects reality."""
+    if not _androguard_available():
+        pytest.skip("androguard not installed — Android static Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "unsigned.apk")
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        certs = service.apk_certificates(session_id)
+        assert certs.ok, certs.error
+        assert certs.data["v1_signed"] is False
+        assert certs.data["certificates"] == []
+        assert certs.data["signature_files"] == []
     finally:
         service.close_all()
