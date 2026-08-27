@@ -246,6 +246,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.il` 拒绝格式位非法的方法体头，不再伪造 fat 头）
+
+- `_read_method_body` 只判断“是不是 tiny(低两位 0b10)”，其余一律走 fat 分支。按 ECMA-335
+  II.25.4 方法体头只有 tiny 与 fat(低两位 0b11)两种，低两位 0b00/0b01 根本不是方法头；
+  旧逻辑却把它们当 fat，从紧随其后的字节里读出 flags/max_stack/code_size 当作真头返回，再按
+  那个凭空的 `code_size` 切一段“IL”，`partial` 也只由这段虚构是否越过 EOF 决定。于是一个指向
+  非方法头字节的 MethodDef RVA(混淆器的诱饵、损坏的 MethodDef 表、或纯粹是错的 RVA)会被读成
+  一个真实存在的方法，而 `dotnet.il` 的调用方毫无察觉。现在进 tiny/fat 分派前先校验低两位确为
+  0b10 或 0b11，否则回 `not_found`——与既有“fat 头被 EOF 截断”一样的快速失败，而非编造一个文件
+  里并不存在的头。新增直测复用截断诚实性测试的最小可验证 CLR 构造器，仅改写单个方法头字节，
+  钉住 0b00/0b01 被拒、tiny 仍正常反汇编、0b11 仍走 fat 分支。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节

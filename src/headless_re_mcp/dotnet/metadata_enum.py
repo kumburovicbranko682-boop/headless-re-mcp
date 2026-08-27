@@ -652,7 +652,22 @@ def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject
     if file_off >= len(data):
         raise DotnetInspectError("not_found", f"method RVA out of file: {rva:#x}")
     first = data[file_off]
-    if (first & 0x03) == 0x02:
+    fmt = first & 0x03
+    if fmt not in (0x02, 0x03):
+        # ECMA-335 II.25.4: a method body header is tiny (low bits 0b10) or fat
+        # (0b11); no other low-two-bit pattern is a header at all. The dispatch
+        # below sent everything that was not tiny down the fat branch, so a byte
+        # ending 0b00 / 0b01 was read as a fat header -- fabricating flags,
+        # max_stack and code_size out of whatever followed and handing that back
+        # as an ordinary method. A MethodDef RVA pointing at non-header bytes (an
+        # obfuscator decoy, a corrupt table, a bad RVA) then read as a real fat
+        # body. Refuse it, the same shape as the truncated-header guard below,
+        # rather than inventing a header the file does not contain.
+        raise DotnetInspectError(
+            "not_found",
+            f"method header at rva {rva:#x} has invalid format bits {fmt:#x}",
+        )
+    if fmt == 0x02:
         code_size = first >> 2
         il_start = file_off + 1
         header: JsonObject = {"format": "tiny", "code_size": code_size}
