@@ -83,10 +83,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body (UTF-8 text at most 200000 bytes) or body_path plus spill_reason
         (too_large or binary) when the body was spilled to an artifact rather
         than decoded lossily. A spilled body also carries artifact_id. Headers
-        are bounded in count and size; metadata_truncated on request or
-        response marks a clipped header map or field. There is no top-level
-        headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        are bounded in count and size, and repeated names (several Set-Cookie
+        lines, say) collapse to the last value; metadata_truncated on request
+        or response marks a clipped or collapsed header map or a clipped field.
+        There is no top-level headers or body field, and a binary body is never
+        returned as a mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

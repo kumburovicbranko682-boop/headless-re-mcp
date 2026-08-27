@@ -295,6 +295,13 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
         if total + entry_bytes > _MAX_FLOW_HEADERS_TOTAL_BYTES:
             truncated = True
             break
+        # A repeated header name -- several Set-Cookie lines, several Via or
+        # Cache-Control -- overwrites the value already stored, so the map keeps
+        # one line where the wire carried many. That is a real drop the flag
+        # promises to cover, yet count/size bounding never sees it; the earlier
+        # values would otherwise vanish with no signal at all.
+        if name in out:
+            truncated = True
         total += entry_bytes
         out[name] = text
     return out, truncated

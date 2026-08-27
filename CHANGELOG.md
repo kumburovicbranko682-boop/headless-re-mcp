@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`proxy.flow.get` 把重复的响应头悄悄合并后不再谎称完整）
+
+- `proxy.flow.get` 内联返回的头部映射用 `dict[str, str]` 表达,同名头(多条 `Set-Cookie`、
+  多条 `Via` / `Cache-Control`)后来的值直接覆盖前面的——五条 `Set-Cookie` 回来只剩最后一条。
+  `_bounded_headers` 的注释白纸黑字写着「凡有丢弃就把标志置真,免得读者把被裁的映射当成完整头集」,
+  可实现只在**条数/字节**超限时才置 `metadata_truncated`,同名合并这条丢弃它从没看见:于是一个种了
+  五个 Cookie 的响应回来像只有一个,调用方毫无察觉丢了四条。逆向者据此分析会话/鉴权,正好把
+  最关键的重复头读漏。
+- 现在 `_bounded_headers` 在覆盖一个**已存在的**头名时(即发生同名合并)也置 `truncated`,让代码
+  兑现它自己文档许下的承诺;条数/字节封顶照旧。`proxy.flow.get` 描述点名这一路径:同名头合并为最后一个值,
+  并计入 `metadata_truncated`(与「裁掉的映射/字段」并列)。大小写不同的同名头(`Set-Cookie` vs
+  `set-cookie`)仍按不同键各自保留,与旧的 `dict(headers)` 行为一致、并不比原来更不诚实。
+- 新增回归:`_bounded_headers` 遇重复 `Set-Cookie` 回最后一个值且 `truncated=true`、全不同名的多值
+  路径不误报、`flow.get` 对含重复响应头的流在 `response` 侧置 `metadata_truncated` 而无重复的 `request`
+  侧不置。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
