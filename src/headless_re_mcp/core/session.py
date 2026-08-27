@@ -551,6 +551,11 @@ _AXML_ATTR_BY_RES_ID = {
     0x0101000F: "debuggable",
     0x01010272: "testOnly",
 }
+# The intent-filter markers that make an <activity> the app's launcher -- its
+# entry point, the Android analogue of an ELF's e_entry or a .NET entry token.
+# An activity is launchable when one intent-filter carries both.
+_ANDROID_ACTION_MAIN = "android.intent.action.MAIN"
+_ANDROID_CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
 
 # A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
 # strings) and format version are at known offsets, so how much code an APK
@@ -1072,6 +1077,15 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     permissions: list[str] = []
     debuggable: bool | None = None
     test_only: bool | None = None
+    # Launcher (entry-point) detection is a small state machine over the flat
+    # element walk: remember the current <activity>'s name, and whether the
+    # intent-filter currently open has declared both MAIN and LAUNCHER. Both in
+    # one filter marks that activity launchable -- MAIN in one filter and
+    # LAUNCHER in another does not, so the pair resets on each intent-filter.
+    launcher_activity: str | None = None
+    current_activity: str | None = None
+    filter_main = False
+    filter_launcher = False
     pos = 8
     chunks = 0
     while pos + 8 <= limit and chunks < _AXML_MAX_CHUNKS:
@@ -1103,6 +1117,21 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                     debuggable = _axml_bool(attrs, "debuggable")
                 if test_only is None:
                     test_only = _axml_bool(attrs, "testOnly")
+            elif name in ("activity", "activity-alias"):
+                # A new activity subtree: its own android:name is the launchable
+                # component (for an alias too -- that is what gets launched).
+                current_activity = _axml_str(attrs, "name")
+                filter_main = filter_launcher = False
+            elif name == "intent-filter":
+                filter_main = filter_launcher = False
+            elif name == "action":
+                if _axml_str(attrs, "name") == _ANDROID_ACTION_MAIN:
+                    filter_main = True
+            elif name == "category":
+                if _axml_str(attrs, "name") == _ANDROID_CATEGORY_LAUNCHER:
+                    filter_launcher = True
+            if launcher_activity is None and current_activity and filter_main and filter_launcher:
+                launcher_activity = current_activity
         pos += csize
     facts: dict[str, Any] = {
         "package": package,
@@ -1111,6 +1140,9 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         "min_sdk": min_sdk,
         "target_sdk": target_sdk,
         "permissions": sorted(set(permissions)),
+        # The launchable activity (entry point), reported as declared in the
+        # manifest -- None for a library/service-only APK with no launcher.
+        "launcher_activity": launcher_activity,
     }
     # Security-posture flags are reported only when the manifest declares them:
     # their framework defaults are version-dependent, so an explicit value is a

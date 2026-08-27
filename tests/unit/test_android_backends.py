@@ -190,6 +190,98 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
+def _axml_launcher_manifest(
+    activities: list[tuple[str, str, list[tuple[list[str], list[str]]]]],
+    *,
+    package: str = "com.example.launch",
+) -> bytes:
+    """A compiled manifest with an <application> of the given activities.
+
+    Each activity is ``(tag, name, filters)`` where ``tag`` is ``"activity"`` or
+    ``"activity-alias"`` and each filter is ``(actions, categories)`` of
+    ``android:name`` strings. Emits a UTF-8 AXML the stdlib reader walks exactly
+    as it walks a real compiled manifest, so the launcher (entry-point)
+    detection is exercised over genuine element nesting.
+    """
+    order: list[str] = []
+    index: dict[str, int] = {}
+
+    def intern(text: str) -> int:
+        if text not in index:
+            index[text] = len(order)
+            order.append(text)
+        return index[text]
+
+    for fixed in ("name", "package", "manifest", "application", package):
+        intern(fixed)
+    for tag, name, filters in activities:
+        intern(tag)
+        intern(name)
+        for actions, categories in filters:
+            intern("intent-filter")
+            for value in (*actions, *categories):
+                intern("action")
+                intern("category")
+                intern(value)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for name_index, data_type, value in attrs:
+            raw = value if data_type == 0x03 else -1
+            body += struct.pack("<iiiHBBI", -1, name_index, raw, 8, 0, data_type, value)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    def named(value: str) -> list[tuple[int, int, int]]:
+        return [(intern("name"), 0x03, intern(value))]
+
+    body = bytearray()
+    body += start(intern("manifest"), [(intern("package"), 0x03, intern(package))])
+    body += start(intern("application"), [])
+    for tag, name, filters in activities:
+        body += start(intern(tag), named(name))
+        for actions, categories in filters:
+            body += start(intern("intent-filter"), [])
+            for value in actions:
+                body += start(intern("action"), named(value))
+                body += end(intern("action"))
+            for value in categories:
+                body += start(intern("category"), named(value))
+                body += end(intern("category"))
+            body += end(intern("intent-filter"))
+        body += end(intern(tag))
+    body += end(intern("application"))
+    body += end(intern("manifest"))
+
+    data = bytearray()
+    offsets: list[int] = []
+    for text in order:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(order) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(order), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
+_MAIN = "android.intent.action.MAIN"
+_LAUNCHER = "android.intent.category.LAUNCHER"
+
+
 class TestManifestFactsWithoutAndroguard:
     """describe_apk reads the compiled AndroidManifest stdlib-only.
 
@@ -213,6 +305,10 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["debuggable"] is True
         # testOnly is not declared, so the fact is omitted rather than guessed.
         assert "test_only" not in manifest
+        # The launchable activity (entry point) -- the <activity> whose
+        # intent-filter carries MAIN + LAUNCHER; the apktool gate cross-checks
+        # this same component against apktool's own decode.
+        assert manifest["launcher_activity"] == "com.example.headless.MainActivity"
 
     def test_reads_a_utf8_pool_and_resolves_stripped_names_by_resource_id(
         self, tmp_path: Path
@@ -265,6 +361,70 @@ class TestManifestFactsWithoutAndroguard:
         )["apk"]["manifest"]
         assert "debuggable" not in manifest
         assert "test_only" not in manifest
+
+    def test_launcher_activity_from_a_main_launcher_intent_filter(self, tmp_path: Path) -> None:
+        # The entry point: the <activity> whose intent-filter declares both
+        # MAIN and LAUNCHER is reported by its android:name.
+        manifest_bytes = _axml_launcher_manifest(
+            [("activity", ".Main", [([_MAIN], [_LAUNCHER])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "launch.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        # Reported exactly as declared (relative name not resolved), so it
+        # matches apktool's text decode component-for-component.
+        assert manifest["launcher_activity"] == ".Main"
+
+    def test_main_and_launcher_in_separate_filters_is_not_a_launcher(self, tmp_path: Path) -> None:
+        # MAIN in one intent-filter and LAUNCHER in another of the same activity
+        # does not make it launchable -- Android requires both in one filter, so
+        # the reader must reset its pair per filter and report no launcher.
+        manifest_bytes = _axml_launcher_manifest(
+            [("activity", ".Main", [([_MAIN], []), ([], [_LAUNCHER])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "split.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["launcher_activity"] is None
+
+    def test_activity_alias_can_be_the_launcher(self, tmp_path: Path) -> None:
+        # A common real pattern: the launcher is an <activity-alias>, not an
+        # <activity>. Its own android:name is the launchable component.
+        manifest_bytes = _axml_launcher_manifest(
+            [
+                ("activity", ".Impl", []),
+                ("activity-alias", ".Alias", [([_MAIN], [_LAUNCHER])]),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "alias.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["launcher_activity"] == ".Alias"
+
+    def test_no_launcher_activity_reads_as_none(self, tmp_path: Path) -> None:
+        # A service/library APK: an activity with a non-launcher filter (MAIN
+        # only, e.g. a leanback or a plain VIEW handler) has no launcher.
+        manifest_bytes = _axml_launcher_manifest(
+            [("activity", ".Main", [([_MAIN], [])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "nolaunch.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["launcher_activity"] is None
+
+    def test_first_launcher_wins_when_several_activities_qualify(self, tmp_path: Path) -> None:
+        # A manifest can declare more than one LAUNCHER activity; the reader
+        # reports the first in document order rather than the last or a set.
+        manifest_bytes = _axml_launcher_manifest(
+            [
+                ("activity", ".First", [([_MAIN], [_LAUNCHER])]),
+                ("activity", ".Second", [([_MAIN], [_LAUNCHER])]),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "two.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["launcher_activity"] == ".First"
 
     def test_manifest_is_present_but_empty_on_a_garbage_axml(self, tmp_path: Path) -> None:
         # _apk() writes a RES_XML header with no real chunks behind it; the walk

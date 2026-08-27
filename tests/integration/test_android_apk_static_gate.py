@@ -79,6 +79,11 @@ def test_android_apk_static_happy_path() -> None:
         assert str(tool_free["min_sdk"]) == info["min_sdk"]
         assert str(tool_free["target_sdk"]) == info["target_sdk"]
         assert tool_free["permissions"] == ["android.permission.INTERNET"]
+        # The launchable activity (entry point) the stdlib reader found from the
+        # MAIN + LAUNCHER intent-filter must be the one androguard's own
+        # get_main_activity resolves -- a second independent cross-check of the
+        # entry-point fact, alongside the apktool gate's.
+        assert tool_free["launcher_activity"] == info["main_activity"]
 
         manifest = service.apk_manifest(session_id)
         assert manifest.ok, manifest.error
