@@ -295,6 +295,51 @@ def test_android_dex_analysis_on_a_real_dex(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_android_jadx_decompiles_a_real_dex(tmp_path: Path) -> None:
+    """apk.export_sources / apk.decompile end to end through jadx.
+
+    jadx is a user-provided CLI (needs a JRE), so this skips when it is not
+    configured -- exactly like the webcrack / wabt gates. When it is present it
+    runs the real decompiler over the hand-built DEX and proves the two source
+    tools work end to end: the tree lists the class, and asking for it by its
+    simple name returns Java that mentions the method. jadx drops a package-less
+    class into ``defpackage/``, so this also exercises the client's single-match
+    fallback (the dotted path ``Crackme.java`` does not exist at the sources
+    root, but exactly one file by that name does).
+    """
+    from headless_re_mcp.config import Settings
+
+    jadx = Settings.load().jadx
+    if jadx is None or not jadx.is_file():
+        pytest.skip("jadx not configured — jadx Gate not run (skip != pass)")
+
+    apk = _build_real_dex_apk(tmp_path / "real.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id)
+        assert exported.ok, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert any(name.endswith("Crackme.java") for name in exported.data["java_files"])
+
+        decompiled = service.apk_decompile(session_id, "Crackme")
+        assert decompiled.ok, decompiled.error
+        assert decompiled.data["class_name"] == "Crackme"
+        assert "secret" in decompiled.data["source"]
+
+        # A class jadx never emitted is a not_found, not a crash or empty source.
+        missing = service.apk_decompile(session_id, "does.not.Exist")
+        assert missing.ok is False
+        assert missing.error is not None
+        assert missing.error.code == "not_found"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
     apk = _build_synthetic_apk(tmp_path / "sample.apk")
     service = AnalysisService()
