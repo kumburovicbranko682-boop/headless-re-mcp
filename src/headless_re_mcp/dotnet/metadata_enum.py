@@ -141,9 +141,21 @@ def enumerate_metadata(
     inspect_dotnet(path, require_verified=require_verified)
     meta = _load_metadata_context(Path(path))
     if kind_norm == "strings":
-        items = list(_iter_strings_heap(meta))
-        note = "ASCII/#Strings heap entries (not full #US decode)"
-    elif kind_norm == "types":
+        # The #Strings heap is sized directly (windowed page + true total),
+        # not materialised whole: an arbitrary 10000-entry cap used to slice
+        # everything past it and still report truncated=False, hiding the tail
+        # of a big obfuscated identifier heap from the analyst.
+        window, total = _strings_page(meta.strings, offset=offset, limit=limit)
+        return Page(
+            kind=kind_norm,
+            items=tuple(window),
+            offset=offset,
+            limit=limit,
+            total=total,
+            truncated=offset + len(window) < total,
+            note="ASCII/#Strings heap entries (not full #US decode)",
+        )
+    if kind_norm == "types":
         items = list(_iter_typedefs(meta))
         note = "TypeDef Name/Namespace from #~ + #Strings"
     elif kind_norm == "methods":
@@ -624,23 +636,35 @@ def _iter_memberrefs(meta: _MetaCtx) -> Iterable[JsonObject]:
         }
 
 
-def _iter_strings_heap(meta: _MetaCtx) -> Iterable[JsonObject]:
-    data = meta.strings
+def _strings_page(data: bytes, *, offset: int, limit: int) -> tuple[list[JsonObject], int]:
+    """Windowed #Strings enumeration: only the page is built, total is exact.
+
+    The heap is already capped to the metadata slice (<=2 MiB), so scanning every
+    null-delimited entry to count them is bounded work; materialising dicts only
+    for the requested [offset, offset+limit) window keeps memory flat regardless
+    of how many identifiers the heap holds. That is what lets ``total`` and
+    ``truncated`` be honest -- the previous fixed 10000-entry cap both dropped the
+    remainder and reported it as complete.
+    """
+    window: list[JsonObject] = []
+    total = 0
     if not data:
-        return
+        return window, total
     i = 1
-    count = 0
-    while i < len(data):
+    n = len(data)
+    upper = offset + limit
+    while i < n:
         end = data.find(b"\0", i)
         if end < 0:
-            end = len(data)
-        raw = data[i:end]
-        if raw:
-            count += 1
-            yield {"index": i, "value": raw.decode("utf-8", errors="replace")}
+            end = n
+        if end > i:  # skip the empty string at index 0 and any zero-length runs
+            if offset <= total < upper:
+                window.append(
+                    {"index": i, "value": data[i:end].decode("utf-8", errors="replace")}
+                )
+            total += 1
         i = end + 1
-        if count >= 10000:
-            break
+    return window, total
 
 
 def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject:

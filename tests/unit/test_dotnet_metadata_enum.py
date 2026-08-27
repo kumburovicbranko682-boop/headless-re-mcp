@@ -7,7 +7,20 @@ from pathlib import Path
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    _disassemble_il,
+    _strings_page,
+    enumerate_metadata,
+)
+
+
+def _strings_heap(names: list[bytes]) -> bytes:
+    """A #Strings heap: an empty string at index 0, then null-terminated runs."""
+    heap = bytearray(b"\0")
+    for name in names:
+        heap += name + b"\0"
+    return bytes(heap)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -90,6 +103,49 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
         ("call", 0x0A000001),
     ]
     assert partial is False
+
+
+def test_strings_page_total_is_honest_past_the_old_cap() -> None:
+    """A heap with more than 10000 identifiers must not read as complete at 10000.
+
+    The old enumerator materialised at most 10000 entries and then reported
+    total=10000 with truncated=False, so the tail of a big obfuscated identifier
+    heap silently vanished and the reply claimed there was nothing more. The
+    windowed reader counts every entry and can page into the region the cap used
+    to hide.
+    """
+    names = [f"s{k}".encode() for k in range(10005)]
+    heap = _strings_heap(names)
+
+    first, total = _strings_page(heap, offset=0, limit=5)
+    assert total == 10005
+    assert [w["value"] for w in first] == ["s0", "s1", "s2", "s3", "s4"]
+    assert first[0]["index"] == 1  # first non-empty run sits right after index 0
+
+    tail, tail_total = _strings_page(heap, offset=10000, limit=5)
+    assert tail_total == 10005
+    assert [w["value"] for w in tail] == ["s10000", "s10001", "s10002", "s10003", "s10004"]
+
+
+def test_strings_page_skips_empty_runs_and_tracks_indices() -> None:
+    """Index 0 and any zero-length runs are not entries; indices are byte offsets."""
+    heap = b"\0\0Main\0\0Sub\0"
+    window, total = _strings_page(heap, offset=0, limit=10)
+    assert total == 2
+    assert [(w["index"], w["value"]) for w in window] == [(2, "Main"), (8, "Sub")]
+
+
+def test_strings_page_window_respects_offset_and_limit() -> None:
+    names = [f"n{k}".encode() for k in range(6)]
+    heap = _strings_heap(names)
+    window, total = _strings_page(heap, offset=2, limit=2)
+    assert total == 6
+    assert [w["value"] for w in window] == ["n2", "n3"]
+
+
+def test_strings_page_empty_heap_is_empty() -> None:
+    assert _strings_page(b"", offset=0, limit=5) == ([], 0)
+    assert _strings_page(b"\0", offset=0, limit=5) == ([], 0)
 
 
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:

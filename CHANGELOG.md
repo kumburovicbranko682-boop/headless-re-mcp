@@ -257,6 +257,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.enumerate(strings)` 静默截断 #Strings 堆并谎报已列全）
+
+- `_iter_strings_heap` 把 `#Strings` 堆整体物化成列表，并硬编码 10000 条上限提前 `break`;
+  `enumerate_metadata` 再以此计 `total` 并按 `MAX_LIMIT`(256) 分页。于是一个大型混淆
+  程序集(混淆器常生成成千上万条标识符)超过第 10000 条的字符串既翻不到、`total` 又停在
+  10000、末页还报 `truncated=False`——恰是本项目反复修的“静默截断且谎报列全”。现改为
+  窗口式枚举 `_strings_page`:只物化 `[offset, offset+limit)` 这一页的 dict、逐条数出真实
+  `total`(堆已被元数据切片封顶在 <=2 MiB,整堆扫描是有界工作),内存与页大小无关而 `total`/
+  `truncated` 如实反映。新增直测:>10000 条堆的真实 `total` 与翻到旧上限之后区域、空串/零长
+  run 跳过与索引即字节偏移、`offset`/`limit` 窗口、空堆。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
