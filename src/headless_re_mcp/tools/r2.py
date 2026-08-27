@@ -107,11 +107,15 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         count: Annotated[int, Field(ge=1, le=512)] = 32,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Disassemble count instructions at address, as radare2 decodes them.
+        """Disassemble up to count instructions at address, as radare2 decodes them.
 
         Answers with items holding those instructions, plus address
-        (va/rva/module), address_va (the integer that was asked) and count.
-        There is no integer address field.
+        (va/rva/module), address_va (the integer that was asked), count (how
+        many instructions r2 actually decoded) and requested (the number asked
+        for). When count is below requested -- r2 hit unmapped or undecodable
+        bytes before that many, or decoded none -- partial is true. A short
+        listing is not mistaken for the whole range. There is no integer address
+        field.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
