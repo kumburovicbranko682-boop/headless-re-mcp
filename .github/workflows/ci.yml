@@ -152,6 +152,49 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-dynamic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with web + browser extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install Chromium for Playwright
+        # --with-deps pulls the shared libraries a headless Chromium needs on a
+        # bare ubuntu runner; without it launch fails and the gate would skip.
+        run: python -m playwright install --with-deps chromium
+
+      - name: Web dynamic RE gate runs for real (skip != pass)
+        run: |
+          python -c "import playwright; print('playwright', playwright.__version__)"
+          python -m pytest tests/integration/test_web_dynamic_re_gate.py \
+            -rs --tb=short --timeout=180 --junitxml=web-dynamic-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("web-dynamic-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # Playwright and Chromium were both just installed, so a skip here means
+          # the browser could not launch -- the false-green this gate exists to
+          # rule out. This is the only test that reads a live page's response
+          # bodies, script source, screenshot and HAR end to end.
+          if not cases:
+              sys.exit("no web dynamic gate was collected")
+          if skipped:
+              sys.exit(f"web dynamic gate skipped despite an installed browser: {skipped}")
+          print(f"web dynamic gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

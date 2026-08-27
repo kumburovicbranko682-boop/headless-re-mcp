@@ -213,6 +213,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 测试（Web 动态 RE 现场 gate：真浏览器回读页面字节）
+
+- 既有 web gate 只验证浏览器能开、能干净关，以及列脚本 / console / DOM；分析师真正开无头
+  浏览器要做的事——把页面加载的那段 JS 原样取回、逐字节读响应体、截图、导出网络日志——全都走
+  CDP 打真 Chromium，却一行现场执行覆盖都没有，属于典型的 skip != pass。新增
+  `tests/integration/test_web_dynamic_re_gate.py`：起一个本机 HTTP 源（文档 + 外链脚本 +
+  PNG），经服务层驱动一个 Chromium 会话（顺带覆盖制品登记与采集上限），断言每次回读拿到的是
+  真实字节：`web.network.get` 对 HTML 与脚本回内联文本（非 base64）；对 PNG 回 `base64_encoded`
+  且把 body 溢写到文件，文件内容是**解码后**的图片、长度是真实字节数而非 ~33% 更大的 base64
+  ——正是过去把 base64 文本写进 `.bin` 的那条路径；`web.script.source` 连标记一并取回外链脚本
+  源码；`web.screenshot` 落一张真 PNG；`web.har.export` 导出全部请求。
+- CI 新增 `linux-web-dynamic` 作业：装 `.[test,dev,web,browser]` 与
+  `playwright install --with-deps chromium`，只跑该 gate 并解析 junitxml——刚装好浏览器仍跳过
+  即判失败，堵住"装了却没真跑"的假绿。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
