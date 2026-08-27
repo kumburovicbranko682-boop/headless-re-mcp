@@ -239,6 +239,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `status` 报 `running:false, exited:true` 并带上线程存下的原因与已抓到的 flow 数（证据仍可查），
   `start` 会顶替已崩溃的实例让会话重开，`replay` 对死代理失败关闭。用 `_ever_started` 门区分“起来过又
   死了”和“正在启动中”，从而不破坏并发 start 的互斥保证。
+- **监控台帧把后端的死活信号丢了**。上面两条让后端不再谎报浏览器/代理已死，但监控快照的 web 块
+  只读 `open`、丢掉了新加的 `responsive`/`exited`——于是无人值守的控制台仍把已崩溃的 web 会话显示成
+  open 且带陈旧 url，后端诚实了、整条链路却还在说谎。现在快照连同 `responsive`（无浏览器可应答时为
+  None）与 `exited` 一并带出，`open` 仍为真（会话句柄在 close 前一直在）。`proxy.status` 工具文档
+  （AI 读到的契约）也补上崩溃分支：`running:false, exited:true`，含 host/port/flow_count 与 error 原因，
+  重启即恢复、已抓 flow 在此之前仍可读。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
