@@ -256,6 +256,7 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "decompiled" in decompile
     assert "truncated" in decompile
     assert "found" in decompile
+    assert "decompile_completed" in decompile
 
 
 def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
@@ -311,6 +312,61 @@ def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
     assert payload["found"] is True
+
+
+def test_ghidra_decompile_reports_completed_true_when_c_came_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-empty C from an older script derives decompile_completed true."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["decompile_completed"] is True
+
+
+def test_ghidra_decompile_flags_a_found_function_that_did_not_decompile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A found function with empty C is a failed decompile, not an empty body.
+
+    When the decompiler times out or errors inside its 30s budget the script
+    leaves decompiled "" for a function that was found. Without
+    decompile_completed that reads exactly like an empty body, so an older
+    script that emits no flag must derive it false from the empty C.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["decompile_completed"] is False
+
+
+def test_ghidra_decompile_trusts_a_completed_flag_the_script_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit decompile_completed false is not overwritten by the text.
+
+    The new script emits decompile_completed and, when it can, decompile_error.
+    Even if some C text is present, the script's own verdict wins.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompile_completed": false, "decompile_error": "timed out",'
+        ' "decompiled": "partial", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["decompile_completed"] is False
+    assert payload["decompile_error"] == "timed out"
 
 
 def test_ghidra_refuses_an_oversized_export_json(

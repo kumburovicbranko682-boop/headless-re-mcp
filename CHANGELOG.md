@@ -134,6 +134,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`ghidra.decompile` 把「反编译超时/失败」当成「函数体为空」）
+
+- `ghidra.decompile` 已用 `found` 区分「此处没有函数」与「函数体反编译为空」，但漏了第三种：
+  `getFunctionContaining` 找到了函数、可 `DecompInterface.decompileFunction` 在 30 秒预算内超时或
+  出错（`results` 为空或 `decompileCompleted()` 为假）时，脚本仍回 `decompiled=""`、`found=True`，
+  且 postScript 自身正常退出（exit 0），于是客户端的 `_export_has_content` 空内容检查（只在
+  exit≠0 时报错）也不拦——一段反编译失败读起来与一个空函数体一模一样，无人值守的一遍会把空串当
+  成函数体。现在 `ExportJson.py` 显式回 `decompile_completed`（仅当反编译真正完成才为真），并在
+  Ghidra 给了原因时附 `decompile_error`；客户端在跨 Jython 边界、旧脚本未带该字段时按反编译文本
+  兜底推导（有 C 文本才算完成，空串无法确认完成即报 `False`，而非把未经确认的空体当函数体）。补
+  回归测试钉住：找到函数但反编译为空会报 `decompile_completed=False`、有 C 文本推导为真、脚本显式
+  写的 `decompile_completed=False` 与 `decompile_error` 不被兜底覆盖。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
