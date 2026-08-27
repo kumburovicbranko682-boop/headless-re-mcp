@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 device.pull 本地文件名的后缀消毒：设备可控的远端路径不能左右落盘位置）
+
+- `device.pull` 的远端路径是设备可控输入,而本地落盘名的扩展名由 `_safe_pull_suffix` 从该字符串派生(其余部分\
+  由服务固定),故远端侧绝不能借它把路径分量、绝对路径或 NTFS 备用数据流注入到落盘位置。该 helper 此前无\
+  直接测试。新增 `test_device_pull_suffix.py` 钉住其契约:短、纯、ASCII 字母数字的扩展名为可读性保留(大小写\
+  原样、只取最后一段的最后一个扩展名),其余一律塌缩为惰性的 `.bin`——分隔符(`\`)、NTFS 流(`x.txt:evil`、\
+  `data.bin:$DATA`)、标点(`-`/`_`/空格)、超过 16 字符、非 ASCII、以及根本没有扩展名(裸名/目录/空串/`.bashrc`\
+  隐藏文件/绝对或穿越路径)都归为 `.bin`,并钉住 16 字符长度上限的精确边界。(纯测试补充,无行为变更。)
+
 ### 修复（web.open 在非 web 会话上缺少 url 时快速失败，而非把文件路径当作导航目标）
 
 - `web.open` 的目标解析此前对任意会话都回退到 `session.locator`。web 会话的 locator 本就是它创建时的 URL,\
