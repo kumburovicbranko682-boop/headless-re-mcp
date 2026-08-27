@@ -241,6 +241,13 @@ class WebAnalysisMixin:
     ) -> Result[JsonObject]:
         return self._web_wrap(session_id, "cookies", session_id, offset=offset, limit=limit)
 
+    def web_storage(
+        self, session_id: str, which: str = "local", offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id, "storage", session_id, which=which, offset=offset, limit=limit
+        )
+
     def web_screenshot(self, session_id: str, full_page: bool = False) -> Result[JsonObject]:
         try:
             out = self._web_artifact_dir(session_id) / f"screenshot-{uuid4().hex}.png"

@@ -44,6 +44,12 @@ _MAX_URL_BYTES = 16 * 1024
 # hostile or instrumented page can still pile them up, so the read is paged
 # like the other capture readers rather than returned whole.
 _MAX_COOKIES = 1000
+# Web Storage: a page can put megabytes in localStorage, so cap the per-value
+# preview and the number of keys pulled across the CDP bridge. The value cap is
+# generous enough for a JWT or a serialised config blob; the key guard only
+# fires on a pathological store and is disclosed via scan_capped.
+_MAX_STORAGE_VALUE = 64 * 1024
+_MAX_STORAGE_KEYS = 10_000
 _COOKIE_FIELDS = (
     "name",
     "value",
@@ -1329,6 +1335,74 @@ class WebBackend:
             "total": len(entries),
             "offset": start,
             "has_more": start + len(window) < len(entries),
+        }
+
+    def storage(
+        self, session_id: str, *, which: str = "local", offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        if which not in ("local", "session"):
+            raise WebError("invalid_params", "which must be local or session", which=which)
+        handle = self._get(session_id)
+
+        # Bound both the per-value preview and the key count in the page so a
+        # bloated store cannot pull megabytes across the bridge. The store is
+        # per-origin (local) or per-tab (session); reading it needs the page's
+        # own context, so this goes through page.evaluate, not a CDP domain.
+        script = (
+            "(args) => {"
+            " const [store, maxval, maxkeys] = args;"
+            " const s = store === 'session' ? window.sessionStorage : window.localStorage;"
+            " const n = s.length; const out = []; const lim = Math.min(n, maxkeys);"
+            " for (let i = 0; i < lim; i++) {"
+            "  const k = s.key(i); const v = s.getItem(k) ?? '';"
+            "  out.push([k, v.length > maxval ? v.slice(0, maxval) : v, v.length]);"
+            " }"
+            " return { total: n, entries: out, capped: n > maxkeys };"
+            "}"
+        )
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(script, [which, _MAX_STORAGE_VALUE, _MAX_STORAGE_KEYS])
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cannot read storage: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "storage read returned no object")
+            return raw
+
+        raw = self._runner(handle).call(work)
+        rows = raw.get("entries") if isinstance(raw.get("entries"), list) else []
+        total = int(raw.get("total") or 0)
+        # Sort by key so paging is stable across calls; the store's own order is
+        # insertion order and not something a caller can rely on.
+        parsed: list[JsonObject] = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) != 3:
+                continue
+            key, value, true_len = str(row[0]), str(row[1]), int(row[2])
+            parsed.append(
+                {
+                    "key": key,
+                    "value": value,
+                    "value_len": true_len,
+                    "value_truncated": true_len > len(value),
+                }
+            )
+        parsed.sort(key=lambda item: item["key"])
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_STORAGE_KEYS))
+        window = parsed[start : start + cap]
+        return {
+            "which": which,
+            "entries": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < len(parsed),
+            # The store had more keys than the page-side read guard, so total can
+            # exceed what was actually pulled -- say so rather than let a caller
+            # read a short list as the whole store.
+            "scan_capped": bool(raw.get("capped")),
         }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:

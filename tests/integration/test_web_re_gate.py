@@ -54,8 +54,16 @@ _SITE_HTML = (
 _SITE_JS_MARKER = "net-gate-marker-9449"
 # The fetch to /redir (302 -> /redir-target) makes the browser walk a redirect,
 # which is how the HAR redirect-chain capture is exercised end to end.
+# The app.js also seeds Web Storage so web.storage has a real local/session
+# store to read back: a token in localStorage and a marker in sessionStorage.
+_SITE_LOCAL_KEY = "sg_token"
+_SITE_LOCAL_VALUE = "jwt-9449"
+_SITE_SESSION_KEY = "sg_sess"
+_SITE_SESSION_VALUE = "sess-9449"
 _SITE_JS = (
     f"console.log('net-gate-ready'); window.__netgate = '{_SITE_JS_MARKER}';"
+    f"try{{localStorage.setItem('{_SITE_LOCAL_KEY}','{_SITE_LOCAL_VALUE}');"
+    f"sessionStorage.setItem('{_SITE_SESSION_KEY}','{_SITE_SESSION_VALUE}');}}catch(e){{}}"
     "fetch('/redir').then(()=>{window.__redirdone=1;}).catch(()=>{});\n"
 )
 _SITE_COOKIE_NAME = "netgate"
@@ -644,6 +652,58 @@ def test_web_cookies_read_the_jar_including_httponly() -> None:
                 # The HttpOnly cookie only the CDP jar can see, correctly flagged.
                 assert by_name[_SITE_HTTPONLY_NAME]["value"] == _SITE_HTTPONLY_VALUE
                 assert by_name[_SITE_HTTPONLY_NAME]["httpOnly"] is True
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_storage_reads_local_and_session_stores() -> None:
+    """web.storage must read back what the page put in local/session storage.
+
+    The loopback page's script seeds a token in localStorage and a marker in
+    sessionStorage -- state no cookie or network reader shows. web.storage reads
+    the chosen store through the page context, so the local read must return the
+    token and the session read the marker, each with its real value. The two
+    stores are distinct, so a session key must not appear in the local read.
+    skip != pass when playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                local = _poll(
+                    lambda: service.web_storage(session_id, which="local"),
+                    lambda r: r.ok
+                    and any(e["key"] == _SITE_LOCAL_KEY for e in r.data["entries"]),
+                )
+                assert local.ok, local.error
+                assert local.data["which"] == "local"
+                lmap = {e["key"]: e["value"] for e in local.data["entries"]}
+                assert lmap.get(_SITE_LOCAL_KEY) == _SITE_LOCAL_VALUE, local.data
+                # The session key lives in a different store, not this one.
+                assert _SITE_SESSION_KEY not in lmap, local.data
+
+                session = _poll(
+                    lambda: service.web_storage(session_id, which="session"),
+                    lambda r: r.ok
+                    and any(e["key"] == _SITE_SESSION_KEY for e in r.data["entries"]),
+                )
+                assert session.ok, session.error
+                smap = {e["key"]: e["value"] for e in session.data["entries"]}
+                assert smap.get(_SITE_SESSION_KEY) == _SITE_SESSION_VALUE, session.data
             finally:
                 service.web_close(session_id)
         finally:

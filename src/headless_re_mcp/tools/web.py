@@ -6,7 +6,7 @@ refusal to offer a generic ``dynamic.command``.
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -154,6 +154,29 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         did not set them, not absent.
         """
         return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
+
+    @tools.tool(name="web.storage")
+    def web_storage(
+        session_id: str,
+        which: Literal["local", "session"] = "local",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Read a page's Web Storage (localStorage or sessionStorage).
+
+        Front-ends stash tokens, feature flags and cached config in Web Storage,
+        which no network or cookie reader shows. which selects the store: "local"
+        (default, per-origin, survives the tab) or "session" (per-tab). Answers
+        with which, entries (each key, value, value_len, value_truncated), count,
+        total, offset, has_more and scan_capped. A value longer than the preview
+        cap is cut and marked value_truncated with value_len keeping the true
+        length; scan_capped means the store had more keys than the read guard, so
+        total can exceed the entries pulled. Entries are sorted by key so paging
+        is stable.
+        """
+        return _dump(
+            analysis.web_storage(session_id, which=which, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="web.scripts")
     def web_scripts(
