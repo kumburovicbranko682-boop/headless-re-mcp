@@ -42,6 +42,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   手搓的带类型化函数、内存、全局量与三个具名导出的模块，wat gate 断言渲染出的字节码（`i32.add`）
   与具名导出，另加 `wasm.info` gate 断言 wasm-objdump 列出 Type/Function/Export/Code 段并解析出
   `add` 导出——让上面新增的 Linux CI 真正把装上的 wabt 两个工具都跑起来，而不只是装着。
+- 同样加强 JS 反混淆现场 gate：`test_js_deobfuscate_when_webcrack_present` 过去只断言输出是非空
+  字符串（`bytes>0`），一个跑起来却没反混淆的 webcrack 也照样绿。现断言 webcrack 确实做了变换——
+  夹具把 `"H3adl3ss"` 藏在 `\x` 转义的字符串数组里、经 `["split"]`/`["push"]` 计算成员访问调用方法；
+  gate 要求还原出的字符串出现、且计算成员访问被简化成点号（`.split(` 在、`["split"]` 不在），这是
+  webcrack 的核心反混淆，纯重排打印过不了。
 
 ### 新增（监控台工作台）
 

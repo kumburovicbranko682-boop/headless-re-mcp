@@ -77,8 +77,18 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # Prove webcrack transformed the sample rather than merely re-printing it.
+        # The fixture hides "H3adl3ss" in a \x-escaped string array and reaches
+        # its methods through computed ["split"] / ["push"] accesses. Requiring
+        # the recovered string plus the bracket-to-dot member simplification --
+        # webcrack's core deobfuscation -- means an install that ran but decoded
+        # nothing fails here instead of reading green on the earlier bytes>0 check.
+        assert "H3adl3ss" in code
+        assert ".split(" in code
+        assert '["split"]' not in code
     finally:
         service.close_all()
 
