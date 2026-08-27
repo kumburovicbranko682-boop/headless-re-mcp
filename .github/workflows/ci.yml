@@ -187,7 +187,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends radare2 wabt \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
             gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
-            gcc-mingw-w64-x86-64
+            gcc-mingw-w64-x86-64 \
+            gcc-multilib libc6-dev-i386
 
       - name: Install webcrack (JS deobfuscation)
         run: npm install -g webcrack
@@ -317,6 +318,7 @@ jobs:
             tests/integration/test_m11_r2_ghidra_data_xref_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_arm_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_pe_agree_gate.py \
+            tests/integration/test_m11_r2_ghidra_i386_agree_gate.py \
             tests/integration/test_m11_r2_arm_xrefs_gate.py \
             tests/integration/test_m11_r2_data_xrefs_gate.py \
             tests/integration/test_m11_r2_pe_imports_gate.py \
