@@ -297,7 +297,7 @@ powershell -File .\scripts\verify_msi.ps1    # 装 → 跑 → 卸，并断言�
 
 ## 验收
 
-Windows 先跑零窗口 Gate，再按需跑 pytest。Linux 跳过 Windows-only gate，但运行完整可移植单测、doctor strict 与核心服务冒烟；缺可选环境出现 `skip` 时不能当通过。
+Windows 先跑零窗口 Gate，再按需跑 pytest。Linux 跳过 Windows-only gate，但运行完整可移植单测、doctor strict 与核心服务冒烟；CI 另有 `linux-integration` 任务在标准 GitHub runner 上装好 FOSS 后端（radare2 / Ghidra / androguard / jadx / apktool / apksigner / adb / Playwright Chromium / mitmproxy / webcrack / wabt / frida）后真跑可移植集成 Gate。缺可选环境出现 `skip` 时不能当通过。
 
 ```powershell
 # 以下两个 x64dbg gate 仅 Windows
@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
+**Android 与 Web 两个目标域比 PE 那条链路新，成熟度仍在其后**：契约（信封、读写分级、敌意输入）、降级、超时分类与写路径限制均有单元测试强制，可移植真机 Gate（androguard/jadx/apktool/apksigner、adb 设备线、frida、r2/Ghidra、浏览器 CDP 抓取、mitmproxy 起停与重放、webcrack/wabt）在 `linux-integration` CI 任务里装好 FOSS 后端后逐次真跑。本机缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 仍如实跳过，**skip 不等于 pass**。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
