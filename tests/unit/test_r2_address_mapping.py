@@ -123,6 +123,43 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_survives_a_bracket_flood_from_the_binary() -> None:
+    """A deep bracket run raised RecursionError out of the C decoder.
+
+    Once the root document fails to parse (a capture truncated at the 1 MB
+    cap is routine), the scan walks into bracket positions inside string
+    values that came straight from the binary under analysis. RecursionError
+    is neither a JSONDecodeError nor a ValueError, so it escaped the old
+    except clause as a raw interpreter error; the attempt cap keeps the
+    salvage from going quadratic once it is caught.
+    """
+    assert parse_r2_json("[" * 20_000) is None
+
+
+def test_parse_r2_json_refuses_nan_and_infinity() -> None:
+    """Python's json accepts NaN/Infinity by default and hands back floats.
+
+    Those floats then break every strict consumer downstream: the web UI's
+    JSON.parse refuses a response body containing bare NaN, and the agent
+    store serializes tool output with allow_nan=False. detection/die.py
+    already rejects these constants; parse_r2_json did not.
+    """
+    assert parse_r2_json('[{"entropy": NaN}]') is None
+    assert parse_r2_json('{"size": Infinity}') is None
+    assert parse_r2_json('{"delta": -Infinity}') is None
+
+
+def test_parse_r2_json_gives_up_after_the_scan_attempt_cap() -> None:
+    """Candidates past the cap are not tried: degraded honestly to None.
+
+    r2 prints its banners before the one JSON document, so a real root is
+    always within the first handful of bracket positions; only a hostile
+    flood puts the first parseable value beyond the cap.
+    """
+    flood = '{"x" ' * 300  # each "{" is a failing candidate
+    assert parse_r2_json(flood + '{"ok": 1}') is None
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,

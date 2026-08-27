@@ -8,6 +8,11 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# How many candidate "["/"{" positions the JSON scan will try to decode.
+# r2 -q0 prints its banners before the one JSON document, so the real root
+# is always within the first handful of bracket positions; this only bounds
+# the cost of raw output that is mostly brackets (see parse_r2_json).
+_MAX_JSON_SCAN_ATTEMPTS = 256
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -94,6 +99,14 @@ def address_dict(
     return addr.model_dump(mode="json", exclude_none=True)
 
 
+def _reject_constant(value: str) -> Any:
+    # Python's json accepts NaN/Infinity by default and hands back floats that
+    # json.dumps(allow_nan=False) and every strict consumer downstream (the
+    # web UI's JSON.parse, the agent store's canonical hashing) then refuse.
+    # detection/die.py rejects these constants for the same reason.
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def parse_r2_json(raw: str) -> Any | None:
     """Extract the first JSON value from r2 -q0 output (may include banners).
 
@@ -101,17 +114,31 @@ def parse_r2_json(raw: str) -> Any | None:
     opcodes (``mov eax, dword [rbp+0x10]``), C++ names, and strings. That
     slice is not the root array, so the ``{…}`` fallback loaded only the last
     object and ``enrich_r2_payload`` reported ``parsed: True`` with no items.
+
+    The raw text is hostile-influenced: once the root document fails to parse
+    (a 1 MB capture truncated mid-JSON is routine), the scan walks into
+    bracket positions inside string values that came straight from the binary
+    under analysis. A run of brackets there raised RecursionError out of the
+    C decoder -- neither a JSONDecodeError nor a ValueError -- and, with that
+    caught, would still make the scan quadratic; hence the attempt cap,
+    matching detection/die.py's ``_MAX_JSON_OBJECT_SCANS``.
     """
     text = (raw or "").strip()
     if not text:
         return None
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(parse_constant=_reject_constant)
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        if attempts >= _MAX_JSON_SCAN_ATTEMPTS:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # JSONDecodeError is a ValueError, and so is the constant
+            # rejection above; RecursionError is the deep-nesting case.
             continue
         return value
     return None
