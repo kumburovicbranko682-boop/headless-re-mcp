@@ -356,6 +356,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   活体门经代理打一条 GET 和一条 POST，断言 `method`/`url_contains`/`status` 各自把实时抓包收窄到目标 flow、回
   `filtered`/`unfiltered_total`、且非命中 flow 不在过滤页里（缺 mitmproxy 时 skip≠pass）；单测覆盖四种过滤器与组合、
   `total` 报命中数而 `unfiltered_total` 留全量、无过滤器不多出字段、以及 `status` 过滤跳过失败 flow。
+- **`apk.strings` 只能整页翻，找一个 URL/密钥要人肉翻完整个 DEX**。列表此前只有分页；要在一个大 app 的几万条常量里
+  定位某个域名、`api_key`/token 标记、或某个加密常量，只能一页页翻，而收集上限是 5000 条去重字符串——真正想找的那条
+  可能就在这 5000 条之外，无过滤扫描到上限就停了，永远够不着。给 `apk.strings` 加可选 `contains`（大小写不敏感子串），
+  且过滤在扫描**当中**施加，而非扫完再筛：这样 5000 上限约束的是**命中数**而非过滤前的集合，藏在远超上限之后的那条稀有
+  字符串照样能被找到。设了 `contains` 时，`total`/`count`/`has_more` 描述命中子集，另回 `filtered` 为真与 `query`
+  （查询词），`scan_capped` 为真则表示上限之外可能还有更多命中。无 `contains` 时行为与字段完全不变，工具计数与读写归类
+  不变。活体门在自建 APK 上按 `contains="DECRYPT"` 断言只回含该子串的 DEX 字符串（大小写折叠）、带 `filtered`/`query`、
+  且不含无关类名，另断言无命中查询回 `total` 为 0（缺 androguard 时 skip≠pass）；单测覆盖大小写折叠过滤、无过滤器不多出
+  字段、以及一条埋在超过 5000 条非命中之后的字符串仍被找到（证明上限约束的是命中而非扫描位置）。
 - **看不清 APK 里到底装了什么——只能看见 `.so`**。`apk.native_libs` 只列 `lib/*.so`，其余归档内容（有几个 dex、
   有没有 `assets/` 目录——藏 bundled dex/JS 载荷或配置的常见地方、资源表、META-INF 签名文件）此前没有任何工具能看到，
   想枚举只能 `apk.decode` 整包 apktool 解一遍。新增只读的 `apk.files`：先经 androguard 解析做门禁与校验（确是可解析

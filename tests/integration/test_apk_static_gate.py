@@ -521,6 +521,21 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert _DEX_METHOD in strings.data["strings"]
         assert _DEX_CLASS in strings.data["strings"]
 
+        # The contains filter must narrow the real DEX strings to matches only,
+        # case-insensitively, and report filtered/query -- so hunting a token in
+        # a real app does not mean paging every constant.
+        hit = service.apk_strings(session_id, contains="DECRYPT")
+        assert hit.ok, hit.error
+        assert hit.data["filtered"] is True
+        assert hit.data["query"] == "DECRYPT"
+        assert _DEX_METHOD in hit.data["strings"]
+        assert all("decrypt" in value.lower() for value in hit.data["strings"])
+        assert _DEX_CLASS not in hit.data["strings"]
+        miss = service.apk_strings(session_id, contains="no-such-string-zzz")
+        assert miss.ok, miss.error
+        assert miss.data["total"] == 0
+        assert miss.data["strings"] == []
+
         # xrefs must traverse the analysis graph and return cleanly even when
         # the target method has no callers.
         xrefs = service.apk_xrefs(session_id, _DEX_METHOD)

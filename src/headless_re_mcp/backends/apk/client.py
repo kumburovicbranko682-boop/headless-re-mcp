@@ -856,18 +856,28 @@ class ApkClient:
         }
 
     @_guard_androguard
-    def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+    def strings(
+        self, path: Path, *, offset: int = 0, limit: int = 200, contains: str | None = None
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        # A substring filter is applied during the scan, not after, so the
+        # collection cap bounds *matches*: hunting one URL or key in an app with
+        # far more than _MAX_STRINGS_COLLECT distinct strings would otherwise
+        # never reach it, because the unfiltered scan stops at the cap first.
+        needle = contains.casefold() if contains else None
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
             if len(seen) >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            value = str(item.get_value())[:_MAX_STRING_LEN]
+            if needle is not None and needle not in value.casefold():
+                continue
+            seen.add(value)
         values = sorted(seen)
         window = values[offset : offset + limit]
-        return {
+        result: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
@@ -875,6 +885,12 @@ class ApkClient:
             "has_more": offset + len(window) < len(values),
             "scan_capped": scan_more,
         }
+        if needle is not None:
+            # total already counts only matches; name the filter so a small
+            # result is read as "few matches", not "few strings in the DEX".
+            result["filtered"] = True
+            result["query"] = contains
+        return result
 
     @_guard_androguard
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

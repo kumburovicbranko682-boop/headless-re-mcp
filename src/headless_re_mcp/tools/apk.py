@@ -194,6 +194,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
 
@@ -202,8 +203,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         is the number collected, capped at 5000; scan_capped is true when
         more unique strings may exist. has_more only means a larger offset
         still has collected rows. There is no items or constants field.
+
+        Pass contains to hunt a substring (case-insensitive) -- a URL, a host,
+        an api_key/token marker, a crypto constant -- across the DEX. The filter
+        is applied during the scan, so the 5000 cap bounds matches, not the
+        pre-filter set: a rare string is still found in an app with far more
+        strings than the cap, where an unfiltered page would never reach it.
+        When set the reply also carries filtered true and query (the term), and
+        total/count/has_more describe the matched subset; scan_capped true then
+        means still more matches may exist beyond the cap.
         """
-        return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_strings(session_id, offset=offset, limit=limit, contains=contains)
+        )
 
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(

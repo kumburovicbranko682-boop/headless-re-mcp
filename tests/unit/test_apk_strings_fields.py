@@ -37,11 +37,13 @@ class _FakeString:
 
 
 class _FakeParsed:
-    def __init__(self) -> None:
+    def __init__(self, values: list[str] | None = None) -> None:
         self.analysis = self
+        self._values = values
 
     def get_strings(self) -> list[_FakeString]:
-        return [_FakeString(f"s{index}") for index in range(25)]
+        values = self._values if self._values is not None else [f"s{i}" for i in range(25)]
+        return [_FakeString(value) for value in values]
 
 
 def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
@@ -65,3 +67,60 @@ def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
     doc = _tool_docstring("apk.strings")
     assert "Answers with strings" in doc
     assert "has_more" in doc
+
+
+def test_apk_strings_contains_filters_to_matches() -> None:
+    """A substring filter must narrow the DEX strings, case-insensitively.
+
+    Hunting a URL or key in a real app means not paging every constant. Assert
+    contains keeps only the matching strings, folds case, and reports
+    filtered/query so a small result is read as "few matches", not "few strings".
+    """
+    values = [
+        "https://api.example.com/v1/login",
+        "https://cdn.other.com/app.js",
+        "AES/CBC/PKCS5Padding",
+        "GET",
+        "API_KEY",
+    ]
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed(values)  # type: ignore[method-assign]
+
+    hits = client.strings(Path("dummy.apk"), contains="EXAMPLE.com")
+    assert hits["strings"] == ["https://api.example.com/v1/login"]
+    assert hits["filtered"] is True
+    assert hits["query"] == "EXAMPLE.com"
+    assert hits["total"] == 1
+
+    # An unfiltered call carries neither key, so a plain listing is not mistaken
+    # for a filtered one.
+    plain = client.strings(Path("dummy.apk"))
+    assert "filtered" not in plain
+    assert "query" not in plain
+    assert plain["total"] == len(values)
+
+
+def test_apk_strings_contains_finds_a_match_past_the_collection_cap() -> None:
+    """The filter is applied during the scan, so the cap bounds matches.
+
+    An unfiltered scan stops at the 5000-distinct cap and never sees a string
+    beyond it. Bury one secret after more than that many non-matching strings
+    and assert a contains filter still finds it -- proving the cap bounds
+    matches, not scan position (an after-the-fact filter would miss it).
+    """
+    from headless_re_mcp.backends.apk.client import _MAX_STRINGS_COLLECT
+
+    values = [f"nomatch-{index}" for index in range(_MAX_STRINGS_COLLECT + 1000)]
+    values.append("buried://SECRET_TOKEN/xyz")
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed(values)  # type: ignore[method-assign]
+
+    hits = client.strings(Path("dummy.apk"), contains="secret_token")
+    assert hits["strings"] == ["buried://SECRET_TOKEN/xyz"]
+    assert hits["total"] == 1
+    assert hits["scan_capped"] is False
+
+    doc = _tool_docstring("apk.strings")
+    assert "contains" in doc
+    assert "filtered" in doc
+    assert "query" in doc
