@@ -659,14 +659,24 @@ def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject
     else:
         if file_off + 12 > len(data):
             raise DotnetInspectError("not_found", "fat method header truncated")
-        flags = int.from_bytes(data[file_off : file_off + 2], "little")
+        # ECMA-335 II.25.4.3: the first 16-bit word packs Flags in bits 0-11 and
+        # the header size (in 4-byte units) in bits 12-15. Reading the whole word
+        # as flags folded the size nibble in, so an ordinary header (word 0x3013)
+        # reported flags 0x3013 instead of 0x13 -- any equality check or high-bit
+        # read on that value was against a fabricated number.
+        word = int.from_bytes(data[file_off : file_off + 2], "little")
+        flags = word & 0x0FFF
+        header_size = ((word >> 12) & 0x0F) * 4
         max_stack = int.from_bytes(data[file_off + 2 : file_off + 4], "little")
         code_size = int.from_bytes(data[file_off + 4 : file_off + 8], "little")
         local_sig = int.from_bytes(data[file_off + 8 : file_off + 12], "little")
-        il_start = file_off + 12
+        # A loadable method always declares size 3 (12 bytes); honour a larger
+        # declared header defensively, but never start inside the fixed fields.
+        il_start = file_off + max(12, header_size)
         header = {
             "format": "fat",
             "flags": flags,
+            "header_size": header_size,
             "max_stack": max_stack,
             "code_size": code_size,
             "local_var_sig_tok": local_sig,

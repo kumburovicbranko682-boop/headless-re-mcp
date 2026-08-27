@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.il` 的 fat 方法头 `flags` 把头长 nibble 混进来了）
+
+- `dotnet.il` 报告的 fat 方法头 `flags` 读的是首个 16 位字的全部,但按 ECMA-335 II.25.4.3,
+  该字低 12 位才是 Flags,高 4 位是头长(以 4 字节为单位)。标准 fat 头的字是 0x3013(头长
+  nibble=3、Flags=0x13),旧代码把 `flags` 报成 0x3013,AI 对这个值做等值判断或读高位时,
+  比的是个被掺了头长的假数。现改为 `flags = word & 0x0FFF`,并单列 `header_size` 字段;IL
+  起点按 `max(12, 头长×4)` 计算——可加载方法头长恒为 3(12 字节)故与旧行为一致,但对故意
+  写大头长的构造样本也不会再从固定字段中间开始读 IL。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
