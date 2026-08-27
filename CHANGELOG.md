@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（linux-integration 泳道的 rcodesign 环境变量碰撞）
+
+- 新 CI 泳道给作业设的 `RCODESIGN_VERSION`（只想用来拼下载 URL）被 rcodesign 自身的
+  环境变量配置机制吃进去：它把每个 `RCODESIGN_*` 前缀变量解析为配置键，`version`
+  不在合法键（`sign`、`remote-sign`）里，于是**每次调用**都在做任何事之前以
+  "configuration file error" 退出 1——codesign gate 在该泳道首跑即失败。本地以
+  `RCODESIGN_VERSION=0.29.0 rcodesign sign …` 复现同样报错。变量改名为无前缀
+  冲突的 `APPLE_CODESIGN_VERSION`，并留注释防止回归。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
