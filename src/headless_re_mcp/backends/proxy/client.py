@@ -679,7 +679,25 @@ class ProxyBackend:
         if resp_headers_cut:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
-        return {"id": flow_id, "request": request, "response": response}
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # A flow the recorder captured through its error hook -- TLS handshake
+        # refused, upstream unreachable, connection reset mid-request -- has no
+        # response at all, so the block above yields status null and an empty
+        # body: indistinguishable, on flow.get alone, from a request that simply
+        # answered with nothing. proxy.flows already marks such a row error /
+        # error_msg; surface the same here, from the flow's own error, so a
+        # caller that goes straight to flow.get for the detail still learns the
+        # host refused rather than reading the empty response as a real one. A
+        # completed flow has no error, so this stays absent for it.
+        err = getattr(flow, "error", None)
+        if err is not None:
+            message = str(getattr(err, "msg", None) or err or "flow error")
+            error_text, error_cut = _bounded_metadata(message, _MAX_METADATA_BYTES)
+            result["error"] = True
+            result["error_msg"] = error_text
+            if error_cut:
+                result["metadata_truncated"] = True
+        return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)

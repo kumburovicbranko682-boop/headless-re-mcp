@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（proxy.flow.get 对"没跑完就出错"的流也报出错误原因）
+
+- 出错钩子已经把 mitmproxy 没能跑完的流(TLS 握手被拒、上游不可达、请求中途连接被重置)捕获下来,
+  `proxy.flows` 也会把那一行标成 `error`/`error_msg` 且 `status` 为 null。可这种流根本没有响应,于是
+  `proxy.flow.get` 只算出 `status` 为 null、正文为空,别的什么都不给——单看 `flow.get`,它和"请求正常
+  返回了一个空正文"没法区分。逆向时直奔 `flow.get` 想知道"这条为什么失败"的人,什么也读不到。现在
+  `flow.get` 像摘要那样把该流自己的 `error` 摊开:顶层 `error` 为 true、带 `error_msg`(取自 `flow.error`,
+  超长按 `_MAX_METADATA_BYTES` 截断并置 `metadata_truncated`),`response.status` 仍为 null——正常完成的流
+  则完全没有 `error` 字段,两者可区分。`proxy.flow.get` 文档串说明:出错的流(无响应)带 `error` true 与
+  `error_msg`、`status` 保持 null。单测新增四条(出错流经 flow.get 报出原因且 status/正文为空、正常流无
+  error、超长错误串按上限截断、错误对象不给原因时回退到 "flow error"),复用出错流假件形状。新增 live gate
+  (`test_proxy_flow_get_error_live_gate.py`):经真实 mitmproxy 常规代理把一次客户端请求转发到本机一个没人
+  监听的端口(上游连接立即被拒、离线可复现),待其记下出错流后取回,断言 `flow.get` 返回 `error` true、
+  `error_msg` 非空、`status` 为 null。CI 新增 `linux-proxy-flow-get-error` job 装 mitmproxy 跑该 gate,
+  skip≠pass 守卫在 mitmproxy 已装却仍 skip 时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

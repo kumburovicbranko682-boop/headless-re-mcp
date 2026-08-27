@@ -152,6 +152,37 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-proxy-flow-get-error:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the package with mitmproxy
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+          python -c "import mitmproxy.version; print('mitmproxy', mitmproxy.version.VERSION)"
+      - name: proxy.flow.get errored-flow gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_proxy_flow_get_error_live_gate.py \
+            -rs --tb=short --junitxml=proxy-flow-get-error-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("proxy-flow-get-error-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no proxy flow.get error gate was collected")
+          if skipped:
+              sys.exit(f"proxy flow.get error gate skipped despite an installed mitmproxy: {skipped}")
+          print(f"proxy flow.get error gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

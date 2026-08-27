@@ -84,9 +84,14 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         (too_large or binary) when the body was spilled to an artifact rather
         than decoded lossily. A spilled body also carries artifact_id. Headers
         are bounded in count and size; metadata_truncated on request or
-        response marks a clipped header map or field. There is no top-level
-        headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        response marks a clipped header map or field. A flow that errored
+        instead of completing (TLS refused, upstream unreachable, connection
+        reset) has no response, so it carries top-level error true and
+        error_msg while response.status stays null -- the same marking
+        proxy.flows uses -- rather than reading as a real empty response. A
+        completed flow carries no error field. There is no top-level headers or
+        body field, and a binary body is never returned as a mojibake body
+        string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
