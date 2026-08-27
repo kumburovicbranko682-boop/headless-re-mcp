@@ -138,6 +138,65 @@ def test_address_dict_with_rva() -> None:
     }
 
 
+def test_address_dict_below_image_base_stays_va_only() -> None:
+    """An address below the load base has no rva: va-only, no module, and never
+    a fabricated (would-be-negative) rva.
+
+    This is the r2 twin of the Ghidra EXTERNAL-space degradation pinned in
+    test_ghidra_address_mapping.py. In a coordinate-agreement line the one thing
+    worse than "no rva" is a wrong rva, so the guard that keeps va < image_base
+    out of the subtraction must be asserted directly, not just implied by the
+    happy path.
+    """
+    below = address_dict(
+        0x1000,
+        module="demo64.exe",
+        image_base=0x140000000,
+        architecture=Architecture.X64,
+    )
+    assert below == {"va": 0x1000, "architecture": "x64"}
+
+    # The lower bound is inclusive: va == image_base is rva 0, still enriched.
+    at_base = address_dict(
+        0x140000000,
+        module="demo64.exe",
+        image_base=0x140000000,
+        architecture=Architecture.X64,
+    )
+    assert at_base == {
+        "module": "demo64.exe",
+        "rva": 0,
+        "va": 0x140000000,
+        "architecture": "x64",
+    }
+
+
+def test_enrich_r2_item_below_image_base_is_va_only(tmp_path: Path) -> None:
+    """An r2 item whose va is below the image base degrades to va-only.
+
+    r2 can report addresses outside the mapped image; enrich_r2_payload must
+    carry them as va-only (arch still known from the binary) rather than
+    subtracting past the base into a bogus rva. Same contract the Ghidra
+    enrichment holds for EXTERNAL-space symbols, now pinned on the r2 side.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)  # image_base 0x140000000
+    raw = json.dumps(
+        [
+            {"offset": 0x140001000, "name": "entry0"},
+            {"offset": 0x1000, "name": "below_base"},
+        ]
+    )
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aflj"]}, binary=binary)
+    in_image, below = enriched["items"]
+    assert in_image["address"] == {
+        "module": "demo64.exe",
+        "rva": 0x1000,
+        "va": 0x140001000,
+        "architecture": "x64",
+    }
+    assert below["address"] == {"va": 0x1000, "architecture": "x64"}
+
+
 def test_enrich_functions_payload(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     arch, base = pe_preferred_base(binary)
