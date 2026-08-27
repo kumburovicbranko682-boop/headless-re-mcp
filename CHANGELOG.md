@@ -543,6 +543,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
   改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
   webcrack / wabt 一致：先认配置路径，再回落 PATH。
+- **`Settings.load` 的 r2 默认值漏了 `radare2` 这个二进制名**。`R2Client._discover` 认
+  `("r2", "rizin", "radare2")` 三个名字，但加载器只按 `r2`→`rizin` 顺序 `shutil.which`，
+  于是只装了全名 `radare2`（PATH 上没有 `r2`/`rizin` 别名）的机器把 `settings.r2` 留成
+  None。客户端 `_discover` 仍能发现它、工具照跑，可配置层在“什么名字算 radare2”上与客户端
+  不一致——是个潜在维护陷阱（谁哪天去掉客户端回落就会暴露）。默认值补上
+  `shutil.which("radare2")`，与客户端发现名字对齐；新增回归用只有 `radare2` 的 PATH 断言
+  `Settings.load` 会把 `settings.r2` 填上。
 - **Ghidra headless 会把操作者的 `JAVA_TOOL_OPTIONS` 直接覆盖掉**。`_run_headless`
   过去 `env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"`，把操作者为代理、编码或 JDK 17+
   Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。

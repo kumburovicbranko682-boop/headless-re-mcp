@@ -174,6 +174,7 @@ class Settings:
                 or data.get("r2")
                 or shutil.which("r2")
                 or shutil.which("rizin")
+                or shutil.which("radare2")
             ),
             ghidra_home=_optional_path(
                 os.environ.get("HEADLESS_RE_GHIDRA_HOME")
