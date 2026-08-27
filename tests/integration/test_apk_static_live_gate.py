@@ -880,14 +880,13 @@ def test_apk_dex_readers_fail_soft_on_a_corrupt_dex(tmp_path: Path) -> None:
 
             # The DEX-backed readers must every one fail closed with a structured,
             # non-internal_error code rather than leaking the androguard exception.
-            dex_calls = {
-                "apk_classes": lambda: service.apk_classes(session_id, limit=50),
-                "apk_strings": lambda: service.apk_strings(session_id, limit=50),
-                "apk_xrefs": lambda: service.apk_xrefs(session_id, "onCreate"),
-                "apk_methods": lambda: service.apk_methods(session_id, "com.example.App"),
+            dex_results = {
+                "apk_classes": service.apk_classes(session_id, limit=50),
+                "apk_strings": service.apk_strings(session_id, limit=50),
+                "apk_xrefs": service.apk_xrefs(session_id, "onCreate"),
+                "apk_methods": service.apk_methods(session_id, "com.example.App"),
             }
-            for name, call in dex_calls.items():
-                result = call()
+            for name, result in dex_results.items():
                 assert not result.ok and result.error is not None, (label, name, result)
                 assert result.error.code != "internal_error", (label, name, result.error)
                 assert result.error.code == "backend_error", (label, name, result.error)

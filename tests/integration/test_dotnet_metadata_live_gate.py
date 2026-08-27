@@ -345,3 +345,112 @@ def test_dotnet_il_out_of_range_token_fails_closed(tmp_path: Path) -> None:
         assert result.error.code == "not_found", result.error
     finally:
         service.close_session(session_id)
+
+
+def _first_rowcount_offset(image: bytes) -> int:
+    """File offset of the ``#~`` stream's first table row-count u32.
+
+    Parses the metadata root exactly as :func:`_build_dotnet_assembly` writes it
+    (BSJB header, 4-byte-rounded version, stream directory) so a test can reach
+    in and corrupt the tables stream without hard-coding a brittle constant.
+    """
+    bsjb = image.find(b"BSJB")
+    assert bsjb >= 0, "no metadata root in fixture"
+    off = bsjb + 4 + 2 + 2 + 4  # signature, major, minor, reserved
+    version_len = struct.unpack_from("<I", image, off)[0]
+    off += 4 + ((version_len + 3) & ~3)
+    off += 2  # flags
+    stream_count = struct.unpack_from("<H", image, off)[0]
+    off += 2
+    tilde_payload: int | None = None
+    for _ in range(stream_count):
+        stream_off, _stream_size = struct.unpack_from("<II", image, off)
+        off += 8
+        name_start = off
+        while image[off] != 0:
+            off += 1
+        name = image[name_start:off]
+        off = name_start + (((len(name) + 1) + 3) & ~3)
+        if name == b"#~":
+            tilde_payload = bsjb + stream_off
+    assert tilde_payload is not None, "no #~ stream in fixture"
+    # #~ payload: reserved(4) + maj/min/heap/reserved(4) + valid(8) + sorted(8).
+    return tilde_payload + 4 + 4 + 8 + 8
+
+
+@pytest.mark.integration
+def test_dotnet_readers_refuse_a_broken_metadata_signature(tmp_path: Path) -> None:
+    """A clobbered BSJB signature must fail closed, never internal_error.
+
+    The CLR verifier keys off the metadata-root signature; corrupting it should
+    make every reader refuse cleanly (clr_unverified) rather than press on with a
+    half-decoded blob. This is the fail-closed half of the .NET fault contract:
+    when the metadata cannot be trusted, the tools say so instead of guessing.
+    """
+    assembly = _build_dotnet_assembly(tmp_path / _MODULE_NAME)
+    image = bytearray(assembly.path.read_bytes())
+    bsjb = image.find(b"BSJB")
+    assert bsjb >= 0
+    image[bsjb : bsjb + 4] = b"XXXX"
+    broken = tmp_path / "bad-signature.dll"
+    broken.write_bytes(bytes(image))
+
+    service = _make_service(tmp_path / "artifacts")
+    created = service.create_session(str(broken))
+    assert created.ok and created.data is not None, created.error
+    session_id = str(created.data["session"]["id"])
+    try:
+        calls = (
+            lambda: service.dotnet_inspect(session_id, require_verified=True),
+            lambda: service.dotnet_enumerate(session_id, "types", limit=8),
+            lambda: service.dotnet_enumerate(session_id, "methods", limit=8),
+            lambda: service.dotnet_il(session_id, _METHOD_TOKEN),
+            lambda: service.dotnet_xrefs(session_id, limit=8),
+        )
+        for call in calls:
+            result = call()
+            assert not result.ok and result.error is not None, result
+            assert result.error.code != "internal_error", result.error
+            assert result.error.code == "clr_unverified", result.error
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_dotnet_readers_survive_a_hostile_table_row_count(tmp_path: Path) -> None:
+    """A ``#~`` row count of 2^31 must not run the table walker off the stream.
+
+    A malformed (or deliberately adversarial) assembly can claim a table has far
+    more rows than the stream can hold. The ECMA row-sizing walk multiplies row
+    count by row width to locate later tables, so an unbounded count is exactly
+    the shape that turns into a wild read or a MemoryError. Every reader must
+    still return a structured envelope -- degrade to empty/not_found or refuse --
+    but never internal_error and never an uncaught exception.
+    """
+    assembly = _build_dotnet_assembly(tmp_path / _MODULE_NAME)
+    image = bytearray(assembly.path.read_bytes())
+    struct.pack_into("<I", image, _first_rowcount_offset(image), 0x7FFFFFFF)
+    hostile = tmp_path / "hostile-rowcount.dll"
+    hostile.write_bytes(bytes(image))
+
+    service = _make_service(tmp_path / "artifacts")
+    created = service.create_session(str(hostile))
+    assert created.ok and created.data is not None, created.error
+    session_id = str(created.data["session"]["id"])
+    try:
+        calls = (
+            lambda: service.dotnet_inspect(session_id, require_verified=True),
+            lambda: service.dotnet_enumerate(session_id, "types", limit=8),
+            lambda: service.dotnet_enumerate(session_id, "methods", limit=8),
+            lambda: service.dotnet_il(session_id, _METHOD_TOKEN),
+            lambda: service.dotnet_xrefs(session_id, limit=8),
+        )
+        for call in calls:
+            result = call()
+            # ok (clamped/empty) or a clean structured refusal are both fine; a
+            # server-defect internal_error, or a raised exception, are not.
+            if not result.ok:
+                assert result.error is not None
+                assert result.error.code != "internal_error", result.error
+    finally:
+        service.close_session(session_id)
