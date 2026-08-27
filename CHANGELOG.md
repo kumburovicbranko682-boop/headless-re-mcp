@@ -37,6 +37,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：14 通过、1 跳过（仅 Windows 才有的 OS
   句柄泄漏检查，POSIX 下诚实 skip）。r2 与 frida 的现场 gate 依赖 Windows PE 夹具，在 Linux 只会
   skip，故仍留在 Windows job。
+- 配套加强 WASM 现场 gate：`test_web_re_gate.py` 过去只把 magic+version 的空模块喂给 wasm2wat、
+  断言里仅有 `(module)`，只证明工具能起；`wasm-objdump`（`wasm.info`）更是完全没有现场覆盖。现改用
+  手搓的带类型化函数、内存、全局量与三个具名导出的模块，wat gate 断言渲染出的字节码（`i32.add`）
+  与具名导出，另加 `wasm.info` gate 断言 wasm-objdump 列出 Type/Function/Export/Code 段并解析出
+  `add` 导出——让上面新增的 Linux CI 真正把装上的 wabt 两个工具都跑起来，而不只是装着。
 
 ### 新增（监控台工作台）
 
