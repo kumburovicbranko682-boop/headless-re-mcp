@@ -130,6 +130,102 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ReadApi:
+    def modules(self, limit: int = 64) -> dict[str, Any]:
+        del limit
+        return {"modules": [], "total": 0}
+
+    def exports(self, name: str, count: int) -> dict[str, Any]:
+        del count
+        return {"found": True, "module": name, "base": "0x1", "exports": []}
+
+    def read(self, address: int, size: int) -> list[int]:
+        del address
+        return [0] * int(size)
+
+
+class _ReadScript:
+    exports_sync = _ReadApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _DetachFailSession:
+    def create_script(self, source: str) -> _ReadScript:
+        del source
+        return _ReadScript()
+
+    def detach(self) -> None:
+        raise RuntimeError("native session is still attached")
+
+
+def test_frida_modules_reports_a_detach_failure_instead_of_success() -> None:
+    """A read that cannot detach leaves the enum script loaded in the target.
+
+    Returning the module list as a success let the caller move on while the
+    session stayed resident. The failed detach is now surfaced instead.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid, timeout=None: _DetachFailSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, limit=10)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_exports_reports_a_detach_failure_instead_of_success() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid, timeout=None: _DetachFailSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_memory_read_reports_a_detach_failure_instead_of_success() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid, timeout=None: _DetachFailSession()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 16, allowed_pid=1)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_read_probe_detach_failure_does_not_mask_the_real_error() -> None:
+    """When the read itself fails, its error wins over a later detach failure."""
+
+    class _Session:
+        def create_script(self, source: str) -> object:
+            del source
+            raise FridaError("backend_error", "script load exploded")
+
+        def detach(self) -> None:
+            raise RuntimeError("also cannot detach")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = lambda pid, timeout=None: _Session()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, limit=10)
+
+    assert caught.value.code == "backend_error"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
