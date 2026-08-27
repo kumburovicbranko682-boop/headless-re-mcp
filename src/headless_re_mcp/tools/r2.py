@@ -100,6 +100,22 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.symbols")
+    def r2_symbols(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """The whole symbol table radare2 read (isj), not just imports or exports.
+
+        Answers with items, each carrying name, type (FUNC/OBJECT/...), bind
+        (LOCAL/GLOBAL/WEAK), size, vaddr and address (va/rva/module), plus
+        count. This is the full .symtab/.dynsym, so it names local, non-exported
+        functions and data a stripped binary would hide -- the difference
+        between sub_1234 and the real name. There is no integer address field.
+        Read items_truncated, items_total and items_limit when the list filled
+        the cap (4096). There is no symbols, truncated or has_more field.
+        """
+        return _dump(analysis.r2_symbols(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
