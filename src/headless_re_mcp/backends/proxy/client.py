@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import logging
@@ -34,6 +35,11 @@ _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
 _OMITTED_BODY = object()
+# WebSocket message surfacing on a flow: bound the payload preview per message
+# and how many messages one flow.get returns, so a chatty socket cannot produce
+# an unbounded tool result. The underlying retention is mitmproxy's flow object.
+_MAX_WS_PAYLOAD = 8 * 1024
+_MAX_WS_MESSAGES = 500
 
 
 class ProxyError(RuntimeError):
@@ -203,6 +209,67 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _ws_message_count(flow: Any) -> int:
+    ws = getattr(flow, "websocket", None)
+    if ws is None:
+        return 0
+    messages = getattr(ws, "messages", None) or []
+    return len(messages)
+
+
+def _ws_messages_view(flow: Any, *, limit: int = _MAX_WS_MESSAGES) -> JsonObject | None:
+    """The WebSocket messages mitmproxy accumulated on a flow, bounded for a reply.
+
+    Returns None for a plain HTTP flow. For a WebSocket flow, each message is
+    normalised the same way the browser (CDP) capture is: a text message keeps a
+    bounded text preview, a binary message is base64 so the bytes survive, and
+    direction is sent (client -> server) or received (server -> client).
+    """
+    ws = getattr(flow, "websocket", None)
+    if ws is None:
+        return None
+    messages = list(getattr(ws, "messages", None) or [])
+    out: list[JsonObject] = []
+    for msg in messages[: max(0, int(limit))]:
+        content = getattr(msg, "content", b"") or b""
+        if not isinstance(content, bytes | bytearray):
+            content = str(content).encode("utf-8", errors="replace")
+        content = bytes(content)
+        opcode = getattr(msg, "type", None)
+        opcode_int = int(opcode) if isinstance(opcode, int) else None
+        is_text = opcode_int == 0x1
+        if is_text:
+            payload, truncated = _bounded_metadata(
+                content.decode("utf-8", errors="replace"), _MAX_WS_PAYLOAD
+            )
+            kind = "text"
+        else:
+            payload = base64.b64encode(content[:_MAX_WS_PAYLOAD]).decode("ascii")
+            truncated = len(content) > _MAX_WS_PAYLOAD
+            kind = "binary"
+        record: JsonObject = {
+            "direction": "sent" if bool(getattr(msg, "from_client", False)) else "received",
+            "opcode": opcode_int,
+            "type": kind,
+            "payload": payload,
+            "payload_len": len(content),
+            "ts": getattr(msg, "timestamp", None),
+        }
+        if truncated:
+            record["payload_truncated"] = True
+        out.append(record)
+    view: JsonObject = {
+        "messages": out,
+        "count": len(out),
+        "total": len(messages),
+        "closed": getattr(ws, "timestamp_end", None) is not None,
+    }
+    close_code = getattr(ws, "close_code", None)
+    if close_code is not None:
+        view["close_code"] = close_code
+    return view
 
 
 def _http_version(part: Any) -> str:
@@ -395,6 +462,22 @@ class _FlowRecorder:
             if method_truncated or url_truncated or host_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
+
+    def websocket_message(self, flow: Any) -> None:  # mitmproxy calls this per WS message
+        # The flow was already summarised at its 101 handshake response; mark it
+        # as a WebSocket flow and keep the running message count current so
+        # proxy.flows shows which flows carry frames without re-reading the raw.
+        flow_id = str(getattr(flow, "id", None) or "")
+        count = _ws_message_count(flow)
+        with self._lock:
+            for summary in reversed(self.flows):
+                if summary.get("id") == flow_id:
+                    summary["websocket"] = True
+                    summary["ws_messages"] = count
+                    break
+
+    def websocket_end(self, flow: Any) -> None:  # mitmproxy calls this on WS close
+        self.websocket_message(flow)
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -714,6 +797,9 @@ class ProxyBackend:
             result["response"]["body_path"] = str(out)
         else:
             result["response"]["body"] = body.decode("utf-8", errors="replace")
+        websocket = _ws_messages_view(flow)
+        if websocket is not None:
+            result["websocket"] = websocket
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

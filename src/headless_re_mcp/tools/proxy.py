@@ -60,7 +60,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with flows (id, seq, method, url, host, status, content_type),
         count, total, offset, has_more, and dropped. body_omitted is set on a
-        row whose request/response body was over the retain cap. The list
+        row whose request/response body was over the retain cap. A WebSocket
+        flow (the 101 handshake) also carries websocket true and ws_messages,
+        the running frame count; fetch the frames with proxy.flow.get. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
@@ -75,7 +77,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with id, request (method, url, headers) and response (status,
         headers, size). A body at most 200000 bytes is response.body; anything
         larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        top-level headers or body fields. A WebSocket flow also carries
+        websocket with the captured messages (direction sent or received, type
+        text or binary, payload, payload_len, ts), count, total and closed; a
+        binary message's payload is base64 and an oversized one is cut and
+        marked payload_truncated.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
