@@ -5,6 +5,13 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+非 PE 后端的 doctor 探针补齐到与 PE 工具同一档：radare2/rizin、jadx、apktool、webcrack、
+wabt(wasm2wat) 过去只用 `shutil.which` 浅探测，最多报 `detected`——JRE 坏掉的 jadx、Node
+版本不对的 webcrack、跑不起来的 r2 都和正常安装报同一个词。现改为像 upx/die 那样真正带
+超时地跑一次 `--version`/`-v`，跑通且解析出版本号才报 `ready`，配置了路径却跑不起来报
+`blocked`，未配置报 `missing`，并在 details 里带上版本号与 remediation。能力目录（供 Cursor
+消费）直接透传探针状态，因此这些后端从模糊的 `detected` 变成明确的 `ready`。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

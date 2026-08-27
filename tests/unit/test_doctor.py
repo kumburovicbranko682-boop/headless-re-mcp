@@ -17,9 +17,14 @@ from headless_re_mcp.doctor import (
     Probe,
     ProbeStatus,
     format_report,
+    probe_apktool,
     probe_die,
     probe_exeinfope,
+    probe_jadx,
+    probe_radare2,
     probe_upx,
+    probe_wabt,
+    probe_webcrack,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
     run_doctor,
@@ -412,6 +417,138 @@ def test_upx_probe_blocks_without_usable_version(
 
     monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
     assert probe_upx(settings).status == ProbeStatus.BLOCKED
+
+
+def _version_run(
+    monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode: int = 0
+) -> list[list[str]]:
+    """Patch the probe seam to return a fixed version banner; record the argv."""
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    return commands
+
+
+def test_radare2_probe_is_optional_when_unconfigured(tmp_path: Path) -> None:
+    probe = probe_radare2(_settings(None, tmp_path / "artifacts"))
+    assert probe.status == ProbeStatus.MISSING
+    assert "HEADLESS_RE_R2" in (probe.remediation or "")
+
+
+def test_radare2_probe_ready_runs_the_cli_and_parses_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "r2"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=executable)
+    commands = _version_run(monkeypatch, stdout="radare2 5.9.8 0 @ linux-x86-64\n")
+
+    probe = probe_radare2(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "5.9.8"
+    # It must actually run the tool, not just stat it -- that is the whole point.
+    assert commands and commands[0][-1] == "-v"
+
+
+def test_radare2_probe_also_accepts_rizin_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "rizin"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=executable)
+    _version_run(monkeypatch, stdout="rizin 0.7.3 @ linux-x86-64\n")
+
+    probe = probe_radare2(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "0.7.3"
+
+
+def test_radare2_probe_blocks_when_configured_path_is_missing(tmp_path: Path) -> None:
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=tmp_path / "nope")
+    assert probe_radare2(settings).status == ProbeStatus.BLOCKED
+
+
+def test_jadx_probe_ready_runs_the_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "jadx"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=executable)
+    commands = _version_run(monkeypatch, stdout="1.5.1\n")
+
+    probe = probe_jadx(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "1.5.1"
+    assert commands and commands[0][-1] == "--version"
+
+
+def test_jadx_probe_is_optional_when_unconfigured(tmp_path: Path) -> None:
+    probe = probe_jadx(_settings(None, tmp_path / "artifacts"))
+    assert probe.status == ProbeStatus.MISSING
+    assert "HEADLESS_RE_JADX" in (probe.remediation or "")
+
+
+def test_apktool_probe_ready_runs_the_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "apktool"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), apktool=executable)
+    _version_run(monkeypatch, stdout="2.9.3\n")
+
+    probe = probe_apktool(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "2.9.3"
+
+
+def test_wabt_probe_ready_runs_wasm2wat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "wasm2wat"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=executable)
+    _version_run(monkeypatch, stdout="1.0.34 (git~1.0.34)\n")
+
+    probe = probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "1.0.34"
+
+
+def test_webcrack_probe_ready_runs_the_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "webcrack"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), webcrack=executable)
+    _version_run(monkeypatch, stdout="2.16.0\n")
+
+    probe = probe_webcrack(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "2.16.0"
+
+
+def test_webcrack_probe_blocks_when_the_cli_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "webcrack"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), webcrack=executable)
+    # A non-zero exit means the tool is present but not runnable (wrong Node, etc.),
+    # which must read as BLOCKED, not the DETECTED the old shutil.which probe gave.
+    _version_run(monkeypatch, stdout="", returncode=1)
+
+    assert probe_webcrack(settings).status == ProbeStatus.BLOCKED
 
 
 def test_isolation_probe_blocks_on_elevated_host(

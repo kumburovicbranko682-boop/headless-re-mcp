@@ -186,7 +186,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             if on_windows
             else windows_only("scylla", "Scylla dump/IAT adapter requires Windows")
         ),
-        probe_command("radare2", ("r2", "rizin")),
+        probe_radare2(current),
         probe_ghidra(current),
         probe_python_module("frida", "frida"),
         probe_command("java", ("java",)),
@@ -199,14 +199,14 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("androguard", "androguard"),
         probe_python_module("adbutils", "adbutils"),
         probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
+        probe_jadx(current),
+        probe_apktool(current),
         probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
         # Web reverse-engineering (all optional).
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_webcrack(current),
+        probe_wabt(current),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1106,6 +1106,154 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def _probe_versioned_cli(
+    name: str,
+    executable: Path | None,
+    *,
+    label: str,
+    version_args: tuple[str, ...] = ("--version",),
+    version_regex: str | None = None,
+    timeout: float = 15.0,
+    remediation_missing: str,
+    remediation_blocked: str,
+) -> Probe:
+    """Detect an optional CLI by actually running it, like the PE-tool probes.
+
+    ``probe_command`` / ``probe_optional_tool`` only ask ``shutil.which`` and can
+    never answer better than ``detected`` -- so a jadx with a broken JRE, a stale
+    webcrack, or an r2 that no longer launches all still reported "detected", the
+    same word a working install gets. The PE adapters (upx, die, ...) have long
+    run ``--version`` under a deadline to earn ``ready``; this gives the non-PE
+    backends the same crisp signal, since the capabilities catalog surfaces the
+    probe status verbatim to the client.
+    """
+    if executable is None:
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            f"Optional {label} is not configured",
+            {},
+            remediation_missing,
+        )
+    if not executable.is_file():
+        return Probe(
+            name,
+            ProbeStatus.BLOCKED,
+            f"Configured {label} does not exist",
+            {"executable": str(executable)},
+            remediation_blocked,
+        )
+    details: dict[str, Any] = {"executable": str(executable)}
+    try:
+        result = _probe_run([str(executable), *version_args], timeout=timeout)
+    except (OSError, TimedOut) as exc:
+        return Probe(
+            name,
+            ProbeStatus.BLOCKED,
+            f"{label} did not run",
+            {**details, "error": f"{type(exc).__name__}: {exc}"},
+            remediation_blocked,
+        )
+    output = _bounded_text(result.stdout, result.stderr)
+    version = None
+    if version_regex:
+        match = re.search(version_regex, output, re.I)
+        version = match.group(1) if match else None
+    details.update(
+        {
+            "version": version,
+            "version_exit_code": result.returncode,
+            "version_output": output,
+        }
+    )
+    if result.returncode == 0:
+        suffix = f" {version}" if version else ""
+        return Probe(name, ProbeStatus.READY, f"{label}{suffix} is available", details)
+    return Probe(
+        name,
+        ProbeStatus.BLOCKED,
+        f"{label} did not report a usable version",
+        details,
+        remediation_blocked,
+    )
+
+
+def probe_radare2(settings: Settings) -> Probe:
+    return _probe_versioned_cli(
+        "radare2",
+        getattr(settings, "r2", None),
+        label="radare2/rizin CLI",
+        version_args=("-v",),
+        version_regex=r"(?:radare2|rizin)\s+(\d+\.\d+(?:\.\d+)?)",
+        remediation_missing=(
+            "Install radare2 or rizin, put r2/rizin on PATH, or set HEADLESS_RE_R2."
+        ),
+        remediation_blocked="Verify HEADLESS_RE_R2 points at a working r2/rizin executable.",
+    )
+
+
+def probe_jadx(settings: Settings) -> Probe:
+    return _probe_versioned_cli(
+        "jadx",
+        getattr(settings, "jadx", None),
+        label="jadx decompiler",
+        version_regex=r"(\d+\.\d+(?:\.\d+)?)",
+        # jadx boots a JVM, so allow for cold start.
+        timeout=30.0,
+        remediation_missing=(
+            "Install jadx and set HEADLESS_RE_JADX (needs a JRE on PATH)."
+        ),
+        remediation_blocked=(
+            "Verify HEADLESS_RE_JADX points at a jadx launcher and a JRE is on PATH."
+        ),
+    )
+
+
+def probe_apktool(settings: Settings) -> Probe:
+    return _probe_versioned_cli(
+        "apktool",
+        getattr(settings, "apktool", None),
+        label="apktool",
+        version_regex=r"(\d+\.\d+(?:\.\d+)?)",
+        timeout=30.0,
+        remediation_missing=(
+            "Install apktool and set HEADLESS_RE_APKTOOL (needs a JRE on PATH)."
+        ),
+        remediation_blocked=(
+            "Verify HEADLESS_RE_APKTOOL points at an apktool launcher and a JRE is on PATH."
+        ),
+    )
+
+
+def probe_wabt(settings: Settings) -> Probe:
+    return _probe_versioned_cli(
+        "wabt",
+        getattr(settings, "wabt", None),
+        label="wabt (wasm2wat)",
+        version_regex=r"(\d+\.\d+(?:\.\d+)?)",
+        remediation_missing=(
+            "Install wabt (provides wasm2wat), put wasm2wat on PATH, or set HEADLESS_RE_WABT."
+        ),
+        remediation_blocked="Verify HEADLESS_RE_WABT points at a working wasm2wat executable.",
+    )
+
+
+def probe_webcrack(settings: Settings) -> Probe:
+    return _probe_versioned_cli(
+        "webcrack",
+        getattr(settings, "webcrack", None),
+        label="webcrack",
+        version_regex=r"(\d+\.\d+(?:\.\d+)?)",
+        remediation_missing=(
+            "Install webcrack (npm i -g webcrack, needs Node 22/24), put it on PATH, "
+            "or set HEADLESS_RE_WEBCRACK."
+        ),
+        remediation_blocked=(
+            "Verify HEADLESS_RE_WEBCRACK points at a working webcrack (Node 22/24 on PATH)."
+        ),
     )
 
 
