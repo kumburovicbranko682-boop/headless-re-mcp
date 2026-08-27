@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 apktool/jadx 的 _run 子进程错误分类钉进测试）
+
+- apktool 与 jadx 都经 `run_bounded` 起 JVM,必须把它的失败形态收敛成结构化错误而非让原始异常逃逸:非法
+  截止→`invalid_params`、超时→`timeout`(带被杀 pid)、起不来的二进制→`backend_error`。jadx 的 `_run` 还额外
+  守可用性、缺失 apk,并且——因为 jadx 在部分类反编译失败时仍会写出可用源码——只在盘上什么都没落时才硬失败。
+  这些路径此前只在真 JVM 下跑过。
+- 新增 `tests/unit/test_jvm_backend_run_taxonomy.py`,用 monkeypatch 驱动 `run_bounded`/`clamp_cli_timeout`:
+  apktool `_run` 钉住非法截止→`invalid_params`、超时→`timeout` 带 killed_pids、启动失败→`backend_error`、
+  正常解码流;jadx `_run` 钉住同三类外加缺执行档→`capability_unavailable`、缺 apk→`not_found`、非零退出但有
+  源码→原样返回(退出码回带)、非零且无源码→`backend_error`(带 exit_code)、干净退出→解码流。`apktool/client.py`
+  的 `_run`(81-91)与 `jadx/client.py` 的 `_run`(191-228)错误分类补齐,纯补测、不改行为。
+
 ### 加固（把 frida 的超时/自省/清理 helper 钉进测试）
 
 - 每个 frida 调用底下都压着一族纯 helper,却没有一个有直接单测:`_bound_timeout` 是截止时间守卫(拒非正、
