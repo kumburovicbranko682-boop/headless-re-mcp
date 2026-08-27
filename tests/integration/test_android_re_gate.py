@@ -10,7 +10,9 @@ the live-device parts, which have their own explicit skips).
 from __future__ import annotations
 
 import hashlib
+import shutil
 import struct
+import subprocess
 import zipfile
 import zlib
 from dataclasses import replace
@@ -543,6 +545,73 @@ def test_valid_apk_apktool_decodes_and_repacks(tmp_path: Path) -> None:
         assert repacked.ok, repacked.error
         assert Path(repacked.data["apk"]).is_file()
         assert repacked.data["signed"] is False
+    finally:
+        service.close_all()
+
+
+def _apksigner_available() -> bool:
+    from headless_re_mcp.backends.apktool import ApktoolClient
+
+    settings = Settings.load()
+    return ApktoolClient(settings.apktool, settings.apksigner).signer_available
+
+
+@pytest.mark.integration
+def test_valid_apk_apksigner_signs_and_verifies_a_repack(tmp_path: Path) -> None:
+    """Live apksigner coverage: sign a repacked APK and have apksigner verify it.
+
+    apk.sign was the last Android Java-toolchain tool with no CI coverage. This
+    closes the modify -> repack -> sign loop: decode the real DEX, rebuild the
+    APK, generate a throwaway RSA keystore inside the session artifact tree with
+    keytool, then sign against it. The backend runs `apksigner verify` right
+    after signing, so a green envelope means the output really carries a valid
+    signature -- we assert it reports signed with our (non-debug) keystore and
+    that the signed APK landed on disk. Needs apktool + apksigner + keytool;
+    skips cleanly otherwise (skip != pass).
+    """
+    if not (_apktool_available() and _apksigner_available()):
+        pytest.skip("apktool/apksigner not configured — sign gate not run (skip != pass)")
+    if shutil.which("keytool") is None:
+        pytest.skip("keytool not available — sign gate not run (skip != pass)")
+    apk = _build_apk_with_dex(tmp_path / "withdex.apk")
+    assert classify_target(apk) is TargetKind.APK
+
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        # apk.sign requires the keystore to live inside the session-owned artifact
+        # tree; the apktool subtree (root/apktool/<id>) is one such owned root.
+        keystore_dir = tmp_path / "artifacts" / "apktool" / session_id
+        keystore_dir.mkdir(parents=True, exist_ok=True)
+        keystore = keystore_dir / "signing.keystore"
+        generated = subprocess.run(
+            [
+                "keytool", "-genkeypair", "-keystore", str(keystore),
+                "-storepass", "testpass", "-keypass", "testpass",
+                "-alias", "testkey", "-keyalg", "RSA", "-keysize", "2048",
+                "-validity", "365", "-dname", "CN=Gate Test,O=Test,C=US",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert generated.returncode == 0, generated.stderr
+
+        assert service.apk_decode(session_id, timeout=240.0, no_resources=True).ok
+        assert service.apk_repack(session_id, timeout=240.0).ok
+
+        signed = service.apk_sign(
+            session_id,
+            keystore=str(keystore),
+            keystore_password="testpass",
+            key_alias="testkey",
+            timeout=240.0,
+        )
+        assert signed.ok, signed.error
+        assert signed.data["signed"] is True
+        assert signed.data["debug_keystore"] is False
+        assert Path(signed.data["apk"]).is_file()
     finally:
         service.close_all()
 

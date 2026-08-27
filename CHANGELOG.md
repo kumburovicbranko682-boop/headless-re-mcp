@@ -120,6 +120,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Sample.smali` 里有 `.class ... Sample;`、`helper()V` 与 jadx 会折掉、baksmali 会保留的
   `const-string "gate-secret-marker"`,再 `apk.repack` 从该树重建出一个(未签名)APK。仅当 apktool 缺失时
   skip。
+- apksigner 签名/校验线补齐,Android Java 工具链三件套(jadx/apktool/apksigner)整条进 CI。`linux-
+  integration` 直接拉钉版 Android build-tools(内含 apksigner+zipalign,不走 SDK manager)上 PATH,
+  keytool 随 JRE 而来。新 Gate 走完 modify→repack→sign 闭环:decode+repack 出 APK、用 keytool 在
+  会话产物树内现造一个 RSA 密钥库、`apk.sign` 用它签名——后端签完自己再跑 `apksigner verify`,信封回
+  绿即代表产物真带合法签名;断言其报告用(非 debug)密钥库签成且 signed.apk 落盘。仅当
+  apktool/apksigner/keytool 缺失时 skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
