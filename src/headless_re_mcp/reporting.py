@@ -49,6 +49,9 @@ def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
     return lines
 
 
+_SUMMARY_FIELD_CAP = 4
+
+
 def _summarize_value(value: object) -> str:
 
     if isinstance(value, dict):
@@ -57,7 +60,24 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        shown = [
+            f"{key}={_cell(item)}"
+            for key, item in list(value.items())[:_SUMMARY_FIELD_CAP]
+        ]
+
+        hidden = len(value) - len(shown)
+
+        if hidden > 0:
+
+            # The cell only shows the first few fields so the table stays
+            # readable, but a finding of ten fields rendered as four reads like
+            # a finding of four. Name the count left out rather than letting the
+            # partial dict pass for the whole. A short dict of many small fields
+            # would otherwise drop them with no ellipsis at all, since the row
+            # never reaches the cell-width cut that would add one.
+            shown.append(f"… (+{hidden} more)")
+
+        return ", ".join(shown)
 
     return _cell(value)
 
