@@ -311,8 +311,19 @@ class ApkClient:
             text = str(name)
             if not text.startswith("lib/"):
                 continue
+            # androguard's get_files() returns zip directory entries -- "lib/",
+            # "lib/arm64-v8a/" -- alongside real payloads. A directory marker is
+            # not a native library: counting it inflates the total, and putting
+            # "lib/arm64-v8a/" in a list an analyst reads as "the .so files this
+            # app ships" is a phantom finding. Standard aapt APKs omit directory
+            # entries, but apktool-rebuilt and otherwise re-zipped packages -- the
+            # kind an RE session handles -- routinely carry them. Skip them, and
+            # derive the ABI set from the files that remain so an ABI with only an
+            # empty directory marker is not reported as shipping native code.
+            if text.endswith("/"):
+                continue
             parts = text.split("/")
-            if len(parts) >= 3:
+            if len(parts) >= 3 and parts[1]:
                 abis.add(parts[1])
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True

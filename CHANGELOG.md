@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`apk.native_libs` 把 zip 目录条目当成原生库，虚增 `count`）
+
+- **`apk.native_libs` 过去把 `lib/` 下每一条以 `lib/` 开头的归档条目都算作原生库**——可
+  androguard 的 `get_files()` 会把 zip 的**目录条目**（`lib/`、`lib/arm64-v8a/`，即以 `/` 结尾的
+  纯目录标记）和真正的 `.so`/原生载荷一起列出来。标准 aapt 产物不存目录条目，但 apktool 重打包、
+  或被第三方改过再压回去的 APK（正是逆向会话常处理的那类）经常带着它们。于是一个只装了三个原生载荷
+  （`libfoo.so`、`gdbserver`、`libbar.so`）的包会被读成六个「库」，列表里还混着 `lib/arm64-v8a/`
+  这种根本不是文件的条目——分析师照着这个列表以为 app 多带了原生代码。现跳过以 `/` 结尾的目录标记，
+  只列真实文件、`count` 随之修正；ABI 集合改从剩下的文件推导（顺带用 `and parts[1]` 排掉 `lib//x.so`
+  这类退化路径给出的空 ABI），所以一个只剩空目录标记、没有任何 `.so` 的 ABI 不会再被谎报成「有原生
+  代码」。真机核对过：含 `lib/`+`lib/arm64-v8a/`+`lib/arm64-v8a/libfoo.so`+`lib/arm64-v8a/gdbserver`
+  +`lib/x86/`+`lib/x86/libbar.so` 的包，修复前 `count=6`、列表含三个目录，修复后 `count=3`、
+  `abis=['arm64-v8a','x86']`。新增单测 `test_apk_native_libs_excludes_zip_directory_entries` 钉住。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
