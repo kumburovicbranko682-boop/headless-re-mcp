@@ -120,3 +120,56 @@ def test_apk_repack_rejects_a_nonzip_output_even_when_apktool_exits_zero(
         client.build(source, out)
     assert caught.value.code == "backend_error"
     assert "empty or invalid" in caught.value.message
+
+
+def test_apk_decode_rejects_an_empty_manifest_even_when_apktool_exits_zero(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """apktool can exit 0 yet leave a zero-byte AndroidManifest.xml.
+
+    Before this the client read is_file() as success, so a caller would edit
+    and rebuild a tree that never decoded. Now the empty manifest is a
+    backend_error at decode time -- the same failure the rebuild path rejects.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("@echo off\n", encoding="utf-8")
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    out_dir = tmp_path / "decoded"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "AndroidManifest.xml").write_bytes(b"")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, None)
+    with pytest.raises(ApktoolError) as caught:
+        client.decode(apk, out_dir)
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("size") == 0
+
+
+def test_apk_decode_accepts_a_nonempty_manifest(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A real decode (non-empty manifest) still succeeds and names its fields."""
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("@echo off\n", encoding="utf-8")
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    out_dir = tmp_path / "decoded"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
+        (out_dir / "smali").mkdir(parents=True, exist_ok=True)
+        (out_dir / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, None)
+    payload = client.decode(apk, out_dir)
+    assert payload["decoded_dir"] == str(out_dir)
+    assert payload["manifest"].endswith("AndroidManifest.xml")
+    assert payload["smali_dirs"] == ["smali"]
+    doc = _tool_docstring("apk.decode")
+    assert "backend_error" in doc

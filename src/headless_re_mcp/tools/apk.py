@@ -170,7 +170,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decode the APK to smali and resources with apktool (editable tree).
 
         Answers with decoded_dir, manifest, smali_dirs, and has_resources.
-        There is no output, path or tree field.
+        There is no output, path or tree field. An empty AndroidManifest.xml
+        (apktool can exit 0 yet leave a truncated file) is reported as
+        backend_error, not as a decoded tree, so a tree that never decoded is
+        not edited and rebuilt.
         """
         return _dump(analysis.apk_decode(session_id, timeout=timeout, no_resources=no_resources))
 
