@@ -453,3 +453,46 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_ghidra_imports_passes_the_imports_mode_and_returns_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """imports drives the postScript in imports mode and returns name/library.
+
+    Guards the plumbing (client -> ExportJson mode arg -> export_imports.json):
+    getExternalFunctions runs only inside Ghidra, but the mode routing and the
+    export read are what a wrong wiring would break.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(
+                    '{"mode": "imports", "items": [{"name": "malloc",'
+                    ' "library": "libc.so"}], "count": 1, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    listed = client.imports(_binary(tmp_path), tmp_path / "project")
+
+    assert listed["items"] == [{"name": "malloc", "library": "libc.so"}]
+    assert listed["has_more"] is False
+    assert listed["export_path"]
+    assert "imports" in calls[0]
+    assert any(arg.endswith("export_imports.json") for arg in calls[0])
+
+
+def test_ghidra_imports_description_names_its_fields() -> None:
+    doc = _tool_docstring("ghidra.imports")
+    assert "name" in doc
+    assert "library" in doc
+    assert "has_more" in doc

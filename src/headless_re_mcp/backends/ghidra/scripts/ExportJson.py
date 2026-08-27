@@ -60,6 +60,24 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+elif mode == "imports":
+    items = []
+    for fn in fm.getExternalFunctions():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        # getExternalLocation()/getLibraryName() name the library a symbol
+        # resolves to; both are wrapped because a malformed external can raise
+        # here, and losing the library is better than losing the whole listing.
+        library = ""
+        try:
+            loc = fn.getExternalLocation()
+            if loc is not None:
+                library = loc.getLibraryName() or ""
+        except Exception:
+            library = ""
+        items.append({"name": fn.getName(), "library": str(library)})
+    payload["items"] = items
 elif mode == "xrefs":
     items = []
     if address_arg:

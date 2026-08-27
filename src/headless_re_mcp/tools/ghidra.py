@@ -61,6 +61,24 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.imports")
+    def ghidra_imports(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """External (imported) functions Ghidra resolved, with their library.
+
+        Runs getExternalFunctions. Answers with items, each carrying name and
+        library (the library the symbol resolves to, empty when Ghidra left it
+        unresolved), plus count and has_more so a page that filled the limit is
+        not read as every import. This is the import table specifically -- the
+        external calls, not the whole symbol list ghidra.symbols returns -- and
+        a second reading beside r2.imports from a different engine. There is no
+        address field. A failed export is an error, not a binary with no imports.
+        """
+        return _dump(analysis.ghidra_imports(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,
