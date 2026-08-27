@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台重载后对话空白）
+
+- 运行中重载监控台会丢掉整段对话。恢复逻辑能从 `history.state` 认出还在跑的 run、重放它的
+  事件、把停着的批准卡片带回来，却始终没把 `selectedThread` 选回去：转录区因此空白，而 run
+  一旦结束，`stream_ended` 又没有线程可供回捞助手回复，对话就在一个号称「会话能扛住重启」的
+  页面上凭空消失。现在恢复时先用 run 行自带的 `thread_id`（`GET /api/agent/runs/{id}` 一直
+  在回传）把它所属线程选回来，再重放事件——转录与批准都回到重载前的样子；线程若已删除则退化
+  为只恢复 run 与批准，不让复原失败。`webui/src/app/useWorkbench.resume.test.ts` 断言重载后
+  线程被选回、转录与停着的批准都还在。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

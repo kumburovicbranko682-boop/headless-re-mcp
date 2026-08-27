@@ -136,6 +136,23 @@ export function useWorkbench() {
           try {
             const history = await api<{ events: RunEvent[] }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}/events/history?after=0`);
             if (cancelled) return;
+            // Reselect the run's own thread before replaying its events. A
+            // reload restored the run and its pending approval but left
+            // selectedThread null, so the transcript showed blank and, once the
+            // run finished, stream_ended had no thread to reload the assistant
+            // reply from -- the conversation vanished on a console that promises
+            // sessions survive a restart. The run row carries its thread id.
+            const runInfo = await api<{ run?: { thread_id?: string } }>(
+              `/api/agent/runs/${encodeURIComponent(resumeRun)}`,
+            ).catch(() => null);
+            if (cancelled) return;
+            const resumeThread = runInfo?.run?.thread_id;
+            if (typeof resumeThread === "string" && resumeThread) {
+              // Best-effort: a since-deleted thread must not sink the restore of
+              // the run and its approval.
+              await selectThread(resumeThread).catch(() => undefined);
+              if (cancelled) return;
+            }
             dispatch({ type: "run", runId: resumeRun });
             history.events.forEach((event) => dispatch({ type: "event", event }));
             void consume(resumeRun, resumeAfter);
