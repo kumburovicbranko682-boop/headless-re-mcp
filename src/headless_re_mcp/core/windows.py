@@ -128,7 +128,7 @@ def resolve_allowed_ui_pids(
             )
         allowed.add(raw)
     overlap = allowed & blocked
-    if overlap:
+    if overlap:  # pragma: no cover - defensive; every member of allowed is screened above
         raise UiPidBoundaryError(
             "permission_denied",
             "allowed UI PIDs overlap blocked analyzer/host PIDs",
