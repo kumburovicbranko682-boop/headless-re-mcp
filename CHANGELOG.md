@@ -234,6 +234,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `apk.repack` 再重建出（未签名）APK；新增 gate 驱动整条往返：decode 断言产出 smali 目录与命名 package
   的文本清单，repack 断言落盘一个未签名 APK。无 apktool 时干净跳过（skip != pass），apktool 在场时
   已验证通过。签名需 apksigner（Android build-tools），仍由既有降级单测覆盖。
+- **doctor 现在只在浏览器真正装好时才判定 Web CDP 线就绪**。playwright 探针原先用 `probe_python_module`，
+  只要包能 import 就报 `detected`;但 `web.open` 还需要浏览器二进制,而能力目录把 `web.cdp` 映射到这个探针。
+  于是一次全新安装(或浏览器缓存被清掉——这很容易发生)就会把一条实际会在 launch 时 `backend_error` 的
+  Web CDP 能力误报为可用。新增 `probe_playwright`:它在解析出的浏览器目录(`PLAYWRIGHT_BROWSERS_PATH`
+  或各平台默认缓存)下,依据 Playwright 自己写的 `INSTALLATION_COMPLETE` 标记判断(同时覆盖 `chromium-*`
+  与 `chromium_headless_shell-*` 两种构建),既不启动也不 import 浏览器。包在且浏览器已装 → detected;
+  包在但无浏览器 → missing 并给出 `python -m playwright install chromium` 的补救提示;包不在 → missing。
+  这样 `web.cdp` 的状态就与 `web.open` 是否真能跑一致了。四条分支均有 CI 可跑的单测覆盖。
 - **`js.unpack_bundle` 一直是坏的：webcrack 拒绝客户端刚建好的输出目录**。`unpack_bundle` 先
   `out_dir.mkdir()` 再跑 `webcrack -o out_dir`，而 webcrack 不给 `-f` 就对已存在的输出目录直接
   报错退出（`output directory already exists`，webcrack 2.16.0 复现）；服务每次都递一个全新的
