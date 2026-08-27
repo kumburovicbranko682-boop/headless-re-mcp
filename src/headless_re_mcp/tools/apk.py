@@ -88,9 +88,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         with exported and exported_count: the components other apps can reach
         (android:exported=true, or the platform's implicit rule when the
         attribute is absent -- an intent-filter for activity/service/receiver,
-        target SDK < 17 for a provider), each as {type, name, permission} with
-        permission null when nothing guards it. An exported, unguarded
-        component is directly invokable by any installed app.
+        target SDK < 17 for a provider), each as {type, name, permission,
+        actions, categories} with permission null when nothing guards it and
+        actions/categories the intent-filter names that reach it (an action
+        like BOOT_COMPLETED or SMS_RECEIVED, or a BROWSABLE category, is the
+        component's invocation surface). An exported, unguarded component is
+        directly invokable by any installed app.
         """
         return _dump(analysis.apk_components(session_id))
 

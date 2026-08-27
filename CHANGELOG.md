@@ -218,6 +218,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`apk.components` 的导出组件不带 intent-filter，看不到具体调用面**。知道某组件被导出后，分析者下一步要问的是"什么 intent
+  能触发它"——`BOOT_COMPLETED`（持久化）、`SMS_RECEIVED`（拦截短信）这类 action，或 `BROWSABLE` 这类 category，正是导出组件的
+  实际调用面。既然已在遍历清单树，就顺带用新增的 `_intent_filter_names` 收集每个导出组件各 `<intent-filter>` 的
+  `<action>`/`<category>` 名称（去重、排序、按组件设上限），并入其条目为 `actions`/`categories`。
 - **`web.network.list` 与 `proxy.flows` 没有 URL 过滤，繁忙抓包只能逐页翻找**。二者原来只分页，而 `apk.*`/`frida.*` 列表工具
   早有 `name_filter`。现给两者都加上 `url_filter`：对 url 做大小写不敏感子串匹配，在分页之前应用，于是 `total` 即匹配数，能在
   抓到成百上千请求的页面上直接定位某个端点/主机/`.json`；`dropped`（环形缓冲淘汰计数）仍基于未过滤的全量，不受过滤影响。

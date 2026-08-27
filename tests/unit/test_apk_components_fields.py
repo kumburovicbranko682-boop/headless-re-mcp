@@ -80,6 +80,7 @@ _MANIFEST = b"""<?xml version="1.0" encoding="utf-8"?>
     <activity android:name=".Main">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
     <activity android:name=".Internal"/>
@@ -124,10 +125,65 @@ def test_apk_components_flags_the_external_attack_surface() -> None:
     exported = payload["exported"]
     assert payload["exported_count"] == 3
     assert exported == [
-        {"type": "activity", "name": ".Main", "permission": None},
-        {"type": "receiver", "name": ".Rcv", "permission": None},
-        {"type": "service", "name": ".Svc", "permission": "com.x.PERM"},
+        {
+            "type": "activity",
+            "name": ".Main",
+            "permission": None,
+            "actions": ["android.intent.action.MAIN"],
+            "categories": ["android.intent.category.LAUNCHER"],
+        },
+        {
+            "type": "receiver",
+            "name": ".Rcv",
+            "permission": None,
+            "actions": ["b"],
+            "categories": [],
+        },
+        {
+            "type": "service",
+            "name": ".Svc",
+            "permission": "com.x.PERM",
+            "actions": [],
+            "categories": [],
+        },
     ]
+
+
+_PERSIST_MANIFEST = b"""<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.x">
+  <application>
+    <receiver android:name=".Boot" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>
+"""
+
+
+class _PersistApk(_FakeApk):
+    def get_android_manifest_xml(self) -> etree._Element:
+        return etree.fromstring(_PERSIST_MANIFEST)
+
+    def get_target_sdk_version(self) -> int:
+        return 30
+
+
+def test_apk_components_lists_deduped_sorted_receiver_actions() -> None:
+    """An exported BOOT_COMPLETED receiver is the persistence signal; dupes fold."""
+    client = ApkClient()
+    client._apk = lambda _path: _PersistApk()  # type: ignore[method-assign]
+    (component,) = client.components(Path("dummy.apk"))["exported"]
+    assert component["type"] == "receiver"
+    assert component["actions"] == [
+        "android.intent.action.BOOT_COMPLETED",
+        "android.intent.action.MY_PACKAGE_REPLACED",
+    ]
+    assert component["categories"] == []
 
 
 def test_apk_components_exports_a_provider_only_on_a_pre_api_17_target() -> None:
@@ -136,4 +192,12 @@ def test_apk_components_exports_a_provider_only_on_a_pre_api_17_target() -> None
     client._apk = lambda _path: _ManifestApk(14)  # type: ignore[method-assign]
     payload = client.components(Path("dummy.apk"))
     provider = [c for c in payload["exported"] if c["type"] == "provider"]
-    assert provider == [{"type": "provider", "name": ".Prov", "permission": None}]
+    assert provider == [
+        {
+            "type": "provider",
+            "name": ".Prov",
+            "permission": None,
+            "actions": [],
+            "categories": [],
+        }
+    ]

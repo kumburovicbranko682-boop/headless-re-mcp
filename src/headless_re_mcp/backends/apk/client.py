@@ -38,6 +38,9 @@ _MAX_PERMISSIONS = 256
 # export state defines the app's cross-app attack surface.
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 _COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
+# Per exported component, cap how many distinct intent-filter action/category
+# names are listed so one filter-heavy component cannot bloat the answer.
+_MAX_INTENT_NAMES = 64
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
 # Page ceilings mirror the MCP input-schema Field(le=...) bounds. They are
@@ -217,6 +220,39 @@ def _cert_public_key(cert: Any) -> tuple[str, int | None]:
     except Exception:  # noqa: BLE001
         size = None
     return algo, size
+
+
+def _intent_filter_names(element: Any) -> tuple[list[str], list[str]]:
+    """The distinct action and category names across a component's intent-filters.
+
+    Walks the ``<intent-filter>`` children of a component element and collects
+    each ``<action>``/``<category>`` ``android:name``. Duplicates are dropped and
+    each list is bounded so a filter-heavy component cannot bloat the answer;
+    both lists are sorted for a stable result. An odd node shape is skipped
+    rather than raising, so it never breaks the components answer.
+    """
+    actions: list[str] = []
+    categories: list[str] = []
+    for child in element:
+        if getattr(child, "tag", None) != "intent-filter":
+            continue
+        for node in child:
+            tag = getattr(node, "tag", None)
+            if tag == "action":
+                target = actions
+            elif tag == "category":
+                target = categories
+            else:
+                continue
+            name = node.get(_ANDROID_NS + "name")
+            if name is None:
+                continue
+            value = str(name)
+            if value not in target and len(target) < _MAX_INTENT_NAMES:
+                target.append(value)
+    actions.sort()
+    categories.sort()
+    return actions, categories
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -665,11 +701,19 @@ class ApkClient:
                 break
             name = element.get(_ANDROID_NS + "name")
             permission = element.get(_ANDROID_NS + "permission")
+            actions, categories = _intent_filter_names(element)
             out.append(
                 {
                     "type": tag,
                     "name": str(name) if name is not None else "",
                     "permission": None if permission is None else str(permission),
+                    # The intent-filter actions/categories that reach this
+                    # component are its concrete invocation surface: an action
+                    # like BOOT_COMPLETED (persistence) or SMS_RECEIVED
+                    # (interception), or a BROWSABLE category (deep-link entry),
+                    # is what an analyst triages an exported component for.
+                    "actions": actions,
+                    "categories": categories,
                 }
             )
         out.sort(key=lambda c: (str(c["type"]), str(c["name"])))
