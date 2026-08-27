@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import headless_re_mcp.dotnet.metadata_enum as metadata_enum
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.dotnet.metadata_enum import (
@@ -16,6 +17,75 @@ from headless_re_mcp.dotnet.metadata_enum import (
     _simple_index_size,
     enumerate_metadata,
 )
+
+# TypeDef (table 0x02) row size with two-byte heap/index sizes and only TypeDef
+# declared: RID(4) + Name(2) + Namespace(2) + Extends coded index(2) +
+# FieldList(2) + MethodList(2).
+_TYPEDEF_ROW_SIZE = 14
+
+
+def _typedef_ctx(*, declared_rows: int, present_rows: int) -> metadata_enum._MetaCtx:
+    """A metadata context whose #~ TypeDef header over- or exactly declares rows.
+
+    tables is sized to physically hold present_rows while row_counts declares
+    declared_rows, which is the truncated/hand-crafted #~ stream the row cap
+    guards against.
+    """
+    return metadata_enum._MetaCtx(
+        path=Path("crafted.dll"),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=bytes(_TYPEDEF_ROW_SIZE * present_rows),
+        strings=b"",
+        heap_sizes=0,
+        string_index_size=2,
+        blob_index_size=2,
+        guid_index_size=2,
+        row_counts={0x02: declared_rows},
+        table_data_offset=0,
+    )
+
+
+def _patch_ctx(monkeypatch: pytest.MonkeyPatch, ctx: metadata_enum._MetaCtx) -> None:
+    monkeypatch.setattr(metadata_enum, "inspect_dotnet", lambda *a, **k: None)
+    monkeypatch.setattr(metadata_enum, "_load_metadata_context", lambda _p: ctx)
+
+
+def test_enumerate_flags_a_table_short_of_its_declared_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A #~ header can declare more rows than the stream physically holds.
+
+    The row cap silently trims the walk to what fits, so total came back as the
+    trimmed count with nothing to say the table declared more -- a caller reading
+    total as the whole type list was reading a slice of a corrupt/crafted table.
+    """
+    _patch_ctx(monkeypatch, _typedef_ctx(declared_rows=5, present_rows=2))
+
+    page = enumerate_metadata(Path("crafted.dll"), "types", offset=0, limit=10)
+
+    assert page.total == 2
+    assert page.rows_truncated is True
+    assert page.declared_total == 5
+    body = page.to_dict()
+    assert body["rows_truncated"] is True
+    assert body["declared_total"] == 5
+
+
+def test_enumerate_leaves_an_honest_table_unflagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A table whose stream holds exactly what it declares carries no verdict."""
+    _patch_ctx(monkeypatch, _typedef_ctx(declared_rows=3, present_rows=3))
+
+    page = enumerate_metadata(Path("crafted.dll"), "types", offset=0, limit=10)
+
+    assert page.total == 3
+    assert page.rows_truncated is False
+    assert page.declared_total is None
+    assert "declared_total" not in page.to_dict()
 
 
 def _write_minimal_clr(path: Path) -> None:

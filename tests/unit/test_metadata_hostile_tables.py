@@ -93,6 +93,12 @@ def test_a_table_cannot_declare_more_rows_than_its_stream_holds(
     assert peak < 64 * 1024 * 1024, f"{declared:#x} rows took {peak / 1024 / 1024:.0f} MB"
     assert page.total < 100_000, f"reported {page.total} rows from a 60 KB file"
     assert len(page.items) <= 20
+    # The cap trims to what the stream holds; total is now far short of the
+    # declared count, so the reply must say so rather than pass the slice off as
+    # the whole table.
+    assert page.rows_truncated is True
+    assert page.declared_total == declared
+    assert page.total < declared
 
 
 def test_an_honest_assembly_enumerates_exactly_as_before() -> None:
@@ -102,3 +108,7 @@ def test_an_honest_assembly_enumerates_exactly_as_before() -> None:
     assert page.total == 77
     assert len(page.items) == 20
     assert page.truncated is True
+    # An honest table declares exactly what its stream holds, so the row-cap
+    # verdict must stay off even though paging truncated the window.
+    assert page.rows_truncated is False
+    assert page.declared_total is None
