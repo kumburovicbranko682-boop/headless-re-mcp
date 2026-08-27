@@ -402,6 +402,63 @@ def test_tls_and_import_tables_are_bounded_to_raw_section(tmp_path: Path) -> Non
     assert report.pe.overlay_size == 64
 
 
+def test_unterminated_import_thunk_list_is_flagged_truncated(tmp_path: Path) -> None:
+    """A lookup table with no null thunk inside its section reads as truncated.
+
+    A well-formed import lookup table ends with a null thunk; when it instead
+    runs to the section boundary the reader stops there and ``function_count``
+    undercounts. The descriptor loop and the TLS callback loop already flag
+    that run-off, but the thunk loop did not, so the summary claimed a complete
+    count it could not stand behind. Fill one library's lookup table to the
+    exact end of ``.idata`` with non-null ordinals and no terminator, keep the
+    descriptor list itself null-terminated so the only run-off is the thunk
+    list, and require the flag.
+    """
+    pe = _SyntheticPe("x64")
+    pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    idata = pe.add_section(".idata", size=0x400)
+    pointer_size = pe.pointer_size
+    ordinal_flag = 1 << 63
+
+    name_offset = 0x40
+    thunk_offset = 0x380
+    pe.write(idata, name_offset, b"L\0")
+    entry_count = (len(idata.data) - thunk_offset) // pointer_size
+    for index in range(entry_count):
+        pe.write(
+            idata,
+            thunk_offset + index * pointer_size,
+            (ordinal_flag | (index + 1)).to_bytes(pointer_size, "little"),
+        )
+    pe.write(
+        idata,
+        0,
+        struct.pack(
+            "<IIIII",
+            pe.rva(idata, thunk_offset),  # OriginalFirstThunk (lookup table)
+            0,
+            0,
+            pe.rva(idata, name_offset),  # Name
+            pe.rva(idata, thunk_offset),  # FirstThunk
+        ),
+    )
+    # Two descriptors: the real one plus a null terminator, so the descriptor
+    # loop ends by finding the null rather than by running off its span.
+    pe.directories[1] = (pe.rva(idata, 0), 2 * 20)
+
+    path = tmp_path / "unterminated-thunks.exe"
+    path.write_bytes(pe.build())
+
+    report = scan_pe(path)
+
+    assert report.pe.imports.truncated is True
+    assert report.pe.imports.library_count == 1
+    assert report.pe.imports.function_count == entry_count
+    assert report.pe.imports.ordinal_count == entry_count
+
+
 def test_overlay_without_certificate_starts_after_last_raw_section(tmp_path: Path) -> None:
     path = tmp_path / "overlay.exe"
     path.write_bytes(_sample("x86", certificate=b"", overlay=b"tail"))

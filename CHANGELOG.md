@@ -278,6 +278,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   只有大到填满一个分块的文件才多读，且绝不超过实际存在的字节。实测同一个 4 KiB 文件峰值降到
   约 1 MiB。回归测试断言小文件在默认 256 MiB 上限下的分配与文件大小成比例，而非与上限成比例。
 
+### 修复（导入表 thunk 数组越界截断不上报 `truncated`）
+
+- `scan_pe` 的 `_parse_imports` 逐库读取导入查找表（thunk/ILT）时，正常表以一个空 thunk 收尾；
+  当某库的查找表没有空项、一路读到所在 section 的原始数据边界才停下时，`function_count` 只数到
+  边界为止、少报了真实函数数，但 `ImportSummary.truncated` 仍是 `False`——于是摘要把一个被截断的
+  计数当成完整结果交出去。同一函数里的**描述符循环**和 `_parse_tls` 的**回调循环**都用
+  `while … else: truncated = True` 明确标记了这种「读到 section 边界仍未见终止项」的越界；唯独
+  thunk 内层循环漏了这个 `else`。现补上：查找表在 section 边界前没找到空 thunk 即置
+  `truncated=True`，与描述符/TLS 两处的越界诚实一致。正常（空 thunk 终止）与到上限截断的路径不受影响，
+  因为二者都是 `break` 退出、不会触发 `else`。新增回归：构造一份 x64 PE，让某库的查找表以非空序数项
+  正好铺满 `.idata` 到 section 末尾且不留终止项（描述符列表本身仍以空描述符收尾，隔离出唯一的越界点），
+  断言 `truncated=True` 且 `function_count` 等于铺进去的项数；去掉修复后该用例会失败（`truncated=False`）。
+
 ### 修复（内存版仓库时间线无界增长）
 
 - `InMemoryAnalysisRepository`（与 SQLite 端口同契约、供自定义组合使用的生产模块）的
