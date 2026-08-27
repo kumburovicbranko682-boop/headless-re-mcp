@@ -50,6 +50,16 @@ _MAX_HEADER_VALUE_BYTES = 4 * 1024
 # A context's cookie jar: bounded on count (an ad-heavy page can set dozens per
 # domain) and, like headers, on each value (session JWTs run to kilobytes).
 _MAX_COOKIES = 500
+# Web Storage (localStorage/sessionStorage) per store: an origin can hold ~5-10 MB,
+# so cap the number of keys returned and each value's length. The in-page slice
+# below keeps a multi-megabyte value from ever crossing the CDP bridge; the byte
+# bound here is the one that decides what the reply carries.
+_MAX_STORAGE_ITEMS = 500
+_MAX_STORAGE_VALUE_BYTES = 4 * 1024
+# Chars, not bytes: a coarse in-page ceiling so the driver never ships an entire
+# multi-megabyte value across the bridge only for Python to clip it. Set well
+# above the byte cap so the byte cap stays the effective one for normal values.
+_MAX_STORAGE_VALUE_CHARS = 16 * 1024
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -74,6 +84,44 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bound_storage_area(area: object) -> JsonObject:
+    """Bound one Web Storage area (the JS dump of localStorage/sessionStorage).
+
+    ``area`` is the ``{entries: [[k, v], ...], total, error?}`` shape produced
+    in-page. Keys and values are re-bounded here (the in-page slice is only a
+    coarse transfer guard), and ``total`` vs the returned count drives has_more
+    so a store cut at the item cap is never read as the whole store.
+    """
+    if not isinstance(area, dict):
+        return {"items": [], "count": 0, "total": 0, "has_more": False}
+    raw_entries = area.get("entries")
+    entries = raw_entries if isinstance(raw_entries, list) else []
+    items: list[JsonObject] = []
+    for pair in entries:
+        if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+            continue
+        key, key_cut = _bounded_metadata(pair[0], _MAX_METADATA_BYTES)
+        value, value_cut = _bounded_metadata(pair[1], _MAX_STORAGE_VALUE_BYTES)
+        item: JsonObject = {"key": key, "value": value}
+        if key_cut or value_cut:
+            item["metadata_truncated"] = True
+        items.append(item)
+    total = area.get("total")
+    total_int = total if isinstance(total, int) and total >= 0 else len(items)
+    out: JsonObject = {
+        "items": items,
+        "count": len(items),
+        "total": total_int,
+        "has_more": total_int > len(items),
+    }
+    error = area.get("error")
+    if isinstance(error, str) and error:
+        # The origin denied storage access (opaque origin, storage disabled):
+        # say so rather than reporting an empty store as if it were empty.
+        out["error"] = _bounded_metadata(error, _MAX_METADATA_BYTES)[0]
+    return out
 
 
 def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
@@ -900,6 +948,67 @@ class WebBackend:
                     entry["metadata_truncated"] = True
                 items.append(entry)
             return {"cookies": items, "count": len(items), "has_more": has_more}
+
+        return self._runner(handle).call(work)
+
+    def storage(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        # Read both Web Storage areas in-page. Each area is fetched behind a
+        # getter so a SecurityError on `window.localStorage` (opaque origins,
+        # storage disabled) degrades to an empty area with a reason instead of
+        # throwing the whole call. Values are sliced in-page so a multi-megabyte
+        # entry never crosses the bridge; count and value bytes are re-bounded
+        # in Python below.
+        script = """
+        (cfg) => {
+          const fail = (e) => ({ entries: [], total: 0, error: String(e) });
+          const dump = (getStore) => {
+            let store;
+            try { store = getStore(); } catch (e) { return fail(e); }
+            if (!store) { return { entries: [], total: 0 }; }
+            let total = 0;
+            try { total = store.length; } catch (e) { return fail(e); }
+            const out = [];
+            const n = Math.min(total, cfg.maxItems);
+            for (let i = 0; i < n; i++) {
+              let key, val;
+              try { key = store.key(i); val = store.getItem(key); } catch (e) { continue; }
+              if (key == null) { continue; }
+              if (val == null) { val = ""; }
+              out.push([String(key), String(val).slice(0, cfg.maxValueChars)]);
+            }
+            return { entries: out, total: total };
+          };
+          let origin = "";
+          try { origin = window.location.origin; } catch (e) { origin = ""; }
+          return {
+            origin: origin,
+            local: dump(() => window.localStorage),
+            session: dump(() => window.sessionStorage),
+          };
+        }
+        """
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    script,
+                    {
+                        "maxItems": _MAX_STORAGE_ITEMS,
+                        "maxValueChars": _MAX_STORAGE_VALUE_CHARS,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"storage read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raw = {}
+            result: JsonObject = {
+                "origin": _bounded_metadata(raw.get("origin"), _MAX_URL_BYTES)[0],
+                "local": _bound_storage_area(raw.get("local")),
+                "session": _bound_storage_area(raw.get("session")),
+            }
+            return result
 
         return self._runner(handle).call(work)
 

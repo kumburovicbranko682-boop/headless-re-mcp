@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **268（150 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **269（151 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -336,6 +336,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   编译器现编一个 `-no-pie` ELF，断言 `r2.sections` 取回可执行的 `.text` 段、其 `address.va` 为正、ELF 不伪造 PE
   的 `rva`、`perm` 标记为可执行（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `iSj` 条目到 Address 的映射、列表截断标注、
   以及工具描述如实点名 `iSj`/`perm`/`vsize`/`items_truncated`。该工具计入读效果，工具面因此 267→268。
+- **Web 线只读得到 Cookie，读不到 Web Storage——现代 SPA 真正存令牌/状态的地方**。刚加的 `web.cookies` 补上了
+  Cookie 罐，但 localStorage/sessionStorage（JWT、refresh token、feature flag、应用状态常驻于此，且 `document.cookie`
+  完全看不到）此前没有任何工具能取。新增只读的 `web.storage`：在页面内一次读出两个存储区，回 `origin` 与 `local`、
+  `session` 两块，每块带 `items`（`key`/`value`）、`count`、`total`、`has_more`——某区被每区 500 上限截断时不会被当成
+  整区读完。取值在页面内先按字符粗切（避免把几 MB 的值整段拉过 CDP 桥），再在 Python 里按字节封顶，`key`/`value` 触顶
+  标 `metadata_truncated`。每个存储区各自走 getter 读取：`window.localStorage` 抛 SecurityError（不透明源、禁用存储）时
+  该区退化为带 `error` 的空区、而非把「取不到」伪装成「空」，也不会连累另一区或整次调用。活体门用本地站点在页面里写入
+  一枚 localStorage 令牌 + 一枚 sessionStorage 项，断言 `web.storage` 取回其 `key`/`value`、`origin` 指回被测源、两区
+  `count` 正确（缺浏览器时 skip≠pass）；单测直接驱动 `page.evaluate`，覆盖两区键值映射、超长值有界、大区按上限截断置
+  `has_more`、以及被拒存储区透出 `error`。该工具计入读效果，工具面因此 268→269。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

@@ -146,6 +146,22 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_cookies(session_id))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the page's Web Storage (localStorage and sessionStorage).
+
+        The cookie jar is only half the client-side state; SPAs keep JWTs,
+        refresh tokens, feature flags and app state in Web Storage, which
+        web.cookies never sees. Answers with origin and two areas, local and
+        session, each carrying items (key, value), count, total and has_more so
+        a store cut at the per-area cap (500) is not read as the whole store. A
+        key or value cut to its byte cap is marked metadata_truncated. An area
+        the origin refused (opaque origin, storage disabled) comes back empty
+        with an error string rather than a silent empty store. Values are read
+        in full up to the cap -- this is the token you are usually after.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

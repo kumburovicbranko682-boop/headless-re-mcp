@@ -801,6 +801,85 @@ def test_web_cdp_reads_the_cookie_jar() -> None:
             service.close_all()
 
 
+_STORAGE_PAGE = (
+    b"<!doctype html><html><head><title>storage-gate</title><script>"
+    b"try{"
+    b"localStorage.setItem('access_token','eyJhbGciOiJIUzI1NiJ9.payload');"
+    b"localStorage.setItem('theme','dark');"
+    b"sessionStorage.setItem('csrf','csrf-9182');"
+    b"}catch(e){}"
+    b"</script></head><body>storage</body></html>"
+)
+
+
+@contextmanager
+def _storage_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_STORAGE_PAGE)))
+            self.end_headers()
+            self.wfile.write(_STORAGE_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_cdp_reads_web_storage() -> None:
+    """Cookies were reachable but Web Storage was not -- where SPAs keep tokens.
+
+    localStorage/sessionStorage hold JWTs, refresh tokens and app state that
+    never appear in the cookie jar or the DOM. Drive a page that writes both
+    stores and assert web.storage reads them back keyed, valued, and split into
+    the two areas, with the origin surfaced.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web storage Gate not run (skip != pass)")
+    with _storage_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _has_token() -> dict[str, Any] | None:
+                res = service.web_storage(session_id)
+                assert res.ok, res.error
+                for item in res.data["local"]["items"]:
+                    if item.get("key") == "access_token":
+                        return res.data
+                return None
+
+            data = _poll(_has_token, timeout=15.0)
+            assert data is not None, "the localStorage token was never read back"
+            local = {item["key"]: item["value"] for item in data["local"]["items"]}
+            assert local["access_token"] == "eyJhbGciOiJIUzI1NiJ9.payload"
+            assert local["theme"] == "dark"
+            session = {item["key"]: item["value"] for item in data["session"]["items"]}
+            assert session["csrf"] == "csrf-9182", "sessionStorage was lost"
+            assert str(data["origin"]).startswith("http://127.0.0.1")
+        finally:
+            service.close_all()
+
+
 _BIG_DOM_MARKER = b"gate-big-dom-marker"
 # A body well past the 200 KB inline cap so the snapshot has to spill.
 _BIG_DOM_PAGE = (

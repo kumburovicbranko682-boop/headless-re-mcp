@@ -12,6 +12,8 @@ from headless_re_mcp.backends.web.client import (
     _MAX_COOKIES,
     _MAX_HEADER_VALUE_BYTES,
     _MAX_METADATA_BYTES,
+    _MAX_STORAGE_ITEMS,
+    _MAX_STORAGE_VALUE_BYTES,
     _MAX_URL_BYTES,
     WebBackend,
 )
@@ -560,6 +562,124 @@ def test_web_cookies_caps_a_huge_jar(monkeypatch: Any) -> None:
     payload = backend.cookies("s")
     assert payload["count"] == _MAX_COOKIES
     assert payload["has_more"] is True
+
+
+class _StoragePage:
+    """A stand-in page.evaluate that mimics the in-page storage dump.
+
+    It honours the maxItems/maxValueChars the backend passes (so the item cap
+    and the coarse in-page value slice are exercised) and can simulate an area
+    the origin refused by returning an error for localStorage.
+    """
+
+    def __init__(
+        self,
+        local: list[tuple[str, str]],
+        session: list[tuple[str, str]],
+        *,
+        origin: str = "https://app.example",
+        local_error: str | None = None,
+    ) -> None:
+        self._local = local
+        self._session = session
+        self._origin = origin
+        self._local_error = local_error
+
+    def evaluate(self, script: str, arg: dict[str, Any]) -> dict[str, Any]:
+        del script
+        max_items = int(arg["maxItems"])
+        max_chars = int(arg["maxValueChars"])
+
+        def dump(pairs: list[tuple[str, str]], err: str | None) -> dict[str, Any]:
+            if err is not None:
+                return {"entries": [], "total": 0, "error": err}
+            entries = [[str(k), str(v)[:max_chars]] for k, v in pairs[:max_items]]
+            return {"entries": entries, "total": len(pairs)}
+
+        return {
+            "origin": self._origin,
+            "local": dump(self._local, self._local_error),
+            "session": dump(self._session, None),
+        }
+
+
+class _StorageHandle:
+    def __init__(self, page: _StoragePage) -> None:
+        self.page = page
+        self.runner = _CookieRunner()
+
+
+def test_web_storage_reads_both_areas_with_bounds(monkeypatch: Any) -> None:
+    """web.cookies read the jar but not Web Storage -- where SPAs stash tokens.
+
+    Drive page.evaluate and assert both areas come back keyed and valued, the
+    origin is surfaced, and an oversized value (past the byte cap but under the
+    in-page char slice) is bounded and flagged rather than returned raw.
+    """
+    oversized = "j" * (_MAX_STORAGE_VALUE_BYTES + 500)
+    page = _StoragePage(
+        local=[("access_token", "eyJhbGciOi.J"), ("blob", oversized)],
+        session=[("csrf", "tok-9")],
+    )
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _StorageHandle(page))
+    payload = backend.storage("s")
+
+    assert payload["origin"] == "https://app.example"
+    local = payload["local"]
+    assert local["count"] == 2
+    assert local["total"] == 2
+    assert local["has_more"] is False
+    token = local["items"][0]
+    assert token["key"] == "access_token"
+    assert token["value"] == "eyJhbGciOi.J"
+    assert "metadata_truncated" not in token
+    blob = local["items"][1]
+    assert len(str(blob["value"]).encode("utf-8")) <= _MAX_STORAGE_VALUE_BYTES
+    assert blob["metadata_truncated"] is True
+
+    session = payload["session"]
+    assert session["count"] == 1
+    assert session["items"][0] == {"key": "csrf", "value": "tok-9"}
+
+    doc = _tool_docstring("web.storage")
+    assert "localStorage" in doc
+    assert "sessionStorage" in doc
+    assert "metadata_truncated" in doc
+    assert "has_more" in doc
+
+
+def test_web_storage_caps_a_huge_area(monkeypatch: Any) -> None:
+    """An origin stuffing thousands of keys must not return an unbounded list."""
+    local = [(f"k{index}", "v") for index in range(_MAX_STORAGE_ITEMS + 25)]
+    page = _StoragePage(local=local, session=[])
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _StorageHandle(page))
+    payload = backend.storage("s")
+    assert payload["local"]["count"] == _MAX_STORAGE_ITEMS
+    assert payload["local"]["total"] == _MAX_STORAGE_ITEMS + 25
+    assert payload["local"]["has_more"] is True
+
+
+def test_web_storage_reports_a_denied_area(monkeypatch: Any) -> None:
+    """A SecurityError on one area degrades to an error, not a silent empty.
+
+    An opaque origin or disabled storage makes window.localStorage throw. That
+    area must come back empty with a reason -- and must not take down the other
+    area or the whole call.
+    """
+    page = _StoragePage(
+        local=[],
+        session=[("only", "here")],
+        local_error="SecurityError: storage is not available",
+    )
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _StorageHandle(page))
+    payload = backend.storage("s")
+    assert payload["local"]["items"] == []
+    assert payload["local"]["count"] == 0
+    assert "SecurityError" in payload["local"]["error"]
+    assert payload["session"]["count"] == 1
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
