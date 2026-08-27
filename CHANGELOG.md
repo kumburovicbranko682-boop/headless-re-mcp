@@ -239,6 +239,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
+### 修复（frida.spawn 先校验请求再连设备）
+
+- `frida.spawn` 过去先 `_resolve_device` 再校验包名与超时。`_resolve_device` 走
+  `get_usb_device` / `add_remote_device`,会阻塞到各自的超时去接触硬件——于是一个拼错的
+  包名(或非正数超时)也要先等完整段设备发现,最后才被拒。包名/超时是否合法与命名了哪台
+  设备无关,现改为先校验请求、后解析设备:非法请求在触碰硬件前即返回 `invalid_params`,
+  与 `frida.java.classes/methods`、`frida.hook.template` 先过授权门的方向一致。回归测试
+  钉住非法包名与 `timeout=0` 都在 `_resolve_device` 之前被拒(解析函数一次都不被调用)。
 
 ### 修复（监控台回环护栏）
 

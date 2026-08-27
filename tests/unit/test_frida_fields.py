@@ -318,6 +318,38 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     assert "There is no process_id" in doc
 
 
+def test_frida_spawn_validates_the_request_before_resolving_a_device() -> None:
+    """A bad request must not cost a device-discovery wait.
+
+    _resolve_device goes through frida.get_usb_device / add_remote_device,
+    which block up to their own timeout contacting hardware. A malformed
+    package id or a non-positive timeout is a bad request regardless of which
+    device was named, so it is rejected before the device is resolved -- a typo
+    should not spend the whole discovery wait only to fail.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    resolved: list[str | None] = []
+
+    def _resolve(device_id: str | None) -> Any:
+        resolved.append(device_id)
+        raise AssertionError("device must not be resolved for a bad request")
+
+    client._resolve_device = _resolve  # type: ignore[method-assign]
+
+    for package in ("not a package", "", r"C:\Windows\notepad.exe"):
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", package)
+        assert caught.value.code == "invalid_params"
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=0)
+    assert caught.value.code == "invalid_params"
+
+    assert resolved == []
+
+
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     """device.spawn / resume with no deadline parked a worker forever.
 
