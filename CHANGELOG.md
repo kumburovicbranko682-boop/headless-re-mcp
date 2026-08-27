@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `/events/history` 对账）。顺带把这段循环抽成模块级 `_run_event_stream`（sleep 可注入），新增
   确定性回归：脚本化 store 先让 run 读到 COMPLETED、事件晚两轮才出现，钉住这条终态事件必须被送达。
 
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
