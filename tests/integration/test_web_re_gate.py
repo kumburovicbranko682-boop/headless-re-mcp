@@ -83,17 +83,82 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         service.close_all()
 
 
+def _wasm_module_with_a_function_and_exports() -> bytes:
+    """A hand-assembled module that is more than magic + version.
+
+    The gate used to hand wasm2wat the four-byte empty module, which only proves
+    the tool launches. A module with a typed function, a memory, a global and
+    three named exports makes wasm2wat render real bytecode (i32.add) and
+    wasm-objdump list real sections, so the WASM path is exercised end to end
+    rather than merely started. Every section body here is well under 128 bytes,
+    so each length is a single-byte LEB128, which is why bytes([len]) is exact.
+    """
+
+    def section(section_id: int, body: bytes) -> bytes:
+        return bytes([section_id, len(body)]) + body
+
+    magic_and_version = b"\x00asm\x01\x00\x00\x00"
+    type_section = section(1, b"\x01\x60\x02\x7f\x7f\x01\x7f")  # one (i32, i32) -> i32
+    function_section = section(3, b"\x01\x00")  # func 0 uses type 0
+    memory_section = section(5, b"\x01\x00\x01")  # one memory, min 1 page
+    global_section = section(6, b"\x01\x7f\x00\x41\x2a\x0b")  # i32 global = 42
+    export_section = section(
+        7,
+        b"\x03"  # three exports
+        b"\x03add\x00\x00"  # func 0 as "add"
+        b"\x03mem\x02\x00"  # memory 0 as "mem"
+        b"\x06answer\x03\x00",  # global 0 as "answer"
+    )
+    body = b"\x00\x20\x00\x20\x01\x6a\x0b"  # no locals; local.get 0/1; i32.add; end
+    code_section = section(10, b"\x01" + bytes([len(body)]) + body)
+    return (
+        magic_and_version
+        + type_section
+        + function_section
+        + memory_section
+        + global_section
+        + export_section
+        + code_section
+    )
+
+
 @pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    module = tmp_path / "module.wasm"
+    module.write_bytes(_wasm_module_with_a_function_and_exports())
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        # Not just "(module)": the function body and a named export must render,
+        # proving wasm2wat decoded the code and export sections rather than
+        # merely emitting a shell for an empty module.
+        assert "i32.add" in wat
+        assert '(export "add"' in wat
+        assert result.data["bytes"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    # wasm-objdump had no live gate at all; the tool was installed but never
+    # exercised, so a break in the info path would only surface in production.
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "module.wasm"
+    module.write_bytes(_wasm_module_with_a_function_and_exports())
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        # wasm-objdump -h -x lists the sections and resolves the export names.
+        for section_name in ("Type", "Function", "Export", "Code"):
+            assert section_name in objdump, section_name
+        assert '"add"' in objdump
     finally:
         service.close_all()
