@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 classify_target 的目标路由矩阵钉进测试）
+
+- `classify_target` 是多线分析器的前门:它决定一个进来的目标交给 PE / APK / Web 哪条线,而且**先信后缀
+  再看内容**,所以一个判错的名字会在任何字节被读之前就把文件送错线。既有测试只钉了 `.apk`、一个带
+  manifest 的 `.bin` zip、一个纯 zip、两个 URL、`.js` 和一个 `\x00asm` blob,矩阵其余大半没覆盖。
+- 新增 `tests/unit/test_target_classification.py`,补齐:完整的 APK/Web 后缀集(此前只有 `.apk`/`.js`)
+  且大小写折叠(`.APK` 仍走 APK);无已知后缀时 `MZ` 魔数兜底为 PE(保留最贴切的"不是 PE"报错)、非
+  魔数字节默认 PE、路径读不开(缺失/不可读)吞成 PE 不抛;文档化的**后缀优先**契约——一个装着 PE 字节
+  却叫 `.js` 的文件仍判 Web、一个根本不是 zip 却叫 `.apk` 的文件仍判 APK(内容压根不嗅,错也交给对应
+  线自己 fail-closed);以及 `is_http_url` 的 scheme 闸门:任意大小写的 http(s) 为 Web,`file://` /
+  `ftp://` / `chrome://` / `javascript:` / `data:` / 空串一律不是(浏览器拒开 `file://` 之类的底层原语)。
+  `core/session.py` 中 366-398(`is_http_url`+`classify_target`)补齐,纯补测、不改行为。
+
 ### 加固（把 adb 三个纯校验/解析 helper 的契约钉进测试）
 
 - adb 后端的设备读出(logcat/packages/force_stop)已由 `test_adb_device_readouts` 用脚本化假设备钉住,
