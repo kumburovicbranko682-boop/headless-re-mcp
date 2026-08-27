@@ -376,20 +376,29 @@ def _elf64_relro(*, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0
     return ehdr + program + dyn
 
 
-def _elf64_dynamic_with_strtab(strtab: bytes) -> bytes:
+def _elf64_dynamic_with_strtab(
+    strtab: bytes, *, rpath: int | None = None, runpath: int | None = None
+) -> bytes:
     """A dynamic ELF whose DT_STRTAB points at ``strtab``.
 
     A PT_LOAD with vaddr == offset == 0 makes DT_STRTAB's virtual address map
     straight to its file offset, the same trick the DT_NEEDED builder uses, so
     the reader resolves the string table exactly as it does on a real image.
+    ``rpath``/``runpath`` add a DT_RPATH/DT_RUNPATH tag whose value is the given
+    string-table offset.
     """
+    entries: list[tuple[int, int]] = []
+    if rpath is not None:
+        entries.append((15, rpath))  # DT_RPATH
+    if runpath is not None:
+        entries.append((29, runpath))  # DT_RUNPATH
+    entries += [
+        (5, 176),  # DT_STRTAB (vaddr == file offset of the string table)
+        (10, len(strtab)),  # DT_STRSZ
+        (0, 0),  # DT_NULL
+    ]
     dyn = b"".join(
-        tag.to_bytes(8, "little") + val.to_bytes(8, "little")
-        for tag, val in (
-            (5, 176),  # DT_STRTAB (vaddr == file offset of the string table)
-            (10, len(strtab)),  # DT_STRSZ
-            (0, 0),  # DT_NULL
-        )
+        tag.to_bytes(8, "little") + val.to_bytes(8, "little") for tag, val in entries
     )
     ph_off = 64
     strtab_off = ph_off + 56 * 2  # == 176, matching DT_STRTAB above
@@ -477,6 +486,47 @@ def test_stack_canary_detected_from_the_dynamic_symbol_names(tmp_path: Path) -> 
         _write(tmp_path, "n.bin", _elf64_dynamic_with_strtab(b"\x00puts\x00malloc\x00"))
     )["native"]
     assert unguarded["canary"] is False
+
+
+def test_runpath_splits_the_colon_separated_search_list(tmp_path: Path) -> None:
+    # DT_RUNPATH is one colon-separated string in the dynamic string table; the
+    # reader splits it into the list the loader would walk. $ORIGIN tokens are
+    # reported verbatim -- expansion is the loader's business, not triage's.
+    strtab = b"\x00/opt/lib:$ORIGIN/../lib\x00"
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, runpath=1))
+    facts = describe_native(path)["native"]
+    assert facts["runpath"] == ["/opt/lib", "$ORIGIN/../lib"]
+    assert "rpath" not in facts
+
+
+def test_rpath_and_runpath_are_reported_separately(tmp_path: Path) -> None:
+    # Old-style DT_RPATH and new-style DT_RUNPATH have different loader
+    # precedence (before vs after LD_LIBRARY_PATH), so they stay distinct facts.
+    strtab = b"\x00/legacy\x00/modern\x00"
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, rpath=1, runpath=9)
+    )
+    facts = describe_native(path)["native"]
+    assert facts["rpath"] == ["/legacy"]
+    assert facts["runpath"] == ["/modern"]
+
+
+def test_no_search_path_tags_leave_the_facts_out(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_needed())
+    facts = describe_native(path)["native"]
+    assert "rpath" not in facts
+    assert "runpath" not in facts
+
+
+def test_a_search_path_offset_past_the_string_table_stays_out(tmp_path: Path) -> None:
+    # A hostile DT_RUNPATH offset beyond the string table cannot be resolved;
+    # the fact is omitted rather than guessed or read out of bounds.
+    strtab = b"\x00/opt/lib\x00"
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, runpath=len(strtab) + 100)
+    )
+    facts = describe_native(path)["native"]
+    assert "runpath" not in facts
 
 
 def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:

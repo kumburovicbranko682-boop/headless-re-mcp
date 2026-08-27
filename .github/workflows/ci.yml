@@ -254,6 +254,9 @@ jobs:
           cat /proc/sys/kernel/yama/ptrace_scope
 
       - name: Linux integration gates
+        # gcc and readelf (for the ELF search-path gate, which links probes
+        # with a known rpath/runpath and cross-checks the reader against
+        # binutils) ship with the runner image, so no install step is needed.
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
 
   webui:

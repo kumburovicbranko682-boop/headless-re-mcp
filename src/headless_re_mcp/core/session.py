@@ -411,6 +411,14 @@ _DT_NEEDED = 1
 _DT_STRTAB = 5
 _DT_SONAME = 14
 _DT_STRSZ = 10
+# The runtime library search paths baked into the binary. DT_RPATH is the older
+# tag (searched before LD_LIBRARY_PATH), DT_RUNPATH the newer (searched after);
+# both are colon-separated string-table offsets, read the same way as
+# DT_NEEDED/DT_SONAME. They are a first-order supply-chain/hijack triage fact --
+# a writable or relative entry lets an attacker preload a library -- and
+# readelf -d reports the same tags, so the native gate can cross-check them.
+_DT_RPATH = 15
+_DT_RUNPATH = 29
 _DT_BIND_NOW = 24
 _DT_FLAGS = 30
 _DT_FLAGS_1 = 0x6FFFFFFB
@@ -2113,15 +2121,18 @@ def _elf_layout_facts(
         facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
         if program["has_dynamic"]:
             pie = _elf_dynamic_pie(stream, order, bits, program["dyn_off"], program["dyn_sz"])
-            needed, soname, canary = _elf_dynamic_names(
+            names = _elf_dynamic_names(
                 stream, order, bits, program["dyn_off"], program["dyn_sz"], program["loads"]
             )
-            if needed is not None:
-                facts["needed"] = needed
-            if soname is not None:
-                facts["soname"] = soname
-            if canary is not None:
-                facts["canary"] = canary
+            if names is not None:
+                facts["needed"] = names["needed"]
+                facts["canary"] = names["canary"]
+                if names["soname"] is not None:
+                    facts["soname"] = names["soname"]
+                if names["rpath"] is not None:
+                    facts["rpath"] = names["rpath"]
+                if names["runpath"] is not None:
+                    facts["runpath"] = names["runpath"]
         else:
             pie = False
         if pie is not None:
@@ -2289,31 +2300,34 @@ def _elf_dynamic_names(
     dyn_off: int,
     dyn_sz: int,
     loads: list[tuple[int, int, int]],
-) -> tuple[list[str] | None, str | None, bool | None]:
-    """``(needed, soname, canary)`` from the dynamic table and its string table.
+) -> dict[str, Any] | None:
+    """The string-table facts from the dynamic table, or None if unreadable.
 
-    Walks the dynamic array for the DT_NEEDED string offsets, the DT_SONAME
-    offset and the DT_STRTAB address, maps that address to a file offset through
-    the PT_LOAD segments, and reads the names out of the dynamic string table.
-    ``canary`` is whether that string table names a stack-guard symbol -- the
-    same read costs nothing extra and answers the fourth checksec question.
-    Bounded at every step: the entry count, the name count and the string-table
-    read are all capped, so a corrupt table yields ``(None, None, None)``
-    (dynamic but undetermined) rather than a large read; a dynamic image that
-    names nothing yields ``([], None, False)``. DT_SONAME is present only on a
-    shared object.
+    Walks the dynamic array for the DT_NEEDED string offsets, the DT_SONAME /
+    DT_RPATH / DT_RUNPATH offsets and the DT_STRTAB address, maps that address
+    to a file offset through the PT_LOAD segments, and reads the names out of
+    the dynamic string table. ``canary`` is whether that string table names a
+    stack-guard symbol -- the same read costs nothing extra and answers the
+    fourth checksec question. ``rpath``/``runpath`` are the colon-separated
+    library search paths split into lists. Bounded at every step: the entry
+    count, the name count and the string-table read are all capped, so a
+    corrupt table yields ``None`` (dynamic but undetermined) rather than a
+    large read; a dynamic image that names nothing yields empty/None values.
+    DT_SONAME is present only on a shared object.
     """
     if dyn_off <= 0 or dyn_sz <= 0 or not loads:
-        return None, None, None
+        return None
     entsize = 16 if bits == 64 else 8
     vsize = entsize // 2
     count = min(dyn_sz // entsize, _ELF_MAX_DYN)
     if count <= 0:
-        return None, None, None
+        return None
     stream.seek(dyn_off)
     table = stream.read(entsize * count)
     needed_offsets: list[int] = []
     soname_off: int | None = None
+    rpath_off: int | None = None
+    runpath_off: int | None = None
     strtab_va: int | None = None
     strsz: int | None = None
     for i in range(count):
@@ -2329,15 +2343,19 @@ def _elf_dynamic_names(
                 needed_offsets.append(val)
         elif tag == _DT_SONAME:
             soname_off = val
+        elif tag == _DT_RPATH:
+            rpath_off = val
+        elif tag == _DT_RUNPATH:
+            runpath_off = val
         elif tag == _DT_STRTAB:
             strtab_va = val
         elif tag == _DT_STRSZ:
             strsz = val
     if strtab_va is None:
-        return None, None, None
+        return None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
     if str_off is None:
-        return None, None, None
+        return None
     cap = strsz if strsz is not None and 0 < strsz <= _ELF_MAX_STRTAB else _ELF_MAX_STRTAB
     stream.seek(str_off)
     blob = stream.read(cap)
@@ -2350,10 +2368,21 @@ def _elf_dynamic_names(
             return blob[offset:end].decode("utf-8", errors="replace") or None
         return None
 
-    needed = [name for off in needed_offsets if (name := read_name(off))]
-    soname = read_name(soname_off) if soname_off is not None else None
-    canary = any(sym in blob for sym in _ELF_CANARY_SYMBOLS)
-    return needed, soname, canary
+    def read_paths(offset: int | None) -> list[str] | None:
+        if offset is None:
+            return None
+        value = read_name(offset)
+        if value is None:
+            return None
+        return [part for part in value.split(":") if part]
+
+    return {
+        "needed": [name for off in needed_offsets if (name := read_name(off))],
+        "soname": read_name(soname_off) if soname_off is not None else None,
+        "rpath": read_paths(rpath_off),
+        "runpath": read_paths(runpath_off),
+        "canary": any(sym in blob for sym in _ELF_CANARY_SYMBOLS),
+    }
 
 
 def _elf_build_id(
