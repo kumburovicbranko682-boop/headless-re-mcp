@@ -434,6 +434,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即重新生成强随机 token 并以 0600 权限落盘。重新生成是安全的:这是服务器自己的凭据,新值只
   会让旧会话失效。回归测试参数化覆盖截断 JSON、纯垃圾、裸字符串与列表四种损坏形态。
 
+### 测试（非 PE 工具的读写效果须与其真实行为一致，锁死只读部署的拒绝面）
+
+- 只读部署（`local_full_access=false`）拒绝一切 `CommandSpec.write` 为真的工具、放行其余。既有两套
+  测试守着这套机制却都不钉**单个工具效果的真值**：`test_write_policy.py` 在合成的单工具 catalog 上
+  证明 STATE_CHANGE 被拒、READ_ONLY 被放行，从不看真实工具面；`test_write_policy_surface.py` 证明
+  受守卫集合**等于**写分类集合（守卫与分类彼此一致，无论分类本身对不对）。两者都留下同一个洞：某个
+  工具被归错效果。`catalog.py` 把 265 个名字分列三个 frozenset 并断言并集大小，故漏项/重复会被抓——
+  但把 `device.uninstall` 从 `_STATE_CHANGE_NAMES` 挪进 `_READ_ONLY_NAMES`，数目仍是 265、受守卫集仍
+  等于（缩小后的）写集、`test_write_policy_surface` 的只读用例也照过（该工具此刻只是在坏 serial 上失败、
+  不再回 `write_disabled`）。净效果：一个能把 app 从设备卸载的工具，会在自称只读的部署里照跑不误——而
+  非 PE 线正是这最伤的地方，它引入了只读运维最需要挡住的设备/进程/网络/磁盘写操作。
+- 新增 `test_nonpe_tool_effect_ground_truth.py` 以显式表钉住非 PE 工具面的效果真值：每个会改设备、目标
+  进程、网络或磁盘的 device/frida/proxy/web/apk/js/wasm/ghidra/r2 工具必须是写（33 个），每个只读的必须
+  不是写（47 个）；另有一条断言两张表不相交。任一方向的归错都只翻动一个条目并在此失败、点名工具与
+  方向，而基于计数与一致性的既有守卫仍全绿。实测：把 `device.uninstall` 挪成只读，本测试恰以
+  `device.uninstall mutates state/disk but is filed as read-only` 单点失败，而 `test_write_policy*` 的
+  23 条照过——正说明这个洞真实存在、且只有效果真值表能堵。表项若因改名/删除取不到 spec 也会失败，逼
+  这张表与工具面同步维护。
+
 ### 修复（监控台只读写请求返回 500）
 
 - **只读部署（`local_full_access=false`）下监控台的写请求回 `500` 而非承诺的 `403`**。
