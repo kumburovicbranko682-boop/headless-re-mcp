@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -221,6 +221,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`web.cookies` 缺席：浏览器的 cookie jar 只能从抓包的 Set-Cookie 头里零散拼**。抓包里的 Set-Cookie 只是某一次响应的片段，
+  而 web RE 真正要的是当前完整的 jar——JS 通过 `document.cookie` 写入的、跨若干次重定向（其请求早被环形缓冲淘汰）累积的、以及
+  页面自身脚本读不到的 HttpOnly cookie（会话/鉴权令牌往往正是这类）。新增只读工具 `web.cookies`，走 CDP `Network.getAllCookies`
+  一次性读出整个 jar：返回 `name`、`value`（按上限裁剪并标 `value_truncated`）、`domain`、`path`、`http_only`、`secure`、
+  `session`，以及浏览器给出的 `expires`/`size`/`same_site`；先按 `_MAX_COOKIES` 限制采集面（jar 更大时置 `collection_truncated`），
+  `domain_filter` 对域名做大小写不敏感子串匹配、在分页前应用，把应用自身 cookie 从第三方追踪里择出来。工具总数 267→268。
 - **`proxy.start` 同样不限并发实例，跨会话可无界累积线程与抓包缓冲**。每个活的代理都占一个事件循环线程、一个绑定端口，并可
   保留至多 `_MAX_RETAINED_BYTES`（64 MiB）的抓包体；单会话有「一会话一代理」和端口占用检查约束，但总数无界——一个在多会话
   间反复 `proxy.start` 的调用方能攒下 N 个线程和 N×64 MiB。仿照刚给 web 加的并发上限，加上 `_MAX_PROXIES`（8）：持锁、在

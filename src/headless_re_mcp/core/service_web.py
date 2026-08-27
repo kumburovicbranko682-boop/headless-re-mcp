@@ -178,6 +178,22 @@ class WebAnalysisMixin:
             session_id, "console", session_id, limit=limit, type_filter=type_filter
         )
 
+    def web_cookies(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        domain_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "cookies",
+            session_id,
+            offset=offset,
+            limit=limit,
+            domain_filter=domain_filter,
+        )
+
     def web_scripts(
         self,
         session_id: str,

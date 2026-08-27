@@ -50,6 +50,10 @@ _MAX_METADATA_BYTES = 1024
 _MAX_HEADERS = 100
 _MAX_HEADER_TEXT = 8 * 1024
 _MAX_HEADERS_BYTES = 16 * 1024
+# web.cookies reads the whole jar via CDP; a hostile page can set thousands of
+# cookies with large values, so cap the universe collected and clip each value.
+_MAX_COOKIES = 1000
+_MAX_COOKIE_VALUE = 4 * 1024
 # Header lists live on the ring entry but are stripped from network.list.
 _NETWORK_HEADER_KEYS = frozenset({"request_headers", "response_headers"})
 # Ring-only capture detail that no network.* view should surface directly: the
@@ -1036,6 +1040,77 @@ class WebBackend:
             "count": len(page),
             "has_more": len(held) > capped,
             "dropped": dropped,
+        }
+
+    @staticmethod
+    def _project_cookie(cookie: dict[str, Any]) -> JsonObject:
+        """Project a CDP cookie into a bounded, JSON-safe row.
+
+        The value is the analysis target (session/auth tokens) so it is kept,
+        but clipped to _MAX_COOKIE_VALUE; name/domain/path are bounded like other
+        metadata. httpOnly is the whole reason a JS-only tool cannot see these,
+        so it, secure, session and sameSite are surfaced verbatim.
+        """
+        value, value_over = _bounded_metadata(cookie.get("value"), _MAX_COOKIE_VALUE)
+        row: JsonObject = {
+            "name": _bounded_metadata(cookie.get("name"), _MAX_METADATA_BYTES)[0],
+            "value": value,
+            "domain": _bounded_metadata(cookie.get("domain"), _MAX_METADATA_BYTES)[0],
+            "path": _bounded_metadata(cookie.get("path"), _MAX_METADATA_BYTES)[0],
+            "http_only": bool(cookie.get("httpOnly")),
+            "secure": bool(cookie.get("secure")),
+            "session": bool(cookie.get("session")),
+        }
+        expires = cookie.get("expires")
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool):
+            row["expires"] = float(expires)
+        size = cookie.get("size")
+        if isinstance(size, int) and not isinstance(size, bool):
+            row["size"] = size
+        same_site = cookie.get("sameSite")
+        if isinstance(same_site, str) and same_site:
+            row["same_site"] = _bounded_metadata(same_site, _MAX_METADATA_BYTES)[0]
+        if value_over:
+            row["value_truncated"] = True
+        return row
+
+    def cookies(
+        self, session_id: str, *, offset: int = 0, limit: int = 200, domain_filter: str = ""
+    ) -> JsonObject:
+        handle = self._get(session_id)
+        try:
+            resp = self._runner(handle).call(
+                lambda: handle.cdp.send("Network.getAllCookies")
+            )
+        except WebError:
+            # Session-level fault (wedged/timed-out/closed runner) propagates
+            # with its own code, as the other CDP reads do.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WebError("backend_error", f"cannot read cookies: {exc}") from exc
+        raw = resp.get("cookies") if isinstance(resp, dict) else None
+        rows = raw if isinstance(raw, list) else []
+        # Bound the universe first: a hostile page can set an unbounded number of
+        # cookies, and collection_truncated tells the caller the jar was larger.
+        universe_over = len(rows) > _MAX_COOKIES
+        projected = [self._project_cookie(c) for c in rows[:_MAX_COOKIES] if isinstance(c, dict)]
+        # A case-insensitive substring on the cookie domain, applied before
+        # paging, isolates the app's own cookies from the third-party trackers a
+        # real page accretes; total then reflects the matching set.
+        needle = domain_filter.strip().lower() if isinstance(domain_filter, str) else ""
+        if needle:
+            projected = [c for c in projected if needle in str(c.get("domain", "")).lower()]
+        total = len(projected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_COOKIES))
+        window = projected[start : start + cap]
+        return {
+            "cookies": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "collection_truncated": universe_over,
         }
 
     def scripts(

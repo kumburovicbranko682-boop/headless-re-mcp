@@ -145,6 +145,34 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit, type_filter=type_filter))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        domain_filter: str = "",
+    ) -> dict[str, Any]:
+        """Read the browser's whole cookie jar via CDP (Network.getAllCookies).
+
+        Unlike the Set-Cookie headers captured per request, this returns the
+        live jar as it stands now: cookies set by JavaScript, carried across
+        redirects the request ring already evicted, and HttpOnly cookies a
+        page's own document.cookie cannot see -- the session/auth tokens a web
+        RE task is usually after. Answers with cookies (name, value, domain,
+        path, http_only, secure, session, and expires/size/same_site when the
+        browser reported them; value clipped with value_truncated when long),
+        count, total, offset, has_more, and collection_truncated when the jar
+        held more than the collection cap. domain_filter keeps only cookies
+        whose domain contains that substring (case-insensitive), applied before
+        paging, to separate the app's own cookies from third-party trackers.
+        There is no set or delete; this is read-only.
+        """
+        return _dump(
+            analysis.web_cookies(
+                session_id, offset=offset, limit=limit, domain_filter=domain_filter
+            )
+        )
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,
