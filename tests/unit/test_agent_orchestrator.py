@@ -567,6 +567,43 @@ async def test_a_length_truncated_final_turn_fails_rather_than_completes(
 
 
 @pytest.mark.asyncio
+async def test_a_content_filtered_final_turn_fails_with_the_filter_named(
+    tmp_path: Path,
+) -> None:
+    """A turn the provider's moderation suppressed is not a finished answer.
+
+    finish_reason "content_filter" is the other way a provider ends a turn the
+    model did not: the reply was cut mid-flight by moderation. Same trap as
+    "length" -- with no tool calls it was filed as a clean completion -- and
+    the failure must name the filter so it is not misread as a token limit.
+    """
+
+    class FilteredProvider(FakeProvider):
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="the reply was")
+            yield ProviderEvent("completed", tool_calls=(), finish_reason="content_filter")
+
+    store = AgentStore(tmp_path / "filtered.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "filtered-config"),
+        provider_factory=lambda _: FilteredProvider([]),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.FAILED
+    failed = store.get_run(run["id"])
+    assert failed is not None and "content_filter" in str(failed.error)
+    assert not any(
+        event.type == "run.completed" for event in store.list_events(run["id"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_stop_finish_with_no_tool_calls_still_completes(tmp_path: Path) -> None:
     """A normal finish (stop / none) with no tool calls stays a clean completion."""
 
