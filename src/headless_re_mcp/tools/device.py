@@ -89,6 +89,19 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.package_path")
+    def device_package_path(serial: str, package: str) -> dict[str, Any]:
+        """Resolve a package's installed APK path(s) on the device (pm path).
+
+        Answers with package, paths, count, has_more, and installed. A split
+        app returns several paths (base.apk plus config splits), so pull every
+        one to reconstruct it -- there is no single path field, read the paths
+        list. installed is false only when pm path returned no line; an adb
+        error line (a dead or offline device) is a failure, not an uninstalled
+        app. Feed a path to device.pull to fetch the APK for apk.* analysis.
+        """
+        return _dump(analysis.device_package_path(serial, package))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

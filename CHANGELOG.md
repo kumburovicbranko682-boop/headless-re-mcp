@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -522,14 +522,37 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
-- **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
-  logcat、截图、push/pull、端口转发。**刻意不提供 `device.shell`**——与既有「无
-  `dynamic.command`」同一条原则；序列号与包名按严格正则校验，杜绝参数注入。
+- **设备**：`device.*` 16 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
+  logcat、截图、push/pull、端口转发、包名到 APK 路径解析（`device.package_path`）。**刻意不
+  提供 `device.shell`**——与既有「无 `dynamic.command`」同一条原则；序列号与包名按严格正则
+  校验，杜绝参数注入。
 - **动态**：Frida 后端从「只能本机、只能一个 pid」推广到设备维度（USB/模拟器/远程），
   新增 `frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`。
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+
+### 新增（device.package_path：把设备上装着的应用定位到 APK，补上"拉下来做静态分析"的断链）
+
+- 设备侧一直缺一环：`device.packages` 只回包名，想把目标应用**从设备上拉下来**交给 `apk.*`
+  静态分析，却没有工具能把包名解析成它在设备上的 APK 路径。`device.pull` 能拉任意路径，可路径
+  从哪来无解——"列出装了什么 → 定位它的 APK → 拉下来 → `apk.open`"这条最常见的取证/逆向链
+  在"定位 APK"这一步断掉。后端本就有个内部 `_pm_path`（装包/卸包时验存在用），但它只取
+  `pm path` 的**第一行**；对如今普遍的**分包应用**（base.apk 加一串 `split_config.*.apk`）这会
+  静默丢掉所有 split，拉回来的"APK"根本装不回、也解析不全。
+- 新增只读工具 `device.package_path(serial, package)`：跑 `pm path <pkg>`，把**每一条**
+  `package:` 行都收进 `paths`（base 与全部 split 按设备给出的顺序保留），回
+  `{package, paths, count, has_more, installed}`。分包应用一次拿齐全部路径，逐个喂
+  `device.pull` 即可重建整个应用。
+- 诚实语义与 `device.packages` / `_pm_path` 同源：`pm path` 把 adb 宿主错误行（设备离线/未授权）
+  当 stdout 回而不抛时，识别为宿主错误并按 `backend_error`（`pm path failed`）**失败**，绝不把
+  "设备挂了"读成"应用没装"；真没装的应用回空输出（exit 1），据此 `installed=false`、`paths=[]`，
+  两者清楚区分。路径条数封顶 `_MAX_PACKAGE_PATHS`（64）并置 `has_more`，敌意/异常设备用海量行
+  撑爆回包也无从下手；包名先过严格正则（`invalid_params`），杜绝注入。
+- 工具计数 265 → **266**（只读 148 → 149，写不变）；`catalog.py` 计数守卫、`test_tool_catalog_agent`
+  / `test_workspace_profiles` 及 README 三处读写/敌意输入计数同步更新。新增回归：分包应用拿齐全部
+  路径而非只有 base；空输出是"未安装"而非错误；宿主错误行按 `backend_error` 抛；海量行被限数并置
+  `has_more`；非法包名被拒。
 
 ### 新增（Web）
 

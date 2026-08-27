@@ -40,6 +40,9 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+# A split app answers pm path with several lines (base.apk plus config splits);
+# a handful is normal. Cap so a device returning junk cannot flood the reply.
+_MAX_PACKAGE_PATHS = 64
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -524,6 +527,38 @@ class AdbBackend:
             "count": len(pkgs),
             "has_more": has_more,
             "third_party_only": third_party_only,
+        }
+
+    def package_path(self, serial: str, package: str) -> JsonObject:
+        dev = self._device(serial)
+        pkg = _check_package(package)
+        raw = _device_shell(dev, ["pm", "path", pkg])
+        text = str(raw)
+        # pm path can hand back the adb host's own error line as stdout rather
+        # than raising, the same leak pm list and _pm_path guard against. An
+        # offline or unauthorized device must fail here, not read as an app that
+        # is simply not installed (which answers with empty output, exit 1).
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm path failed", output=text[:800])
+        paths: list[str] = []
+        has_more = False
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("package:"):
+                continue
+            path = line.split(":", 1)[1].strip()
+            if not path:
+                continue
+            if len(paths) >= _MAX_PACKAGE_PATHS:
+                has_more = True
+                break
+            paths.append(path)
+        return {
+            "package": pkg,
+            "paths": paths,
+            "count": len(paths),
+            "has_more": has_more,
+            "installed": bool(paths),
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
