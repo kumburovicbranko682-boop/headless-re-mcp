@@ -43,17 +43,6 @@ _ADB_TRANSFER_TIMEOUT_S = 120.0
 _ADB_TRANSPORT_TIMEOUT_S = _ADB_TRANSFER_TIMEOUT_S
 _PACKAGE_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){1,10}")
 
-# Well-known local ADB ports for the common Windows emulators, so a caller can
-# connect without memorising them.
-EMULATOR_PORTS: dict[str, int] = {
-    "ldplayer": 5555,
-    "mumu": 7555,
-    "nox": 62001,
-    "memu": 21503,
-    "bluestacks": 5555,
-    "avd": 5554,
-}
-
 
 class AdbError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
