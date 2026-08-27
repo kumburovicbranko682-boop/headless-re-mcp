@@ -2037,9 +2037,11 @@ def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None
     assert data["stopped_elsewhere"] is False
     assert data["resume_failed"] is False
     assert data["resume_error"] is None
+    assert data["unverified_hits"] == 0
     assert data["convention"] == "microsoft_x64_integer_registers"
     first = data["hits"][0]
     assert first["instruction_pointer"] == api_address
+    assert first["verified"] is True
     assert [argument["source"] for argument in first["arguments"]] == [
         "rcx",
         "rdx",
@@ -2051,6 +2053,58 @@ def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None
 
     commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.set") == 1
+    assert commands.count("breakpoints.remove") == 1
+
+
+class _RegisterReadFailsWorker(FakeDynamicWorker):
+    """Resumes and pauses fine, but the register read at each pause errors."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "registers.read":
+            self.requests.append((command, params or {}))
+            raise XdbgRpcError(
+                "debugger_command_failed",
+                "registers unavailable at this pause",
+                details={"method": "registers.read"},
+            )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_trace_api_arguments_flags_hits_it_could_not_verify(tmp_path: Path) -> None:
+    """A pause whose registers were unreadable is not a confirmed call.
+
+    The loop only ends the trace on someone else's break when it can read the
+    instruction pointer and see it differ from the target. When the register
+    read fails the pointer is null, that guard is skipped, and the pause used to
+    be appended as an ordinary hit -- padding hit_count with a null-pointer,
+    empty-argument entry indistinguishable from a confirmed call. Each such hit
+    now carries verified=false, and unverified_hits counts them.
+    """
+    api_address = 0x140002000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _RegisterReadFailsWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=api_address, max_hits=3)
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["hit_count"] == 3
+    assert data["truncated"] is True
+    assert data["stopped_elsewhere"] is False
+    assert data["unverified_hits"] == 3
+    assert all(hit["verified"] is False for hit in data["hits"])
+    assert all(hit["instruction_pointer"] is None for hit in data["hits"])
+    commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.remove") == 1
 
 

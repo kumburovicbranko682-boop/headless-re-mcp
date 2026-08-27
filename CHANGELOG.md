@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（dynamic.trace_api_arguments 标记无法核实的命中）
+
+- `trace_api_arguments` 只有在能读到指令指针、且指针不等于目标地址时,才把当前暂停判为
+  "停在别处"并结束 trace。当 `registers.read` 失败(RPC 抖动,或暂停到取不到寄存器的状态)
+  时指针为 null,那道防误标的守卫被跳过,这个暂停照样被当成一次普通命中追加——用一个指令
+  指针为 null、参数为空的条目把 `hit_count` 撑大,与一次已确认的调用无从区分,连"是不是我们
+  断点处的暂停"都没核实。现在每个这样的命中带 `verified: false`,顶层 `unverified_hits`
+  汇总其数量;能读到并匹配目标的干净 trace 里每个命中 `verified: true`、`unverified_hits` 为 0。
+
 ### 修复（dynamic.trace_api_arguments 披露被 resume 失败截断的 trace）
 
 - `trace_api_arguments` 在断点上逐次 resume 采集 API 参数,循环有三个终止条件,但只有两个
