@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+frida 线的插桩入口 `frida.hook.template` 首次有了真机覆盖：它把一段随附的 hook 脚本编译后加载进目标进程的 GumJS
+agent。此前只读面（attach/modules/exports/memory.read）已有 gate，但 hook 模板只对 mock frida 跑过，没有任何测试
+证明随附模板对已装 frida 是有效脚本，或 attach→create_script→load→detach 生命周期真能跑通。新增
+`tests/integration/test_frida_hook_template_live_gate.py`：spawn 一个本地进程，加载通用的 `noop` 模板（唯一不需要
+ART 运行时的模板）并断言 frida 报告已加载（即 GumJS 真的编译并运行了脚本，而非 mock 返回字典）；再钉住两个无需
+attach 的守卫——未知模板名以 `invalid_params` 连同 allowed 列表拒绝、非会话 debuggee 的 pid 以 `permission_denied`
+拒绝。Java 模板（ssl-unpin/crypto-monitor 等）需 ART，在 Linux 主机上不在覆盖范围。新增 `linux-frida-hook-template`
+CI job：装 frida、开放 ptrace、跑该 gate 并解析 junitxml，frida 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
