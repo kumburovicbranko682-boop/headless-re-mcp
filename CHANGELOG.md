@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+`apk.native_libs`首次有了真机覆盖。此前它只对一个假 APK 对象跑过——单测直接替换 `ApkClient._apk`，androguard
+从不解析任何东西，所以没有测试证明它对真正由 zip 构造的 `androguard.core.apk.APK` 有效：构造器能否吃下该归档、
+`get_files()` 是否返回真实条目名、`lib/<abi>/<name>` 过滤能否从整包里挑出原生代码。新增
+`tests/integration/test_apk_native_libs_live_gate.py`：现造 APK zip 并驱动 `ApkClient.native_libs`——多 ABI 包精确列出其
+`lib/` 条目（排序）、报告每个 ABI、并排除非原生条目（`classes.dex`、`assets/`）；再断言超过 256 上限的包会截断列表
+（`count` 为 256、`has_more` 为 True）但仍报告**每一个** ABI（ABI 集合在截断前收集，所以被截断的列表不会隐藏某个目标
+其实带了 x86 代码）。新增 `linux-apk-native-libs` CI job：装 android extra、跑该 gate 并解析 junitxml，androguard 已装却
+skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

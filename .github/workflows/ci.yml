@@ -152,6 +152,43 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apk-native-libs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with androguard
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,android]"
+
+      - name: apk native_libs gate runs for real (skip != pass)
+        # Builds real APK zips and drives androguard's APK().get_files(), so a
+        # skip here means androguard is missing -- the false-green "skip != pass"
+        # warns about.
+        run: |
+          python -c "import androguard; print('androguard', androguard.__version__)"
+          python -m pytest tests/integration/test_apk_native_libs_live_gate.py \
+            -rs --tb=short --junitxml=apk-native-libs-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apk-native-libs-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no apk native_libs gate was collected")
+          if skipped:
+              sys.exit(f"apk native_libs gate skipped despite installed androguard: {skipped}")
+          print(f"apk native_libs gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
