@@ -402,6 +402,8 @@ Web 动态（Playwright/CDP）此前的真机 Gate 只开一个 `data:` URL—�
 
 抓包（mitmproxy）除了起停/端口释放的生命周期 Gate，现在还有一个端到端的抓包 Gate（`tests/integration/test_proxy_capture_gate.py`）：起一个本地 HTTP 源、把请求经代理转发过去，断言 `proxy.flows` 记到了这条流、`proxy.flow.get` 能取到请求/响应体、`proxy.export_har` 导出的 HAR 里带着它，并进一步用 `proxy.replay` 重放该流、确认请求被再次发出并二次捕获——纯 HTTP、免 CA、免外网。Web 静态侧则修了一个真实缺陷：`js.unpack_bundle` 在 webcrack 2.x 下必然报 “output directory already exists”（客户端预建了输出目录），加上 `-f` 后恢复可用，并新增了 `js.unpack_bundle` 与 `wasm.info`（wasm-objdump）的 live Gate。
 
+设备控制（ADB / Frida 设备）此前只有 mock 覆盖，没有任何真机路径跑过安装的 adbutils/frida——而这两者跨版本会改 API（ADB 客户端已为 `AdbClient` 参数、`list` vs `device_list` 备了回退）。完整的设备操作（install/shell/logcat/spawn/java）仍需真机或模拟器,这条无法在普通 CI 里覆盖;但**与设备无关的入口**可以,新增的 `tests/integration/test_device_control_gate.py` 就跑这部分:`device.list` 连到真实 adb server(adbutils 自带 adb 二进制并自动拉起守护进程)返回一个格式正确的空设备表、`device.connect` 连一个本地无人监听的端口时按契约落为**信封失败**(adb 返回的状态串不算“已连接”)、`frida.devices` 枚举出恒在的 `local` 设备。跑的是 service 层,缺 adbutils/frida 时如实跳过(skip ≠ pass)。
+
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
