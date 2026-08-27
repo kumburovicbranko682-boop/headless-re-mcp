@@ -3885,6 +3885,7 @@ class TestProxyReplayWaitsForTheCommand:
             recorder=SimpleNamespace(raw=lambda flow_id: flow),
             _master=SimpleNamespace(commands=Commands()),
             _loop=Loop(),
+            is_alive=lambda: True,
         )
         backend = ProxyBackend()
         backend._get = lambda session_id: inst  # type: ignore[method-assign]
@@ -3910,6 +3911,7 @@ class TestProxyReplayWaitsForTheCommand:
             recorder=SimpleNamespace(raw=lambda flow_id: flow),
             _master=SimpleNamespace(commands=SimpleNamespace(call=lambda *a, **k: None)),
             _loop=Loop(),
+            is_alive=lambda: True,
         )
         backend = mod.ProxyBackend()
         backend._get = lambda session_id: inst  # type: ignore[method-assign]

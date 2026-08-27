@@ -182,12 +182,13 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
         )
     backend = ProxyBackend()
     backend._instances["s"] = SimpleNamespace(
-        host="127.0.0.1", port=8080, recorder=recorder
+        host="127.0.0.1", port=8080, recorder=recorder, is_alive=lambda: True
     )
     payload = backend.status("s")
     assert "count" not in payload
     assert "flows" not in payload
     assert payload["running"] is True
+    assert "exited" not in payload
     assert payload["flow_count"] == 3
     assert payload["retained_max"] == _MAX_FLOWS
     assert payload["retained_bytes"] >= 0

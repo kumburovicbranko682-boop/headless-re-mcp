@@ -303,6 +303,42 @@ class _ProxyInstance:
         self._master: Any = None
         self._started = threading.Event()
         self._error: BaseException | None = None
+        # Set once start() has confirmed the port is accepting. It is what
+        # tells a crashed-then-registered instance apart from one whose start
+        # is still in flight: both read is_alive() False (a just-reserved
+        # instance has no thread yet), but only the former may be replaced.
+        self._ever_started = False
+
+    def is_alive(self) -> bool:
+        """Whether the mitmproxy thread is still running the capture.
+
+        A registered instance only ever reaches the map after start() saw the
+        port accept, so ``is_alive`` is False exactly when run() has since
+        returned or raised -- the loop is closed and the port released by the
+        time this flips, because that teardown is the thread's own finally.
+        """
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def exit_reason(self) -> str | None:
+        """The bounded reason run() stored before the thread exited, if any.
+
+        A clean stop() ends run() without an exception, so this stays None
+        there; it is populated only when the loop raised out from under the
+        capture, which is the case status needs to explain.
+        """
+        exc = self._error
+        return None if exc is None else str(exc)[:500]
+
+    def crashed_after_start(self) -> bool:
+        """True only for an instance that went live and has since died.
+
+        A start still in flight also reads is_alive() False -- the instance is
+        reserved in the map before its thread exists -- so the ``_ever_started``
+        gate is what keeps a concurrent second start refused as "already
+        running" instead of mistaken for recovery.
+        """
+        return self._ever_started and not self.is_alive()
 
     def start(self, timeout: float = 15.0) -> None:
         """Return only once the proxy is actually accepting connections.
@@ -334,6 +370,7 @@ class _ProxyInstance:
             if not self._thread.is_alive():
                 raise ProxyError("backend_error", "mitmproxy exited during startup")
             if _port_accepts(self.host, self.port):
+                self._ever_started = True
                 return
             time.sleep(0.05)
         self.stop()
@@ -426,9 +463,20 @@ class ProxyBackend:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        stale: _ProxyInstance | None = None
         with self._lock:
-            if session_id in self._instances:
-                raise ProxyError("invalid_state", "proxy already running for this session")
+            current = self._instances.get(session_id)
+            if current is not None:
+                if not current.crashed_after_start():
+                    raise ProxyError(
+                        "invalid_state", "proxy already running for this session"
+                    )
+                # A crashed proxy left its dead instance in the map. Drop it so
+                # this session can rebind instead of being told it is "already
+                # running" for the rest of the process's life; its thread has
+                # exited and released the port. Recorded flows go with it -- a
+                # fresh capture is a fresh buffer, same as a first start.
+                stale = self._instances.pop(session_id, None)
             for owner, existing in self._instances.items():
                 if existing.host == host and existing.port == port:
                     raise ProxyError(
@@ -442,6 +490,12 @@ class ProxyBackend:
             # bind a port, and only the last write to this dict was tracked.
             inst = _ProxyInstance(host, port)
             self._instances[session_id] = inst
+        if stale is not None:
+            # Outside the lock: join is instant on an already-dead thread, but
+            # stop also touches process-global logging state, which should not
+            # run under the registry lock.
+            with contextlib.suppress(Exception):
+                stale.stop()
         try:
             inst.start()
         except BaseException:
@@ -476,6 +530,25 @@ class ProxyBackend:
             inst = self._instances.get(session_id)
         if inst is None:
             return {"running": False}
+        if not inst.is_alive():
+            # The thread ran its capture and then exited -- an internal
+            # mitmproxy error, or the loop dying under it. Membership in the
+            # map alone used to keep reporting running=True, so an unattended
+            # capture that had stopped recording looked healthy indefinitely
+            # while start refused to rebind. Report it exited, keep the flow
+            # count so the already-captured evidence is still discoverable,
+            # and hand back the reason the thread stored.
+            payload: JsonObject = {
+                "running": False,
+                "exited": True,
+                "host": inst.host,
+                "port": inst.port,
+                "flow_count": inst.recorder.count(),
+            }
+            reason = inst.exit_reason()
+            if reason:
+                payload["error"] = reason
+            return payload
         return {
             "running": True,
             "host": inst.host,
@@ -560,8 +633,12 @@ class ProxyBackend:
                 "flow body was not retained; cannot replay",
                 flow_id=flow_id,
             )
-        if master is None or inst._loop is None:
-            raise ProxyError("invalid_state", "proxy is not running")
+        if master is None or inst._loop is None or not inst.is_alive():
+            # A crashed proxy still holds its stale master and a closed loop,
+            # so without the liveness check replay dispatched onto a dead loop
+            # and surfaced as "Event loop is closed" -- a backend_error that
+            # reads like a bug rather than "the proxy exited; start it again".
+            raise ProxyError("invalid_state", "proxy is not running; call proxy.start to restart")
         try:
             new_flow = flow.copy()
             done: concurrent.futures.Future[Any] = concurrent.futures.Future()
