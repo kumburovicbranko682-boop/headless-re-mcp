@@ -37,9 +37,17 @@ _MAX_METADATA_BYTES = 1024
 _OMITTED_BODY = object()
 # WebSocket message surfacing on a flow: bound the payload preview per message
 # and how many messages one flow.get returns, so a chatty socket cannot produce
-# an unbounded tool result. The underlying retention is mitmproxy's flow object.
+# an unbounded tool result.
 _MAX_WS_PAYLOAD = 8 * 1024
 _MAX_WS_MESSAGES = 500
+# The frames themselves ride on mitmproxy's own flow object, which grows for the
+# whole life of the socket -- a long-lived chatty socket is the same overnight
+# OOM the body caps guard against, just via a container the recorder does not
+# own. Bound the retained frames per flow by count and by total bytes, evicting
+# the oldest and disclosing how many were dropped, so the process stays bounded
+# no matter how long a socket stays open.
+_MAX_WS_RETAINED = 2000
+_MAX_WS_RETAINED_BYTES = 16 * 1024 * 1024
 
 
 class ProxyError(RuntimeError):
@@ -211,12 +219,11 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
-def _ws_message_count(flow: Any) -> int:
-    ws = getattr(flow, "websocket", None)
-    if ws is None:
-        return 0
-    messages = getattr(ws, "messages", None) or []
-    return len(messages)
+def _ws_message_size(msg: Any) -> int:
+    content = getattr(msg, "content", b"") or b""
+    if isinstance(content, bytes | bytearray):
+        return len(content)
+    return len(str(content).encode(errors="replace"))
 
 
 def _normalize_ws_message(msg: Any) -> JsonObject:
@@ -425,6 +432,11 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        # Per-flow WebSocket accounting, kept alongside the raw retention: how
+        # many frame bytes are still held on each flow and how many were evicted
+        # to stay under the caps. These live for the socket, not just the ring.
+        self._ws_bytes: dict[str, int] = {}
+        self._ws_dropped: dict[str, int] = {}
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -455,6 +467,8 @@ class _FlowRecorder:
             flow_id = str(getattr(flow, "id", None) or self._seq)
             self._raw.pop(flow_id, None)
             self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
+            self._ws_bytes.pop(flow_id, None)
+            self._ws_dropped.pop(flow_id, None)
             if not omitted:
                 for retained_id, retained in list(self._raw.items()):
                     if self._retained_bytes + stored_bytes <= _MAX_RETAINED_BYTES:
@@ -471,6 +485,8 @@ class _FlowRecorder:
             while len(self._raw) > self._capacity:
                 evicted_id, _ = self._raw.popitem(last=False)
                 self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+                self._ws_bytes.pop(evicted_id, None)
+                self._ws_dropped.pop(evicted_id, None)
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -486,21 +502,59 @@ class _FlowRecorder:
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
+    def _refresh_ws_summary(self, flow_id: str, retained: int, dropped: int) -> None:
+        # The flow was summarised at its 101 handshake response; mark it a
+        # WebSocket flow and keep the retained/dropped counts current so
+        # proxy.flows shows which flows carry frames, and that eviction happened,
+        # without re-reading the raw.
+        for summary in reversed(self.flows):
+            if summary.get("id") == flow_id:
+                summary["websocket"] = True
+                summary["ws_messages"] = retained
+                if dropped:
+                    summary["ws_dropped"] = dropped
+                break
+
     def websocket_message(self, flow: Any) -> None:  # mitmproxy calls this per WS message
-        # The flow was already summarised at its 101 handshake response; mark it
-        # as a WebSocket flow and keep the running message count current so
-        # proxy.flows shows which flows carry frames without re-reading the raw.
+        ws = getattr(flow, "websocket", None)
+        messages = getattr(ws, "messages", None) if ws is not None else None
+        if not isinstance(messages, list):
+            return
         flow_id = str(getattr(flow, "id", None) or "")
-        count = _ws_message_count(flow)
         with self._lock:
-            for summary in reversed(self.flows):
-                if summary.get("id") == flow_id:
-                    summary["websocket"] = True
-                    summary["ws_messages"] = count
-                    break
+            # Exactly one new message is appended per hook call; account its
+            # bytes, then evict the oldest until the per-flow count and byte caps
+            # hold again. A single frame larger than the byte cap is kept (we
+            # cannot shrink it) rather than dropping the whole conversation.
+            if messages:
+                self._ws_bytes[flow_id] = self._ws_bytes.get(flow_id, 0) + _ws_message_size(
+                    messages[-1]
+                )
+            dropped = 0
+            while len(messages) > 1 and (
+                len(messages) > _MAX_WS_RETAINED
+                or self._ws_bytes.get(flow_id, 0) > _MAX_WS_RETAINED_BYTES
+            ):
+                evicted = messages.pop(0)
+                self._ws_bytes[flow_id] = max(
+                    0, self._ws_bytes.get(flow_id, 0) - _ws_message_size(evicted)
+                )
+                dropped += 1
+            if dropped:
+                self._ws_dropped[flow_id] = self._ws_dropped.get(flow_id, 0) + dropped
+            self._refresh_ws_summary(flow_id, len(messages), self._ws_dropped.get(flow_id, 0))
 
     def websocket_end(self, flow: Any) -> None:  # mitmproxy calls this on WS close
-        self.websocket_message(flow)
+        ws = getattr(flow, "websocket", None)
+        messages = getattr(ws, "messages", None) if ws is not None else None
+        flow_id = str(getattr(flow, "id", None) or "")
+        with self._lock:
+            retained = len(messages) if isinstance(messages, list) else 0
+            self._refresh_ws_summary(flow_id, retained, self._ws_dropped.get(flow_id, 0))
+
+    def ws_dropped(self, flow_id: str) -> int:
+        with self._lock:
+            return int(self._ws_dropped.get(flow_id, 0))
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -822,6 +876,7 @@ class ProxyBackend:
             result["response"]["body"] = body.decode("utf-8", errors="replace")
         websocket = _ws_messages_view(flow)
         if websocket is not None:
+            websocket["dropped"] = inst.recorder.ws_dropped(flow_id)
             result["websocket"] = websocket
         return result
 
@@ -857,6 +912,7 @@ class ProxyBackend:
             "total": view["total"],
             "offset": view["offset"],
             "has_more": view["has_more"],
+            "dropped": inst.recorder.ws_dropped(flow_id),
             "closed": view["closed"],
             **({"close_code": view["close_code"]} if "close_code" in view else {}),
         }

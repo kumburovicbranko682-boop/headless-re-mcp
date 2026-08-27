@@ -98,6 +98,9 @@ def test_flow_get_returns_the_websocket_frames(tmp_path: Path, monkeypatch: Any)
         def raw(self, flow_id: str) -> Any:
             return flow
 
+        def ws_dropped(self, flow_id: str) -> int:
+            return 0
+
     backend = ProxyBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
     payload = backend.flow_get("s", "w1", tmp_path)
@@ -132,6 +135,9 @@ def test_flow_get_bounds_a_giant_binary_frame(tmp_path: Path, monkeypatch: Any) 
         def raw(self, flow_id: str) -> Any:
             return flow
 
+        def ws_dropped(self, flow_id: str) -> int:
+            return 0
+
     backend = ProxyBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
     frame = backend.flow_get("s", "w1", tmp_path)["websocket"]["messages"][0]
@@ -151,6 +157,9 @@ def test_plain_http_flow_has_no_websocket_key(tmp_path: Path, monkeypatch: Any) 
     class _Recorder:
         def raw(self, flow_id: str) -> Any:
             return flow
+
+        def ws_dropped(self, flow_id: str) -> int:
+            return 0
 
     backend = ProxyBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
@@ -179,6 +188,9 @@ def test_ws_frames_pages_the_full_conversation(monkeypatch: Any) -> None:
     class _Recorder:
         def raw(self, flow_id: str) -> Any:
             return flow
+
+        def ws_dropped(self, flow_id: str) -> int:
+            return 0
 
     backend = ProxyBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
@@ -209,6 +221,9 @@ def test_ws_frames_rejects_a_plain_http_flow(monkeypatch: Any) -> None:
     class _Recorder:
         def raw(self, flow_id: str) -> Any:
             return flow
+
+        def ws_dropped(self, flow_id: str) -> int:
+            return 0
 
     backend = ProxyBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
@@ -241,17 +256,113 @@ def test_ws_frames_reports_a_dropped_flow_as_too_large(monkeypatch: Any) -> None
     assert excinfo.value.code == "too_large"
 
 
+def test_websocket_retention_is_bounded_by_frame_count(monkeypatch: Any) -> None:
+    import headless_re_mcp.backends.proxy.client as pc
+
+    monkeypatch.setattr(pc, "_MAX_WS_RETAINED", 5)
+    recorder = _FlowRecorder(capacity=8)
+    messages: list[Any] = []
+    flow = _ws_flow(messages, closed=False)
+    recorder.response(flow)
+    for i in range(20):
+        messages.append(_msg(from_client=True, content=str(i).encode(), opcode=1, ts=float(i)))
+        recorder.websocket_message(flow)
+
+    # mitmproxy's own list is trimmed in place to the cap: the oldest frames are
+    # gone, so a socket cannot grow the flow object without bound.
+    assert len(messages) == 5
+    assert [m.content for m in messages] == [str(i).encode() for i in range(15, 20)]
+    assert recorder.ws_dropped("w1") == 15
+
+    row = next(r for r in recorder.snapshot() if r["id"] == "w1")
+    assert row["websocket"] is True
+    assert row["ws_messages"] == 5
+    assert row["ws_dropped"] == 15
+
+
+def test_websocket_retention_is_bounded_by_total_bytes(monkeypatch: Any) -> None:
+    import headless_re_mcp.backends.proxy.client as pc
+
+    monkeypatch.setattr(pc, "_MAX_WS_RETAINED_BYTES", 4 * 1024)
+    recorder = _FlowRecorder(capacity=8)
+    messages: list[Any] = []
+    flow = _ws_flow(messages, closed=False)
+    recorder.response(flow)
+    for i in range(10):
+        messages.append(_msg(from_client=False, content=b"x" * 1024, opcode=2, ts=float(i)))
+        recorder.websocket_message(flow)
+
+    # A 4 KiB budget holds at most four 1 KiB frames; the rest are evicted.
+    assert len(messages) == 4
+    assert sum(len(m.content) for m in messages) <= 4 * 1024
+    assert recorder.ws_dropped("w1") == 6
+
+
+def test_websocket_retention_keeps_a_lone_oversized_frame(monkeypatch: Any) -> None:
+    import headless_re_mcp.backends.proxy.client as pc
+
+    monkeypatch.setattr(pc, "_MAX_WS_RETAINED_BYTES", 1024)
+    recorder = _FlowRecorder(capacity=8)
+    messages: list[Any] = []
+    flow = _ws_flow(messages, closed=False)
+    recorder.response(flow)
+    messages.append(_msg(from_client=False, content=b"y" * 8192, opcode=2, ts=1.0))
+    recorder.websocket_message(flow)
+
+    # A single frame over the byte cap is kept -- we cannot shrink it, and
+    # dropping it would erase the only content the socket carried.
+    assert len(messages) == 1
+    assert recorder.ws_dropped("w1") == 0
+
+
+def test_flow_get_and_ws_frames_disclose_dropped_frames(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import headless_re_mcp.backends.proxy.client as pc
+
+    monkeypatch.setattr(pc, "_MAX_WS_RETAINED", 3)
+    recorder = _FlowRecorder(capacity=8)
+    messages: list[Any] = []
+    flow = _ws_flow(messages, closed=True)
+    recorder.response(flow)
+    for i in range(8):
+        messages.append(_msg(from_client=True, content=str(i).encode(), opcode=1, ts=float(i)))
+        recorder.websocket_message(flow)
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+
+    detail = backend.flow_get("s", "w1", tmp_path)
+    assert detail["websocket"]["total"] == 3
+    assert detail["websocket"]["dropped"] == 5
+
+    page = backend.ws_frames("s", "w1")
+    assert page["total"] == 3
+    assert page["dropped"] == 5
+    assert [f["payload"] for f in page["frames"]] == ["5", "6", "7"]
+
+
 def test_proxy_ws_descriptions_name_the_frame_fields() -> None:
     flows = _tool_docstring("proxy.flows")
     assert "websocket" in flows
     assert "ws_messages" in flows
+    assert "ws_dropped" in flows
 
     flow_get = _tool_docstring("proxy.flow.get")
     assert "websocket" in flow_get
     assert "payload_truncated" in flow_get
     assert "base64" in flow_get
     assert "proxy.ws.frames" in flow_get
+    assert "dropped" in flow_get
 
     ws_frames = _tool_docstring("proxy.ws.frames")
-    for field in ("flow_id", "frames", "offset", "has_more", "invalid_state", "too_large"):
+    for field in (
+        "flow_id",
+        "frames",
+        "offset",
+        "has_more",
+        "dropped",
+        "invalid_state",
+        "too_large",
+    ):
         assert field in ws_frames

@@ -734,10 +734,14 @@ def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
             assert head["offset"] == 0
             assert head["count"] == 1
             assert head["has_more"] is True
+            # A handful of frames is well under the per-flow retention cap, so
+            # nothing was evicted.
+            assert head["dropped"] == 0
             tail = backend.ws_frames("ws", str(flow["id"]), offset=1, limit=100)
             assert tail["offset"] == 1
             assert tail["count"] == len(frames) - 1
             assert tail["has_more"] is False
+            assert tail["dropped"] == 0
             walked = head["frames"] + tail["frames"]
             assert [f["payload"] for f in walked] == [f["payload"] for f in frames]
 

@@ -62,7 +62,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         count, total, offset, has_more, and dropped. body_omitted is set on a
         row whose request/response body was over the retain cap. A WebSocket
         flow (the 101 handshake) also carries websocket true and ws_messages,
-        the running frame count; fetch the frames with proxy.flow.get. The list
+        the retained frame count, plus ws_dropped once frames were evicted to
+        stay under the per-flow retention cap; fetch the frames with
+        proxy.flow.get or page them with proxy.ws.frames. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
@@ -80,10 +82,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         top-level headers or body fields. A WebSocket flow also carries
         websocket with the captured messages (direction sent or received, type
         text or binary, payload, payload_len, ts), count, total, offset,
-        has_more and closed; a binary message's payload is base64 and an
-        oversized one is cut and marked payload_truncated. Only the first 500
-        messages ride along here -- page the whole conversation with
-        proxy.ws.frames.
+        has_more, dropped and closed; a binary message's payload is base64 and
+        an oversized one is cut and marked payload_truncated. dropped counts
+        frames the per-flow retention cap evicted (a long socket cannot grow
+        without bound). Only the first 500 retained messages ride along here --
+        page the whole retained conversation with proxy.ws.frames.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
@@ -99,10 +102,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with flow_id, url, frames (each direction sent or received, type
         text or binary, payload, payload_len, ts; a binary payload is base64 and
         an oversized one is cut and marked payload_truncated), count, total,
-        offset, has_more and closed, plus close_code once the socket has closed.
-        Unlike proxy.flow.get, which only inlines the first 500 messages, this
-        walks the full conversation via offset/limit. A plain HTTP flow is
-        rejected with invalid_state; a flow whose body was dropped is too_large.
+        offset, has_more, dropped and closed, plus close_code once the socket has
+        closed. total is the retained frame count and dropped is how many the
+        per-flow retention cap evicted, so the two together disclose a socket
+        too long to keep whole. Unlike proxy.flow.get, which only inlines the
+        first 500 retained messages, this walks the full retained conversation
+        via offset/limit. A plain HTTP flow is rejected with invalid_state; a
+        flow whose body was dropped is too_large.
         """
         return _dump(
             analysis.proxy_ws_frames(session_id, flow_id, offset=offset, limit=limit)
