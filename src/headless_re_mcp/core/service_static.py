@@ -637,6 +637,17 @@ class StaticAnalysisMixin:
         return Result[JsonObject](ok=True, data=payload, meta=dict(result.meta))
 
     def _static_patch_dir(self, session_id: str) -> Path:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        # session_id becomes a path component here. Every other artifact-writing
+        # service (web/ui/proxy/apk and _write_die_artifact) refuses a segment
+        # that is not one ordinary name before joining it; this one did not, so
+        # a session whose id was ``..`` (restorable through adopt() from a
+        # tampered store) would resolve the patch record above the artifact
+        # root. Raise the same OSError _write_die_artifact does -- the caller
+        # already treats a write failure here as patch_record_failed.
+        if not _is_safe_session_segment(session_id):
+            raise OSError("invalid session id for artifact path")
         directory = (
             self.settings.artifact_root.expanduser().resolve() / "static" / session_id / "patches"
         )
@@ -726,6 +737,17 @@ class StaticAnalysisMixin:
         spilled["truncated"] = True
         spilled["preview_chars"] = len(preview)
         spilled["artifact_bytes"] = len(payload)
+
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        # session_id is about to become a path component. The sibling artifact
+        # writers all refuse a segment that is not one ordinary name; without
+        # the same guard an id of ``..`` (restorable via adopt() from a tampered
+        # store) would drop the oversized text above the artifact root. Keep the
+        # usable preview and say why rather than write outside the tree.
+        if not _is_safe_session_segment(session_id):
+            spilled["spill_failed"] = "invalid session id for artifact path"
+            return spilled
 
         directory = (
             self.settings.artifact_root.expanduser().resolve() / "static" / session_id / "oversized"
