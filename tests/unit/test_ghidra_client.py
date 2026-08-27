@@ -291,3 +291,37 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert caught.value.code == "backend_error"
     assert caught.value.message == "export JSON invalid"
     assert error_type in str(caught.value.details["error"])
+
+
+def test_export_script_is_java_and_emits_the_documented_json_keys() -> None:
+    """The post-script must be the Java GhidraScript and emit the parsed keys.
+
+    The script runs only inside Ghidra, so no unit test executes it and the
+    live gate skips wherever Ghidra is not installed (all of CI). This pins the
+    output contract in every run instead: the client's json parser and the
+    ghidra.* tool docstrings name these keys, and a rename in the script would
+    otherwise drift silently until a machine with Ghidra ran the live gate.
+    """
+    script = ghidra_client._SCRIPT_DIR / ghidra_client._EXPORT_SCRIPT
+    assert script.suffix == ".java", "the export post-script must be a native Java GhidraScript"
+    assert script.is_file(), "export post-script missing from the package tree"
+    text = script.read_text(encoding="utf-8")
+    expected = [
+        "mode",
+        "items",
+        "count",
+        "has_more",  # top-level, every mode
+        "name",
+        "entry",
+        "body_size",  # functions
+        "address",
+        "type",  # symbols
+        "from",
+        "to",  # xrefs
+        "function",
+        "decompiled",
+        "truncated",  # decompile
+    ]
+    # The Java source writes each JSON key as an escaped literal, e.g. \"name\".
+    missing = [key for key in expected if f'\\"{key}\\"' not in text]
+    assert not missing, f"export script no longer emits: {missing}"
