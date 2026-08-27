@@ -3918,6 +3918,68 @@ class TestProxyReplayWaitsForTheCommand:
         assert caught.value.code == "timeout"
 
 
+class TestProxyHarExportIsBounded:
+    """proxy.export_har writes a registered artifact retention only reclaims
+    once it is on disk. The flow ring is count-capped, but each summary carries
+    a URL up to _MAX_URL_BYTES, so a full ring serialises past the capture cap.
+    The browser HAR export drops oldest entries to fit; the proxy one used to
+    write whatever the ring held.
+    """
+
+    @staticmethod
+    def _recorder_with(count: int) -> Any:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy import client as mod
+
+        recorder = mod._FlowRecorder()
+        for index in range(count):
+            request = SimpleNamespace(
+                method="GET", pretty_url=f"http://example.test/{index}", host="example.test"
+            )
+            response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+            recorder.response(
+                SimpleNamespace(id=str(index), request=request, response=response)
+            )
+        return recorder
+
+    def test_an_oversized_har_drops_oldest_entries_to_fit(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import json
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy import client as mod
+
+        recorder = self._recorder_with(8)
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 400)
+        backend = mod.ProxyBackend()
+        backend._instances["s"] = SimpleNamespace(recorder=recorder)
+        out = tmp_path / "capture.har"
+        payload = backend.export_har("s", out)
+
+        assert payload["truncated"] is True
+        assert 0 < payload["entry_count"] < 8
+        assert payload["size"] <= 400
+        assert out.stat().st_size <= 400
+        # What survived is still valid HAR JSON, not a byte-sliced blob.
+        parsed = json.loads(out.read_text(encoding="utf-8"))
+        assert len(parsed["log"]["entries"]) == payload["entry_count"]
+
+    def test_a_har_that_fits_is_not_labelled_truncated(self, tmp_path: Any) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy import client as mod
+
+        backend = mod.ProxyBackend()
+        backend._instances["s"] = SimpleNamespace(recorder=self._recorder_with(1))
+        payload = backend.export_har("s", tmp_path / "capture.har")
+
+        assert payload["truncated"] is False
+        assert payload["entry_count"] == 1
+        assert payload["size"] > 0
+
+
 class TestFridaJavaEnumerationStopsEarly:
     def test_class_enumeration_script_stops_at_the_cap(self) -> None:
         from headless_re_mcp.backends.frida.client import _JAVA_SCRIPT

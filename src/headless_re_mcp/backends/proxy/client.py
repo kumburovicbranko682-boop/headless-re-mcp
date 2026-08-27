@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -577,9 +579,36 @@ class ProxyBackend:
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
+        text = json.dumps(har, ensure_ascii=False)
+        encoded = text.encode("utf-8")
+        truncated = False
+        # The flow ring is count-capped, but each summary still carries a URL up
+        # to _MAX_URL_BYTES, so a full ring serialises into tens of megabytes.
+        # This file is a registered artifact retention can only reclaim once it
+        # is on disk, so drop the oldest entries until it fits -- the same bound
+        # the browser HAR export already applies.
+        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            drop = max(1, len(entries) // 8)
+            del entries[-drop:]
+            har["log"]["entries"] = entries
+            text = json.dumps(har, ensure_ascii=False)
+            encoded = text.encode("utf-8")
+            truncated = True
+        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=len(encoded),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "truncated": truncated,
+            "size": len(encoded),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

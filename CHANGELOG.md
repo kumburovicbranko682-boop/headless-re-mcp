@@ -314,6 +314,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会在产物目录里堆下永远回收不掉的截图和 HAR。现在这五条路径统一登记为产物并回 `artifact_id`
   （与静态溢出走同一个 `_record_artifact`）。登记失败不影响抓取本身——文件还在，原因放进
   `artifact_error` 字段。
+- **登记只解决「回收得到」，没解决「单份别撑爆磁盘」——而 `proxy.export_har` 比 `web.har.export`
+  少了后半截**。抓包环按条数封顶（2000），但每条摘要仍带最长 `_MAX_URL_BYTES`（16 KiB）的 URL，
+  写满的环序列化出来可达数十 MB；这份 HAR 又是登记产物，回收只能在它落盘之后才够得着。浏览器那条
+  早已在超出 `UNREGISTERED_CAPTURE_MAX_BYTES` 时逐块丢最旧的条目、真放不下才报 `too_large`；proxy
+  这条此前无条件整份写盘，全靠「URL 上限 × 环容量恰好小于 cap」这条巧合兜着，一旦哪个上限上调就
+  会静默把磁盘写爆。现改为同款有界：丢到能装下为止并回 `truncated` / `size`，与 `web.har.export`
+  对齐。补回归测试钉住超限丢最旧条目、落盘文件不超上限且仍是合法 HAR JSON，以及未超限时不误标
+  `truncated`。
 - **UI 截图是其中最大的一处**。`ui.screenshot` 与 `ui.ocr` 每次调用都按新 uuid 写一张**未压缩
   BMP**（整窗可达数 MB），同样不登记。UI 驱动循环因此会在产物目录里堆下按 GB 计的位图，而配额
   连数都数不到它们，agent 也读不回来。现在两条路径都登记；固定文件名、每次覆盖的虚拟桌面抓图
