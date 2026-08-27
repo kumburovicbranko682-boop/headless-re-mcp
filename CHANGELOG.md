@@ -127,6 +127,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dynamic.trace_api_arguments` 读不到参数时不再伪装成零参调用）
+
+- `trace_api_arguments` 每命中一次断点就读一次参数：x64 从寄存器组解码，x86 则另发一次
+  `stack.read` 从栈上取。当命中点确实落在目标地址（`instruction_pointer` 与目标相符、命中为真），
+  但取参那一步失败时——x86 的栈读报错或后端根本不提供 `stack.read`，或 x64 的寄存器读失败——
+  `arguments` 会回成空列表 `[]`。这与「该函数本就零参」（`argument_count=0` 或调用约定无整型参）
+  返回的空列表一模一样，agent 会把「参数没读到」误当成「这次调用没有参数」，据此对 API 语义下错结论。
+- 现每条命中新增 `arguments_read_failed`：仅当请求了参数（`argument_count>0`）却读不到取参来源
+  （x64 寄存器组或 x86 栈）时为 `true`，据此把「不可用」与真正的零参区分开；返回体新增
+  `arguments_read_failed_hits` 汇总此类命中数，为 0 才代表每条命中的参数都读到了（或压根没请求参数）。
+  与既有的 `stopped_elsewhere`（停在别处）互不相关：那说的是命中真假，这说的是命中为真时参数取没取到。
+  文档串同步说明：命中的空 `arguments` 只有在 `arguments_read_failed` 为 `false` 时才可当作「无参数」。
+  新增三条直测：x86 栈读不可用时每条命中标记失败且汇总相符、成功读参时标记为 `false` 且汇总为 0、
+  `argument_count=0` 即便栈读失败也不算取参失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
