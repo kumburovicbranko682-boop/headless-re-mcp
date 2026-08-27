@@ -25,6 +25,7 @@ from headless_re_mcp.logging_setup import (
     attach_rotating_handler,
     resolve_log_dir,
 )
+from headless_re_mcp.redaction import BEARER_VALUE, SECRET_KEY_KEYWORDS
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -33,17 +34,21 @@ JsonObject = dict[str, Any]
 _LOGGER_NAME = "headless_re_mcp.incidents"
 _LOCK = threading.Lock()
 _LOG_PATH: Path | None = None
-# The keyword set is kept in step with the structured redactor in
-# ``redaction.py``: a value masked when it sits under a dict key must also be
-# masked when it appears inline in an exception message, because that message is
-# what reaches the on-disk incident log, the HTTP 500 body and the CLI stderr
-# envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
-# deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
+# The keyword set is the structured redactor's, imported rather than copied: a
+# value masked when it sits under a dict key must also be masked when it
+# appears inline in an exception message, because that message is what reaches
+# the on-disk incident log, the HTTP 500 body and the CLI stderr envelope. The
+# two lists were maintained by hand before and drifted apart, which is exactly
+# a keyword-list bug. The strict ``[:=]`` boundary (rather than a trailing
+# ``\w*``) is deliberate -- it keeps "tokenized=false" and similar diagnostics
+# readable. An HTTP auth scheme after the separator ("Bearer x", "Basic y")
+# would satisfy the value pattern with the scheme word alone and leave the
+# credential standing after it, so the scheme is kept and what follows it is
+# what gets masked.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
     re.compile(
-        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"(?i)((?:" + "|".join(SECRET_KEY_KEYWORDS) + r")\s*[:=]\s*"
+        r"(?:(?:basic|bearer|digest)\s+)?)[^\s,;]+"
     ),
 )
 
@@ -52,6 +57,11 @@ def _redact_text(value: object, *, limit: int = 1000) -> str:
     text = str(value)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(r"\1[REDACTED]", text)
+    # A bearer token with no key in front -- an httpx error quoting a header
+    # value, a repr() of a header tuple -- is still one recognisable secret.
+    # The structured redactor already masks this form inside payload strings;
+    # the inline scrubber let it through.
+    text = BEARER_VALUE.sub("Bearer [REDACTED]", text)
     return text[:limit]
 
 

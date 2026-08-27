@@ -129,6 +129,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   就会明文落进事故日志与 500 响应——正是 SECURITY.md 列为漏洞的那类泄露。现补齐这四个关键字;
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
+- 进一步把「对齐」做成结构性的:两份关键字词表本就是手抄两处才漂移出上面那个洞,现在
+  `redaction.py` 暴露唯一的 `SECRET_KEY_KEYWORDS`,行内正则由它构建,再往 `redaction` 加关键字
+  会同时生效于两条通道;回归测试也改为遍历该共享词表逐一断言行内形态被抹,漂移在 CI 直接红。
+  顺带补上两个行内残口:`Authorization: Basic <base64>`(旧模式只特判 Bearer,Basic 的
+  账号口令对整段明文落盘)与不带键名的裸 `Bearer <token>`(httpx 报错、header 元组的 repr
+  常这样引用值;结构化脱敏早已抹这种形态)。方案值(`Basic x`/`Bearer x`)只留方案词、
+  抹其后的凭据,避免方案词自己吃掉 `[^\s,;]+` 而让真正的口令站在原地。
 
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
