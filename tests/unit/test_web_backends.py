@@ -300,14 +300,19 @@ class TestProxyScoping:
     def test_stop_without_start_is_not_an_error(self) -> None:
         assert ProxyBackend().stop("no-such-session")["stopped"] is False
 
-    def test_start_rejects_an_out_of_range_port(self) -> None:
+    @pytest.mark.parametrize("port", [0, -1, 99999, 70000])
+    def test_start_rejects_an_out_of_range_port(self, port: int) -> None:
+        """The port contract holds whether or not mitmproxy is installed.
+
+        start() now validates the port before the capability gate, so an
+        out-of-range value is invalid_params on every machine. Previously the
+        gate ran first and answered capability_unavailable without mitmproxy,
+        which both hid the contract and made this test un-runnable there (it had
+        to skip -- and a skip is not a pass).
+        """
         backend = ProxyBackend()
-        try:
-            backend._check_available()
-        except ProxyError:
-            pytest.skip("mitmproxy not installed — port validation not reached (skip != pass)")
         with pytest.raises(ProxyError) as info:
-            backend.start("s", port=99999)
+            backend.start("s", port=port)
         assert info.value.code == "invalid_params"
 
 

@@ -62,6 +62,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（proxy.start 的 port 校验移到能力门之前，缺 mitmproxy 时也回 invalid_params）
+
+- `ProxyBackend.start` 先做 `_check_available()` 再校验 `port`，于是没装 mitmproxy 的机器上一个越界
+  端口会得到 `capability_unavailable` 而不是 `invalid_params`——同一个畸形输入在不同机器上给不同
+  错误，也让端口契约在所有缺可选 CLI 的测试环境里都够不着（对应单测只能 `skip`，而 skip 不等于
+  pass）。现把 `1 <= port <= 65535` 校验提到能力门之前，越界端口在任何机器上一致回 `invalid_params`。
+  回归去掉 skip、参数化钉住 `0/-1/99999/70000` 均被拒，和 web.open 的 scheme、Ghidra 的 max_heap、
+  frida 的 address 同属"输入先于门"的一致处理。
+
 ### 修复（frida.memory.read 的 address 与 size 一样先校验，不再变成 internal_error 事故）
 
 - `frida.memory.read` 只对 `size` 做了范围校验，`address` 却原样交给注入脚本里的 `ptr(address)`。
