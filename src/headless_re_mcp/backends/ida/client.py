@@ -13,6 +13,10 @@ from pathlib import Path
 from threading import Event, RLock, Thread
 from typing import Any, TextIO
 
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    clamp_cli_timeout,
+)
 from headless_re_mcp.backends.common.subprocess_rpc import (
     ManagedSubprocessMixin,
     no_window_popen_kwargs,
@@ -39,6 +43,16 @@ _MAX_PENDING_WORKER_MESSAGES = 1_024
 # percentages, file names).  Keep enough distinct sightings for diagnostics
 # without retaining a session-long log of every title ever seen.
 _MAX_OBSERVED_WINDOWS = 128
+# The largest deadline any IDA tool schema declares (decompile asks for le=600;
+# the rest are le=300). request() feeds the caller value straight into _receive,
+# where a NaN makes ``remaining <= 0`` never fire -- so the receive loop polls
+# forever, holding the request lock against a worker that never answers -- and a
+# huge value lets a wedged Hex-Rays call hold that lock for as long as the caller
+# named. The MCP schema bounds this, but the agent transport invokes handlers
+# from raw model arguments with no schema check, the same gap clamp_cli_timeout
+# closes for the CLI adapters. Clamp here so the bound holds regardless of
+# transport; internal callers (close/ready-wait) stay well under it.
+_MAX_REQUEST_TIMEOUT_S = 600.0
 
 
 def next_receive_deadline(
@@ -220,6 +234,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         *,
         timeout: float = 120.0,
     ) -> JsonObject:
+        # Guard first, before the lock: a bad deadline is a bad parameter
+        # regardless of session state, and rejecting a NaN here keeps it from
+        # reaching _receive, where it would defeat the deadline entirely.
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_REQUEST_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise IdaWorkerError("invalid_params", str(exc)) from exc
         with self._request_lock:
             if self._closed:
                 raise IdaWorkerError("session_closed", "IDA worker is closed")
