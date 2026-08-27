@@ -97,6 +97,28 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.field_search")
+    def apk_field_search(
+        session_id: str,
+        query: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find declared fields whose name contains a case-insensitive query.
+
+        The field analog of apk.method_search / apk.class_search, and the way to
+        locate a config flag, base-URL holder or hardcoded key field (API_KEY,
+        sBaseUrl) across every class -- something apk.field_xrefs (which needs an
+        exact name) cannot do. Matches the field's simple name by substring,
+        case-insensitively. Each row is class_name (the declaring class), name,
+        descriptor (the field type) and access (the flag string). Answers with
+        query, fields, count, total, offset, and has_more so a filled page is not
+        read as every match. total is the number collected, capped at 2000;
+        scan_capped is true when more may exist. Rows are deduped and sorted by
+        (class_name, name, descriptor).
+        """
+        return _dump(analysis.apk_field_search(session_id, query, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

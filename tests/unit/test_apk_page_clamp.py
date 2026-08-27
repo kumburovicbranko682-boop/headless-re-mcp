@@ -169,6 +169,59 @@ def test_strings_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None
     assert payload["has_more"] is False
 
 
+class _FakeEncodedField:
+    def __init__(self, class_name: str, name: str, descriptor: str, access: str) -> None:
+        self._class_name = class_name
+        self._name = name
+        self._descriptor = descriptor
+        self._access = access
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_class_name(self) -> str:
+        return self._class_name
+
+    def get_descriptor(self) -> str:
+        return self._descriptor
+
+    def get_access_flags_string(self) -> str:
+        return self._access
+
+
+class _FakeFieldAnalysis:
+    def __init__(self, encoded: _FakeEncodedField) -> None:
+        self._encoded = encoded
+
+    def get_field(self) -> _FakeEncodedField:
+        return self._encoded
+
+
+class _FakeFieldParsed:
+    def __init__(self, fields: list[_FakeFieldAnalysis]) -> None:
+        self.analysis = self
+        self._fields = fields
+
+    def get_fields(self) -> list[_FakeFieldAnalysis]:
+        return self._fields
+
+
+def test_field_search_clamp_oversized_limit(tmp_path: Path, monkeypatch: Any) -> None:
+    fields = [
+        _FakeFieldAnalysis(
+            _FakeEncodedField(
+                f"Lcom/example/C{index:04d};", "apiKey", "Ljava/lang/String;", "private"
+            )
+        )
+        for index in range(_MAX_METHODS_PAGE + 4)
+    ]
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeFieldParsed(fields))
+    client = ApkClient()
+    payload = client.search_fields(tmp_path / "app.apk", "apikey", offset=0, limit=10**9)
+    assert payload["count"] == _MAX_METHODS_PAGE
+    assert payload["has_more"] is True
+
+
 class _FakeXrefCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
@@ -229,5 +282,6 @@ def test_client_page_caps_match_the_tool_schema_maxima() -> None:
     """
     assert _limit_schema("apk.classes")["maximum"] == _MAX_CLASSES_PAGE
     assert _limit_schema("apk.methods")["maximum"] == _MAX_METHODS_PAGE
+    assert _limit_schema("apk.field_search")["maximum"] == _MAX_METHODS_PAGE
     assert _limit_schema("apk.strings")["maximum"] == _MAX_STRINGS_PAGE
     assert _limit_schema("apk.xrefs")["maximum"] == _MAX_XREFS_PAGE

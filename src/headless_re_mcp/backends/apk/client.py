@@ -417,6 +417,77 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def search_fields(
+        self,
+        path: Path,
+        query: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Find declared fields whose name contains a case-insensitive query.
+
+        The field analog of apk.method_search / apk.class_search / apk.string
+        _search, and the way to locate a config flag, base-URL holder or
+        hardcoded key field (API_KEY, sBaseUrl) across every class -- something
+        apk.field_xrefs (which needs an exact name) and a per-class field list
+        cannot do. Matches the field's simple name by substring, case-
+        insensitively. Each row is class_name (the declaring class), name,
+        descriptor (the field type) and access (the flag string), so a constant
+        is told apart from mutable state. Rows are deduped and sorted by (class
+        _name, name, descriptor). total is the number collected, capped at 2000
+        with scan_capped when more may exist, and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        needle = query.strip()
+        if not needle:
+            raise ApkError("invalid_params", "query is required")
+        lowered = needle.lower()
+        rows: list[JsonObject] = []
+        seen: set[tuple[str, str, str]] = set()
+        scan_more = False
+        for field in parsed.analysis.get_fields():
+            if len(rows) >= _MAX_METHODS_COLLECT:
+                scan_more = True
+                break
+            try:
+                encoded = field.get_field()
+                name = str(encoded.get_name())
+            except Exception:  # noqa: BLE001 - external/malformed fields vary
+                continue
+            if lowered not in name.lower():
+                continue
+            try:
+                class_name = str(encoded.get_class_name())
+                descriptor = str(encoded.get_descriptor())
+                access = str(encoded.get_access_flags_string())
+            except Exception:  # noqa: BLE001 - external/malformed fields vary
+                continue
+            key = (class_name, name, descriptor)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "class_name": class_name,
+                    "name": name,
+                    "descriptor": descriptor,
+                    "access": access,
+                }
+            )
+        rows.sort(key=lambda row: (row["class_name"], row["name"], row["descriptor"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "query": needle,
+            "fields": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
