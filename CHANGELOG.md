@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（取消与审批消费竞态时报 FAILED 事故而非 CANCELLED）
+
+- Agent 编排器在工具审批被批准后、消费审批令牌前会先查一次取消；但若用户的停止恰好落在这次
+  检查与 `consume_approval` 调用之间,`consume_approval` 会因运行已取消而拒绝(返回 False),
+  于是抛 `PermissionError` 并铸出一条 FAILED 事故——把用户主动按下的停止误记成故障。现在在
+  `consume_approval` 拒绝后先复查取消:若确系取消则抛 `asyncio.CancelledError`,让运行如实收
+  束为 CANCELLED,而不是为没人要求失败的工作留下 FAILED 事故;真正的令牌不匹配仍照旧抛
+  `PermissionError`。新增回归覆盖这一竞态窗口。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
