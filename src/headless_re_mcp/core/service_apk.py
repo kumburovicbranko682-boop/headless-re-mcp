@@ -30,10 +30,18 @@ def _refuse_oversized_tree(path: Path, *, kind: str, error_type: type) -> None:
     if not path.exists():
         return
     try:
-        size = _dir_size(path) if path.is_dir() else int(path.stat().st_size)
+        if path.is_dir():
+            # Pass the cap as the budget so _dir_size can stop as soon as the
+            # tree is known to be over it, and so its ``over`` flag catches a
+            # tree of many small files that sums under the cap only because the
+            # walk was truncated -- exactly what apktool/jadx produce on a large
+            # or hostile APK. Without the flag such a tree defeated the cap.
+            size, over = _dir_size(path, budget=UNREGISTERED_CAPTURE_MAX_BYTES)
+        else:
+            size, over = int(path.stat().st_size), False
     except OSError:
         return
-    if size <= UNREGISTERED_CAPTURE_MAX_BYTES:
+    if not over and size <= UNREGISTERED_CAPTURE_MAX_BYTES:
         return
     with suppress(OSError):
         if path.is_dir():

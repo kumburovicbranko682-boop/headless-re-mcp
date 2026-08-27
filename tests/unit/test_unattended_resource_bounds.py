@@ -3040,6 +3040,122 @@ class TestUnregisteredCaptureDirsStayCapped:
         assert left == ["unpack-4", "unpack-5"]
 
 
+class TestDirSizeIsHonestAboutLargeTrees:
+    """The byte cap on unregistered capture trees must not be defeated by files.
+
+    ``_dir_size`` used to stop summing after a fixed file count and return a bare
+    int, so a tree of many small files (what apktool/jadx produce on a large or
+    hostile APK, and what webcrack can unpack) measured small and slipped past
+    ``max_bytes`` / the oversized-tree refusal. It now reports whether the walk
+    stopped early so the cap enforcers can treat that as "at or over the cap",
+    while a genuinely large-but-under-budget app is still measured exactly.
+    """
+
+    def test_dir_size_reports_over_once_the_byte_budget_is_passed(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.core.limits import _dir_size
+
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        for index in range(20):
+            (tree / f"f{index}.bin").write_bytes(b"x" * 1000)  # 20 KiB total
+
+        counted, over = _dir_size(tree, budget=5_000)
+        assert over is True
+        assert counted > 5_000, "must report at least the budget it crossed"
+
+        # With no budget it walks the whole tree and reports an exact, not-over size.
+        assert _dir_size(tree) == (20_000, False)
+
+    def test_a_mass_of_tiny_files_cannot_undercount_past_the_file_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.core import limits
+
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        for index in range(10):
+            (tree / f"f{index}").write_bytes(b"x")  # 10 bytes total -- trivially small
+
+        # Force the walk to truncate before it finishes: the bytes seen stay far
+        # under the budget, yet the tree must still read as over-cap because the
+        # real total is unknown. The bare-int version returned 4 here and the
+        # caller believed the tree fit.
+        monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 4)
+        counted, over = limits._dir_size(tree, budget=1_000_000)
+        assert over is True
+        assert counted < 1_000_000
+
+    def test_prune_evicts_a_subtree_too_large_to_finish_measuring(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.core import limits
+
+        root = tmp_path / "jsre"
+        root.mkdir()
+        old = root / "unpack-old"
+        old.mkdir()
+        for index in range(10):
+            (old / f"f{index}").write_bytes(b"x")
+        os.utime(old, (1, 1))
+        new = root / "unpack-new"
+        new.mkdir()
+        (new / "f").write_bytes(b"x")
+        os.utime(new, (2, 2))
+
+        # Bytes are tiny and only two entries exist, so neither the byte budget
+        # nor the entry cap would evict anything on the counts alone. The old
+        # subtree is still removed because it could not be measured within the
+        # file cap, which the pre-fix code silently treated as "fits".
+        monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 4)
+        limits.prune_capped_dir(root, max_entries=8, max_bytes=1_000_000)
+        assert sorted(path.name for path in root.iterdir()) == ["unpack-new"]
+
+    def test_refuse_oversized_tree_deletes_a_truncated_many_file_tree(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.core import limits
+        from headless_re_mcp.core.service_apk import _refuse_oversized_tree
+
+        class _Boom(Exception):
+            def __init__(self, code: str, message: str, **details: Any) -> None:
+                super().__init__(message)
+                self.code = code
+                self.details = details
+
+        tree = tmp_path / "decoded"
+        tree.mkdir()
+        for index in range(10):
+            (tree / f"s{index}.smali").write_bytes(b"x")
+        os.utime(tree, (1, 1))
+
+        monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 4)
+        with pytest.raises(_Boom):
+            _refuse_oversized_tree(tree, kind="apktool", error_type=_Boom)
+        assert not tree.exists(), "an over-cap decode tree must be deleted, not left on disk"
+
+    def test_refuse_oversized_tree_keeps_a_large_but_under_cap_app(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.core.service_apk import _refuse_oversized_tree
+
+        class _Boom(Exception):
+            def __init__(self, code: str, message: str, **details: Any) -> None:
+                super().__init__(message)
+
+        # 500 real files well under the byte cap: a legitimate large app must not
+        # be refused for its file count, which is why the file cap sits far above
+        # what a real decode produces and the byte budget does the real work.
+        tree = tmp_path / "decoded"
+        tree.mkdir()
+        for index in range(500):
+            (tree / f"s{index}.smali").write_bytes(b"x" * 100)  # ~50 KiB total
+
+        _refuse_oversized_tree(tree, kind="apktool", error_type=_Boom)
+        assert tree.exists(), "a many-file app under the byte cap must be kept"
+
+
 class TestAdbForwardsAreReleased:
     def test_a_successful_forward_is_remembered(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend

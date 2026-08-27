@@ -44,7 +44,12 @@ UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
 UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
 JSRE_UNPACK_MAX_ENTRIES = 8
 JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
-_DIR_SIZE_FILE_CAP = 4096
+# Safety valve so measuring a tree cannot walk forever on a degenerate mass of
+# tiny (even empty) files. It is deliberately far above what a real APK decode
+# or bundle unpack produces -- a genuinely large tree trips the byte budget long
+# before this -- so legitimate many-file apps are still measured exactly rather
+# than refused for their file count alone.
+_DIR_SIZE_FILE_CAP = 250_000
 
 
 class _MemoryStatusEx(ctypes.Structure):
@@ -138,7 +143,16 @@ def prune_capped_dir(
     for child in children:
         try:
             stat = child.stat()
-            size = int(stat.st_size) if child.is_file() else _dir_size(child)
+            if child.is_file():
+                size = int(stat.st_size)
+            else:
+                counted, over = _dir_size(child, budget=max_bytes)
+                # A subtree too large to finish measuring under the budget is,
+                # by that fact, over it: bill it as at least one byte past the
+                # cap so it is evicted rather than kept because only its head
+                # was summed. The pre-budget version returned an under-count,
+                # and a mass of small files then silently defeated max_bytes.
+                size = max(counted, max_bytes + 1) if over else counted
             entries.append((float(stat.st_mtime), child, size))
             total += size
         except OSError:
@@ -155,22 +169,37 @@ def prune_capped_dir(
     return removed
 
 
-def _dir_size(directory: Path) -> int:
+def _dir_size(directory: Path, *, budget: int | None = None) -> tuple[int, bool]:
+    """Recursive byte size of a tree, bounded so the walk itself stays cheap.
+
+    Returns ``(bytes, over)``. ``over`` is True when the walk stopped early --
+    the running total passed ``budget`` or the tree held more files than
+    ``_DIR_SIZE_FILE_CAP`` -- which both mean the real total is at least what
+    was counted and may be far larger. A caller enforcing a byte cap must treat
+    ``over`` as "at or over the cap": the earlier version returned a bare int
+    and, once past the file cap, silently under-reported, so a tree of many
+    small files (a hostile APK decode, a webcrack bundle) slipped past the byte
+    cap while measuring small. Passing ``budget`` also lets the walk quit as
+    soon as the answer is known instead of summing an oversized tree in full.
+    """
     total = 0
     seen = 0
     try:
         for child in directory.rglob("*"):
             try:
-                if child.is_file():
-                    total += child.stat().st_size
-                    seen += 1
-                    if seen >= _DIR_SIZE_FILE_CAP:
-                        break
+                if not child.is_file():
+                    continue
+                total += int(child.stat().st_size)
+                seen += 1
             except OSError:
                 continue
+            if budget is not None and total > budget:
+                return total, True
+            if seen >= _DIR_SIZE_FILE_CAP:
+                return total, True
     except OSError:
-        return total
-    return total
+        return total, False
+    return total, False
 
 
 def _remove_entry(path: Path) -> bool:
