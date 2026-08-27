@@ -985,8 +985,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `<asn1crypto.x509.Name 0x.. b'0<1\x0b0\t..'>` 这种对象 repr;而客户端此前正是 `str(getattr(cert, "subject"))`,
   于是「这个 APK 是谁签的」——证书读取存在的唯一意义——回来的是一坨没法看的 repr。改用 `Name.human_friendly`
   渲染成可读 DN(`Common Name: .., Organization: ..`),对没有该属性的证书形态(更老的 androguard、或本就是字符串)
-  回退到 `str`,并把「属性访问抛异常」当作没有、以免一个古怪证书把整个字段清空。新增静态单测(用替身对象钉住可读路径
-  与两条回退,不需 androguard、不需真 APK);详见下方 gate 条目的 live 覆盖。
+  回退到 `str`,并把「属性访问抛异常」当作没有、以免一个古怪证书把整个字段清空。顺带把 `sha256` 也 `str()` 兜住:
+  整个证书 payload 会跨 MCP 边界做 JSON 序列化,而 asn1crypto 的兄弟属性 `sha256`(非 `sha256_fingerprint`)是原始
+  bytes——某个证书对象在这里给出 bytes(或任何非标量)不会让采集循环失败、却会在下游序列化时崩,故每个证书字段
+  (subject/issuer/serial/sha256)都在源头钉成字符串。新增静态单测(用替身对象钉住可读路径与两条回退、并断言含
+  Name 主体与 bytes sha256 的 payload 能 `json.dumps`,不需 androguard、不需真 APK);详见下方 gate 条目的 live 覆盖。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

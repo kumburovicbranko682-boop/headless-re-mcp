@@ -319,7 +319,13 @@ class ApkClient:
                         "subject": _readable_name(getattr(cert, "subject", "")),
                         "issuer": _readable_name(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
-                        "sha256": cert.sha256_fingerprint
+                        # str()-coerced like the fields above: this whole payload
+                        # is JSON-serialized across the MCP boundary, and
+                        # asn1crypto's sibling ``sha256`` is raw bytes -- one cert
+                        # object exposing bytes here (or any non-scalar) would not
+                        # fail this loop but would crash the serializer later, so
+                        # every cert field is pinned to a string at the source.
+                        "sha256": str(cert.sha256_fingerprint)
                         if hasattr(cert, "sha256_fingerprint")
                         else "",
                     }

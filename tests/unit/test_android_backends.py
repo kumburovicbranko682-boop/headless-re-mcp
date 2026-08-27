@@ -365,6 +365,46 @@ class TestApkCertificateNamesAreReadable:
 
         assert _readable_name(_Raises()) == "fallback-dn"
 
+    def test_certificate_payload_is_json_safe_and_readable(self) -> None:
+        """Every cert field must be a JSON scalar, even for odd cert objects.
+
+        The certificates() payload is JSON-serialized across the MCP boundary.
+        asn1crypto's readable subject/issuer are Name objects and its ``sha256``
+        sibling is raw bytes, so a cert exposing a non-scalar would not fail the
+        collect loop but would crash the serializer downstream. Drive certificates()
+        with a stand-in whose subject is a Name-like object and whose
+        sha256_fingerprint is bytes, and assert the whole payload json.dumps and the
+        subject came back as a readable DN.
+        """
+        import json
+
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        class _Name:
+            human_friendly = "Common Name: Gate, Organization: HeadlessRE"
+
+        class _Cert:
+            subject = _Name()
+            issuer = _Name()
+            serial_number = 1234567890123456789
+            sha256_fingerprint = b"\x2f\xda\xfc"  # asn1crypto's sibling is bytes
+
+        class _FakeApk:
+            def get_signature_names(self) -> list[str]:
+                return ["META-INF/GATEKEY.RSA"]
+
+            def get_certificates(self) -> list[_Cert]:
+                return [_Cert()]
+
+        client = ApkClient()
+        client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+        payload = client.certificates(Path("dummy.apk"))
+        json.dumps(payload)  # the MCP boundary; must not raise on any cert field
+        cert = payload["certificates"][0]
+        assert cert["subject"] == "Common Name: Gate, Organization: HeadlessRE"
+        assert cert["serial"] == "1234567890123456789"
+        assert isinstance(cert["sha256"], str)
+
 
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:

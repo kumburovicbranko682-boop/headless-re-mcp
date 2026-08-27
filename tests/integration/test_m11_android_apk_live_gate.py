@@ -130,9 +130,15 @@ def test_m11_androguard_apk_surface() -> None:
     assert certs["v1_signed"] is True, certs
     assert any(name.endswith(".RSA") for name in certs["signature_files"]), certs
     assert certs["certificates"], certs
-    subject = certs["certificates"][0]["subject"]
-    assert "HeadlessRE Gate" in subject, subject
-    assert "asn1crypto" not in subject, subject
+    cert = certs["certificates"][0]
+    assert "HeadlessRE Gate" in cert["subject"], cert
+    assert "asn1crypto" not in cert["subject"], cert
+    # serial and sha256 are the other two cert fields; pin them as readable JSON
+    # scalars so an androguard that returns either as a non-string (bytes sha256,
+    # an object serial) -- which would crash the MCP JSON serializer, not this
+    # gate -- is caught here against the real cert.
+    assert cert["serial"].isdigit(), cert
+    assert isinstance(cert["sha256"], str) and cert["sha256"], cert
 
 
 @pytest.mark.integration
