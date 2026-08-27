@@ -79,6 +79,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   只反映“没有候选”，不等于“确认未加壳”，应按“未知”处理并在配置好 DIE 或指定 `force_route`
   后再下结论。新增两条直测：diec 未配置时 recommend 标 inconclusive 且带 note，完成的干净扫描
   不标 note。
+- `unpack.plan` 走同一条 classify→候选 的取值路径，同样只取候选、丢掉判定，于是 inconclusive
+  检测下也会给出 `route="none"` 的“优先静态分析”计划而不作声明。现按 `unpack.recommend`
+  同样的方式透传 `detection_conclusion` / `signature_scan_completed` / `detection_inconclusive`
+  / `scanners`，并在 inconclusive 时加 `note`，使“none”计划不被当成“确认未加壳”。新增两条
+  直测：diec 未配置时 plan 标 inconclusive 且带 note，完成的干净扫描不标。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
