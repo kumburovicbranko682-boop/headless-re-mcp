@@ -122,6 +122,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   新增两个单元回归（webcrack 与 wasm2wat 各一）：把上限 monkeypatch 到 4 字节后断言超限输入以
   `too_large`（细节含 `max_file_size`）拒绝，并把 `_run` 换成必失败桩证明超限文件从未到达子进程。
 
+### 新增（APK 解析缓存并发安全的回归）
+
+- `ApkClient` 的解析缓存是类级、被多线程同时访问（工具调用在线程池上跑，会话关闭又在同一批 dict 上调
+  `release()`）。客户端注释记录了当时复现出的两个故障：`release()` 遍历缓存时另一线程插入触发
+  「OrderedDict mutated during iteration」，`move_to_end` 与逐出竞争成 `KeyError`、再被结果映射误报为
+  `session_not_found`；修复是一把 RLock 罩住所有变更。但此前没有任何测试钉住它——把锁去掉只会在生产的
+  高负载下才炸。新增一个并发回归：用桩替掉 androguard，让真实的加锁缓存路径（插入 / `move_to_end` /
+  到 `_CACHE_LIMIT` 后逐出，以及 `release` 同时扫描两个 dict）在把线程切换间隔压到 1e-6 的条件下由多线程
+  同时跑（正是注释复现所用的条件），断言全程无异常且无线程挂起；顺带兜住把 RLock 误改成会自死锁的普通锁。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：

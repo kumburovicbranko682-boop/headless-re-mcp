@@ -378,6 +378,109 @@ class TestApktoolBoundaries:
         assert info.value.details.get("exit_code") == 1
 
 
+class TestApkCacheIsThreadSafe:
+    """The parse cache is class-level and reached from several threads at once.
+
+    Tool calls run on a worker pool while a session close calls release() on the
+    same dicts. The client's comment records the reproduced failures: release()
+    iterating the cache while another thread inserted raised "OrderedDict mutated
+    during iteration", and move_to_end raced eviction into a KeyError the result
+    mapper then reported as session_not_found. One RLock over every mutation is
+    what fixes it -- but nothing pinned the fix, so dropping the lock would only
+    surface under load in production. This drives the real locked cache path
+    (insert, move_to_end, capped eviction, and release scanning both dicts) from
+    several threads with the switch interval forced low, exactly the conditions
+    the comment used to reproduce the corruption.
+    """
+
+    def test_concurrent_parse_and_release_never_corrupt_the_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import threading
+        import types
+
+        from headless_re_mcp.backends.apk import client as mod
+
+        # Stand-ins for androguard so the real locked cache path runs without
+        # parsing anything. _apk imports APK; _parsed imports AnalyzeAPK.
+        class _FakeAPK:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+        core_apk = types.ModuleType("androguard.core.apk")
+        core_apk.APK = _FakeAPK  # type: ignore[attr-defined]
+        misc = types.ModuleType("androguard.misc")
+        misc.AnalyzeAPK = lambda path: (_FakeAPK(path), object(), object())  # type: ignore[attr-defined]
+        for name, module in (
+            ("androguard", types.ModuleType("androguard")),
+            ("androguard.core", types.ModuleType("androguard.core")),
+            ("androguard.core.apk", core_apk),
+            ("androguard.misc", misc),
+        ):
+            monkeypatch.setitem(sys.modules, name, module)
+
+        # Distinct real files so keys differ and eviction actually fires
+        # (_CACHE_LIMIT is 4); mtime-based keys need the files to exist.
+        apks = []
+        for index in range(8):
+            path = tmp_path / f"app{index}.apk"
+            path.write_bytes(b"PK")
+            apks.append(path)
+
+        client = mod.ApkClient()
+        assert client.available  # the stubbed import makes androguard "present"
+
+        # Start from an empty cache and restore it after, so this test cannot
+        # leak entries into siblings that read the class-level dicts.
+        with mod.ApkClient._cache_lock:
+            light_backup = dict(mod.ApkClient._light_cache)
+            full_backup = dict(mod.ApkClient._full_cache)
+            mod.ApkClient._light_cache.clear()
+            mod.ApkClient._full_cache.clear()
+
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def guarded(work: Any) -> Any:
+            def run() -> None:
+                try:
+                    for _ in range(100):
+                        if stop.is_set():
+                            return
+                        for path in apks:
+                            work(path)
+                except BaseException as exc:  # noqa: BLE001 - catching the race is the point
+                    errors.append(exc)
+                    stop.set()
+
+            return run
+
+        threads = (
+            [threading.Thread(target=guarded(client._apk)) for _ in range(3)]
+            + [threading.Thread(target=guarded(client._parsed)) for _ in range(3)]
+            + [threading.Thread(target=guarded(mod.ApkClient.release)) for _ in range(3)]
+        )
+
+        previous_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # the comment's "switch interval forced low"
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+        finally:
+            sys.setswitchinterval(previous_interval)
+            with mod.ApkClient._cache_lock:
+                mod.ApkClient._light_cache.clear()
+                mod.ApkClient._full_cache.clear()
+                mod.ApkClient._light_cache.update(light_backup)
+                mod.ApkClient._full_cache.update(full_backup)
+
+        assert errors == [], f"cache access raced: {errors[0]!r}"
+        assert all(not thread.is_alive() for thread in threads), "a cache worker hung"
+
+
 class TestPeOnlyToolsRefuseApkSessions:
     def test_detect_dotnet_and_unpack_return_target_mismatch(self, tmp_path: Path) -> None:
         from dataclasses import replace
