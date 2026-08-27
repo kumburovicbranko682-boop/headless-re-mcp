@@ -113,6 +113,85 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_jvm_tool_probe_flags_missing_java_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # jadx/apktool/apksigner are only JVM launchers: finding the wrapper on PATH
+    # does not mean it can run, so a missing java must show up as a hint rather
+    # than a bare "detected" that misleads the operator (same as probe_ghidra).
+    on_path = tmp_path / "jadx"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda cmd: str(on_path) if cmd == "jadx" else None
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=None)
+
+    probe = probe_optional_tool("jadx", settings, "jadx", ("jadx", "jadx.bat"), needs_java=True)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is not None
+    assert "java" in probe.remediation.lower()
+    assert "java is not on PATH" in probe.summary
+
+
+def test_jvm_tool_probe_is_clean_when_java_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = tmp_path / "apktool"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path)
+        if cmd == "apktool"
+        else ("/usr/bin/java" if cmd == "java" else None),
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), apktool=None)
+
+    probe = probe_optional_tool(
+        "apktool", settings, "apktool", ("apktool", "apktool.bat"), needs_java=True
+    )
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is None
+    assert "java is not on PATH" not in probe.summary
+
+
+def test_jvm_tool_probe_flags_missing_java_for_configured_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = tmp_path / "apksigner"
+    configured.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    settings = replace(_settings(None, tmp_path / "artifacts"), apksigner=configured)
+
+    probe = probe_optional_tool(
+        "apksigner", settings, "apksigner", ("apksigner",), needs_java=True
+    )
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is not None
+    assert probe.details["path"] == str(configured)
+
+
+def test_non_jvm_tool_probe_needs_no_java_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A native tool (radare2) must not grow a JRE hint just because java is
+    # absent: needs_java stays False and the probe is a clean detection.
+    on_path = tmp_path / "r2"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda cmd: str(on_path) if cmd == "r2" else None
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is None
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)
