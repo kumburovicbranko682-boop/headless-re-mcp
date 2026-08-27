@@ -81,6 +81,26 @@ def _lc_load_dylib(name: str) -> bytes:
     return bytes(cmd)
 
 
+def _lc_load_dylinker(path: str) -> bytes:
+    raw = path.encode() + b"\x00"
+    total = (12 + len(raw) + 3) & ~3  # cmd, cmdsize, name offset (12), then the path
+    cmd = bytearray(total)
+    cmd[0:4] = (0x0E).to_bytes(4, "little")  # LC_LOAD_DYLINKER
+    cmd[4:8] = total.to_bytes(4, "little")
+    cmd[8:12] = (12).to_bytes(4, "little")  # name offset
+    cmd[12 : 12 + len(raw)] = raw
+    return bytes(cmd)
+
+
+def _lc_filler(size: int) -> bytes:
+    # A load command the reader does not recognise, used to push later commands
+    # past the header window so the streamed read is what reaches them.
+    cmd = bytearray(size)
+    cmd[0:4] = (0x7FFFFFFF).to_bytes(4, "little")
+    cmd[4:8] = size.to_bytes(4, "little")
+    return bytes(cmd)
+
+
 def _lc_uuid() -> bytes:
     return (0x1B).to_bytes(4, "little") + (24).to_bytes(4, "little") + b"\x00" * 16
 
@@ -327,6 +347,39 @@ def test_macho_static_executable_has_no_dylibs(tmp_path: Path) -> None:
     assert facts["pie"] is False
     assert facts["linking"] == "static"
     assert "dylibs" not in facts
+    assert "interpreter" not in facts
+
+
+def test_macho_records_its_dynamic_linker(tmp_path: Path) -> None:
+    # LC_LOAD_DYLINKER is the Mach-O PT_INTERP: it names the loader, so a native
+    # session reports it the way it reports an ELF's interpreter.
+    dyld = "/usr/lib/dyld"
+    lib = "/usr/lib/libSystem.B.dylib"
+    data = _macho64_full(
+        filetype=2,  # MH_EXECUTE
+        flags=0x00200000 | 0x4,  # MH_PIE | MH_DYLDLINK
+        load_cmds=_lc_load_dylinker(dyld) + _lc_load_dylib(lib),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["interpreter"] == dyld
+    assert facts["dylibs"] == [lib]
+
+
+def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:
+    # A dylib whose load command sits beyond the 4 KiB header window is only
+    # reachable by reading the whole load-command region from the file, the way
+    # the ELF reader seeks rather than working off the window alone.
+    lib = "/usr/lib/libLate.dylib"
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,  # MH_DYLDLINK
+        load_cmds=_lc_filler(5000) + _lc_load_dylib(lib),
+        ncmds=2,
+    )
+    assert len(data) > 4096  # the dylib command is past the header window
+    facts = describe_native(_write(tmp_path, "big.bin", data))["native"]
+    assert facts["dylibs"] == [lib]
 
 
 def test_macho_universal_lists_slices(tmp_path: Path) -> None:

@@ -437,8 +437,13 @@ _MACHO_CPU = {
 _MH_PIE = 0x00200000
 _MH_DYLDLINK = 0x00000004
 _LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, reexport
+_LC_LOAD_DYLINKER = 0x0E  # names the dynamic linker -- the Mach-O PT_INTERP
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
+# The header window read for identity facts is small, but a real image's load
+# commands can run past it, so the command region is read in full from the file
+# (bounded) rather than truncated at the window, the way the ELF reader seeks.
+_MACHO_MAX_CMDS_BYTES = 2 * 1024 * 1024
 _MACHO_FILETYPES = {
     1: "object",
     2: "execute",
@@ -1790,7 +1795,7 @@ def describe_native(path: Path) -> dict[str, Any]:
                 return {"native": _elf_facts(head, stream)}
             magic = head[:4]
             if magic in _MACHO_THIN_MAGICS:
-                return {"native": _macho_thin_facts(head, magic)}
+                return {"native": _macho_thin_facts(head, magic, stream)}
             if magic == _MACHO_FAT_MAGIC:
                 facts = _macho_fat_facts(head)
                 return {"native": facts} if facts else {}
@@ -2033,7 +2038,7 @@ def _elf_is_stripped(
     return True
 
 
-def _macho_thin_facts(head: bytes, magic: bytes) -> dict[str, Any]:
+def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, Any]:
     bits, order = _MACHO_THIN_MAGICS[magic]
     facts: dict[str, Any] = {"format": "macho", "bits": bits, "endianness": order}
     if len(head) >= 16:
@@ -2042,46 +2047,85 @@ def _macho_thin_facts(head: bytes, magic: bytes) -> dict[str, Any]:
         facts["arch"] = _MACHO_CPU.get(cputype, f"cpu_{cputype}")
         facts["type"] = _MACHO_FILETYPES.get(filetype, f"type_{filetype}")
     # The header flags and load commands answer the same triage questions the
-    # ELF reader does: position independence, dynamic linking, and which shared
-    # libraries the image pulls in. The mach_header flags sit at offset 24 in
-    # both the 32- and 64-bit layouts.
+    # ELF reader does: position independence, dynamic linking, which dynamic
+    # linker loads the image, and which shared libraries it pulls in. The flags
+    # sit at offset 24 in both the 32- and 64-bit layouts.
     if len(head) >= 28:
         ncmds = int.from_bytes(head[16:20], order)  # type: ignore[arg-type]
+        sizeofcmds = int.from_bytes(head[20:24], order)  # type: ignore[arg-type]
         flags = int.from_bytes(head[24:28], order)  # type: ignore[arg-type]
         facts["pie"] = bool(flags & _MH_PIE)
         facts["linking"] = "dynamic" if flags & _MH_DYLDLINK else "static"
-        dylibs = _macho_dylibs(head, order, 32 if bits == 64 else 28, ncmds)
+        cmd_off = 32 if bits == 64 else 28
+        cmds = _macho_read_load_commands(stream, cmd_off, sizeofcmds, head)
+        dylibs, interpreter = _macho_load_commands(cmds, order, ncmds)
         if dylibs is not None:
             facts["dylibs"] = dylibs
+        if interpreter is not None:
+            facts["interpreter"] = interpreter
     return facts
 
 
-def _macho_dylibs(head: bytes, order: str, offset: int, ncmds: int) -> list[str] | None:
-    """Shared-library names from LC_LOAD_DYLIB / weak / reexport load commands.
+def _macho_read_load_commands(
+    stream: BinaryIO, cmd_off: int, sizeofcmds: int, head: bytes
+) -> bytes:
+    """Return the load-command region, from the head window or a bounded read.
 
-    Bounded by the command count and the header window already read; a command
-    whose body runs past that window stops enumeration rather than seeking on.
+    Small images keep their commands inside the header window already read; a
+    larger one has them read straight from the file, capped so a corrupt
+    sizeofcmds cannot force a large allocation.
+    """
+    if sizeofcmds <= 0:
+        return b""
+    cap = min(sizeofcmds, _MACHO_MAX_CMDS_BYTES)
+    if cmd_off + cap <= len(head):
+        return head[cmd_off : cmd_off + cap]
+    try:
+        stream.seek(cmd_off)
+        return stream.read(cap)
+    except OSError:
+        return head[cmd_off:] if cmd_off < len(head) else b""
+
+
+def _macho_lc_str(cmds: bytes, pos: int, cmdsize: int, order: str) -> str | None:
+    """Decode a load command's lc_str (an offset into its own body)."""
+    name_off = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+    if 8 <= name_off < cmdsize:
+        raw = cmds[pos + name_off : pos + cmdsize]
+        return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace") or None
+    return None
+
+
+def _macho_load_commands(
+    cmds: bytes, order: str, ncmds: int
+) -> tuple[list[str] | None, str | None]:
+    """Walk the load commands for the dylib list and the dynamic linker path.
+
+    Returns ``(dylibs, interpreter)``. ``dylibs`` is None when the command count
+    is out of range (undetermined), else the list of LC_LOAD_DYLIB / weak /
+    reexport names. Bounded by the command count and the region already sized; a
+    command whose body runs past that region stops the walk.
     """
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
-        return None
+        return None, None
     names: list[str] = []
-    pos = offset
+    interpreter: str | None = None
+    pos = 0
     for _ in range(ncmds):
-        if pos + 8 > len(head):
+        if pos + 8 > len(cmds):
             break
-        cmd = int.from_bytes(head[pos : pos + 4], order)  # type: ignore[arg-type]
-        cmdsize = int.from_bytes(head[pos + 4 : pos + 8], order)  # type: ignore[arg-type]
-        if cmdsize < 8 or pos + cmdsize > len(head):
+        cmd = int.from_bytes(cmds[pos : pos + 4], order)  # type: ignore[arg-type]
+        cmdsize = int.from_bytes(cmds[pos + 4 : pos + 8], order)  # type: ignore[arg-type]
+        if cmdsize < 8 or pos + cmdsize > len(cmds):
             break
-        if cmd in _LC_DYLIB_CMDS:
-            name_off = int.from_bytes(head[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
-            if 8 <= name_off < cmdsize and len(names) < _MACHO_MAX_DYLIBS:
-                raw = head[pos + name_off : pos + cmdsize]
-                name = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
-                if name:
-                    names.append(name)
+        if cmd in _LC_DYLIB_CMDS and len(names) < _MACHO_MAX_DYLIBS:
+            name = _macho_lc_str(cmds, pos, cmdsize, order)
+            if name:
+                names.append(name)
+        elif cmd == _LC_LOAD_DYLINKER and interpreter is None:
+            interpreter = _macho_lc_str(cmds, pos, cmdsize, order)
         pos += cmdsize
-    return names
+    return names, interpreter
 
 
 def _macho_fat_facts(head: bytes) -> dict[str, Any]:
