@@ -132,6 +132,8 @@ class SessionRegistry:
                 metadata = describe_pe_clr(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
+            elif kind is TargetKind.NATIVE:
+                metadata = describe_native(path)
             session = Session(
                 target=kind,
                 binary=path,
@@ -372,6 +374,56 @@ _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
+# Native (non-PE) binaries. ELF (Linux/BSD) starts with 0x7f 'E' 'L' 'F'; Mach-O
+# (macOS) thin objects start with one of four byte orders of the MH magic, and a
+# universal ("fat") binary starts with 0xCAFEBABE. These are the native inputs
+# for radare2, Ghidra and frida, so classifying them lets a session open over
+# them instead of failing detect_pe_architecture with "not a PE file".
+_MACHO_THIN_MAGICS = {
+    b"\xfe\xed\xfa\xce": (32, "big"),
+    b"\xce\xfa\xed\xfe": (32, "little"),
+    b"\xfe\xed\xfa\xcf": (64, "big"),
+    b"\xcf\xfa\xed\xfe": (64, "little"),
+}
+_MACHO_FAT_MAGIC = b"\xca\xfe\xba\xbe"
+# Real universal binaries carry a handful of slices; the cap also disambiguates
+# Java .class files (whose 0xCAFEBABE is followed by a version >= 45).
+_NATIVE_MAX_FAT_ARCHS = 20
+_NATIVE_HEADER_BYTES = 4096
+_ELF_TYPES = {1: "rel", 2: "exec", 3: "dyn", 4: "core"}
+_ELF_MACHINES = {
+    2: "sparc",
+    3: "x86",
+    8: "mips",
+    20: "ppc",
+    21: "ppc64",
+    22: "s390",
+    40: "arm",
+    62: "x86-64",
+    183: "arm64",
+    243: "riscv",
+}
+_MACHO_CPU = {
+    7: "x86",
+    12: "arm",
+    18: "ppc",
+    0x01000007: "x86-64",
+    0x0100000C: "arm64",
+    0x01000012: "ppc64",
+}
+_MACHO_FILETYPES = {
+    1: "object",
+    2: "execute",
+    3: "fvmlib",
+    4: "core",
+    5: "preload",
+    6: "dylib",
+    7: "dylinker",
+    8: "bundle",
+    9: "dsym",
+    10: "kext_bundle",
+}
+
 # APK Signature Scheme v2/v3 live in the APK Signing Block, which sits between
 # the last local entry and the central directory -- not as ZIP entries, so the
 # v1 (JAR) META-INF check cannot see them. A modern apksigner build is often
@@ -470,6 +522,10 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
+    if magic.startswith(b"\x7fELF") or magic[:4] in _MACHO_THIN_MAGICS:
+        return TargetKind.NATIVE
+    if magic.startswith(_MACHO_FAT_MAGIC) and _is_macho_fat(path):
+        return TargetKind.NATIVE
     return TargetKind.PE
 
 
@@ -479,6 +535,26 @@ def _is_android_package(path: Path) -> bool:
             return _APK_MANIFEST in archive.namelist()
     except (OSError, zipfile.BadZipFile):
         return False
+
+
+def _is_macho_fat(path: Path) -> bool:
+    """Validate a 0xCAFEBABE header as a Mach-O universal binary.
+
+    A Java ``.class`` file shares the 0xCAFEBABE magic, so a magic match alone is
+    not enough: require a plausible slice count and a first slice whose cputype
+    is a known Mach-O CPU. Java's version and constant-pool bytes fail both.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(12)
+    except OSError:
+        return False
+    if len(head) < 12 or head[:4] != _MACHO_FAT_MAGIC:
+        return False
+    slices = int.from_bytes(head[4:8], "big")
+    if not 1 <= slices <= _NATIVE_MAX_FAT_ARCHS:
+        return False
+    return int.from_bytes(head[8:12], "big") in _MACHO_CPU
 
 
 def describe_apk(path: Path) -> dict[str, Any]:
@@ -1528,3 +1604,83 @@ def _clr_metadata_version(
         return None
     raw = stream.read(version_len)
     return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+
+
+def describe_native(path: Path) -> dict[str, Any]:
+    """Tool-free identity facts for an ELF or Mach-O binary.
+
+    Parallels describe_pe_clr for the native lines: reads only the leading
+    header bytes to report the container format, bitness, byte order, image
+    type and CPU, so a radare2/Ghidra/frida session over a Linux or macOS
+    binary knows what it is opened before any external tool runs. Fail-closed:
+    an unreadable or unrecognised header yields ``{}``.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(_NATIVE_HEADER_BYTES)
+    except OSError:
+        return {}
+    if head.startswith(b"\x7fELF"):
+        return {"native": _elf_facts(head)}
+    magic = head[:4]
+    if magic in _MACHO_THIN_MAGICS:
+        return {"native": _macho_thin_facts(head, magic)}
+    if magic == _MACHO_FAT_MAGIC:
+        facts = _macho_fat_facts(head)
+        return {"native": facts} if facts else {}
+    return {}
+
+
+def _elf_facts(head: bytes) -> dict[str, Any]:
+    facts: dict[str, Any] = {"format": "elf"}
+    if len(head) < 20:
+        return facts
+    facts["bits"] = {1: 32, 2: 64}.get(head[4])
+    order: str | None = {1: "little", 2: "big"}.get(head[5])
+    facts["endianness"] = order
+    if order is None:
+        return facts
+    e_type = int.from_bytes(head[16:18], order)  # type: ignore[arg-type]
+    e_machine = int.from_bytes(head[18:20], order)  # type: ignore[arg-type]
+    facts["type"] = _ELF_TYPES.get(e_type, f"type_{e_type}")
+    facts["arch"] = _ELF_MACHINES.get(e_machine, f"machine_{e_machine}")
+    return facts
+
+
+def _macho_thin_facts(head: bytes, magic: bytes) -> dict[str, Any]:
+    bits, order = _MACHO_THIN_MAGICS[magic]
+    facts: dict[str, Any] = {"format": "macho", "bits": bits, "endianness": order}
+    if len(head) >= 16:
+        cputype = int.from_bytes(head[4:8], order)  # type: ignore[arg-type]
+        filetype = int.from_bytes(head[12:16], order)  # type: ignore[arg-type]
+        facts["arch"] = _MACHO_CPU.get(cputype, f"cpu_{cputype}")
+        facts["type"] = _MACHO_FILETYPES.get(filetype, f"type_{filetype}")
+    return facts
+
+
+def _macho_fat_facts(head: bytes) -> dict[str, Any]:
+    # A fat header is defined big-endian: magic, slice count, then fat_arch rows
+    # of (cputype, cpusubtype, offset, size, align) = 20 bytes each. Validate the
+    # same way the classifier does so a Java .class (which shares 0xCAFEBABE)
+    # yields nothing rather than a bogus universal-binary description.
+    if len(head) < 12:
+        return {}
+    slices = int.from_bytes(head[4:8], "big")
+    if not 0 < slices <= _NATIVE_MAX_FAT_ARCHS:
+        return {}
+    if int.from_bytes(head[8:12], "big") not in _MACHO_CPU:
+        return {}
+    arches: list[str] = []
+    pos = 8
+    for _ in range(slices):
+        if pos + 8 > len(head):
+            break
+        cputype = int.from_bytes(head[pos : pos + 4], "big")
+        arches.append(_MACHO_CPU.get(cputype, f"cpu_{cputype}"))
+        pos += 20
+    return {
+        "format": "macho-universal",
+        "endianness": "big",
+        "slice_count": slices,
+        "architectures": arches,
+    }

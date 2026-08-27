@@ -44,12 +44,16 @@ class TargetKind(StrEnum):
     The debugger-oriented tools assume a local PE with a known machine type.
     Android and browser targets share the session lifecycle, artifacts and
     knowledge store but cannot answer PE questions, so every tool that needs a
-    PE says so explicitly rather than failing deep inside a backend.
+    PE says so explicitly rather than failing deep inside a backend. NATIVE is a
+    non-PE native binary (ELF or Mach-O): the cross-platform tools (radare2,
+    Ghidra, frida) read it through ``require_binary``, while the PE-only
+    debuggers reject it through ``require_pe`` like any other non-PE session.
     """
 
     PE = "pe"
     APK = "apk"
     WEB = "web"
+    NATIVE = "native"
 
 
 class TargetMismatch(RuntimeError):
