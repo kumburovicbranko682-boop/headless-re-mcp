@@ -384,7 +384,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   或已被清出记 `not_found`；对着一个 JavaScript scriptId 调用是 `invalid_params`；超过抓包容量上限的模块
   `too_large`。它是 `web.script.source` 的二进制孪生（同样按 scriptId 取单个脚本的内容供分析），故归入只读；
   工具面因此从 265 增至 266（149 只读 / 117 写）。
-- **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
+- **`web.console` 收得到 `console.*`，却漏掉未捕获异常与未处理的 Promise 拒绝——正是逆向最想看的那类失败**。
+  控制台环形缓冲只挂了 `Runtime.consoleAPICalled`，而一个逃逸的 `throw`（反篡改检查抛错、混淆代码在某处崩掉）
+  或一个 unhandled rejection 走的是 `Runtime.exceptionThrown` 这条独立事件——DevTools 控制台照样显示，我们却
+  只字不收。`Runtime.enable` 本就同时发这两个事件，缺的只是处理器。现在新增 `on_exception`：把异常渲染成一条
+  控制台行（`text` 头 "Uncaught" / "Uncaught (in promise)" 接 `exception.description` 的完整 "Error: msg\n at …"
+  栈，抛原始量则接其 `value`），与其他控制台行共用同一环形写入器和 `_MAX_CONSOLE_TEXT` 逐行上限（一个抛出
+  兆字节字符串的页面钉不住缓冲）。落库的 entry 记 `type:"error"` 并置 `uncaught:true`，让调用方能把「抛出的
+  失败」与「页面自己 `console.error` 的」区分开，引擎报了抛出点时附上 `url`/`line`。`console.*` 的既有行为不变。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

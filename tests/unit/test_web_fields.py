@@ -86,6 +86,7 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     assert "has_more" in doc
     assert "dropped" in doc
     assert "text_truncated" in doc
+    assert "uncaught" in doc
 
 
 def test_web_network_list_puts_the_page_in_requests_not_type(

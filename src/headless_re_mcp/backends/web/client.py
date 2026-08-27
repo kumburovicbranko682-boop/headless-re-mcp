@@ -154,6 +154,39 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _clip_exception_text(params: JsonObject) -> tuple[str, bool]:
+    """Render a ``Runtime.exceptionThrown`` payload into one console-style line.
+
+    Uncaught errors and unhandled promise rejections arrive on this event, not
+    ``consoleAPICalled``, so without handling it the console buffer misses
+    exactly the failures an analyst watches for. DevTools shows the ``text``
+    header ("Uncaught", "Uncaught (in promise)") followed by the exception's
+    ``description`` -- an ``Error`` carries its whole "Error: msg\\n    at ..."
+    stack -- or, for a thrown primitive, its ``value``. Clipped to the same
+    per-message cap as every other console line so a page throwing a megabyte
+    string cannot pin it in the ring.
+    """
+    details = params.get("exceptionDetails")
+    if not isinstance(details, dict):
+        return "", False
+    parts: list[str] = []
+    head = details.get("text")
+    if isinstance(head, str) and head:
+        parts.append(head)
+    exc = details.get("exception")
+    if isinstance(exc, dict):
+        desc = exc.get("description")
+        if isinstance(desc, str) and desc:
+            parts.append(desc)
+        elif "value" in exc:
+            value = exc.get("value")
+            parts.append(value if isinstance(value, str) else str(value))
+    message = " ".join(parts)
+    if len(message) > _MAX_CONSOLE_TEXT:
+        return message[:_MAX_CONSOLE_TEXT], True
+    return message, False
+
+
 def _spill_text(
     text: str,
     *,
@@ -519,6 +552,15 @@ class WebBackend:
                     handle.scripts.popitem(last=False)
                     handle.scripts_dropped += 1
 
+        def record_console(entry: JsonObject) -> None:
+            with handle.lock:
+                if (
+                    handle.console.maxlen is not None
+                    and len(handle.console) == handle.console.maxlen
+                ):
+                    handle.console_dropped += 1
+                handle.console.append(entry)
+
         def on_console(params: JsonObject) -> None:
             text, text_truncated = _clip_console_text(params)
             entry: JsonObject = {
@@ -527,13 +569,32 @@ class WebBackend:
             }
             if text_truncated:
                 entry["text_truncated"] = True
-            with handle.lock:
-                if (
-                    handle.console.maxlen is not None
-                    and len(handle.console) == handle.console.maxlen
-                ):
-                    handle.console_dropped += 1
-                handle.console.append(entry)
+            record_console(entry)
+
+        def on_exception(params: JsonObject) -> None:
+            # Uncaught errors and unhandled promise rejections come over
+            # exceptionThrown, not consoleAPICalled; folding them into the same
+            # ring is what makes the buffer match what DevTools shows. Typed
+            # "error" and flagged uncaught so a caller can tell a thrown failure
+            # from a console.error the page chose to emit, with the throw site
+            # (url/line) attached when CDP reported one.
+            text, text_truncated = _clip_exception_text(params)
+            entry: JsonObject = {
+                "type": "error",
+                "text": text or "Uncaught (exception)",
+                "uncaught": True,
+            }
+            if text_truncated:
+                entry["text_truncated"] = True
+            details = params.get("exceptionDetails")
+            if isinstance(details, dict):
+                url, _ = _bounded_metadata(details.get("url"), _MAX_URL_BYTES)
+                if url:
+                    entry["url"] = url
+                line = details.get("lineNumber")
+                if isinstance(line, int):
+                    entry["line"] = line
+            record_console(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
@@ -544,6 +605,7 @@ class WebBackend:
         # on a page logging 60 lines, growing for as long as the session lived.
         # The same information arrives here as plain data.
         cdp.on("Runtime.consoleAPICalled", on_console)
+        cdp.on("Runtime.exceptionThrown", on_exception)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)
