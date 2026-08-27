@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from headless_re_mcp.backends.apktool import client as apktool_mod
-from headless_re_mcp.backends.common.bounded_run import InvalidTimeout, clamp_cli_timeout
+from headless_re_mcp.backends.common.bounded_run import (
+    Completed,
+    InvalidTimeout,
+    clamp_cli_timeout,
+)
 from headless_re_mcp.backends.jadx import client as jadx_mod
 from headless_re_mcp.backends.jsre import client as jsre_mod
 from headless_re_mcp.backends.r2 import client as r2_mod
@@ -34,7 +37,9 @@ class _Recorder:
 
     def __call__(self, cmd: list[str], *, timeout: float, creationflags: int = 0, **_: Any) -> Any:
         self.timeouts.append(timeout)
-        return SimpleNamespace(stdout=b"", stderr=b"", returncode=0)
+        # A real Completed, not a bare namespace: run() reads stdout_truncated to
+        # tell an 8 MiB drain-buffer cap from an ordinary cut.
+        return Completed(returncode=0, stdout=b"", stderr=b"")
 
 
 class TestClampCliTimeout:
