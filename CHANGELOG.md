@@ -558,6 +558,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`frida.java.classes` / `frida.java.methods` 的 `pid` 参数没在 schema 上设界**。这是
+  frida 面上最后两个未设界的数值参数：`pid` 是裸 int、默认 0。服务把 0 读作「用本会话最近
+  一次 spawn/attach 的 pid」，其它值转发给 frida 客户端，`_authorize` 会把 `pid <= 0` 判成
+  `invalid_params`、把不在授权集里的 pid 判成 `permission_denied`——但都要等工具已经派发到
+  后端才报。现在把下界钉到 0（保留 0 这个哨兵）并补上参数说明，负 pid 在 MCP 边界即被拒，
+  与其它数值参数一致。
 
 ### 新增（项目文档）
 

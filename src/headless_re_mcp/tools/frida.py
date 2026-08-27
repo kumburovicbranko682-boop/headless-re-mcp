@@ -150,12 +150,22 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         name_filter: str = "",
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[
+            int,
+            Field(
+                ge=0,
+                description="Device pid to target; 0 uses the session's most recently "
+                "spawned/attached pid",
+            ),
+        ] = 0,
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
         Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        limit is not read as every loaded class. pid defaults to 0, which
+        targets the session's most recently spawned/attached pid; a negative
+        pid is refused at the schema and any explicit pid must be one this
+        session authorized.
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -166,12 +176,22 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         class_name: str,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
-        pid: int = 0,
+        pid: Annotated[
+            int,
+            Field(
+                ge=0,
+                description="Device pid to target; 0 uses the session's most recently "
+                "spawned/attached pid",
+            ),
+        ] = 0,
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
         Answers with methods, class_name, count, and has_more so a page that
-        filled the limit is not read as every declared method.
+        filled the limit is not read as every declared method. pid defaults to
+        0, which targets the session's most recently spawned/attached pid; a
+        negative pid is refused at the schema and any explicit pid must be one
+        this session authorized.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
