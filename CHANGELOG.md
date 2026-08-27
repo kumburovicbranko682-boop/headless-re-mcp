@@ -97,6 +97,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
+### 修复（外部 unpacker CLI 的 timeout schema 上限与实际执行上限对不上）
+
+- **`unpack.xvlkc.unpack` / `unpack.vmp.dump` / `unpack.scylla.rebuild` 的 schema 声明
+  `0 < timeout <= 600`,但服务层把 `timeout` 一律过 `_detection_timeout`,该校验对超过
+  `MAX_WORKFLOW_TIMEOUT`（300s）的值直接抛 `ValueError`。** 于是一个通过 MCP schema 校验的
+  合法 `timeout=400` 会在服务层被拒为「timeout must be greater than 0 and at most 300
+  seconds」——一个调用方从未被告知的上限。相邻的 `unpack.start`（同为 le=600）把 `timeout`
+  当编排 deadline 存下、并不过 `_detection_timeout`,所以它确实能用到 600;而这三个外部
+  unpacker 复用了本为快速检测扫描准备的 `_detection_timeout`,300 的硬顶来自有名字的权威常量
+  `MAX_WORKFLOW_TIMEOUT`,schema 里的 600 只是一个没有出处的字面量。将这三个 schema 的上限
+  收紧到 `le=300` 与实际执行一致：不改变任何本就能跑的行为（≤300 照旧,(300,600] 本就一直被服务层
+  拒绝）,只是让越界请求在传输层就以真实上限被拒,而非在下游冒出一个没预告的 300 错误。补回归测试
+  把这三个工具的 schema 上限钉到 `MAX_WORKFLOW_TIMEOUT`,并钉住 `_detection_timeout` 恰好接受
+  300、拒绝 300.0001/600,防止 schema 与执行再次漂移。
+
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
