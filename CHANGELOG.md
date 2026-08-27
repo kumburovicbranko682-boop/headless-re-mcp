@@ -307,6 +307,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   自动关闭故先等服务端确认再手动关闭;并在测试内强制 fail-closed autonomy,让 `workflow.cancel`
   真正停下等人批(默认加壳 PE 预设会自动批 `state_change` 而跳过审批 UI)。中途 reload 后转而
   断言持久信号(审批卡被消费、Events 页出现 `run.completed` / `run.rejected`)而非易失的流式文本。
+  该 Gate 现也遵循 skip != pass:chromium 可执行文件确实没装时(裸机)捕获 `playwright` 的启动
+  异常并 skip,而非硬失败——与其余 web Gate 一致;CI 装了浏览器仍照跑。
 
 ### 修复（`proxy.flow.get` 头部无界回传）
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import uvicorn
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
@@ -105,10 +106,19 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # system Chrome path made this gate silently Windows-only even though
             # the browser it exercises is fully cross-platform; the bundled
             # browser is also more reproducible across machines.
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=["--disable-gpu", "--no-first-run"],
-            )
+            try:
+                browser = playwright.chromium.launch(
+                    headless=True,
+                    args=["--disable-gpu", "--no-first-run"],
+                )
+            except PlaywrightError as exc:
+                # Chromium genuinely absent (never installed): skip rather than
+                # hard-fail, so the gate stays honest on a bare machine like the
+                # other web gates. CI installs the browser, so it still runs there.
+                pytest.skip(
+                    f"playwright chromium not installed — browser smoke gate not run: "
+                    f"{exc} (skip != pass)"
+                )
             page = browser.new_page()
 
             def capture(response: Response) -> None:
