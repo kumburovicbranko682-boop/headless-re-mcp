@@ -9,6 +9,7 @@ the password argument withheld.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -52,10 +53,37 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     )
 
 
+def _discover(name: str) -> Path | None:
+    for candidate in (name, f"{name}.bat"):
+        found = shutil.which(candidate)
+        if found:
+            return Path(found)
+    return None
+
+
+def _resolve_tool(configured: Path | None, name: str) -> Path | None:
+    """An apktool/apksigner that is actually there, resolved the way doctor does.
+
+    ``__init__`` used to keep any configured path verbatim, so a stale or typo'd
+    ``HEADLESS_RE_APKTOOL`` / ``HEADLESS_RE_APKSIGNER`` left ``available`` /
+    ``signer_available`` False and every ``apk.decode`` / ``repack`` / ``sign``
+    call ``capability_unavailable`` even with the tool on PATH -- while
+    ``doctor``'s ``probe_optional_tool`` and the r2 / jadx / webcrack / wabt
+    resolvers fall back to PATH and report it usable, so doctor and the tools
+    disagreed. Take the configured path only when it is a file, else fall back to
+    PATH; when neither exists callers still get ``capability_unavailable``.
+    """
+    if configured is not None:
+        resolved = configured.expanduser()
+        if resolved.is_file():
+            return resolved
+    return _discover(name)
+
+
 class ApktoolClient:
     def __init__(self, apktool: Path | None = None, apksigner: Path | None = None) -> None:
-        self.apktool = apktool
-        self.apksigner = apksigner
+        self.apktool = _resolve_tool(apktool, "apktool")
+        self.apksigner = _resolve_tool(apksigner, "apksigner")
 
     @property
     def available(self) -> bool:

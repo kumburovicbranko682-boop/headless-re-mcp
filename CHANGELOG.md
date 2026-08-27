@@ -216,6 +216,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`ApktoolClient` 配置路径不存在时不回落 PATH，与 doctor 打架**。`__init__` 原样留着
+  `apktool` / `apksigner`，一旦 `HEADLESS_RE_APKTOOL` / `HEADLESS_RE_APKSIGNER` 是过期/
+  打错的路径，`available` / `signer_available` 便为 False、`apk.decode` / `repack` /
+  `sign` 都 `capability_unavailable`，哪怕工具就在 PATH 上；而 `doctor` 的
+  `probe_optional_tool` 与 r2 / jadx / webcrack / wabt 解析器都会回落 PATH。新增
+  `_resolve_tool`：配置路径是文件才用，否则回落 PATH——补齐可选 CLI 客户端解析一致性的
+  最后一块。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
