@@ -46,7 +46,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with running, and when running also host, port, flow_count
         retained_max, retained_bytes and retained_bytes_max. There is no
         count or flows field. A session with no proxy answers running false
-        and nothing else, which is not an empty capture.
+        and nothing else, which is not an empty capture. A proxy whose thread
+        died answers running false with exited true, the host, port and
+        flow_count of what it captured, and the reason in error; start it
+        again to resume -- the already-captured flows stay readable until then.
         """
         return _dump(analysis.proxy_status(session_id))
 

@@ -99,3 +99,34 @@ def test_web_frame_skips_the_debugger(tmp_path: Path) -> None:
     assert "x64dbg" not in str(error).lower()
     assert snapshot["web"]["open"] is False
     assert snapshot["web"]["locator"] == "https://example.com/app"
+    # Never opened: no browser answers, so responsiveness is not applicable and
+    # nothing has exited.
+    assert snapshot["web"]["responsive"] is None
+    assert snapshot["web"]["exited"] is False
+
+
+def test_web_frame_reports_a_crashed_browser_as_not_responsive(tmp_path: Path) -> None:
+    """The frame must be as honest as web_status: a browser that exited keeps
+    open=True (its handle lives until close) but the frame has to carry the
+    responsive/exited qualifiers, or the console shows a dead session as open
+    with a stale url -- the lie the backend already stopped telling."""
+    from headless_re_mcp.core.models import Result
+
+    service = _service(tmp_path, FakeDynamicWorker())
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = created.data["session"]["id"]
+
+    def crashed_status(sid: str) -> Result:
+        return Result(
+            ok=True,
+            data={"open": True, "responsive": False, "exited": True},
+            meta={"session_id": sid, "backend": "web"},
+        )
+
+    service.web_status = crashed_status  # type: ignore[method-assign]
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    assert snapshot["web"]["open"] is True
+    assert snapshot["web"]["responsive"] is False
+    assert snapshot["web"]["exited"] is True

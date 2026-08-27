@@ -163,6 +163,14 @@ def build_monitor_snapshot(
         "web": {
             "open": bool(web_data.get("open")),
             "opening": bool(web_data.get("opening")),
+            # Carried through from web_status so the frame is as honest as the
+            # backend: a crashed browser keeps open=True (the session handle
+            # lives until close) but reports responsive=False / exited=True.
+            # Dropping these here left the monitor showing a dead session as
+            # open with a stale url -- the same lie the backend stopped telling.
+            # responsive is None when there is no browser to answer for.
+            "responsive": web_data.get("responsive"),
+            "exited": bool(web_data.get("exited")),
             "url": web_data.get("url") or web_data.get("locator"),
             "title": web_data.get("title"),
             "locator": web_data.get("locator"),
