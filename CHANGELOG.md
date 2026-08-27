@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（device.install 读取清单的探针会把整份 AndroidManifest 解压进内存）
+
+- `device.install` 装完后用 `_apk_package_name` 回读 `AndroidManifest.xml` 报告包名，用的是
+  `archive.read("AndroidManifest.xml")[:65536]`——`ZipFile.read` 会先把整份成员解压成一个
+  bytes 再切片。敌意 APK 只要把清单做成解压炸弹（压缩后极小、解压后数十 MiB），这个探针就会
+  在安装后瞬间把内存顶起来（实测约 45 MiB）。现改为 `open(...).read(_MANIFEST_PROBE_BYTES)`
+  流式只取用得上的前 64 KiB，解压到该长度即停，内存回落到探针真正需要的量。新旧代码回读的
+  前缀相同、行为不变，差别只在峰值分配，`tests/unit/test_adb_manifest_probe_bound.py` 用
+  tracemalloc 钉住炸弹形清单下峰值远低于成员大小、包名仍能在前缀内读出。
+
 ### 修复（APK 解包三处入口不设声明尺寸上限——zip 炸弹直至超时才停）
 
 - apktool（`apk.decode`）与 jadx（`apk.export_sources` / `apk.decompile`）把归档膨胀到磁盘、

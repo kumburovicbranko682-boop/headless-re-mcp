@@ -35,6 +35,9 @@ _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
+# The manifest probe only needs the front of AndroidManifest.xml. Reading past
+# a bounded prefix would let a decompression-bomb entry inflate into RAM.
+_MANIFEST_PROBE_BYTES = 64 * 1024
 # adbutils shell/sync calls otherwise wait forever when the device stalls.
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
@@ -184,8 +187,16 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        # Stream a bounded prefix rather than archive.read(name), which inflates
+        # the whole member into RAM before the slice. A manifest entry that
+        # declares gigabytes (a decompression bomb) would OOM this probe during
+        # device.install; open(...).read(n) stops after n decompressed bytes, so
+        # memory stays at the prefix we use.
+        with (
+            zipfile.ZipFile(path) as archive,
+            archive.open("AndroidManifest.xml") as manifest,
+        ):
+            data = manifest.read(_MANIFEST_PROBE_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:
