@@ -219,7 +219,16 @@ def _accepts_timeout(func: Any) -> bool:
 
 def _bound_timeout(timeout: float) -> float:
     value = float(timeout)
-    if value <= 0:
+    # NaN needs its own guard alongside <= 0: ``nan <= 0`` is False and
+    # ``min(nan, MAX)`` returns nan, so a NaN would sail through and become the
+    # deadline handed to ``_run_deadline`` -> ``Future.result(nan)``, which
+    # returns at once with a timeout, tearing down the just-created session and
+    # (racing the worker's ``sessions.append``) potentially leaking a frida
+    # session on the daemon thread. The tool schemas bound timeout, but the
+    # agent transport calls handlers directly, bypassing that. ``value != value``
+    # is the finite-safe NaN test (as ``clamp_cli_timeout`` uses); inf still
+    # passes it and is capped by ``min``.
+    if value != value or value <= 0:
         raise FridaError("invalid_params", "timeout must be positive")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 
