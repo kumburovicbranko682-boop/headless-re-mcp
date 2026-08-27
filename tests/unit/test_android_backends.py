@@ -356,6 +356,10 @@ class TestApkClassification:
         assert info["native_abis"] == ["arm64-v8a"]
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+        # A plain v1 (JAR-signed) fixture carries no APK Signing Block, so the
+        # modern schemes read False -- not merely absent from the payload.
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"
@@ -363,6 +367,107 @@ class TestApkClassification:
             archive.writestr("readme.txt", "hello")
         with pytest.raises(ValueError):
             describe_apk(plain)
+
+
+class TestApkSigningSchemes:
+    """v2/v3 detection reads the APK Signing Block, not META-INF.
+
+    A package built for API 30+ with ``v1SigningEnabled false`` has no
+    ``META-INF/*.RSA`` at all yet is fully signed; its signatures live in the
+    APK Signing Block between the last entry and the central directory. Before
+    this, ``describe_apk`` reported only ``signed_v1`` and read such a package
+    as unsigned -- exactly wrong for a caller judging tamper/authenticity. The
+    id constants and layout here are the real ones apksigner writes (validated
+    in tests/integration against genuine apksigner output); these unit fixtures
+    hand-assemble the same block so the parser is pinned without Android tools.
+    """
+
+    _V2 = 0x7109871A
+    _V3 = 0xF05368C0
+    _V31 = 0x1B93AD61
+    # apksigner pads the block to a 4096-byte boundary with a pair under this id;
+    # the parser must walk past it to reach the scheme ids that follow.
+    _PADDING = 0x42726577
+
+    @staticmethod
+    def _signing_block(pairs: list[tuple[int, bytes]]) -> bytes:
+        import struct
+
+        body = b""
+        for pair_id, value in pairs:
+            payload = struct.pack("<I", pair_id) + value
+            body += struct.pack("<Q", len(payload)) + payload
+        # The declared size counts everything after the leading size field: the
+        # pairs, the trailing size, and the 16-byte magic.
+        block_size = len(body) + 8 + 16
+        return (
+            struct.pack("<Q", block_size)
+            + body
+            + struct.pack("<Q", block_size)
+            + b"APK Sig Block 42"
+        )
+
+    def _apk_with_block(self, path: Path, block: bytes) -> Path:
+        """A real APK with ``block`` spliced in ahead of the central directory."""
+        _apk(path)
+        data = bytearray(path.read_bytes())
+        eocd = data.rfind(b"PK\x05\x06")
+        assert eocd >= 0
+        cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
+        patched = data[:cd_offset] + block + data[cd_offset:]
+        new_cd = cd_offset + len(block)
+        patched[eocd + len(block) + 16 : eocd + len(block) + 20] = new_cd.to_bytes(4, "little")
+        path.write_bytes(patched)
+        return path
+
+    def test_v2_only_block_reads_signed_v2(self, tmp_path: Path) -> None:
+        block = self._signing_block([(self._V2, b"\x00" * 64)])
+        info = describe_apk(self._apk_with_block(tmp_path / "v2.apk", block))["apk"]
+        assert (info["signed_v1"], info["signed_v2"], info["signed_v3"]) == (True, True, False)
+
+    def test_v3_ids_both_read_signed_v3(self, tmp_path: Path) -> None:
+        # v3 and the v3.1 key-rotation id share the v3 verifier, so either sets v3.
+        for scheme_id in (self._V3, self._V31):
+            block = self._signing_block([(scheme_id, b"\x11" * 48)])
+            info = describe_apk(self._apk_with_block(tmp_path / f"v3_{scheme_id}.apk", block))[
+                "apk"
+            ]
+            assert info["signed_v3"] is True
+            assert info["signed_v2"] is False
+
+    def test_v2_and_v3_both_present(self, tmp_path: Path) -> None:
+        block = self._signing_block(
+            [
+                (self._PADDING, b"\x00" * 32),
+                (self._V2, b"\x00" * 40),
+                (self._V3, b"\x00" * 40),
+            ]
+        )
+        info = describe_apk(self._apk_with_block(tmp_path / "v2v3.apk", block))["apk"]
+        assert info["signed_v2"] is True
+        assert info["signed_v3"] is True
+
+    def test_unknown_ids_only_read_unsigned(self, tmp_path: Path) -> None:
+        block = self._signing_block([(self._PADDING, b"\x00" * 4096)])
+        info = describe_apk(self._apk_with_block(tmp_path / "pad.apk", block))["apk"]
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
+
+    def test_a_truncated_block_reads_unsigned_without_raising(self, tmp_path: Path) -> None:
+        # The magic is present but the declared pair length overruns the buffer;
+        # the walk must stop, not read past it, and never raise on session open.
+        import struct
+
+        bad = struct.pack("<Q", 999999) + struct.pack("<I", self._V2)
+        block = (
+            struct.pack("<Q", len(bad) + 24)
+            + bad
+            + struct.pack("<Q", len(bad) + 24)
+            + b"APK Sig Block 42"
+        )
+        info = describe_apk(self._apk_with_block(tmp_path / "bad.apk", block))["apk"]
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
 
 
 class TestApktoolBoundaries:

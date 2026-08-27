@@ -56,6 +56,23 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _signed_with(apk: Any, probe_name: str) -> bool | None:
+    """Report an APK Signature Scheme flag, or None when it cannot be read.
+
+    androguard exposes ``is_signed_v2`` / ``is_signed_v3`` on the APK object.
+    An older build without the method, or one that raises while parsing the
+    signing block, yields None ("unknown") rather than a confident False that a
+    caller would read as "not signed with this scheme".
+    """
+    probe = getattr(apk, probe_name, None)
+    if not callable(probe):
+        return None
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - androguard signing parsers vary by version
+        return None
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -284,6 +301,13 @@ class ApkClient:
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            # v2/v3 signatures live in the APK Signing Block, not META-INF, so a
+            # modern package (v1SigningEnabled false) has no signature_files yet
+            # is signed. Reporting only v1_signed reads it as unsigned. None
+            # means this androguard build could not answer, distinct from a
+            # confident False.
+            "v2_signed": _signed_with(apk, "is_signed_v2"),
+            "v3_signed": _signed_with(apk, "is_signed_v3"),
             "has_more": certs_more or files_more,
         }
 

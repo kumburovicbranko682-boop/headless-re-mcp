@@ -47,6 +47,11 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         assert set(meta["native_abis"]) == {"arm64-v8a", "x86_64"}
         assert meta["dex_count"] == 1
         assert meta["signed_v1"] is True
+        # This synthetic package is v1-only (a META-INF/*.RSA, no APK Signing
+        # Block), so the modern schemes must read False -- the real apksigner
+        # v2/v3 detection is proven in test_apk_signing_schemes_gate.py.
+        assert meta["signed_v2"] is False
+        assert meta["signed_v3"] is False
 
         session_id = session["id"]
 
