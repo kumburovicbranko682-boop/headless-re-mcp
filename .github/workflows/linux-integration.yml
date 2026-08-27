@@ -8,7 +8,9 @@
 #   * Intercept -- mitmproxy lifecycle plus a real HTTP flow captured,
 #                  retrieved, exported to HAR, and replayed through the proxy
 #   * Android   -- androguard APK metadata, a real hand-assembled DEX parsed
-#                  end to end (classes/methods/strings/xrefs), native_libs on an
+#                  end to end (classes/methods/strings/xrefs), apk.open and
+#                  manifest/permissions/components succeeding on a real
+#                  hand-assembled AXML manifest, native_libs on an
 #                  unparseable manifest, certificates parsing a real jarsigner
 #                  v1 signature, jadx decompiling that DEX to Java, apktool
 #                  decode/build round-tripping a real APK, apksigner signing the

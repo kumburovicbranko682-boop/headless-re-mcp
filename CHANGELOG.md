@@ -61,7 +61,11 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
   出 zip 内 so 列表（“元数据 op 拒绝、内容 op 照常”这条分界首次在真 androguard 上验证）；
   `apk.certificates` 用 JDK 自带 keytool+jarsigner 对手搓 DEX APK 打真 v1 签名后走 androguard 真实的
   PKCS7 解析（签名文件、debug 主体、序列号、SHA-256 指纹，未签名孪生答诚实空壳）——证书对象各字段
-  正是随 androguard 版本漂移的那类面（frida 17 同款），此前从未见过真签名。
+  正是随 androguard 版本漂移的那类面（frida 17 同款），此前从未见过真签名。最后按手搓 DEX/WASM 同款
+  思路手搓出最小真 AXML 二进制 manifest（ResourceTypes.h 的 chunk 格式：UTF-16 串池、资源映射、命名
+  空间、带类型值的元素属性），首次让 `apk.open` 的**成功**路径（此前所有 fixture 都是垃圾 manifest，
+  它只证明过拒绝路径）与 manifest/permissions/components 的真实解析跑通：package/version/sdk 逐字段
+  钉死，main_activity 经 MAIN/LAUNCHER intent-filter 真 xpath 解出，AXML→XML 往返含全部属性。
 - **proxy 抓包 gate。** `test_proxy_capture_gate.py` 把一条真 HTTP 请求经 mitmproxy 路由，断言抓到 flow、
   能取回 body、能导出 HAR、能重放。
 - **adb 设备后端首次拿到真机 gate（无需真手机）。** `device.*` 工具此前全对着桩子跑，最易随 adbutils 版本

@@ -177,6 +177,143 @@ def _build_synthetic_apk(path: Path) -> Path:
     return path
 
 
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+_AXML_NO_ENTRY = 0xFFFFFFFF
+_AXML_TYPE_STRING = 0x03
+_AXML_TYPE_INT_DEC = 0x10
+
+
+def _axml_chunk(chunk_type: int, header_size: int, body: bytes) -> bytes:
+    # ResChunk_header: type, headerSize, total size (header + body).
+    return struct.pack("<HHI", chunk_type, header_size, 8 + len(body)) + body
+
+
+def _axml_string_pool(strings: list[str]) -> bytes:
+    # UTF-16 ResStringPool: header, offset array, then per string a u16 char
+    # count, UTF-16LE bytes, and a u16 NUL; data padded to a 4-byte boundary.
+    data = bytearray()
+    offsets = []
+    for text in strings:
+        offsets.append(len(data))
+        data += struct.pack("<H", len(text)) + text.encode("utf-16-le") + b"\x00\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + 4 * len(strings)
+    body = struct.pack("<IIIII", len(strings), 0, 0, strings_start, 0)
+    body += b"".join(struct.pack("<I", offset) for offset in offsets) + bytes(data)
+    return _axml_chunk(0x0001, 28, body)
+
+
+def _axml_node(chunk_type: int, ext: bytes) -> bytes:
+    # ResXMLTree_node: lineNumber 1, no comment, then the per-type ext struct.
+    return _axml_chunk(chunk_type, 16, struct.pack("<II", 1, _AXML_NO_ENTRY) + ext)
+
+
+def _axml_attr(ns: int, name: int, raw: int, dtype: int, data: int) -> bytes:
+    # ResXMLTree_attribute + Res_value (size 8, res0 0, dataType, data).
+    return struct.pack("<IIIHBBI", ns, name, raw, 8, 0, dtype, data)
+
+
+def _axml_start(name: int, attrs: list[bytes]) -> bytes:
+    # ResXMLTree_attrExt: no element namespace, attrStart/attrSize both 20,
+    # no id/class/style attribute.
+    ext = struct.pack("<IIHHHHHH", _AXML_NO_ENTRY, name, 20, 20, len(attrs), 0, 0, 0)
+    return _axml_node(0x0102, ext + b"".join(attrs))
+
+
+def _axml_end(name: int) -> bytes:
+    return _axml_node(0x0103, struct.pack("<II", _AXML_NO_ENTRY, name))
+
+
+def _build_axml_manifest() -> bytes:
+    """Assemble the smallest real binary AndroidManifest.xml, chunk by chunk.
+
+    AXML is the documented chunk format from AOSP's ResourceTypes.h: a RES_XML
+    document chunk wrapping a UTF-16 string pool, a resource map (android:*
+    attribute names must be the first pool entries, parallel to their attribute
+    resource IDs -- the aapt layout parsers expect), one namespace scope, and
+    element start/end nodes whose attributes carry (ns, name, rawValue, typed
+    value). Same in-process-fixture approach as the hand-assembled DEX and WASM
+    modules: no binary blob checked in, every byte explained here. The manifest
+    declares package/versionCode/versionName, uses-sdk 21..33, the INTERNET
+    permission, and one activity marked MAIN/LAUNCHER by its intent-filter --
+    one value for every field apk.open extracts.
+    """
+    strings = [
+        # Resource-mapped android:* attribute names come first (see res_map).
+        "name",  # 0x01010003
+        "versionCode",  # 0x0101021b
+        "versionName",  # 0x0101021c
+        "minSdkVersion",  # 0x0101020c
+        "targetSdkVersion",  # 0x01010270
+        "android",
+        _ANDROID_NS,
+        "manifest",
+        "package",
+        "com.gate.sample",
+        "1.2.3",
+        "uses-sdk",
+        "uses-permission",
+        "android.permission.INTERNET",
+        "application",
+        "activity",
+        "com.gate.sample.Main",
+        "intent-filter",
+        "action",
+        "android.intent.action.MAIN",
+        "category",
+        "android.intent.category.LAUNCHER",
+    ]
+    index = {text: position for position, text in enumerate(strings)}
+    ns = index[_ANDROID_NS]
+    res_map = _axml_chunk(
+        0x0180, 8, struct.pack("<IIIII", 0x01010003, 0x0101021B, 0x0101021C, 0x0101020C, 0x01010270)
+    )
+
+    def sattr(name: str, value: str) -> bytes:
+        pool_id = index[value]
+        return _axml_attr(ns, index[name], pool_id, _AXML_TYPE_STRING, pool_id)
+
+    def iattr(name: str, value: int) -> bytes:
+        return _axml_attr(ns, index[name], _AXML_NO_ENTRY, _AXML_TYPE_INT_DEC, value)
+
+    package = index["com.gate.sample"]
+    body = _axml_string_pool(strings) + res_map
+    body += _axml_node(0x0100, struct.pack("<II", index["android"], ns))  # start namespace
+    body += _axml_start(
+        index["manifest"],
+        [
+            _axml_attr(_AXML_NO_ENTRY, index["package"], package, _AXML_TYPE_STRING, package),
+            iattr("versionCode", 7),
+            sattr("versionName", "1.2.3"),
+        ],
+    )
+    sdk_attrs = [iattr("minSdkVersion", 21), iattr("targetSdkVersion", 33)]
+    body += _axml_start(index["uses-sdk"], sdk_attrs) + _axml_end(index["uses-sdk"])
+    body += _axml_start(
+        index["uses-permission"], [sattr("name", "android.permission.INTERNET")]
+    ) + _axml_end(index["uses-permission"])
+    body += _axml_start(index["application"], [])
+    body += _axml_start(index["activity"], [sattr("name", "com.gate.sample.Main")])
+    body += _axml_start(index["intent-filter"], [])
+    body += _axml_start(index["action"], [sattr("name", "android.intent.action.MAIN")])
+    body += _axml_end(index["action"])
+    body += _axml_start(index["category"], [sattr("name", "android.intent.category.LAUNCHER")])
+    body += _axml_end(index["category"])
+    body += _axml_end(index["intent-filter"]) + _axml_end(index["activity"])
+    body += _axml_end(index["application"]) + _axml_end(index["manifest"])
+    body += _axml_node(0x0101, struct.pack("<II", index["android"], ns))  # end namespace
+    return _axml_chunk(0x0003, 8, body)
+
+
+def _build_real_manifest_apk(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("AndroidManifest.xml", _build_axml_manifest())
+        archive.writestr("classes.dex", _build_minimal_dex())
+        archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
+    return path
+
+
 @pytest.mark.integration
 def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
     apk = _build_synthetic_apk(tmp_path / "sample.apk")
@@ -284,6 +421,69 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
         assert uncalled.ok, uncalled.error
         assert uncalled.data["callers"] == []
         assert uncalled.data["count"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_metadata_ops_succeed_on_a_real_axml_manifest(tmp_path: Path) -> None:
+    """apk.open's success path plus manifest/permissions/components, real AXML.
+
+    Every fixture so far carried a junk manifest, so against real androguard
+    apk.open only ever proved its *refusal* path, and manifest / permissions /
+    components their stub shapes -- the success paths (package/version/sdk/
+    main-activity extraction, the AXML-to-XML dump, the uses-permission walk,
+    the component xpaths with the android namespace) never ran outside fakes.
+    This drives all four ops through the service against the hand-assembled
+    manifest and pins one concrete value per field, including main_activity
+    resolved through the MAIN/LAUNCHER intent-filter (skip != pass without
+    androguard).
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK metadata Gate not run (skip != pass)")
+    apk = _build_real_manifest_apk(tmp_path / "real_manifest.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.apk_open(session_id)
+        assert opened.ok, opened.error
+        assert opened.data["opened"] is True
+        assert opened.data["package"] == "com.gate.sample"
+        assert opened.data["version_name"] == "1.2.3"
+        assert opened.data["version_code"] == "7"
+        assert opened.data["min_sdk"] == "21"
+        assert opened.data["target_sdk"] == "33"
+        assert opened.data["main_activity"] == "com.gate.sample.Main"
+        assert opened.data["permission_count"] == 1
+        assert opened.data["native_abis"] == ["arm64-v8a"]
+
+        manifest = service.apk_manifest(session_id)
+        assert manifest.ok, manifest.error
+        assert manifest.data["package"] == "com.gate.sample"
+        assert manifest.data["truncated"] is False
+        xml = manifest.data["manifest_xml"]
+        assert 'package="com.gate.sample"' in xml
+        assert "uses-permission" in xml
+        assert 'android:versionName="1.2.3"' in xml
+
+        permissions = service.apk_permissions(session_id)
+        assert permissions.ok, permissions.error
+        assert permissions.data["permissions"] == ["android.permission.INTERNET"]
+        assert permissions.data["requested_permissions"] == ["android.permission.INTERNET"]
+        assert permissions.data["count"] == 1
+        assert permissions.data["has_more"] is False
+
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert components.data["activities"] == ["com.gate.sample.Main"]
+        assert components.data["services"] == []
+        assert components.data["receivers"] == []
+        assert components.data["providers"] == []
+        assert components.data["main_activity"] == "com.gate.sample.Main"
+        assert components.data["has_more"] is False
     finally:
         service.close_all()
 
