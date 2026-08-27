@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.permissions` 的 `count` 只数“声明”一列且 `has_more` 分不清两列，补 `requested_count` 与逐列 `has_more`）
+
+- `apk.permissions` 同时回两列:`permissions`(`get_permissions()`,应用**自定义声明**的权限——绝大多数应用一个都不声明)与
+  `requested_permissions`(`get_requested_permissions()`,应用**申请**的权限,如 `INTERNET`、`CAMERA`,通常几十个)。但
+  `count` 只取 `len(declared)`,于是最常见的“声明 0 个、申请一堆”的应用回来 `count==0`——一个据此判断“无权限”的调用方会
+  与事实相悖,而它想要的那列(申请)长度只能自己 `len()`。此外 `has_more` 是 `declared_more or requested_more` 的或,
+  一旦为真便分不清是哪一列触顶,恰恰违背工具文档“a list that filled the cap is not read as every permission”的承诺
+  (`_MAX_PERMISSIONS=256`,虽罕见触顶,但契约不该只兑现一半)。现补 `requested_count`(申请列长度,与 `count` 对称)、
+  逐列 `permissions_has_more` / `requested_permissions_has_more`(指明到底哪列触顶),`count` 与 `has_more` 维持原义、
+  向后兼容;工具文档串澄清 `count` 数的是声明列、要读申请列请看 `requested_count`,并说明逐列标志的含义。
+  `test_apk_permissions_fields.py` 新增三条:以“声明 0、申请 2”断言 `count==0`、`requested_count==2`;分别只让申请列/
+  声明列越过 `_MAX_PERMISSIONS=2`,断言对应的逐列 `has_more` 为真、另一列为假、合并 `has_more` 为真。去掉 Python 侧修复
+  后三条均以 `KeyError`(`requested_count` / `permissions_has_more`)失败,正是调用方会撞上的缺键。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
