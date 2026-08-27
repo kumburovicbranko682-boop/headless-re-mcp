@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.console` 普通条目不带来源位置，无法定位日志出处**。抛出的异常早已附带抛出点 `url`/`line`，但 `console.*` 条目
+  只有 `type`/`text`，而 CDP 的 `consoleAPICalled` 事件本就带 `stackTrace`——其栈顶帧正是 `console.*` 的调用点。新增
+  `_console_call_site` 从栈顶帧还原 `url`/`line`（0 基，与 `Debugger.scriptParsed` 一致）并附到每条 console 记录上，
+  于是一条日志可回溯到发出它的脚本（尤其是 `web.scripts` 现在会标记的匿名/运行时生成脚本）；栈缺失或结构异常时退化为不带
+  位置而非中断采集。
 - **HAR 导出的 `request.bodySize`/`response.bodySize` 恒为 `-1`，请求/响应体大小丢失**。这两个字段按 HAR 规范就是消息体的
   字节数，而发送方自己声明的 `Content-Length` 正是该值——它取自请求头而非我们保留的（可能已被截断的）体副本，因此即使内联体
   被裁剪也不会少报。web 与 proxy 两侧现在都已把头传给 `har_entry`，于是新增 `content_length` 助手从 Content-Length 还原

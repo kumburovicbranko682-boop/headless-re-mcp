@@ -19,6 +19,7 @@ from headless_re_mcp.backends.web.client import (
     WebBackend,
     _clip_console_text,
     _clip_exception_text,
+    _console_call_site,
 )
 
 
@@ -111,6 +112,48 @@ def test_console_api_calls_still_record_after_the_refactor() -> None:
     assert entry["type"] == "warning"
     assert entry["text"] == "hi"
     assert "uncaught" not in entry
+
+
+def test_console_entry_carries_the_call_site_from_the_stack() -> None:
+    """A logged line should be traceable to the script that emitted it."""
+    handle = _wire()
+    handle.cdp.handlers["Runtime.consoleAPICalled"](
+        {
+            "type": "error",
+            "args": [{"type": "string", "value": "bad state"}],
+            "stackTrace": {
+                "callFrames": [
+                    {"functionName": "f", "url": "https://x/bundle.js", "lineNumber": 12},
+                    {"functionName": "g", "url": "https://x/vendor.js", "lineNumber": 99},
+                ]
+            },
+        }
+    )
+    entry = handle.console[-1]
+    assert entry["text"] == "bad state"
+    assert entry["url"] == "https://x/bundle.js"
+    assert entry["line"] == 12
+
+
+def test_console_entry_omits_the_call_site_when_no_stack_is_reported() -> None:
+    handle = _wire()
+    handle.cdp.handlers["Runtime.consoleAPICalled"](
+        {"type": "log", "args": [{"type": "string", "value": "hi"}]}
+    )
+    entry = handle.console[-1]
+    assert "url" not in entry
+    assert "line" not in entry
+
+
+def test_console_call_site_degrades_on_an_odd_stack() -> None:
+    assert _console_call_site({}) == ("", None)
+    assert _console_call_site({"stackTrace": None}) == ("", None)
+    assert _console_call_site({"stackTrace": {"callFrames": []}}) == ("", None)
+    assert _console_call_site({"stackTrace": {"callFrames": [None]}}) == ("", None)
+    # A frame without a numeric line still yields its url.
+    assert _console_call_site(
+        {"stackTrace": {"callFrames": [{"url": "https://x/a.js"}]}}
+    ) == ("https://x/a.js", None)
 
 
 def test_console_object_argument_renders_its_members() -> None:

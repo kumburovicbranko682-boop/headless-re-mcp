@@ -260,6 +260,31 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _console_call_site(params: JsonObject) -> tuple[str, int | None]:
+    """The top stack frame of a ``consoleAPICalled`` event: (url, line) or ("", None).
+
+    ``consoleAPICalled`` carries a ``stackTrace`` whose first ``callFrame`` is
+    where the ``console.*`` ran, so a logged line can be pivoted back to its
+    script location -- exactly the anonymous/dynamic scripts ``web.scripts``
+    flags. This mirrors the throw-site (url/line) already attached to uncaught
+    exceptions. CDP line numbers are 0-based; they are surfaced as reported
+    (matching Debugger.scriptParsed) rather than silently shifted. A missing or
+    oddly shaped stack degrades to no location rather than breaking capture.
+    """
+    stack = params.get("stackTrace")
+    if not isinstance(stack, dict):
+        return "", None
+    frames = stack.get("callFrames")
+    if not isinstance(frames, list) or not frames:
+        return "", None
+    top = frames[0]
+    if not isinstance(top, dict):
+        return "", None
+    url, _ = _bounded_metadata(top.get("url"), _MAX_URL_BYTES)
+    line = top.get("lineNumber")
+    return url, line if isinstance(line, int) else None
+
+
 def _clip_exception_text(params: JsonObject) -> tuple[str, bool]:
     """Render a ``Runtime.exceptionThrown`` payload into one console-style line.
 
@@ -744,6 +769,14 @@ class WebBackend:
             }
             if text_truncated:
                 entry["text_truncated"] = True
+            # Attach the call site (url/line) from the message's stack, the same
+            # way a thrown exception carries its throw site, so a logged line can
+            # be traced to the script that emitted it.
+            url, line = _console_call_site(params)
+            if url:
+                entry["url"] = url
+            if line is not None:
+                entry["line"] = line
             record_console(entry)
 
         def on_exception(params: JsonObject) -> None:

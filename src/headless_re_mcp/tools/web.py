@@ -118,10 +118,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         eviction is visible. A line longer than the per-message cap is
         cut and marked text_truncated. Object and array arguments are
         rendered from their members ({k: v}, [v, ...]) rather than a bare
-        "Object", so a logged config or token survives. Uncaught errors and
-        unhandled promise rejections -- which never reach console.* -- are
-        folded into the same buffer as error entries flagged uncaught, with
-        the throw site url/line when the engine reported one.
+        "Object", so a logged config or token survives. Each entry carries the
+        call site url/line (0-based, as CDP reports) from the message's stack
+        when one was present, so a logged line can be traced to its script.
+        Uncaught errors and unhandled promise rejections -- which never reach
+        console.* -- are folded into the same buffer as error entries flagged
+        uncaught, with the throw site url/line when the engine reported one.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
