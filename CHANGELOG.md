@@ -279,6 +279,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   工具链诚实跳过,adb/frida 调用则降级为 `capability_unavailable` 信封(已验证 adbutils/frida 缺席时不
   抛异常)。跑前先 import 验证 androguard 装成功,不让"装失败=看着绿"混过。jadx/apktool 不在发行版
   仓库里、需下载且版本敏感,故暂不进 CI,保持 skip 门。
+- **Web CDP(Playwright 浏览器)线进 CI 真跑,单独成一个作业**。浏览器抓取路径此前修过真实缺陷
+  (高层 console 事件每次导航泄漏一批 OS 句柄;Playwright 的线程亲和性),这些单测替代不了——必须
+  驱动一个活的 CDP 会话。新增 `web-cdp-gate` 作业:装 `.[browser]` 后
+  `playwright install --with-deps chromium`(浏览器 + 系统库),先用一行 launch 自检(装坏就让这步变红、
+  而不是让 gate 跳过成绿),再按 `-k cdp` 跑两条 gate——对本地 data URL 与一次性 localhost 站点做
+  open/navigate、网络抓取、脚本源码、截图、HAR 导出。它比 pip/apt 那几条重(约 115 MB 浏览器下载加系统库),
+  所以单独一个单 Python 版本作业,而不是塞进 3.11/3.12 双矩阵里翻倍下载。本机装好 chromium 后两条 gate 均通过。
 - **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
   这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
   node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
