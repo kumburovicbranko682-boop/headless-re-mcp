@@ -42,6 +42,12 @@ _ADB_TRANSFER_TIMEOUT_S = 120.0
 # adbutils open_transport defaults to 600s. That is a hang, not a deadline.
 _ADB_TRANSPORT_TIMEOUT_S = _ADB_TRANSFER_TIMEOUT_S
 _PACKAGE_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){1,10}")
+# Tokens that look like packages but never are. Framework ids aside, the android
+# namespace URI (http://schemas.android.com/apk/res/android, present in every
+# manifest string pool) yields "schemas.android.com", which matches the package
+# shape and otherwise wins the best-effort scan whenever the real package value
+# sits past the 400-char window.
+_MANIFEST_NOISE_PREFIXES = ("android.", "com.android.", "schemas.android.")
 
 # Well-known local ADB ports for the common Windows emulators, so a caller can
 # connect without memorising them.
@@ -202,7 +208,7 @@ def _apk_package_name(path: Path) -> str | None:
         window = decoded[marker : marker + 400]
     for blob in (window, decoded):
         for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
+            if candidate.startswith(_MANIFEST_NOISE_PREFIXES):
                 continue
             if _PACKAGE_RE.match(candidate):
                 return str(candidate)
