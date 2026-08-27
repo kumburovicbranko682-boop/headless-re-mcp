@@ -132,6 +132,28 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.secrets")
+    def apk_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """Scan the DEX string pool for hardcoded-credential shapes.
+
+        Where apk.strings returns the whole pool and apk.urls the endpoints,
+        this keeps only tokens matching well-known secret shapes: Google API
+        keys, AWS access key ids, GitHub / Slack / Stripe tokens, JWTs, and PEM
+        private-key headers. Each row is category (the shape matched) and value
+        (the matched token, bounded), deduped by (category, value) and sorted.
+        It is a pattern match over literals, so it misses a key assembled at
+        runtime and may flag a string that only looks like one -- category names
+        the shape, not a proven live secret; only the DEX pool is scanned.
+        Answers with secrets, count, total, offset, and has_more; total is the
+        distinct match count capped at 5000, with scan_capped when more may
+        exist. has_more only means a larger offset still has collected rows.
+        """
+        return _dump(analysis.apk_secrets(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

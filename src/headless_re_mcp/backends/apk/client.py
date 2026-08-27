@@ -8,12 +8,38 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
 JsonObject = dict[str, Any]
+
+# Well-known credential shapes, the same families gitleaks/truffleHog look for.
+# Each alternative is non-capturing so re.findall yields the whole match. This
+# is a pattern match over the DEX string pool, so it finds tokens stored as
+# literals -- not ones assembled at runtime -- and can false-positive on a
+# string that merely looks like a key; the category names the shape, it is not
+# proof of a live secret.
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("google_api_key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    (
+        "aws_access_key_id",
+        re.compile(r"(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|A3T)[0-9A-Z]{16}"),
+    ),
+    ("github_token", re.compile(r"gh[pousr]_[0-9A-Za-z]{36,}")),
+    ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}")),
+    ("stripe_secret_key", re.compile(r"sk_live_[0-9a-zA-Z]{24,}")),
+    (
+        "jwt",
+        re.compile(r"eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}"),
+    ),
+    (
+        "private_key",
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+    ),
+)
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -414,6 +440,48 @@ class ApkClient:
             "total": len(values),
             "offset": start,
             "has_more": start + len(window) < len(values),
+            "scan_capped": scan_more,
+        }
+
+    def secrets(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Scan the DEX string pool for hardcoded-credential shapes.
+
+        apk.strings returns the whole pool and apk.urls the endpoints; this keeps
+        only the tokens matching well-known secret shapes -- Google API keys, AWS
+        access key ids, GitHub / Slack / Stripe tokens, JWTs, PEM private-key
+        headers -- so credentials shipped as literals surface without paging all
+        of strings. Each row is category (the shape that matched) and value (the
+        matched token, bounded). Matches are de-duplicated by (category, value)
+        and sorted for stable paging. This is a pattern match, so it cannot see a
+        key assembled at runtime and may flag a string that only looks like one;
+        category names the shape, not a proven live secret. Only the DEX pool is
+        scanned, not resources.arsc or native libraries. total is the distinct
+        match count, capped at 5000 with scan_capped when more may exist.
+        """
+        parsed = self._parsed(path)
+        found: set[tuple[str, str]] = set()
+        scan_more = False
+        for item in parsed.analysis.get_strings():
+            text = str(item.get_value())
+            for category, pattern in _SECRET_PATTERNS:
+                for match in pattern.findall(text):
+                    if len(found) >= _MAX_STRINGS_COLLECT:
+                        scan_more = True
+                        break
+                    found.add((category, match[:_MAX_STRING_LEN]))
+                if scan_more:
+                    break
+            if scan_more:
+                break
+        rows = [{"category": category, "value": value} for category, value in sorted(found)]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "secrets": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
             "scan_capped": scan_more,
         }
 
