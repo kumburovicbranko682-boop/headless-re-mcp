@@ -67,6 +67,15 @@ def test_hook_template_device_unknown_name_is_invalid_params_without_frida(
     assert caught.value.code == "invalid_params"
 
 
+def test_attach_reports_permission_denied_before_capability() -> None:
+    # attach is a local-device guard alongside _require, so an unauthorized but
+    # well-formed pid is permission_denied even where frida is not installed,
+    # matching modules()/_require rather than drifting to capability_unavailable.
+    with pytest.raises(FridaError) as caught:
+        _unavailable_client().attach(5, allowed_pid=6)
+    assert caught.value.code == "permission_denied"
+
+
 def test_authorize_reports_permission_denied_before_capability() -> None:
     # _authorize checks the allow-set before it probes for frida (matching
     # _require), so an unauthorized but well-formed pid is permission_denied even

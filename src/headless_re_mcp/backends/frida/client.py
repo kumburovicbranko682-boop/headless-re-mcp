@@ -292,14 +292,13 @@ class FridaClient:
     # ------------------------------------------------------------------
     def attach(self, pid: int, *, allowed_pid: int,
                timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
-        # Validate the caller's pid shape before the capability probe: a malformed
-        # pid is the caller's mistake regardless of environment, so it must earn a
-        # deterministic invalid_params rather than capability_unavailable wherever
-        # the frida module happens to be absent.
+        # Shape -> authorization -> capability, the same order as its sibling
+        # local-device guard _require(): a malformed pid is invalid_params and an
+        # unauthorized pid is permission_denied on every host, so neither answer
+        # drifts with -- nor reveals -- whether the frida module is installed;
+        # only the session's own debuggee pid reaches the capability probe.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
         if pid != allowed_pid:
             raise FridaError(
                 "permission_denied",
@@ -307,6 +306,8 @@ class FridaClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
         session = self._attach_local(pid, timeout=timeout)
         try:
             return {
