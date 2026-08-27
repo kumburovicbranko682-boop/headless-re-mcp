@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy）并按 `-rs` 跑整个 `tests/integration`——Web / Android / 抓包 / radare2 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -23,6 +23,19 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 测试（非 PE gate 可移植化）
+
+- **radare2 live gate 过去只认一份仓库里根本没有的 Windows PE 夹具**，于是 Windows 之外永远
+  skip，可移植的 r2 线从未被真正验证过。现在优先用该 PE 夹具（顺带断言 rva+module 映射），
+  否则就地编译一个极小 ELF，让 gate 真的打开二进制、分析并校验 va 映射；只有 r2 缺失或没有
+  C 编译器可用时才 skip。
+- **Agent 工作台浏览器 gate 写死了系统 Chrome 的绝对路径**，等于意外把它变成 Windows 专属——
+  在最需要它证明可移植 Web 线的 Linux 上反而找不到浏览器。改用 Playwright 自带的 Chromium，
+  并把选择器与流程对齐重做过、已本地化的工作台：开屏页、稳定的 `消息` 输入框、就地保存而非
+  关闭的设置弹窗，以及 fail-closed autonomy——好让写工具的批准卡片真的弹出。批准腿断言
+  `/approve` 返回 200、卡片能挺过一次 reload 并从携带的游标续跑；拒绝腿断言 `/reject` 返回
+  200、卡片随之从时间线消失。
 
 ### 新增（监控台工作台）
 
@@ -189,7 +202,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
-  循环。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放。
+  循环。**mitmproxy 12 上仅取消 accept 任务已不够**：每个监听器是取消后仍存活的
+  `ServerInstance`，socket 依旧绑定，`stop()` 看似成功而端口从未释放。因此在关闭循环前先让
+  proxyserver 的 `ServerManager` 不持有任何 mode（`servers.update([])`），这才真正关掉监听
+  socket。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放，
+  现由 `linux-integration` job 每次提交都跑。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
