@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -50,11 +51,19 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # The synthetic archive is intentionally not a valid APK. androguard
+        # does not reject it at construction -- it logs and hands back an APK
+        # whose accessors raise deep in its parser. That must surface as a
+        # named backend fault, never as internal_error with a logged incident
+        # (a truncated or hostile APK is not a server defect). Without
+        # androguard the same call degrades to capability_unavailable.
         opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        assert opened.ok is False
+        assert opened.error is not None
+        if ApkClient().available:
+            assert opened.error.code == "backend_error"
+        else:
+            assert opened.error.code == "capability_unavailable"
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()

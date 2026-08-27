@@ -268,6 +268,89 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _BrokenApk:
+    """An androguard APK whose accessors raise the way a broken manifest does.
+
+    androguard does not raise from ``APK(...)`` on a malformed manifest -- it
+    logs and returns this shape, then the first accessor raises ``KeyError``
+    from inside its parser.
+    """
+
+    def get_package(self) -> str:
+        raise KeyError("Name")
+
+    def get_files(self) -> list[str]:
+        raise KeyError("Name")
+
+    def get_android_manifest_axml(self) -> Any:
+        raise KeyError("Name")
+
+    def get_permissions(self) -> list[str]:
+        raise KeyError("Name")
+
+
+class TestApkFaultsBecomeBackendErrors:
+    """A broken/hostile APK must read as backend_error, not internal_error.
+
+    The service envelope catches every exception, but an uncaught KeyError
+    lands in the ``internal_error`` branch with a recorded incident -- a
+    truncated or adversarial APK then looks like a server defect and can spam
+    the incident log. The backend has to name it, like jadx/apktool/r2 do.
+    """
+
+    def test_open_maps_androguard_faults_to_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _BrokenApk())
+        with pytest.raises(ApkError) as info:
+            ApkClient().open(tmp_path / "app.apk")
+        assert info.value.code == "backend_error"
+
+    def test_manifest_maps_androguard_faults_to_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _BrokenApk())
+        with pytest.raises(ApkError) as info:
+            ApkClient().manifest(tmp_path / "app.apk")
+        assert info.value.code == "backend_error"
+
+    def test_our_own_apk_errors_pass_through_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        def raise_not_found(self: Any, path: Path) -> Any:
+            raise ApkError("not_found", "apk not found", path=str(path))
+
+        monkeypatch.setattr(ApkClient, "_apk", raise_not_found)
+        with pytest.raises(ApkError) as info:
+            ApkClient().open(tmp_path / "missing.apk")
+        # The guard must not relabel a structured code as backend_error.
+        assert info.value.code == "not_found"
+
+    def test_service_reports_backend_error_not_internal_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient
+        from headless_re_mcp.core.service import AnalysisService
+
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _BrokenApk())
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+            opened = service.apk_open(session_id)
+            assert opened.ok is False
+            assert opened.error is not None
+            assert opened.error.code == "backend_error"
+        finally:
+            service.close_all()
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

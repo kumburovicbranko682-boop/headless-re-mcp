@@ -8,12 +8,15 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import functools
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar, cast
 
 JsonObject = dict[str, Any]
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -35,6 +38,33 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _androguard_faults(func: _F) -> _F:
+    """Map androguard's assorted exceptions to a structured ``backend_error``.
+
+    androguard tolerates a malformed manifest by logging and handing back an
+    APK whose accessors then raise ``KeyError`` / ``IndexError`` / ``struct``
+    errors from deep inside its parsers. Those leak past the constructor guard
+    in ``_apk`` / ``_parsed`` and reach the service envelope as
+    ``internal_error`` with a logged incident -- a hostile or truncated APK
+    filed as a server defect, and an incident log a caller can spam. Re-raise
+    our own ``ApkError`` untouched; everything else becomes ``backend_error``,
+    the code the sibling adapters (jadx, apktool, r2) already return.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError(
+                "backend_error", f"androguard failed in {func.__name__}: {exc}"
+            ) from exc
+
+    return cast(_F, wrapper)
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -165,6 +195,7 @@ class ApkClient:
                 self._full_cache.popitem(last=False)
         return parsed
 
+    @_androguard_faults
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         return {
@@ -185,6 +216,7 @@ class ApkClient:
             ),
         }
 
+    @_androguard_faults
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         try:
@@ -197,6 +229,7 @@ class ApkClient:
             "truncated": len(xml) > _MAX_MANIFEST_CHARS,
         }
 
+    @_androguard_faults
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
@@ -213,6 +246,7 @@ class ApkClient:
             "has_more": declared_more or requested_more,
         }
 
+    @_androguard_faults
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         items: list[JsonObject] = []
@@ -252,6 +286,7 @@ class ApkClient:
             "has_more": certs_more or files_more,
         }
 
+    @_androguard_faults
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
@@ -267,6 +302,7 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
+    @_androguard_faults
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
@@ -291,6 +327,7 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    @_androguard_faults
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -313,6 +350,7 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    @_androguard_faults
     def methods(
         self,
         path: Path,
@@ -359,6 +397,7 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    @_androguard_faults
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
@@ -379,6 +418,7 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    @_androguard_faults
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
