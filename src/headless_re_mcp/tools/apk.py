@@ -132,6 +132,25 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.urls")
+    def apk_urls(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract http/https/ws/ftp URLs from the DEX string pool.
+
+        Answers with urls, count, total, offset, and has_more so a page that
+        filled the limit is not read as every endpoint. total is the number of
+        distinct URLs collected, capped at 5000; scan_capped is true when more
+        may exist. This is the endpoint-triage view over apk.strings: it scans
+        the same DEX string pool and keeps only URL-looking tokens (a URL inside
+        a larger literal is returned bare), de-duplicated and sorted. It does not
+        reach resources.arsc or native libraries, and a URL assembled at runtime
+        from fragments will not appear. There is no strings or endpoints field.
+        """
+        return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

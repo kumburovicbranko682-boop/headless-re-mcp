@@ -8,12 +8,18 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
 JsonObject = dict[str, Any]
+
+# Pulls http/https/ws/wss/ftp URLs out of a DEX string, stopping at the first
+# character that cannot appear unescaped in a URL (whitespace, quotes, brackets)
+# so a URL embedded in a larger literal is captured without its surroundings.
+_URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'<>)\]}\\,;]+", re.IGNORECASE)
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -410,6 +416,42 @@ class ApkClient:
         window = values[start : start + cap]
         return {
             "strings": window,
+            "count": len(window),
+            "total": len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
+            "scan_capped": scan_more,
+        }
+
+    def urls(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Extract http/https/ws/ftp URLs from the DEX string pool.
+
+        Finding the endpoints an app talks to is a first-pass triage step, and
+        apk.strings only returns the raw pool -- the caller then has to page all
+        of it and grep. This scans the same pool and keeps just the URL-looking
+        tokens, so a string like "base=https://api.example/v2 fallback" yields
+        the bare URL. Matches are de-duplicated and sorted so paging is stable;
+        total is the number of distinct URLs collected (capped at 5000, with
+        scan_capped when more may exist). This reaches the DEX pool only, not
+        resources.arsc or native libraries, so an endpoint built at runtime from
+        fragments will not appear.
+        """
+        parsed = self._parsed(path)
+        found: set[str] = set()
+        scan_more = False
+        for item in parsed.analysis.get_strings():
+            for match in _URL_RE.findall(str(item.get_value())):
+                if len(found) >= _MAX_STRINGS_COLLECT:
+                    scan_more = True
+                    break
+                found.add(match[:_MAX_STRING_LEN])
+            if scan_more:
+                break
+        values = sorted(found)
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
+        window = values[start : start + cap]
+        return {
+            "urls": window,
             "count": len(window),
             "total": len(values),
             "offset": start,
