@@ -120,3 +120,30 @@ def test_pid_zero_uses_the_most_recent_authorized_pid(
         assert fake.device_calls[0]["allowed"] == [111, 222]
     finally:
         service.close_all()
+
+
+def test_connected_but_unspawned_session_is_told_to_spawn(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A device is connected but nothing has been spawned yet.
+
+    This used to fall through to the PE debuggee path and fail with "no active
+    debuggee for optional backend" -- a debugger-shaped error for an APK/web
+    session. frida.java.* already answers "call frida.spawn first" here, so the
+    hook tool must match rather than reach for a debuggee that cannot exist.
+    """
+    service, session_id, fake = _service_with_authorized_device(
+        tmp_path, monkeypatch, []
+    )
+    try:
+        result = service.frida_hook_template(session_id, template="noop")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_state"
+        assert "frida.spawn" in result.error.message
+        assert "debuggee" not in result.error.message
+        # Neither hook path was reached: the guidance comes before any client call.
+        assert not fake.device_calls
+        assert not fake.local_calls
+    finally:
+        service.close_all()

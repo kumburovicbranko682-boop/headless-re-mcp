@@ -523,19 +523,32 @@ class ExtAnalysisMixin(UiDriveMixin):
     ) -> Result[JsonObject]:
         try:
             client = FridaClient()
-            # A device-connected session (APK/web) hooks an authorised device
-            # pid -- the given one, or the most recent when pid is 0, matching
-            # frida.java.* so a session that spawned several packages can hook
-            # any of them, not only the last. The backend re-checks the pid
-            # against the authorised set. A PE session keeps the local
-            # single-pid behaviour unchanged and ignores pid.
+            # Dispatch on whether a device is connected, not on whether a pid
+            # is already authorised. A connected session that has not spawned
+            # yet must be told to spawn -- the same guidance frida.java.* gives
+            # via _last_pid -- rather than falling through to the PE debuggee
+            # path and failing with "no active debuggee", a debugger-shaped
+            # error that makes no sense for an APK/web session.
             auth = self.registry.get(session_id).metadata.get("frida_authorized")
-            if isinstance(auth, dict) and auth.get("pids"):
-                target = int(pid) if pid else int(auth["pids"][-1])
+            if isinstance(auth, dict):
+                pids = auth.get("pids") or []
+                if pid:
+                    target = int(pid)
+                elif pids:
+                    target = int(pids[-1])
+                else:
+                    raise FridaError(
+                        "invalid_state", "no spawned/attached pid; call frida.spawn first"
+                    )
+                # Device-connected session (APK/web) hooks the given pid or the
+                # most recent when pid is 0, matching frida.java.* so a session
+                # that spawned several packages can hook any of them, not only
+                # the last. The backend re-checks the pid against the set.
                 data = client.hook_template_device(
-                    auth.get("device_id"), target, template, allowed_pids=auth.get("pids", [])
+                    auth.get("device_id"), target, template, allowed_pids=pids
                 )
             else:
+                # A PE session keeps the local single-pid behaviour and ignores pid.
                 debuggee = _require_debuggee_pid(self, session_id)
                 data = client.hook_template(debuggee, template, allowed_pid=debuggee)
             _timeline_append(
