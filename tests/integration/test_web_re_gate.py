@@ -185,6 +185,14 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             got = service.web_network_get(session_id, entry["requestId"])
             assert got.ok, got.error
             assert "NETWORK_GATE_MARKER" in got.data["body"], got.data
+            # Response headers captured at Network.responseReceived: the server
+            # sent Content-Type: application/javascript, so a working capture
+            # returns it. Lowercase the keys before matching since CDP header
+            # name casing is not guaranteed.
+            resp_headers = got.data["response_headers"]
+            assert isinstance(resp_headers, dict) and resp_headers, got.data
+            lowered = {str(k).lower(): str(v) for k, v in resp_headers.items()}
+            assert "javascript" in lowered.get("content-type", "").lower(), resp_headers
         finally:
             service.web_close(session_id)
     finally:

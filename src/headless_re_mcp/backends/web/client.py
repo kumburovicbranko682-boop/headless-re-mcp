@@ -39,6 +39,12 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Response headers are server-controlled: a hostile or misbehaving origin can
+# send many large headers. Cap each value, then bound the whole map by its
+# JSON-encoded size so network_get's header capture cannot push the reply past
+# the result budget (mirrors the proxy.flow_get header discipline).
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_HEADERS_ENCODED = 16 * 1024
 # Headroom fit_json_text leaves for a web result's other fields when it bounds an
 # inline body/source/html by encoded size: the largest is a url capped at
 # _MAX_URL_BYTES (16 KiB); the rest are small scalars. Smaller than the shared
@@ -69,6 +75,42 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _coerce_header(value: object) -> str:
+    """A JSON-safe str for a CDP header key or value, whatever type it arrives as."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return "" if value is None else str(value)
+
+
+def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
+    """Coerce a CDP header map to a JSON-safe, size-bounded ``str -> str`` dict.
+
+    CDP's ``Network.responseReceived`` hands back ``response.headers`` whose keys
+    and values are server-controlled. Capturing them verbatim would let a hostile
+    origin push megabytes of headers into a network_get reply -- enough to overrun
+    the result budget and get the whole reply discarded for a ~16 KiB summary --
+    and any non-str value would break JSON serialization. Coerce every field to
+    ``str``, cap each value at ``_MAX_HEADER_VALUE_BYTES``, and bound the whole map
+    by its JSON-encoded size. Returns ``(headers, truncated)``.
+    """
+    try:
+        base = dict(raw)  # type: ignore[call-overload]
+    except Exception:  # noqa: BLE001 - header container shape varies
+        return {}, False
+    pairs: list[list[str]] = []
+    truncated = False
+    for key, value in base.items():
+        bounded_value, value_cut = _bounded_metadata(
+            _coerce_header(value), _MAX_HEADER_VALUE_BYTES
+        )
+        truncated = truncated or value_cut
+        pairs.append([_coerce_header(key), bounded_value])
+    kept, _dropped, list_cut = fit_json_list(pairs, budget=_MAX_HEADERS_ENCODED, reserve=0)
+    return {k: v for k, v in kept}, truncated or list_cut
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -248,6 +290,10 @@ class _WebSession:
         self.page = page
         self.cdp = cdp
         self.requests: OrderedDict[str, JsonObject] = OrderedDict()
+        # Response headers live in their own bounded map keyed by requestId, not
+        # on the request entry, so network_list stays lean (its rows are already
+        # bounded by url size) while network_get can still return them per-request.
+        self.response_headers: OrderedDict[str, JsonObject] = OrderedDict()
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         self.requests_dropped = 0
         self.console_dropped = 0
@@ -434,13 +480,22 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            headers, headers_truncated = _bounded_headers(resp.get("headers"))
+            request_id = str(params.get("requestId"))
             with handle.lock:
-                entry = handle.requests.get(str(params.get("requestId")))
+                entry = handle.requests.get(request_id)
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+                    handle.response_headers[request_id] = {
+                        "response_headers": headers,
+                        "headers_truncated": headers_truncated,
+                    }
+                    handle.response_headers.move_to_end(request_id)
+                    while len(handle.response_headers) > _MAX_REQUESTS:
+                        handle.response_headers.popitem(last=False)
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -559,8 +614,15 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entry = handle.requests.get(request_id)
+            captured_headers = handle.response_headers.get(request_id)
         if entry is None:
             raise WebError("not_found", "unknown request id", request_id=request_id)
+        # Response headers captured at Network.responseReceived (Set-Cookie, CSP,
+        # CORS, redirect Location, HSTS ...) -- the security-relevant metadata a
+        # body alone cannot answer. Absent when no response was seen for this id.
+        header_fields: JsonObject = {"response_headers": {}, "headers_truncated": False}
+        if captured_headers is not None:
+            header_fields = dict(captured_headers)
         body = ""
         base64_encoded = False
         try:
@@ -570,7 +632,7 @@ class WebBackend:
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            return {**entry, **header_fields, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
         inline, spill, cut = _spill_text(
@@ -580,6 +642,7 @@ class WebBackend:
             kind="response body",
         )
         result = dict(entry)
+        result.update(header_fields)
         result["body"] = inline
         result["body_truncated"] = cut
         if spill is not None:

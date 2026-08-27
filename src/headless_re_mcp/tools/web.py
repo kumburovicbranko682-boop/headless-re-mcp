@@ -86,7 +86,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
         not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        written to disk. Also returns response_headers (the captured
+        Network.responseReceived headers: Set-Cookie, Content-Security-Policy,
+        CORS, redirect Location, HSTS ...) as a str->str map, with
+        headers_truncated set when a value was capped or the map was bounded by
+        size; response_headers is empty when no response was recorded for the id.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

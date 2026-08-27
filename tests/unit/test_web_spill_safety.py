@@ -138,6 +138,7 @@ def test_network_get_reply_stays_under_the_transport_budget(
                 "mimeType": "text/html",
             }
         }
+        response_headers: dict[str, dict[str, object]] = {}
         cdp = _Cdp()
 
     class _Immediate:

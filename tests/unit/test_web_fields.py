@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import (
+    _MAX_HEADER_VALUE_BYTES,
     _MAX_METADATA_BYTES,
     _MAX_URL_BYTES,
     WebBackend,
@@ -50,6 +51,7 @@ class _FakeHandle:
             }
             for index in range(count)
         }
+        self.response_headers: OrderedDict[str, dict[str, object]] = OrderedDict()
         self.scripts = {
             str(index): {
                 "scriptId": str(index),
@@ -152,7 +154,11 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     cdp.handlers["Network.responseReceived"](
         {
             "requestId": "request-1",
-            "response": {"status": 200, "mimeType": huge},
+            "response": {
+                "status": 200,
+                "mimeType": huge,
+                "headers": {"X-Big": huge, "Set-Cookie": "sid=1"},
+            },
         }
     )
     cdp.handlers["Debugger.scriptParsed"](
@@ -165,6 +171,12 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert len(str(request["resourceType"]).encode()) <= _MAX_METADATA_BYTES
     assert len(str(request["mimeType"]).encode()) <= _MAX_METADATA_BYTES
     assert request["metadata_truncated"] is True
+    # Response headers ride the same bounded-before-the-ring path: an oversized
+    # header value is capped and flagged before it ever reaches the buffer.
+    stored = handle.response_headers["request-1"]
+    assert stored["response_headers"]["Set-Cookie"] == "sid=1"
+    assert len(str(stored["response_headers"]["X-Big"]).encode()) <= _MAX_HEADER_VALUE_BYTES
+    assert stored["headers_truncated"] is True
     script = handle.scripts["script-1"]
     assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES

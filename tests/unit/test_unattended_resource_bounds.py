@@ -865,6 +865,7 @@ class TestWebScriptBufferIsBounded:
         class Handle:
             lock = threading.Lock()
             requests = {"r1": {"requestId": "r1", "url": "https://x"}}
+            response_headers: dict[str, dict[str, Any]] = {}
             cdp = Cdp()
 
         backend = mod.WebBackend()

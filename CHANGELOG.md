@@ -1199,6 +1199,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   声明 `debuggable=true`/`allowBackup=false` 的假清单断言映射成真/假布尔;空清单断言两者均为 `None` 而非 `False`。实机 gate 对真实夹具(其
   `<application>` 两标志都没声明)补断言两者均为 `None`,走的正是 `get_attribute_value` 对缺失属性返回 `None` 的真实路径。
 
+- **`web.network.get` 不回响应头,而 `Set-Cookie`/CSP/CORS/重定向 `Location`/HSTS 恰是正文答不了、Web 逆向最想看的安全元数据。** 之前
+  `on_response` 只从 CDP 的 `Network.responseReceived` 取了 `status`/`mimeType`,响应头整个丢掉;`network_get` 因此只能回正文,分析者看不到任何头部。
+  现 `on_response` 额外抓 `response.headers`,`network_get` 新增 `response_headers`(str→str)与 `headers_truncated` 两字段。头由服务器控制,
+  照搬会出两种事故:恶意源站可发几 MB 头把整条回复顶过 262144 预算被丢成摘要,某些取值又可能不是 `str` 直接崩序列化——故新增 `_bounded_headers`
+  (镜像 `proxy.flow_get` 的同名处理):每个键/值强制成 `str`(`bytes` 按 UTF-8 解码)、单值封到 4KiB、整张头表按 JSON 编码体积裁进 16KiB。抓到的头
+  存在**独立于请求条目**的 `response_headers` 环(键为 requestId、按 `_MAX_REQUESTS` 淘汰),使 `network_list` 的分页行保持精简(其行早已按 url 体积
+  兜),只有 `network_get` 才逐条取回。没有对应响应的请求返回空头表 + `headers_truncated` 假,而非缺键或抛错。工具描述补上两字段。单测
+  (`test_web_network_get_fields.py`):经桩件断言取回 `set-cookie`/CSP;无响应条目返回空表;`_bounded_headers` 直测——`bytes` 键值被强制成 `str`
+  且 `json.dumps` 不抛、超大单值被封顶、400 条大头被按编码体积裁到不超 16KiB 且 `truncated` 真。`test_web_fields.py` 经真实 `_wire_events` 布线断言超大
+  响应头在入环前就被封顶、`headers_truncated` 真。实机 gate(`test_web_re_gate.py`)对真实浏览器抓到的 `/app.js` 响应补断言 `response_headers` 里
+  (键名大小写归一后)`content-type` 含 `javascript`,证明 responseReceived→捕获→取回这条链路端到端可用。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
