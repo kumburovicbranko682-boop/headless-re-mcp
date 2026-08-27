@@ -169,6 +169,23 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the page's localStorage and sessionStorage (where SPAs keep tokens).
+
+        A fixed reader, not an arbitrary-JS evaluate: it only walks the two
+        Storage objects, so this is where a single-page app's JWTs, refresh
+        tokens and feature config live, beside web.cookies' HTTP jar. Answers
+        with url plus local and session, each an object carrying available,
+        items (key, value, value_size and value_truncated when a value was cut
+        at 8192 chars) and count. available is false when the origin blocked the
+        read (opaque origin, disabled storage) -- distinct from available true
+        with an empty items, which is a readable but empty store. count is the
+        store's real key count; read items_truncated when items stopped at the
+        cap (500 keys) so a capped page is not read as the whole store.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

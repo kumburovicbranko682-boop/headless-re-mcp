@@ -41,6 +41,12 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Web storage is where a single-page app stashes JWTs, refresh tokens and
+# feature config, so it is worth reading -- but a page can also park megabytes
+# of cached state there. Bound the key count and each value so one hostile
+# origin cannot make web.storage return the whole store.
+_MAX_STORAGE_KEYS = 500
+_MAX_STORAGE_VALUE_CHARS = 8 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -782,6 +788,26 @@ class WebBackend:
 
         return self._runner(handle).call(work)
 
+    def storage(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    _STORAGE_SCRIPT,
+                    {"maxKeys": _MAX_STORAGE_KEYS, "maxVal": _MAX_STORAGE_VALUE_CHARS},
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"storage read failed: {exc}") from exc
+            payload = raw if isinstance(raw, dict) else {}
+            return {
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "local": _bound_store(payload.get("local")),
+                "session": _bound_store(payload.get("session")),
+            }
+
+        return self._runner(handle).call(work)
+
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -839,6 +865,88 @@ class WebBackend:
         for session_id in session_ids:
             with contextlib.suppress(WebError):
                 self.close(session_id)
+
+
+# A fixed reader, not an arbitrary-JS evaluate: it only walks the two Storage
+# objects. Each access is guarded because reading window.localStorage throws a
+# SecurityError on an opaque origin (about:blank, sandboxed frame), which must
+# read as "store not available" rather than crash the whole call. length is the
+# true key count even when the page is capped, so the caller learns a store was
+# larger than what came back.
+_STORAGE_SCRIPT = """(opts) => {
+  function dump(store) {
+    var total;
+    try { total = store.length; } catch (e) { return {available: false}; }
+    var items = [];
+    var truncated = false;
+    for (var i = 0; i < total; i++) {
+      if (items.length >= opts.maxKeys) { truncated = true; break; }
+      var key;
+      try { key = store.key(i); } catch (e) { continue; }
+      if (key === null || key === undefined) { continue; }
+      var value;
+      try { value = store.getItem(key); } catch (e) { value = null; }
+      var text = (value === null || value === undefined) ? "" : String(value);
+      var cut = text.length > opts.maxVal;
+      items.push({
+        key: String(key),
+        value: cut ? text.slice(0, opts.maxVal) : text,
+        value_size: text.length,
+        value_truncated: cut
+      });
+    }
+    return {available: true, count: total, items: items, items_truncated: truncated};
+  }
+  var local, session;
+  try { local = dump(window.localStorage); } catch (e) { local = {available: false}; }
+  try { session = dump(window.sessionStorage); } catch (e) { session = {available: false}; }
+  return {local: local, session: session};
+}"""
+
+
+def _bound_store(raw: object) -> JsonObject:
+    """Re-bound one Storage dump the page returned into an honest summary.
+
+    ``available`` false is kept distinct from ``available`` true with an empty
+    ``items``: the first is a store the origin would not let us read (opaque
+    origin, disabled storage), the second is a readable store that holds
+    nothing. Collapsing them would read a blocked read as "no tokens here".
+    ``count`` is the store's real key count, so a capped ``items`` does not read
+    as the whole store.
+    """
+    if not isinstance(raw, dict) or not raw.get("available"):
+        return {"available": False, "items": [], "count": 0}
+    entries = raw.get("items")
+    entries = entries if isinstance(entries, list) else []
+    items: list[JsonObject] = []
+    truncated = bool(raw.get("items_truncated"))
+    for entry in entries:
+        if len(items) >= _MAX_STORAGE_KEYS:
+            truncated = True
+            break
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if not isinstance(key, str):
+            continue
+        value = entry.get("value")
+        value = value if isinstance(value, str) else ""
+        size = entry.get("value_size")
+        size = size if isinstance(size, int) and size >= 0 else len(value)
+        item: JsonObject = {
+            "key": key,
+            "value": value[:_MAX_STORAGE_VALUE_CHARS],
+            "value_size": size,
+        }
+        if bool(entry.get("value_truncated")) or len(value) > _MAX_STORAGE_VALUE_CHARS:
+            item["value_truncated"] = True
+        items.append(item)
+    count = raw.get("count")
+    count = count if isinstance(count, int) and count >= 0 else len(items)
+    out: JsonObject = {"available": True, "items": items, "count": count}
+    if truncated or count > len(items):
+        out["items_truncated"] = True
+    return out
 
 
 def _safe_title(page: Any) -> str:
