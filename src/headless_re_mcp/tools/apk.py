@@ -27,11 +27,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
         native_abis, main_activity, permission_count, opened, and security --
-        an object with debuggable, allow_backup, uses_cleartext_traffic and
-        network_security_config (whether a custom config is shipped). An absent
-        manifest attribute reports the platform default the app runs with
-        (debuggable off, allow_backup on, cleartext allowed below API 28). There
-        is no version, sdk or abis field.
+        an object with debuggable, allow_backup, uses_cleartext_traffic,
+        network_security_config (whether a custom config is shipped), and
+        shared_user_id (the declared sandbox-sharing id, or null; a value like
+        android.uid.system is a major red flag). An absent manifest attribute
+        reports the platform default the app runs with (debuggable off,
+        allow_backup on, cleartext allowed below API 28). There is no version,
+        sdk or abis field.
         """
         return _dump(analysis.apk_open(session_id))
 

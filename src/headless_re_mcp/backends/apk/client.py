@@ -415,7 +415,32 @@ class ApkClient:
             # Whether the app ships a custom Network Security Config (which can
             # re-enable cleartext or pin/trust CAs); presence alone is the signal.
             "network_security_config": bool(attr("networkSecurityConfig")),
+            # A declared sharedUserId puts the app in a shared Linux sandbox with
+            # every app of the same id and signer; the value itself is the signal
+            # (android.uid.system is a major red flag). It lives on the root
+            # <manifest> tag, not <application>, so it is read from the tree.
+            # Deprecated since API 29 but still honored, hence still triage-worthy.
+            "shared_user_id": self._manifest_root_attr(apk, "sharedUserId"),
         }
+
+    def _manifest_root_attr(self, apk: Any, name: str) -> str | None:
+        """A namespaced attribute of the root ``<manifest>`` tag, or None.
+
+        Read from the parsed manifest tree so a root-level attribute (which the
+        ``<application>``-scoped ``get_attribute_value`` cannot reach) is
+        available; degrades to None when the manifest cannot be parsed.
+        """
+        getter = getattr(apk, "get_android_manifest_xml", None)
+        if not callable(getter):
+            return None
+        try:
+            root = getter()
+        except Exception:  # noqa: BLE001
+            return None
+        if root is None:
+            return None
+        value = root.get(_ANDROID_NS + name)
+        return None if value is None else str(value)
 
     def manifest(self, path: Path, *, spill_dir: Path | None = None) -> JsonObject:
         apk = self._apk(path)

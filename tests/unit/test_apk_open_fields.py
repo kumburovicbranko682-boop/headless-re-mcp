@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from lxml import etree
+
 from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
@@ -79,6 +81,8 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
         "allow_backup": True,
         "uses_cleartext_traffic": False,
         "network_security_config": False,
+        # No manifest tree on the fake -> no sharedUserId to read.
+        "shared_user_id": None,
     }
     doc = _tool_docstring("apk.open")
     assert "Answers with package" in doc
@@ -122,7 +126,32 @@ def test_apk_open_reports_explicit_security_flags() -> None:
         # No usesCleartextTraffic attribute, target 26 (< 28) -> allowed default.
         "uses_cleartext_traffic": True,
         "network_security_config": True,
+        "shared_user_id": None,
     }
     doc = _tool_docstring("apk.open")
     assert "security" in doc
     assert "debuggable" in doc
+
+
+class _SharedUidApk(_FakeApk):
+    """Declares android:sharedUserId on the root <manifest> tag."""
+
+    def get_android_manifest_xml(self) -> etree._Element:
+        return etree.fromstring(
+            b"""<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                          package="com.x"
+                          android:sharedUserId="android.uid.system">
+                  <application/>
+                </manifest>"""
+        )
+
+
+def test_apk_open_surfaces_a_declared_shared_user_id() -> None:
+    """sharedUserId lives on the manifest root and its value is the red flag."""
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _SharedUidApk()  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert payload["security"]["shared_user_id"] == "android.uid.system"
+    doc = _tool_docstring("apk.open")
+    assert "shared_user_id" in doc

@@ -218,6 +218,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`apk.open` 的 `security` 不含 `sharedUserId`，共享沙箱信号缺失**。声明了 `android:sharedUserId` 的应用会与同 id、同签名的
+  其它应用共享同一 Linux 沙箱，其值本身即信号（`android.uid.system` 是重大红旗）。该属性位于根 `<manifest>` 标签而非
+  `<application>`，故新增 `_manifest_root_attr` 从清单树读取，并把 `shared_user_id`（字符串或 null）并入 `security`；
+  自 API 29 起虽被弃用但仍生效，因此仍具定级价值。
 - **`apk.certificates` 不报签名算法与签名者密钥强度，弱签名无法识别**。原来只给 `hash_algo`（摘要），但 MD5/SHA1 签名或
   1024 位 RSA 密钥是旧工具链/二次打包样本的经典特征。新增 `signature_algo`（如 `rsassa_pkcs1v15`）与 `key_algo`/`key_size`
   （从 asn1crypto 证书的 `public_key.algorithm`/`bit_size` 读取），三者与摘要、有效期并列于定级信息中；读取按证书防御式处理，
