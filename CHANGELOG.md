@@ -561,9 +561,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的 `html` 含 body marker（证明取到活 DOM，而不只是标题）；`web.console` 经 CDP 抓到内联
   `console.log`（事件在 goto 返回后异步到达，故轮询等落）；`web.network` 同时记录文档与外链
   脚本两条 flow（status/mime 齐全），`web.network.get` 取回脚本正文；`web.scripts` 解析到
-  `app.js` 且 `web.script_source` 能取源码；`web.screenshot` 落一张按 magic 校验的真 PNG；
+  `app.js` 且   `web.script_source` 能取源码；`web.screenshot` 落一张按 magic 校验的真 PNG；
   `web.har.export` 把采集到的 flow 序列化成引用 `app.js` 的 HAR。全程本地，缺 Playwright 或
   未装 Chromium 构建时按 “skip != pass” 显式跳过。
+- 同一 Gate 另加一例证明 `web.wasm.list`：源站页面把最小 `add.wasm`（`add(i32,i32)->i32`）
+  base64 内嵌并在页内 `WebAssembly.instantiate`，断言模块**真的运行了**（页面经 CDP 打出
+  `add(19,23)=42`），`web.wasm.list` 枚举到 V8 上报的已编译模块（language 为 WebAssembly、
+  url 形如 `wasm://`），且 `wasm_only` 是真过滤——不带过滤的脚本清单仍含页面的纯 JS 脚本，
+  而 wasm-only 视图已将其排除。
 
 ### 修复（HAR 导出规范与边界）
 
