@@ -116,6 +116,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（apk 列表分页在 agent 通道下越界）
+
+- `apk.classes/methods/strings/xrefs` 的分页此前只靠工具 schema（`offset>=0`、`limit∈[1,max]`）
+  兜底，而 schema 只在 MCP 通道生效：agent 通道的 `CommandCatalog.invoke` 直接把原始参数喂给处理器、
+  不做任何 schema 校验。于是模型给出的 `limit=-1` 会原样抵达 `ApkClient`，`names[offset:offset+limit]`
+  退化成 `names[0:-1]`——返回除最后一条外的**几乎整份**列表，与「一小页」恰好相反；负 `offset` 则把
+  DEX 末尾当成第 0 页（`test_apk_offset_schema` 早已在 schema 层记下这一现象）。现在与 web/jsre/proxy/jadx
+  各兄弟后端一致，在后端内部就 `max(0, int(offset))` / `max(1, min(int(limit), 上限))` 收敛，并对越界的
+  `int()` 数字串做与 schema 相同的解析;`apk.xrefs` 原本 `limit` 无上限也一并补上 schema 的 1000 上界。
+  新增回归测试直测负 limit 不再是近乎整份的切片、超大 limit 收敛到页上限、负 offset 即第 0 页、合法页不受影响。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入

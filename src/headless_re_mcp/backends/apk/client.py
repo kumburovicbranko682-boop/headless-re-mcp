@@ -27,6 +27,29 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Per-page ceilings, mirroring the apk.* tool schema (tools/apk.py). The MCP
+# transport validates offset/limit against that schema before a call lands, but
+# the agent transport invokes handlers with raw arguments and no schema check,
+# so these are enforced here too -- the same belt-and-suspenders every sibling
+# backend (web, jsre, proxy, jadx) already applies to its own pages.
+_MAX_CLASSES_PAGE = 1000
+_MAX_METHODS_PAGE = 1000
+_MAX_STRINGS_PAGE = 2000
+_MAX_XREFS_PAGE = 1000
+
+
+def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
+    """Clamp a page window so the bound holds however the call arrived.
+
+    Without this, ``names[offset:offset + limit]`` trusts both arguments: a
+    negative offset reads a tail slice as page zero, and a negative limit turns
+    into ``names[0:-100]`` -- everything but the last hundred rows, the opposite
+    of a small page. int() also coerces a numeric string the agent may hand over
+    where the schema would have parsed it. Returns ``(start, count)``.
+    """
+    start = max(0, int(offset))
+    count = max(1, min(int(limit), max_limit))
+    return start, count
 
 
 class ApkError(RuntimeError):
@@ -293,6 +316,7 @@ class ApkClient:
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
+        start, count = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
         names: list[str] = []
         scan_more = False
         for klass in parsed.analysis.get_classes():
@@ -303,13 +327,13 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        window = names[start : start + count]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -325,6 +349,7 @@ class ApkClient:
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
+        start, count = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
         found = [
             klass
             for klass in parsed.analysis.get_classes()
@@ -348,19 +373,20 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        window = methods[start : start + count]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
+        start, count = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
@@ -369,13 +395,13 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        window = values[start : start + count]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 
@@ -384,7 +410,7 @@ class ApkClient:
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
+        cap = max(1, min(int(limit), _MAX_XREFS_PAGE))
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
