@@ -14,7 +14,15 @@ PROFILES: tuple[str, ...] = ("full", "pe", "android", "web")
 # listed here (session/static/dynamic/frida/workspace/...) is core and stays in
 # every non-full profile.
 _ANDROID_PREFIXES = ("apk.", "device.")
-_WEB_PREFIXES = ("web.", "js.", "wasm.", "proxy.")
+_WEB_PREFIXES = ("web.", "js.", "wasm.")
+# HTTP(S) interception drives an Android app's traffic as much as a browser's --
+# proxy.ca.install_android pushes the mitmproxy CA onto a device over adb -- so it
+# belongs to both dynamic profiles and is hidden only for local PE work. Grouping
+# it with the web-only tools used to strip TLS interception, including the
+# Android-only CA helper, out of the very "android" profile that needs it.
+# (capabilities_catalog marks proxy.mitmproxy "Web + Android"; the README lists
+# 抓包 as "Web 与 Android 共用".)
+_INTERCEPTION_PREFIXES = ("proxy.",)
 
 PROFILE_LABELS: dict[str, str] = {
     "full": "All tools",
@@ -30,7 +38,7 @@ def excluded_prefixes(profile: str) -> tuple[str, ...]:
     if normalized == "full":
         return ()
     if normalized == "pe":
-        return _ANDROID_PREFIXES + _WEB_PREFIXES
+        return _ANDROID_PREFIXES + _WEB_PREFIXES + _INTERCEPTION_PREFIXES
     if normalized == "android":
         return _WEB_PREFIXES
     if normalized == "web":

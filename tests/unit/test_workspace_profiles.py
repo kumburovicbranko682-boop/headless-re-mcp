@@ -41,7 +41,11 @@ async def test_android_profile_hides_web_domain(tmp_path) -> None:
         analysis.close_all()
     assert "apk.open" in names
     assert "device.list" in names
-    assert not any(n.startswith(("web.", "js.", "wasm.", "proxy.")) for n in names)
+    assert not any(n.startswith(("web.", "js.", "wasm.")) for n in names)
+    # HTTP(S) interception is shared with Android (proxy.ca.install_android
+    # pushes the mitmproxy CA to a device), so it stays visible here.
+    assert "proxy.ca.install_android" in names
+    assert "proxy.start" in names
     # Core debugger tools remain available in every profile.
     assert "session.create" in names
     assert "frida.devices" in names
@@ -101,6 +105,36 @@ def test_profile_helpers_are_consistent() -> None:
     assert is_tool_visible("apk.open", "web") is False
     assert is_tool_visible("web.open", "android") is False
     assert is_tool_visible("session.create", "pe") is True
+    # Shared HTTP(S) interception: visible in both dynamic profiles, hidden only
+    # for local PE work. The Android CA helper is Android-only, so hiding proxy
+    # in the android profile stripped the exact tool that profile needs.
+    assert is_tool_visible("proxy.ca.install_android", "android") is True
+    assert is_tool_visible("proxy.start", "web") is True
+    assert is_tool_visible("proxy.start", "pe") is False
+
+
+def test_interception_is_shared_across_dynamic_profiles() -> None:
+    """proxy.* serves both dynamic lines; only local PE work hides it.
+
+    Regression: proxy.* was grouped with the web-only tools, so the android
+    profile hid every interception tool -- including proxy.ca.install_android,
+    which exists solely to push the mitmproxy CA onto an Android device over
+    adb. An Android-reversing session in "android" mode was left with no way to
+    intercept the app's TLS, the core reason the profile exists.
+    capabilities_catalog marks proxy.mitmproxy "Web + Android".
+    """
+    interception = ("proxy.start", "proxy.flows", "proxy.ca.install_android")
+    for name in interception:
+        assert is_tool_visible(name, "android") is True, name
+        assert is_tool_visible(name, "web") is True, name
+        assert is_tool_visible(name, "full") is True, name
+        assert is_tool_visible(name, "pe") is False, name
+    # The trim is still real in each dynamic profile: android hides the browser
+    # line, web hides the device line, and neither leaks into the other.
+    assert is_tool_visible("web.open", "android") is False
+    assert is_tool_visible("js.deobfuscate", "android") is False
+    assert is_tool_visible("apk.open", "web") is False
+    assert is_tool_visible("device.list", "web") is False
 
 
 def test_agent_tool_surface_follows_workspace_profile(tmp_path) -> None:
@@ -129,8 +163,10 @@ def test_agent_tool_surface_follows_workspace_profile(tmp_path) -> None:
         android_names = {tool["function"]["name"] for tool in orchestrator._provider_tools()}
         assert "apk.open" in android_names
         assert not any(
-            n.startswith(("web.", "js.", "wasm.", "proxy.")) for n in android_names
+            n.startswith(("web.", "js.", "wasm.")) for n in android_names
         )
+        # Interception is shared with Android and must survive the trim.
+        assert "proxy.ca.install_android" in android_names
         assert "session.create" in android_names
 
         profile["value"] = "web"
