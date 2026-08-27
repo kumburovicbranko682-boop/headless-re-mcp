@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（会话关闭清理失败会抛出未捕获的 promise rejection）
+
+- `webui` 的 `useWorkbench.noteClosedSession()`（会话被关闭时的清理回调）以裸 `void` 触发两个
+  fire-and-forget 请求：`bindSession(threadId, "", true)`（把对话从已关闭会话解绑）与 `loadSessions()`
+  （刷新会话列表）。`bindSession` 与 `loadSessions` 本身都没有 `try/catch`，而这两处调用又都没有
+  `.catch`——一旦后端正在重启、或对话已被并发删除（PATCH 返回 404），异常就成了 unhandled promise
+  rejection。该文件里其余 fire-and-forget 路径（`markLost` 内部 catch、健康轮询 `tick` 的 catch）
+  一直是兜住背景错误的，唯独这里漏了。现给两处补上 `.catch(() => undefined)`：解绑失败会自愈（下次
+  `selectThread` 打开该对话时会识别出会话已不在并标记为断开），列表也会在下一次 `/healthz` 轮询时刷新，
+  所以这里静默吞掉、不弹横幅才是对的。
+- 新增一条 `useWorkbench` hook 直测：boot 与 `selectThread` 正常后，让解绑 PATCH 与 `/api/sessions`
+  刷新都 reject，断言 `noteClosedSession` 不再泄漏未捕获 rejection、且 `sessionId` 已清空。修复前该
+  用例会以两条 unhandled rejection（解绑与刷新各一条）报错。前端 64 条测试与 `tsc --noEmit` 均通过，
+  提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -309,8 +309,13 @@ export function useWorkbench() {
     lostRef.current = null;
     setSessionId((current) => (current === id ? "" : current));
     const threadId = selectedThreadRef.current;
-    if (threadId) void bindSession(threadId, "", true);
-    void loadSessions();
+    // Best-effort cleanup after a session closes; both calls run as fire-and-
+    // forget. If the backend is restarting or the thread was already deleted
+    // (404), a bare void here becomes an unhandled rejection. Swallow it: the
+    // unbind self-heals (selectThread flags a gone session next time it opens)
+    // and the list refreshes on the next /healthz tick, so a banner here is noise.
+    if (threadId) void bindSession(threadId, "", true).catch(() => undefined);
+    void loadSessions().catch(() => undefined);
   }, [bindSession, loadSessions]);
 
   useEffect(() => {
