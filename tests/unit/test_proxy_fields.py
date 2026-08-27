@@ -7,9 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
+    ProxyError,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
@@ -230,3 +233,40 @@ def test_proxy_export_har_names_path_and_entry_count(
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+
+
+def test_proxy_stop_does_not_report_a_live_thread_as_stopped() -> None:
+    """A wedged thread used to answer stopped True while the instance was dropped.
+
+    Measured: inst.stop() returned with the thread still alive (join timed
+    out) and the outer stop had already popped the instance and answered
+    {stopped: True}, so the listener leaked on its port and the next stop
+    reported that nothing was running. A live thread is now a timeout, and
+    the instance is put back so a later stop can find it.
+    """
+    stopped_calls: list[int] = []
+    inst = SimpleNamespace(
+        stop=lambda: stopped_calls.append(1),
+        _thread=SimpleNamespace(is_alive=lambda: True),
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = inst  # type: ignore[assignment]
+    with pytest.raises(ProxyError) as caught:
+        backend.stop("s")
+    assert caught.value.code == "timeout"
+    assert stopped_calls == [1]
+    assert backend._instances.get("s") is inst
+    doc = " ".join(_tool_docstring("proxy.stop").split())
+    assert "timeout" in doc
+
+
+def test_proxy_stop_reports_a_thread_that_actually_stopped() -> None:
+    inst = SimpleNamespace(
+        stop=lambda: None,
+        _thread=SimpleNamespace(is_alive=lambda: False),
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = inst  # type: ignore[assignment]
+    payload = backend.stop("s")
+    assert payload == {"stopped": True}
+    assert "s" not in backend._instances

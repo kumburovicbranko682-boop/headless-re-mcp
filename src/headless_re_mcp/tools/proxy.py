@@ -36,7 +36,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.stop")
     def proxy_stop(session_id: str) -> dict[str, Any]:
-        """Stop the session's interception proxy."""
+        """Stop the session's interception proxy.
+
+        A proxy thread that will not stop is a timeout, not a stopped proxy.
+        """
         return _dump(analysis.proxy_stop(session_id))
 
     @tools.tool(name="proxy.status")

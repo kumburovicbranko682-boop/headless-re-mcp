@@ -657,6 +657,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拒绝。`device.push` 同样拒绝超过上限的本地文件。
 - **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
+- **`proxy.stop` 在 mitmproxy 线程没退出时仍回 `stopped: True`**。`inst.stop()` 的
+  `join` 超时后线程还活着，但外层已经把实例从表里弹掉并报成功，于是监听线程带着端口泄漏，
+  下一次 `stop` 反而说「没有代理在跑」。现在 join 后线程仍存活记为 `timeout`，并把实例放回
+  表里，让后续 `stop` 还能找到它。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
   先物化全集再截断；加壳应用可以有十几万个类，这一次 RPC 就能把目标拖死。改为边枚举边停。
 - **jadx 反编译会把整个 .java 读进内存再切**。生成器吐出的单文件可以到几十 MB。按上限读。

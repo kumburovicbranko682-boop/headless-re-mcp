@@ -546,6 +546,20 @@ class ProxyBackend:
         if inst is None:
             return {"stopped": False, "note": "no proxy was running"}
         inst.stop()
+        # Measured: a thread that ignored join(10s) still answered
+        # {stopped: True} while the instance was already popped, so the
+        # listener leaked on its port and the next stop reported that nothing
+        # was running. A still-alive thread is a timeout, and the instance is
+        # put back so a later stop can find it again.
+        thread = inst._thread
+        if thread is not None and thread.is_alive():
+            with self._lock:
+                self._instances.setdefault(session_id, inst)
+            raise ProxyError(
+                "timeout",
+                "proxy thread did not stop",
+                session_id=session_id,
+            )
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:
