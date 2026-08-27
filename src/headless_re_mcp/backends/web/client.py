@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.json_budget import fit_json_text
+from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -44,6 +44,10 @@ _MAX_METADATA_BYTES = 1024
 # _MAX_URL_BYTES (16 KiB); the rest are small scalars. Smaller than the shared
 # default because there is no bulky stderr field here.
 _WEB_FIELD_RESERVE = 32 * 1024
+# Headroom for a list result's scalar siblings (count/total/offset/has_more/
+# dropped) when the window (requests/scripts/console rows) is bounded by encoded
+# size; the window itself gets the rest of the budget.
+_LIST_FIELD_RESERVE = 16 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -535,6 +539,13 @@ class WebBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
+        # Bound the page by its JSON-encoded size, not just the row count: each
+        # entry carries a url of up to 16 KiB, so a 1000-row window can run to
+        # megabytes and be discarded whole by the transport for a ~16 KiB
+        # summary. Trimming before has_more is computed keeps it honest -- a
+        # budget-cut page still reports more to fetch, so the caller pages past
+        # it.
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "requests": window,
             "count": len(window),
@@ -583,10 +594,21 @@ class WebBackend:
             held = list(handle.console)
             dropped = handle.console_dropped
         page = held[-capped:]
+        # Bound the page by its JSON-encoded size too: each message text is
+        # capped at 8 KiB, so a 2000-row page can reach ~16 MB and be discarded
+        # whole by the transport for a ~16 KiB summary. This is a "last N" view
+        # with no offset, so keep the most recent rows and drop the oldest of
+        # the page: trim the reversed page (fit_json_list keeps a leading run)
+        # and restore order. Fold the cut into has_more so a trimmed page is not
+        # read as the whole recent buffer.
+        kept_recent, _dropped_old, budget_cut = fit_json_list(
+            list(reversed(page)), reserve=_LIST_FIELD_RESERVE
+        )
+        page = list(reversed(kept_recent))
         return {
             "console": page,
             "count": len(page),
-            "has_more": len(held) > capped,
+            "has_more": len(held) > capped or budget_cut,
             "dropped": dropped,
         }
 
@@ -606,6 +628,11 @@ class WebBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = values[start : start + cap]
+        # Bound the page by encoded size too: each entry carries a url of up to
+        # 16 KiB (this tool's docstring records a full list at 441 KiB), so a
+        # windowed page can still outrun the budget and be discarded whole. See
+        # network_list.
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "scripts": window,
             "count": len(window),

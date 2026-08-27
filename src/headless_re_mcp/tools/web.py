@@ -72,8 +72,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with requests (url, method, status, resourceType), count,
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        visible. count may be below the requested limit when the result-size
+        budget trimmed the page (each url can be 16 KiB), so read count, not
+        limit, and page on has_more. metadata_truncated marks bounded
+        oversized request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -96,8 +98,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with console, count, has_more, and dropped so a page that
         filled the limit is not read as the whole buffer, and ring
-        eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated.
+        eviction is visible. This is a most-recent-N view: when the
+        result-size budget trims the page it keeps the newest messages and
+        drops the oldest, setting has_more, so count may be below the limit.
+        A line longer than the per-message cap is cut and marked
+        text_truncated.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
@@ -113,7 +118,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with scripts (scriptId, url, language), count, total, offset,
         has_more and dropped. The session keeps at most 2000 scripts. A page
         of 100 typical URLs is ~22 KiB; the full list was 441 KiB. Read
-        total and has_more rather than assuming the page is complete.
+        total and has_more rather than assuming the page is complete, and
+        read count, not limit -- the result-size budget can trim the page
+        (each url can be 16 KiB) so count falls below the requested limit.
         metadata_truncated marks bounded oversized script fields.
         """
         return _dump(
