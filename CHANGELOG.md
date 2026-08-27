@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 frida 服务层的枚举/连接/java 路径与错误分类钉进测试）
+
+- frida 审计测试驱动 spawn/server.ensure/applications,closed-session 测试驱动入口与泄漏守卫,本地
+  device.connect 也另有覆盖——但因共享假 client 只有 spawn/applications,还剩一整条没被触及:
+  `frida.devices`(无会话枚举)、`frida.device.connect` 的**远端 endpoint** 分支及其 FridaError 映射、
+  整条 java 路径(`frida.java.classes`/`methods`→`_java`→`_last_pid`)、`frida.applications` 的错误映射,
+  以及 `_frida_auth` 那句\"先连设备\"的拒绝。
+- 新增 `tests/unit/test_frida_service_envelopes.py`,用带 `raises` 注入的假 FridaClient(不需真设备或
+  frida 模块)在服务层钉住:`frida.devices` 成功盖 backend、FridaError→原样 code、意外→`internal_error`;
+  `device.connect` 走远端 endpoint 成功记 auth+timeline、FridaError 失败不留 auth;未连设备时
+  `applications`/java 一律 `invalid_state` fail-closed;java 路径成功默认落到最近 spawn 的 pid、无 pid 时
+  拒绝、FridaError/意外各自分类;`server.ensure` 的 AdbError 透传原样 code 且失败仍带 code 记审计。
+  `service_frida` 覆盖率 85%→99%(仅剩 `_audit_frida` 里一条 `_failure` 永不产生的防御分支),纯补测、
+  不改行为。
+
 ### 加固（把 apk 服务层的成功尾段与错误分类钉进测试）
 
 - APK 线的入口守卫与运行中泄漏守卫(会话中途关闭→删树重抛)已由各 `*_closed_session` 测试钉住,`..`
