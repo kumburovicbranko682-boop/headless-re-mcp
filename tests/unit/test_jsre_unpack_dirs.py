@@ -130,8 +130,10 @@ def test_unpack_forces_overwrite_so_the_precreated_dir_is_not_fatal(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
-        del timeout
+    def fake_run(
+        cmd: list[str], *, timeout: float, maximum: float = 0.0
+    ) -> tuple[str, str, int]:
+        del timeout, maximum
         seen["cmd"] = list(cmd)
         out_dir = Path(cmd[cmd.index("-o") + 1])
         (out_dir / "mod.js").write_text("x", encoding="utf-8")
