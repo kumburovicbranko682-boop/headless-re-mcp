@@ -130,6 +130,118 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ModulesDictExports:
+    """The newer enum script answers modules() with a {modules, total} object.
+
+    The device caps the returned list itself and reports the true total
+    alongside it, so ``total`` here (200) is deliberately larger than the page
+    it hands back (10) -- the two must not be conflated.
+    """
+
+    def modules(self, limit: int = 64) -> dict[str, Any]:
+        del limit
+        return {
+            "modules": [
+                {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
+                for index in range(10)
+            ],
+            "total": 200,
+        }
+
+
+class _ModulesDictScript:
+    exports_sync = _ModulesDictExports()
+
+    def load(self) -> None:
+        return None
+
+
+class _ModulesDictSession:
+    def create_script(self, source: str) -> _ModulesDictScript:
+        del source
+        return _ModulesDictScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ModulesDictFrida:
+    def attach(self, pid: int) -> _ModulesDictSession:
+        del pid
+        return _ModulesDictSession()
+
+
+def test_frida_modules_dict_payload_trusts_the_device_total_over_the_page() -> None:
+    """When the enum script returns an object, total comes from the device.
+
+    Two payload shapes reach here across frida/enum-script versions: a bare list
+    (the sibling test above) and a ``{modules, total}`` object. In the object
+    form the device has already capped the list it sends and reports the real
+    count separately, so ``total`` must be read from that field, not recomputed
+    as ``len(page)``. Collapsing them would report ``total == count`` for a
+    truncated page -- has_more False -- and an agent enumerating a large process's
+    modules would stop at the first page believing it saw them all. Pin that the
+    embedded 200 survives while the page stays the 10 rows actually returned.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ModulesDictFrida()
+    payload = client.modules(1, allowed_pid=1, limit=64)
+    assert payload["count"] == 10
+    assert len(payload["modules"]) == 10
+    assert payload["total"] == 200
+    assert payload["has_more"] is True
+
+
+class _NonDictExportApi:
+    """A script whose exports() answers with the wrong shape (a list, not a map)."""
+
+    def exports(self, name: str, count: int) -> list[Any]:
+        del name, count
+        return ["not", "a", "dict"]
+
+
+class _NonDictExportScript:
+    exports_sync = _NonDictExportApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _NonDictExportSession:
+    def create_script(self, source: str) -> _NonDictExportScript:
+        del source
+        return _NonDictExportScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _NonDictExportFrida:
+    def attach(self, pid: int) -> _NonDictExportSession:
+        del pid
+        return _NonDictExportSession()
+
+
+def test_frida_exports_rejects_a_payload_that_is_not_an_object() -> None:
+    """A malformed exports payload is a backend_error, not a crash on .get.
+
+    exports reads found/module/base/exports off the RPC result with ``.get``, so
+    a result that is not a dict -- a script that returned a bare list, or a
+    protocol hiccup -- would raise AttributeError and be filed as an
+    internal_error incident. The explicit isinstance check turns that into an
+    honest backend_error naming the bad payload, the same class of device-outcome
+    error the enumeration failures already use.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _NonDictExportFrida()
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "libc.so", allowed_pid=1)
+    assert caught.value.code == "backend_error"
+    assert "unexpected frida exports payload" in caught.value.message
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
