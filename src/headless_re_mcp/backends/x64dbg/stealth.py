@@ -250,14 +250,14 @@ def read_current_section(ini_path: Path) -> str | None:
     parser = _parser()
     try:
         read = parser.read(ini_path, encoding="utf-8")
-    except OSError:
+    except OSError:  # pragma: no cover - read() is documented to ignore files it cannot open
         return None
     if not read:
         try:
             read = parser.read(ini_path, encoding="utf-16")
-        except OSError:
+        except OSError:  # pragma: no cover - read() ignores unopenable files
             return None
-        if not read:
+        if not read:  # pragma: no cover - utf-16 re-reads the same unopenable file, so always empty
             return None
     if not parser.has_section("SETTINGS"):
         return None
@@ -290,7 +290,7 @@ def apply_profile(
                 details={"section": section, "ini": str(layout.ini)},
             )
         if not parser.has_section("SETTINGS"):
-            parser.add_section("SETTINGS")
+            parser.add_section("SETTINGS")  # pragma: no cover - _load_or_seed always seeds SETTINGS
         parser.set("SETTINGS", "CurrentProfile", section)
         _quiet_network_hooks(parser)
         _atomic_write_ini(layout.ini, parser)
