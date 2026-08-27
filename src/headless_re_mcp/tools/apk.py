@@ -65,11 +65,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List signing certificates and the APK signature schemes in use.
 
         Answers with certificates (subject, issuer, serial, sha1, sha256,
-        hash_algo, not_before, not_after), signature_files, and the scheme
-        flags v1_signed (JAR/META-INF), v2_signed and v3_signed (APK Signature
-        Scheme) plus signed (any of them), and has_more so a list that filled
-        the cap is not read as every signer. sha1 is the fingerprint threat-intel
-        DBs key on; a v1-only modern app (v2/v3 false) is a Janus-tampering tell.
+        hash_algo, signature_algo, key_algo, key_size, not_before, not_after),
+        signature_files, and the scheme flags v1_signed (JAR/META-INF),
+        v2_signed and v3_signed (APK Signature Scheme) plus signed (any of
+        them), and has_more so a list that filled the cap is not read as every
+        signer. sha1 is the fingerprint threat-intel DBs key on; a v1-only
+        modern app (v2/v3 false) is a Janus-tampering tell, and an MD5/SHA1
+        signature_algo or a 1024-bit key_size is a weak-signing tell.
         There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))

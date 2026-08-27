@@ -74,6 +74,12 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "has_more" in doc
 
 
+class _PubKey:
+    def __init__(self, algorithm: str, bit_size: int) -> None:
+        self.algorithm = algorithm
+        self.bit_size = bit_size
+
+
 class _RichCert:
     subject = "CN=app"
     issuer = "CN=ca"
@@ -81,6 +87,8 @@ class _RichCert:
     sha1_fingerprint = "11:22"
     sha256_fingerprint = "aa:bb"
     hash_algo = "sha256"
+    signature_algo = "rsassa_pkcs1v15"
+    public_key = _PubKey("rsa", 2048)
     not_valid_before = datetime(2020, 1, 1, tzinfo=UTC)
     not_valid_after = datetime(2045, 1, 1, tzinfo=UTC)
 
@@ -120,8 +128,58 @@ def test_apk_certificates_reports_scheme_versions_and_cert_detail() -> None:
     assert cert["sha1"] == "11:22"
     assert cert["sha256"] == "aa:bb"
     assert cert["hash_algo"] == "sha256"
+    assert cert["signature_algo"] == "rsassa_pkcs1v15"
+    assert cert["key_algo"] == "rsa"
+    assert cert["key_size"] == 2048
     assert cert["not_before"].startswith("2020-01-01")
     assert cert["not_after"].startswith("2045-01-01")
     doc = _tool_docstring("apk.certificates")
     assert "v2_signed" in doc
     assert "sha1" in doc
+    assert "key_size" in doc
+
+
+class _WeakCert:
+    subject = "CN=weak"
+    issuer = "CN=weak"
+    serial_number = 1
+    sha1_fingerprint = "de:ad"
+    sha256_fingerprint = "be:ef"
+    hash_algo = "sha1"
+    signature_algo = "rsassa_pkcs1v15"
+    public_key = _PubKey("rsa", 1024)
+
+
+class _NoKeyApk:
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[object]:
+        # One weak signer plus a bare cert whose public_key access raises, to
+        # prove the key helper degrades without dropping the certificate.
+        class _Broken:
+            subject = "CN=broken"
+            issuer = "CN=broken"
+            serial_number = 2
+
+            @property
+            def public_key(self) -> object:
+                raise RuntimeError("unreadable key")
+
+        return [_WeakCert(), _Broken()]
+
+
+def test_apk_certificates_surfaces_weak_signing_and_degrades_on_a_bad_key() -> None:
+    """A 1024-bit RSA / SHA1 signer is the weak-signing tell; a bad key never drops a cert."""
+    client = ApkClient()
+    client._apk = lambda _path: _NoKeyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    weak, broken = payload["certificates"]
+    assert weak["key_algo"] == "rsa"
+    assert weak["key_size"] == 1024
+    assert weak["hash_algo"] == "sha1"
+    # The cert whose key raised still appears, with an empty/None key rather
+    # than being dropped from the list.
+    assert broken["subject"] == "CN=broken"
+    assert broken["key_algo"] == ""
+    assert broken["key_size"] is None

@@ -193,6 +193,32 @@ def _cert_str(cert: Any, name: str) -> str:
     return str(value)
 
 
+def _cert_public_key(cert: Any) -> tuple[str, int | None]:
+    """The signer key's algorithm and bit size, read defensively.
+
+    A weak signer key -- 1024-bit RSA, or a legacy DSA key -- is a classic
+    repackaged-malware / old-toolchain tell, so it belongs beside the hash and
+    validity window in the triage answer. asn1crypto exposes these on the
+    certificate's ``public_key`` (``algorithm``/``bit_size``); a version whose
+    shape differs degrades to ``("", None)`` rather than dropping the whole
+    certificate.
+    """
+    try:
+        pub = cert.public_key
+    except Exception:  # noqa: BLE001
+        return "", None
+    try:
+        algo = str(pub.algorithm)
+    except Exception:  # noqa: BLE001
+        algo = ""
+    try:
+        raw = pub.bit_size
+        size = int(raw) if isinstance(raw, int) else None
+    except Exception:  # noqa: BLE001
+        size = None
+    return algo, size
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -499,6 +525,7 @@ class ApkClient:
                 certs_more = True
                 break
             try:
+                key_algo, key_size = _cert_public_key(cert)
                 items.append(
                     {
                         "subject": str(getattr(cert, "subject", "")),
@@ -507,6 +534,12 @@ class ApkClient:
                         "sha1": _cert_str(cert, "sha1_fingerprint"),
                         "sha256": _cert_str(cert, "sha256_fingerprint"),
                         "hash_algo": _cert_str(cert, "hash_algo"),
+                        # The signature scheme and signer-key strength: an MD5/SHA1
+                        # signature or a 1024-bit RSA key is a weak-signing tell
+                        # common in old or repackaged apps.
+                        "signature_algo": _cert_str(cert, "signature_algo"),
+                        "key_algo": key_algo,
+                        "key_size": key_size,
                         # The validity window is a strong triage signal: a
                         # freshly minted or absurdly long-lived signer is a
                         # malware tell, and it pins which cert to trust.
