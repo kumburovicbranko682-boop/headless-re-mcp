@@ -190,6 +190,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
   循环。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放。
+- **进程内跑 mitmproxy 会被它自带的 mitmdump CLI 插件误杀**。`DumpMaster` 会带上
+  `keepserving` / `readfilestdin` / `errorcheck`：前两个在 `running()` 里读共享的
+  `ctx.options.rfile`，`errorcheck` 则装一个进程级 ERROR 根 handler，只要启动窗口内进程里
+  任何组件（哪怕是别的 master 或无关工具）记了一条 error 就 `sys.exit(1)` 掉整个 master。
+  而 mitmproxy 的 `ctx` 是普通模块全局，`Master.__init__` 在新 master 的选项注册完成之前就把它
+  重置；`setup_servers` 又读共享的 `ctx.options.mode`。四个并发 `proxy.start` 实测能稳定复现
+  两个 master 抢同一端口、`errorcheck` 再把包括健康 master 在内的三个杀掉。现在构造后即剥离这三个
+  CLI 插件（并 `finish()` 掉 `errorcheck` 的根 handler，否则没人摘），用模块锁把构造到
+  running 的危险窗口跨 master 串行化，且这把锁一直持有到我们自己的 running 信号确认危险的
+  钩子链已跑完，而不是端口一接受连接就放。
+- **APK 静态读取遇到坏 manifest 会被记成 `internal_error` 事故**。androguard 的 `APK()` /
+  `AnalyzeAPK()` 对坏 manifest 不抛异常——它只记日志并返回一个对象，随后 `get_main_activity`
+  / `get_permissions` 等 getter 才会从没解析成的树里抛出裸 `KeyError('Name')`。`ApkClient`
+  过去只护住构造，这些裸异常逃逸到服务层被记成 `internal_error` 加一条事故——把输入文件的属性
+  当成服务缺陷，正是 r2/jadx/apktool 适配器早已修掉的错判。现在每个 androguard 读取
+  （open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/
+  xrefs）都把意外异常收敛成结构化 `backend_error`，而 `not_found` / `invalid_params` /
+  `too_large` / `capability_unavailable` 这些刻意的码原样透出；Android gate 现在断言这些读取
+  永远不会回成 `internal_error`。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
@@ -794,6 +813,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **r2 在 Linux 核心首获活体覆盖**：唯一另一个活体 r2 gate 需要一份 Linux 核心不随附的
+  Windows PE 夹具,于是在这个平台上 radare2(已装、跨平台)端到端零覆盖——所有 r2 测试都在
+  打桩子进程。新增 `test_r2_elf_live_gate.py` 用系统 C 编译器编一个小 ELF,驱动真实的一次性
+  管线(argv 构造、跨 banner 的 JSON 提取、命令白名单、Address 映射),覆盖
+  open/functions/disasm/xrefs,并断言白名单在活体路径上照样拒绝表外命令;缺 r2 或编译器
+  时 skip(≠pass),ELF 无 PE ImageBase 故断言 item 只带 `va`、不伪造 RVA。
+- **APK 坏文件读取回结构化码而非内部事故**：Android gate 现在对合成(manifest 不可解析的)
+  APK 逐个跑 open/manifest/permissions/certificates/components/native_libs,断言它们即便失败也
+  绝不回 `internal_error`;单元测试补一组参数化用例,证明任何 androguard 读取都不会漏出裸异常
+  (否则服务层会记成事故),而 `not_found` 等刻意码原样透出。
 
 ### 变更（Android 后端清理）
 
