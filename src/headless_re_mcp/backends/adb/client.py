@@ -319,7 +319,7 @@ class AdbBackend:
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
         return _bind_open_transport(dev, _ADB_TRANSPORT_TIMEOUT_S)
 
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, *, offset: int = 0, limit: int = _MAX_DEVICES) -> JsonObject:
         client = self._client(socket_timeout=_ADB_PROBE_TIMEOUT_S)
         try:
             lister = getattr(client, "list", None)
@@ -340,9 +340,20 @@ class AdbBackend:
                     "timeout", f"adb timed out after {_ADB_PROBE_TIMEOUT_S:g}s"
                 ) from exc
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
-        has_more = len(items) > _MAX_DEVICES
-        page = items[:_MAX_DEVICES]
-        return {"devices": page, "count": len(page), "has_more": has_more}
+        # Sort by serial before paging: adb does not promise a stable order, so a
+        # plain first-N (the previous behaviour) offered no offset to reach a
+        # device once has_more was raised, and page N was not the same set twice.
+        items.sort(key=lambda row: str(row.get("serial", "")))
+        capped = max(1, min(int(limit), _MAX_DEVICES))
+        start = max(0, int(offset))
+        window = items[start : start + capped]
+        return {
+            "devices": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
+        }
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
         client = self._client()

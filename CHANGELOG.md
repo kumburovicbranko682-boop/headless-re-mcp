@@ -488,6 +488,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.packages` 一次回完整包列表，`device.properties` 截断却不说**。忙碌的模拟器
   轻轻松松超过一次工具回包该装下的量；停在上限的列表和「到此为止」看起来一样。两者都
   带回 `has_more`，包列表默认 500、硬上限 2000。`apk.native_libs` 同样封顶并披露。
+- **`device.list` 回 `has_more` 却没有 offset/total，超过 64 台就够不着**。它保留前 64 台
+  设备、回 `has_more`，但既没有 `offset` 去翻后面的、也没有 `total` 说到底有几台——64 台的
+  天花板让这在实践中罕见，可它是唯一还没对齐分页契约的只读工具。现在按 serial 排序后按
+  `offset`/`limit` 切片（硬上限 64），回 `total`/`offset`/`count`/`has_more`，与
+  `device.packages`/`properties` 一致；adb 自己的顺序不是稳定契约，排序让翻页可复现。
 - **ADB 调用在设备卡住时没有截止时间**。adbutils 的 `shell` / `install` / `sync` 默认
   一直等到设备应答；一个假死的模拟器就能永久占住一条工具线程。能传 `timeout` 的路径
   都带上截止（探测 8 秒、shell 30 秒、传输 120 秒），老版本 adbutils 不认该参数时回退。
