@@ -200,8 +200,12 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # --force: the service hands webcrack a freshly created (empty) output
+        # directory, but webcrack aborts with "output directory already exists"
+        # unless told to overwrite. Without it js.unpack_bundle failed on every
+        # call -- the pre-created dir it was given always tripped the check.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "--force"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )
