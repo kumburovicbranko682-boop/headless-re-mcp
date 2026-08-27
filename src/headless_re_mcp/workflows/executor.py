@@ -91,14 +91,14 @@ def execute_workflow_transition(
         )
         breakpoint_count += applied
 
-        refreshed_keys = transition.refresh_module_keys
-        if refreshed_keys:
+        requested_refresh = transition.refresh_module_keys
+        if requested_refresh:
             selectors = {
                 key: module.selector
-                for key in sorted(refreshed_keys)
+                for key in sorted(requested_refresh)
                 if (module := state.lifecycle.get(key)) is not None
             }
-            if selectors.keys() != refreshed_keys:
+            if selectors.keys() != requested_refresh:
                 raise ValueError("workflow refresh references an untracked module")
             port.ensure_paused(timeout=_remaining(deadline))
             effect_count += 1
@@ -108,6 +108,12 @@ def execute_workflow_transition(
             )
             refreshed = apply_workflow_module_refresh(state, resolutions)
             state = refreshed.state
+            # Only now is the refresh a fact: the port returned bases and the
+            # state reflects them. Recording it at the requested set earlier
+            # made a failure inside ensure_paused/refresh_modules report modules
+            # as refreshed that never were -- the one place this executor's
+            # "report exactly how far it got" contract read untrue.
+            refreshed_keys = requested_refresh
             state, applied = _reconcile(
                 state,
                 refreshed.breakpoint_reconciliation.operations,
