@@ -108,13 +108,34 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    # A module with real sections rather than the empty magic+version: it
+    # exports a function "answer" that returns i32.const 42. An empty module
+    # disassembles to "(module)", so asserting only "module" proved nothing was
+    # decoded; a content-bearing module makes wabt walk the type, function,
+    # export and code sections, and the WAT must name what it found.
+    module = tmp_path / "answer.wasm"
+    module.write_bytes(
+        bytes(
+            [
+                0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,  # magic + version
+                0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F,  # type: () -> i32
+                0x03, 0x02, 0x01, 0x00,  # function: uses type 0
+                # export "answer" (func 0)
+                0x07, 0x0A, 0x01, 0x06, 0x61, 0x6E, 0x73, 0x77, 0x65, 0x72, 0x00, 0x00,
+                0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2A, 0x0B,  # code: i32.const 42; end
+            ]
+        )
+    )
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert "module" in wat
+        # The export name and the instruction come from two different sections,
+        # so together they prove wabt decoded the module rather than echoing a
+        # header.
+        assert "answer" in wat
+        assert "i32.const 42" in wat
     finally:
         service.close_all()
