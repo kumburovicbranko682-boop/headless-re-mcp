@@ -112,7 +112,10 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with submitted and state, the same shape as dynamic.wait, plus
         child_windows_hint, suggested_child_pids and child_candidates when the
-        debuggee has child windows. There is no attached or top-level pid field.
+        debuggee has child windows. If that probe itself crashes the reply
+        carries child_window_probe_failed and child_window_probe_error rather
+        than posing as "no child windows"; run ui.process_tree to look again.
+        There is no attached or top-level pid field.
         """
         return _dump(
             analysis.dynamic_attach(

@@ -1833,8 +1833,14 @@ class AnalysisService(
                 annotated["child_windows_hint"] = "windows_on_child_pids"
                 annotated["suggested_child_pids"] = [int(c["pid"]) for c in children]
                 annotated["child_candidates"] = children
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the probe must never fail the attach
+            # A crashed probe used to leave the exact reply of "probed, no
+            # child windows". For a launcher whose real window lives on a
+            # child pid that reads as "interact with this pid", so admit the
+            # probe never answered and leave ui.process_tree to the caller.
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())
+            annotated["child_window_probe_failed"] = True
+            annotated["child_window_probe_error"] = detail[:300]
         return _success(
             annotated,
             session_id=session_id,
