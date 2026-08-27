@@ -368,40 +368,37 @@ def _parse_tables_and_names(
     assembly_name: str | None = None
     if not strings:
         return None, None, stats
+    # Skip intervening tables by their real ECMA-335 row widths so the walk can
+    # reach the Assembly row (0x20). It previously knew how to advance past only
+    # Module and Assembly and broke on the first other table (TypeRef, TypeDef,
+    # ...), which every real assembly has right after Module -- so assembly_name
+    # came back None for essentially all of them. metadata_enum imports this
+    # module, so reuse its authoritative sizing via a deferred import to avoid a
+    # circular import rather than keeping a second copy of the per-column logic.
+    from headless_re_mcp.dotnet.metadata_enum import _row_size
+
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
     for bit in range(64):
         rows = row_counts.get(bit)
         if not rows:
             continue
-        if bit == 0x00:  # Module
+        if bit == 0x00:  # Module: Generation(2) then Name.
             name_idx, _ = read_string_index(tables, cursor + 2)
             module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
+        elif bit == 0x20:  # Assembly: Name follows the fixed head + PublicKey blob.
             name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
+        try:
+            step = _row_size(
+                row_counts, string_index_size, blob_index_size, guid_index_size, bit
             )
-            cursor += row_size * rows
-            continue
-        break
+        except Exception:
+            break
+        cursor += step * rows
+        if bit >= 0x20:
+            # Assembly is the last row we need; stop before any Portable-PDB or
+            # reserved table this sizing does not model.
+            break
     return module_name, assembly_name, stats

@@ -213,6 +213,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   强制目标列取 4 字节,断言五表行宽分别命中修正值;AssemblyRef 另用默认小堆断言 20(错值为 22),
   并保留一条小行数用例钉住 InterfaceImpl/NestedClass 常见情形仍是 4(2+2)。
 
+### 修复（`inspect_dotnet` 的 `assembly_name` 对真实程序集恒为 null）
+
+- `clr_inspect._parse_tables_and_names` 走 `#~` 表流找 Module(0x00)/Assembly(0x20) 名字时,
+  只会跳过 Module 与 Assembly 两张表,遇到别的表就 `break`;而真实程序集紧跟 Module 之后必有
+  TypeRef/TypeDef 等表,于是走到第一张就停,永远够不着 Assembly 行——`assembly_name` 对几乎所有
+  真实程序集都返回 `null`(Module 名仍能读到,因为它排在最前)。现改为按各表真实行宽逐张跳过直至
+  Assembly 行:复用上面修好的 `metadata_enum._row_size`(该模块本就 import 本模块,故用函数内延迟
+  import 规避循环依赖,而不是再抄一份易错的按列宽逻辑),读到 Assembly 名后即停,遇到本 sizing 未建模
+  的 Portable-PDB/保留表则安全收尾、保留已取到的名字。新增直测:手搓 `#~`+`#Strings`,在 Module 与
+  Assembly 之间插一张 TypeDef,断言现在能读出 assembly 名;并加一例只有 Module、其后跟一张未建模表的
+  .netmodule,断言不崩且 assembly 名为 None。
+
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**

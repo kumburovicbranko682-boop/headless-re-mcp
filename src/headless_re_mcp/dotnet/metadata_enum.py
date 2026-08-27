@@ -407,12 +407,23 @@ def _simple_index_size(row_counts: dict[int, int], table: int) -> int:
     return 4 if row_counts.get(table, 0) >= 65536 else 2
 
 
-def _table_row_size(meta: _MetaCtx, table: int) -> int:
-    """ECMA-335 II.22 row sizes for tables we may need to skip/parse."""
-    rc = meta.row_counts
-    s = meta.string_index_size
-    b = meta.blob_index_size
-    g = meta.guid_index_size
+def _row_size(
+    row_counts: dict[int, int],
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+    table: int,
+) -> int:
+    """ECMA-335 II.22 row sizes for tables we may need to skip/parse.
+
+    Kept free of ``_MetaCtx`` so ``clr_inspect`` can reuse this single
+    authoritative sizing when it walks the table stream to the Assembly row,
+    rather than carrying a second copy of the same subtle per-column logic.
+    """
+    rc = row_counts
+    s = string_index_size
+    b = blob_index_size
+    g = guid_index_size
     type_def_or_ref = _coded_index_size(rc, (0x02, 0x01, 0x1B), 2)
     has_constant = _coded_index_size(rc, (0x04, 0x08, 0x17), 2)
     has_custom_attribute = _coded_index_size(
@@ -530,6 +541,16 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
             details={"table": table},
         )
     return sizes[table]
+
+
+def _table_row_size(meta: _MetaCtx, table: int) -> int:
+    return _row_size(
+        meta.row_counts,
+        meta.string_index_size,
+        meta.blob_index_size,
+        meta.guid_index_size,
+        table,
+    )
 
 
 def _table_start(meta: _MetaCtx, table: int) -> int:
