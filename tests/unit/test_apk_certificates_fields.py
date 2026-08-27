@@ -44,6 +44,27 @@ class _FakeApk:
         return [_Cert(index) for index in range(40)]
 
 
+class _V3OnlyApk:
+    """A modern APK signed only with the v3 APK Signature Scheme.
+
+    No META-INF signature files and no v1 certificate objects, exactly what
+    ``apksigner --v1-signing-enabled false`` produces for an app targeting a
+    recent API level. Its signed-ness lives entirely in ``is_signed_v3``.
+    """
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_Cert]:
+        return []
+
+    def is_signed_v2(self) -> bool:
+        return False
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
 
@@ -62,7 +83,32 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    # A build of androguard without the v2/v3 predicates must not raise; the
+    # scheme flags default to false and the overall flag falls back to v1.
+    assert payload["signed_v2"] is False
+    assert payload["signed_v3"] is False
+    assert payload["signed"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+    assert "signed" in doc
+
+
+def test_apk_certificates_reports_a_v3_only_apk_as_signed() -> None:
+    """A v2/v3-only APK must not read as unsigned.
+
+    v1 JAR signing is optional for apps targeting API 24+, so a package signed
+    only with the v3 scheme has no META-INF signature files and no v1 certificate
+    objects. Reporting only v1_signed (false here) made a properly signed APK
+    look unsigned; the scheme flags and the overall ``signed`` fix that.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _V3OnlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is False
+    assert payload["signed_v2"] is False
+    assert payload["signed_v3"] is True
+    assert payload["signed"] is True
+    assert payload["signature_files"] == []
+    assert payload["certificates"] == []

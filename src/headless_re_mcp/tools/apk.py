@@ -52,11 +52,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files.
+        """List signing certificates and the signature schemes in force.
 
         Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        signature_files, v1_signed, signed_v2, signed_v3, signed and has_more
+        so a list that filled the cap is not read as every signer. signed is
+        the one to trust for "is this signed at all": an app targeting API 24+
+        is commonly v2/v3-only, so v1_signed false does not mean unsigned.
+        There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

@@ -49,6 +49,22 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _scheme_flag(apk: Any, method: str) -> bool:
+    """Best-effort ``is_signed_vN`` probe that never fails the call.
+
+    The APK Signature Scheme predicates arrived in androguard at different times
+    (``is_signed_v2``/``is_signed_v3`` are newer than the v1 JAR-signing view),
+    so a build without them must read as "scheme not present" rather than raise.
+    """
+    probe = getattr(apk, method, None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - a probe failure is not a signed APK
+        return False
+
+
 class _ParsedApk:
     __slots__ = ("apk", "analysis", "_dex")
 
@@ -245,10 +261,19 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        v1_signed = bool(names)
+        signed_v2 = _scheme_flag(apk, "is_signed_v2")
+        signed_v3 = _scheme_flag(apk, "is_signed_v3")
         return {
             "signature_files": sig_files,
             "certificates": items,
-            "v1_signed": bool(names),
+            "v1_signed": v1_signed,
+            "signed_v2": signed_v2,
+            "signed_v3": signed_v3,
+            # An app targeting API 24+ is commonly signed with v2/v3 only, so a
+            # v1-only view reports "not signed" for a properly signed APK. The
+            # overall flag is what tells a caller the package is signed at all.
+            "signed": v1_signed or signed_v2 or signed_v3,
             "has_more": certs_more or files_more,
         }
 
