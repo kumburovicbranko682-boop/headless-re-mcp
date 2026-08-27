@@ -61,6 +61,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（device.force_stop 把无法核实误报成已停止）
+
+- 承接上一条：`device.force_stop` 用 `_pids_for_package` 复核目标是否还在跑，回 true/false/null
+  三态。但该函数和当初的 `_pm_path` 一样漏了 `_is_host_error_output` 判定——adbutils 有时把 adb
+  主机端自己的 `error:` / `adb:` 消息当 stdout 返回而不抛异常。对 pidof 这错得更狠：主机错误串里
+  没有任何 pid，而 `error: device '...' not found` 恰好含 "not found"，会把「pidof 缺失」的
+  `ps -A` 回退分支骗着走一遍；而同一台掉线设备的 `ps -A` 同样只回一行主机错误、匹配不到任何进程行，
+  于是被读成「没有存活进程 → 已停止」，force_stop 报 `stopped=true`——复核根本没跑起来的假阳性，
+  正是三态里 null 分支要挡的。现 `_pids_for_package` 在 pidof 与 ps -A 两处输出上都先判主机错误，
+  命中即回 None，让 force_stop 如实报 `stopped=null` 加「could not read」。真正的 `pidof: not found`
+  不带该前缀，仍照常走 `ps -A` 回退；空输出（进程不存在）仍如实为 `stopped=true`。新增两条直测：
+  pidof 回主机错误串、以及 pidof 缺失但 ps -A 回主机错误串时，force_stop 均为 null 而非 true。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
