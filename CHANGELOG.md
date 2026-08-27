@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 可观测性（web.status 增加 capture 抓包健康块，与 proxy.status 对齐）
+
+- `web.status` 本是页面身份快照(open/url/title),唯独不报抓包环健康。web 会话有三个有界抓包环
+  (requests ≤3000、console ≤2000、scripts ≤2000),各自的列表读取器(`web.network.list`/`web.console`/
+  `web.scripts`)虽已分别报自己的 `dropped`,却没有一个"抓了多少、哪个环开始丢历史"的统一快照——
+  web 控制台路由(`session_web_status`)与会话 monitor 读 `web.status` 展示给操作者时因此看不到抓包是否
+  已在淘汰。现 `web.status` 增加 `capture` 块,内含 requests/console/scripts 各自的 `count` 与 `dropped`,
+  与 `proxy.status` 的 `dropped` 健康快照口径一致;计数在持会话锁内读取(抓包由 CDP 事件线程写入),不放到
+  拥有 Playwright 对象的 runner 线程上。(新增字段,向后兼容;`web.status` 经控制台/monitor 消费,非 MCP 工具。)
+
 ### 可观测性（proxy/web 的 HAR 导出补报 dropped，区分“环丢弃”与“文件截断”）
 
 - `proxy.export_har` / `web.har.export` 都从各自的抓包环(proxy ≤2000 flow、web ≤3000 request)取条目导出,只返回

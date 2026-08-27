@@ -425,7 +425,7 @@ class WebBackend:
             raise WebError("capability_unavailable", "playwright is not installed")
 
     def status(self, session_id: str) -> JsonObject:
-        """Cheap page identity; never launches a browser."""
+        """Cheap page identity plus capture-ring health; never launches a browser."""
         with self._lock:
             handle = self._sessions.get(session_id)
         if handle is None:
@@ -435,11 +435,34 @@ class WebBackend:
         if not isinstance(handle, _WebSession):
             return {"open": False}
 
+        # The three capture rings are written from the CDP event thread, so read
+        # their sizes under the session lock rather than on the runner thread
+        # that owns the Playwright objects. dropped is the honest health signal:
+        # nonzero means that ring has begun evicting, so network_list / console /
+        # scripts already return a partial view -- the same at-a-glance snapshot
+        # proxy.status gives, without paging the capture to discover it.
+        with handle.lock:
+            capture = {
+                "requests": {
+                    "count": len(handle.requests),
+                    "dropped": handle.requests_dropped,
+                },
+                "console": {
+                    "count": len(handle.console),
+                    "dropped": handle.console_dropped,
+                },
+                "scripts": {
+                    "count": len(handle.scripts),
+                    "dropped": handle.scripts_dropped,
+                },
+            }
+
         def work() -> JsonObject:
             return {
                 "open": True,
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
+                "capture": capture,
             }
 
         return self._runner(handle).call(work)

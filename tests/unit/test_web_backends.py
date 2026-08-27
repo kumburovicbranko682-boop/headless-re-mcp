@@ -49,6 +49,68 @@ class TestWebSessionScoping:
         backend = WebBackend()
         assert backend.close("never-opened")["closed"] is False
 
+
+class TestWebStatusReportsCaptureHealth:
+    """web.status is a capture-health snapshot, not only page identity.
+
+    The web console and the session monitor read it to show an operator how much
+    a session has captured and whether any of the three rings has begun evicting
+    -- the same at-a-glance signal proxy.status gives -- without paging
+    network.list, console and scripts separately to discover it.
+    """
+
+    class _Page:
+        url = "https://example.com/app"
+
+        def title(self) -> str:
+            return "Example"
+
+    def _open_session(self, backend: WebBackend, session_id: str) -> object:
+        from headless_re_mcp.backends.web.client import _Runner, _WebSession
+
+        handle = _WebSession(None, None, None, self._Page(), None)
+        handle.runner = _Runner(f"web-status-test-{session_id}")
+        backend._sessions[session_id] = handle
+        return handle
+
+    def test_status_reports_each_rings_count_and_dropped(self) -> None:
+        backend = WebBackend()
+        handle = self._open_session(backend, "s1")
+        try:
+            for index in range(3):
+                handle.requests[f"r{index}"] = {}
+            handle.requests_dropped = 7
+            handle.console.append({})
+            handle.console.append({})
+            handle.console_dropped = 2
+            for index in range(5):
+                handle.scripts[f"s{index}"] = {}
+            handle.scripts_dropped = 0
+
+            status = backend.status("s1")
+
+            assert status["open"] is True
+            assert status["url"] == "https://example.com/app"
+            assert status["title"] == "Example"
+            assert status["capture"] == {
+                "requests": {"count": 3, "dropped": 7},
+                "console": {"count": 2, "dropped": 2},
+                "scripts": {"count": 5, "dropped": 0},
+            }
+        finally:
+            handle.runner.shutdown()  # type: ignore[attr-defined]
+
+    def test_a_fresh_session_reports_zeroed_capture_health(self) -> None:
+        backend = WebBackend()
+        handle = self._open_session(backend, "s2")
+        try:
+            capture = backend.status("s2")["capture"]
+            assert capture["requests"] == {"count": 0, "dropped": 0}
+            assert capture["console"] == {"count": 0, "dropped": 0}
+            assert capture["scripts"] == {"count": 0, "dropped": 0}
+        finally:
+            handle.runner.shutdown()  # type: ignore[attr-defined]
+
     def test_script_source_requires_an_open_session(self, tmp_path: Path) -> None:
         backend = WebBackend()
         with pytest.raises(WebError):
