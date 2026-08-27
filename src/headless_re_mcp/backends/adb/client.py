@@ -224,6 +224,17 @@ def _pm_path(dev: Any, package: str) -> str | None:
     return None
 
 
+def _ps_process_name_matches(name: str, package: str) -> bool:
+    """True when a ``ps`` NAME column names *this* package's process.
+
+    ``pidof`` matches a process name exactly; the fallback must too. A bare
+    substring test made ``com.foo`` match the unrelated ``com.foo.bar`` and would
+    force-stop / target the wrong process. Android names an app's extra processes
+    ``<package>:<suffix>`` (e.g. ``com.example.app:push``), so accept that form.
+    """
+    return name == package or name.startswith(package + ":")
+
+
 def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     try:
         raw = _device_shell(dev, ["pidof", package], timeout=_ADB_PROBE_TIMEOUT_S)
@@ -240,12 +251,24 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            tokens = line.split()
+            # `ps -A` on Android is `USER PID PPID ... NAME`; the process name is
+            # the last column. Match it exactly so we do not pick up sibling
+            # packages, and read the PID from its own column (the second) rather
+            # than "the first digit anywhere", which returns a numeric-UID USER
+            # column instead of the PID on toolbox/rooted builds.
+            if len(tokens) < 2 or not _ps_process_name_matches(tokens[-1], package):
                 continue
-            for token in line.split()[:3]:
-                if token.isdigit():
-                    pids.append(int(token))
-                    break
+            pid: int | None = None
+            if tokens[1].isdigit():
+                pid = int(tokens[1])
+            else:
+                for token in tokens[:3]:
+                    if token.isdigit():
+                        pid = int(token)
+                        break
+            if pid is not None:
+                pids.append(pid)
             if len(pids) >= 16:
                 break
         return pids
