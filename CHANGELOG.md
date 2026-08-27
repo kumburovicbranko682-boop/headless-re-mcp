@@ -138,6 +138,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会先转储所有线程栈、点名卡住的测试再退出。`faulthandler_exit_on_timeout` 是
   pytest 9.0 才有的选项，test extra 的 pytest 下限随之从 8.3 抬到 9.0——在 8.x 上
   它只是一条 unknown-option 警告，退出兜底会静默失效。
+- `windows-integration` 的集成 gate 步骤补上同款步骤级超时（80 分钟，低于 90 分钟
+  job 上限）：真实后端 gate 卡死时步骤失败、日志保留，且 `always()` 的残留进程检查
+  仍会执行，能抓到挂死那轮泄漏的分析器进程；此前只有 job 级上限，整个 job 连同日志
+  一起被静默取消。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
