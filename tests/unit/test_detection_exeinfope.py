@@ -57,6 +57,45 @@ def test_parse_log_best_effort_categories() -> None:
     assert findings[0].evidence[0].details["parser"] == "best_effort"
 
 
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Themida / WinLicense", FindingCategory.PROTECTOR),
+        ("Confuser.NET v1.6", FindingCategory.OBFUSCATOR),
+        ("Inno Setup installer", FindingCategory.INSTALLER),
+        ("Microsoft .NET", FindingCategory.RUNTIME),
+        ("PE32 executable", FindingCategory.FILE_FORMAT),
+        # The check order is load-bearing: a protector or obfuscator that also
+        # mentions packing must keep the stronger label instead of collapsing
+        # to PACKER just because a generic "pack" hint is present.
+        ("UPX packed with Themida", FindingCategory.PROTECTOR),
+        ("Confuser packed", FindingCategory.OBFUSCATOR),
+    ],
+)
+def test_category_priority_prefers_the_stronger_signal(
+    description: str, expected: FindingCategory
+) -> None:
+    assert adapter._category_for(description) == expected
+
+
+def test_parse_log_strips_file_prefix_and_keeps_prefixless_lines() -> None:
+    findings = parse_exeinfope_log(
+        "game.exe -  Enigma Protector v6.0\nEnigma Protector v6.0"
+    )
+    # The "<file> - <description>" split drops the file token, and a line with
+    # no separator is used whole; both spellings describe the same protector.
+    assert [item.summary for item in findings] == [
+        "Enigma Protector v6.0",
+        "Enigma Protector v6.0",
+    ]
+    assert all(item.category == FindingCategory.PROTECTOR for item in findings)
+    # The exact stripped line is retained verbatim for auditing.
+    assert (
+        findings[0].evidence[0].details["raw_line"]
+        == "game.exe -  Enigma Protector v6.0"
+    )
+
+
 def test_parse_log_rejects_empty() -> None:
     with pytest.raises(ExeinfopeProtocolError) as caught:
         parse_exeinfope_log("\n\n")
