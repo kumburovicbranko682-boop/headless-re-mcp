@@ -6,13 +6,20 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from inspect import signature
-from threading import Thread
+from threading import BoundedSemaphore, Thread
 from typing import Any, TypeVar
 
 from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 
 JsonObject = dict[str, Any]
 T = TypeVar("T")
+# A native Frida call that hangs cannot be killed; _run_deadline abandons its
+# daemon worker and returns a timeout. Without a ceiling every timeout leaks one
+# more permanent thread, so a long-lived service accumulates them without bound.
+# The slot is only freed when the native call finally returns, so genuinely
+# wedged calls hold their slot and new work is refused rather than piling up.
+_MAX_DEADLINE_THREADS = 8
+_DEADLINE_SLOTS = BoundedSemaphore(_MAX_DEADLINE_THREADS)
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # attach / spawn / Java.perform can block forever on a paused debuggee or a
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
@@ -254,6 +261,14 @@ def _run_deadline(
     when a driver call can never return. The worker is a daemon so a still-stuck
     attach cannot keep the process alive after the caller has moved on.
     """
+    slots = _DEADLINE_SLOTS
+    if not slots.acquire(blocking=False):
+        # A timed-out native call cannot be killed safely, but allowing another
+        # one to start turns each timeout into one more permanent daemon thread.
+        raise FridaError(
+            "resource_exhausted",
+            f"all {_MAX_DEADLINE_THREADS} Frida deadline workers are still occupied",
+        )
     done: Future[T] = Future()
 
     def run() -> None:
@@ -262,9 +277,15 @@ def _run_deadline(
         except BaseException as exc:  # noqa: BLE001 - handed to the caller
             if not done.done():
                 done.set_exception(exc)
+        finally:
+            slots.release()
 
     thread = Thread(target=run, name="frida-deadline", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except BaseException:
+        slots.release()
+        raise
     try:
         return done.result(timeout=timeout)
     except FutureTimeout as exc:
