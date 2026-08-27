@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（catalog 的按名侧表一旦拼错工具名会静默失效，现改为导入即报错）
+
+- `tools/catalog.py` 里 `_WEB_NAMES`、`_SERVICE_OVERRIDES`、`_TOOL_TIMEOUTS` 三张表都以工具名
+  为键，但它们只被 `in` / `.get` 查询、并不参与 `_ALL_TOOL_NAMES` 的迭代建谱。于是任何一个键
+  只要不再对应真实工具，就成了「静默的死配置」：`_WEB_NAMES` 里拼错的名字永远不会给任何工具挂上
+  WEB 传输，`_SERVICE_OVERRIDES` 的键打错会悄悄退回 `name.replace(".", "_")` 的默认方法名，
+  `_TOOL_TIMEOUTS` 的键打错则让超时覆盖直接落空——从头到尾不报一个错，直到某条工具在 Web 上莫名
+  缺席、或某个大样本的首次 open 用回默认 60s 超时被拦腰截断，才可能被发现。此前模块只用
+  `len(_ALL_TOOL_NAMES) != 265` 硬校验了读写分级的完整性，却没管这三张侧表。现比照那处守卫，在
+  导入时校验三张表的键都是 `_ALL_TOOL_NAMES` 的子集，一旦漂移就抛 `RuntimeError` 明确点名，
+  让配置错误在导入即刻暴露而非运行时静默。新增回归同时钉住不变量与其行为后果（每个 `_WEB_NAMES`
+  条目确实拿到 WEB 传输、每个 override 确实压过派生方法名、每个超时确实落进 `resource_policy`）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -373,6 +373,25 @@ _TOOL_TIMEOUTS: dict[str, float] = {
     "static.open": 1800.0,
 }
 
+# These three tables are keyed by tool name but consulted with ``in`` / ``.get``
+# against _ALL_TOOL_NAMES rather than iterated, so a name that drifts from a real
+# tool is silently dead config: a mistyped _WEB_NAMES entry never grants the WEB
+# transport, a _SERVICE_OVERRIDES key typo falls through to the derived default,
+# and a _TOOL_TIMEOUTS typo drops the timeout override -- all with no error. Guard
+# it the same way the effect policy count is guarded above, so drift fails loudly
+# at import instead of quietly at runtime.
+for _aux_names, _aux_label in (
+    (_WEB_NAMES, "_WEB_NAMES"),
+    (frozenset(_SERVICE_OVERRIDES), "_SERVICE_OVERRIDES"),
+    (frozenset(_TOOL_TIMEOUTS), "_TOOL_TIMEOUTS"),
+):
+    _orphans = _aux_names - _ALL_TOOL_NAMES
+    if _orphans:
+        raise RuntimeError(
+            f"{_aux_label} references unknown tools: {sorted(_orphans)}"
+        )
+del _aux_names, _aux_label, _orphans
+
 
 def _declared_spec(name: str) -> CommandSpec:
     if name in _READ_ONLY_NAMES:
