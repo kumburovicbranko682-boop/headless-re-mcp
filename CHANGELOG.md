@@ -1006,11 +1006,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   注释的桩;客户端 `_run` 只在**一个 .java 都没落盘**时才硬失败,故意走「拿到什么给什么」的路子。问题是 `export_sources`
   拿到 `_run` 返回的退出码后**整条丢弃**——它自己的注释都写着 jadx「部分失败仍写可用源码」,却把这个码扔了,于是一次
   部分失败(树里缺类、或某个类体其实是 jadx 的失败桩)与一次干净跑回来的结果一模一样,agent 会把缺了类的树读成反编译
-  已完成。而隔壁 jsre/wabt 的 CLI 早就为自己的部分退出抬了 `tool_failed`。现 `export_sources` 在 jadx 非零退出时补
-  `tool_failed`/`exit_code`/`stderr`(仍照常列出已写出的源码);`decompile` 把这个标志一路带出来——请求的类文件在、可回,
-  但它可能正是那份 `// jadx failed to decompile` 桩,故调用方不能因为「回了个文件」就当它是干净输出。新增单测用 mock 的
-  `_run` 钉住两条路径(部分退出补齐三字段、干净跑不带标志),jadx live gate 也加断言:干净跑一次 `export_sources`/`decompile`
-  都不得带 `tool_failed`(不需真 jadx、由单测覆盖部分失败路径)。
+  已完成。现 `export_sources` 在 jadx 非零退出时补 `tool_failed`/`exit_code`/`stderr`(仍照常列出已写出的源码);`decompile`
+  把这个标志一路带出来——请求的类文件在、可回,但它可能正是那份 `// jadx failed to decompile` 桩,故调用方不能因为
+  「回了个文件」就当它是干净输出。新增单测用 mock 的 `_run` 钉住两条路径(部分退出补齐三字段、干净跑不带标志),jadx
+  live gate 也加断言:干净跑一次 `export_sources`/`decompile` 都不得带 `tool_failed`(不需真 jadx、由单测覆盖部分失败路径)。
+  同源问题也在 jsre/wabt 上修掉,见下条。
+- **jsre(webcrack)与 wabt(wasm2wat/wasm-objdump)对自己的非零退出同样守口如瓶**。四个走「拿到什么给什么」的入口
+  ——`js.deobfuscate`/`js.unpack_bundle`、`wasm.wat`/`wasm.info`——的 `_run` 守卫都只在「非零退出**且**什么都没回」时才
+  硬失败;可一旦工具非零退出却仍打印了东西(webcrack 半路解包仍吐出已处理的部分;wasm2wat/wasm-objdump 可能写完前
+  几段后在某段上 bail),这些入口就把它当干净结果原样返回,agent 会把截断的 WAT、短了的 objdump、半成品的 deob 读成
+  完整产物。此前 jadx 那条也误称 jsre/wabt「已经」抬了这个标志——其实都没有。现补齐:新增 `_note_nonzero_exit`,四个入口
+  在子进程非零退出时补 `tool_failed`/`exit_code`/`stderr`(输出照常返回),与 jadx 的语义对齐。WASM live gate 里原本就写着
+  「干净模块不得带 `tool_failed`」的断言此前是空的(键根本不存在),现在这条断言真正生效;另加单测用 mock 的 `_run` 钉住
+  四个入口的部分退出与干净路径(不需真 webcrack/wabt)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
