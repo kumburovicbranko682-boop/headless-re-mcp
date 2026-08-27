@@ -980,16 +980,41 @@ class AnalysisService(
                 shutil.rmtree(path)
 
     def _unpack_cancel_event(self, session_id: str) -> Event:
-        event = self._unpack_cancel_events.get(session_id)
-        if event is None:
+        """Return the session's unpack-cancel latch, creating one only while live.
+
+        Creation is serialized with close's CLOSING transition under the
+        service lock: an unpack operation racing a close used to re-insert an
+        Event after close had cleared it, retaining one latch per closed
+        session forever. An existing latch is still returned in terminal
+        states so unpack.cancel can stop an in-flight orchestration after a
+        backend failure.
+        """
+        with self._lock:
+            event = self._unpack_cancel_events.get(session_id)
+            if event is not None:
+                return event
+            self._require_session_live_for_unpack(session_id)
             event = Event()
             self._unpack_cancel_events[session_id] = event
-        return event
+            return event
 
     def _reset_unpack_cancel(self, session_id: str) -> Event:
-        event = Event()
-        self._unpack_cancel_events[session_id] = event
-        return event
+        with self._lock:
+            self._require_session_live_for_unpack(session_id)
+            event = Event()
+            self._unpack_cancel_events[session_id] = event
+            return event
+
+    def _require_session_live_for_unpack(self, session_id: str) -> None:
+        session = self.registry.get(session_id)
+        if session.state in {
+            SessionState.CLOSING,
+            SessionState.CLOSED,
+            SessionState.FAILED,
+        }:
+            raise InvalidStateTransition(
+                f"unpack operation cannot run in {session.state.value} state"
+            )
 
     def _signal_unpack_cancel(self, session_id: str) -> None:
         self._unpack_cancel_event(session_id).set()
