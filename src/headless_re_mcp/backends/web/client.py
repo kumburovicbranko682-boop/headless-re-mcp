@@ -315,6 +315,32 @@ class WebBackend:
 
         return runner.call(work)
 
+    def liveness(self) -> list[JsonObject]:
+        """Passive per-session liveness for the unified health report.
+
+        Never dispatches to the browser thread: the health sweep must stay
+        readable when the thing it is reporting on is wedged. The driver pid
+        and the wedged flag are the two signals that answer from this thread;
+        Chromium dying under a live driver is only visible to the roundtrip
+        probe in status(), so a session can read alive here and unresponsive
+        there -- this is the cheap tier, not a contradiction.
+        """
+        with self._lock:
+            items = list(self._sessions.items())
+        rows: list[JsonObject] = []
+        for session_id, handle in items:
+            if not isinstance(handle, _WebSession):
+                continue  # an opening reservation is not a health subject yet
+            runner = handle.runner
+            rows.append(
+                {
+                    "session_id": session_id,
+                    "alive": not _driver_gone(handle),
+                    "wedged": bool(runner is not None and runner.wedged),
+                }
+            )
+        return rows
+
     def _get(self, session_id: str) -> _WebSession:
         with self._lock:
             handle = self._sessions.get(session_id)
@@ -345,7 +371,7 @@ class WebBackend:
         if _driver_gone(handle):
             raise WebError(
                 "invalid_state",
-                "the browser for this session has exited; call web.close, then web.open again",
+                "the browser for this session has exited; call web.open to relaunch it",
             )
         return runner
 
@@ -355,13 +381,33 @@ class WebBackend:
         self._check_available()
 
         with self._lock:
-            if session_id in self._sessions:
-                raise WebError("invalid_state", "web session already open", session_id=session_id)
+            current = self._sessions.get(session_id)
+            stale: _WebSession | None = None
+            if current is not None:
+                # A handle whose node driver died is not open in any usable
+                # sense; refusing it would force close-then-open on every
+                # crash. Replace it, the way proxy.start replaces a crashed
+                # proxy. A wedged-but-alive browser stays refused: it still
+                # holds real processes that close() knows how to reap.
+                if not (isinstance(current, _WebSession) and _driver_gone(current)):
+                    raise WebError(
+                        "invalid_state", "web session already open", session_id=session_id
+                    )
+                stale = current
             # Per-open token, not the shared _OPENING sentinel: close() pops
             # the reservation, and a second open() must not look like the
             # first launch still owns the slot.
             opening = object()
             self._sessions[session_id] = opening  # type: ignore[assignment]
+
+        if stale is not None:
+            # Outside the lock: reaping walks the process tree. The driver is
+            # already dead, so this only sweeps orphaned Chromium children and
+            # stops the stale runner thread.
+            stale_runner = stale.runner
+            if stale_runner is not None:
+                stale_runner.shutdown()
+            _reap_web_session(stale)
 
         from playwright.sync_api import sync_playwright
 

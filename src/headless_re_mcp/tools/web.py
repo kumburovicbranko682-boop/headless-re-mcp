@@ -35,7 +35,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
         Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        browser, ok or page field. A session whose browser process exited
+        (session.health reports its web backend dead) is relaunched by calling
+        this again; no web.close is needed first. A live session answers
+        invalid_state.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 

@@ -250,6 +250,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   按 `exited`/`responsive` 区分「浏览器已退出」与「浏览器无响应」，停掉对死浏览器的截图轮询、
   禁用导航，并给出一键「重开浏览器」（close 再 open，沿用当前地址栏/locator）；已抓到的请求与
   脚本列表在重开前保持可见。SPA 产物已重新构建提交。
+- **`session.health` 对 web/proxy 会话整体失明**。web/proxy 会话从不注册 worker 运行时，统一健康
+  报告只由 worker 监控器构建，于是无人值守调用方轮询的那个工具对这两类目标永远回
+  `backends: [], healthy: null`——浏览器死得再彻底也照样。现在两个后端各暴露一个被动 liveness
+  （一次 pid 检查加一个线程旗标，绝不向被汇报对象发 RPC；仍在 open/start 里的注册不算健康主体），
+  `session.health` 按监控器同款行形状带出 `web`/`proxy` 行：wedged 的浏览器映射为「worker 活着、
+  管道不可用」，死行的 `last_error` 直接写明恢复动词（`web.open` / `proxy.start`）。
+- **watchdog 会把 web/proxy 死行喂给只认 PE 的 `session.recover`**。上一条让 watchdog 第一次看见
+  这些行；若开了自动恢复，它会连试 5 次注定失败的 `session.recover`、告警 5 次然后放弃，把真正
+  该做的事埋进噪音。现在恢复尝试只对 `ida`/`x64dbg` 发起，web/proxy 死行走「报告一次」路径，
+  告警 detail 采用行内 `last_error` 的恢复指引。
+- **`web.open` 对已崩溃的会话报「already open」**。与 `proxy.start` 顶替死实例的语义不对齐：status
+  说 exited、唯一能救活它的调用却拒绝。现在 driver 已死（pid 判定，无歧义）时 open 收割残骸并
+  顶替重开，不再要求先 close；wedged 但 driver 仍活着的会话维持拒绝——它还握着真实进程，得让
+  close 先按既有路径收割。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

@@ -190,6 +190,76 @@ class TestCloseRecoversFastAfterACrash:
         assert runner.calls == 1
 
 
+class TestOpenReplacesACrashedSession:
+    """proxy.start replaces a crashed proxy; web.open owed the same recovery.
+
+    Before this, a session whose driver died answered "web session already
+    open" to the one call that could bring it back, while status said exited
+    -- two tools contradicting each other about the same corpse. Only an
+    unambiguously dead driver is replaced: a wedged-but-alive browser still
+    holds real processes that close() knows how to reap first.
+    """
+
+    @staticmethod
+    def _stub_playwright(monkeypatch: Any) -> None:
+        import types
+
+        pkg = types.ModuleType("playwright")
+        api = types.ModuleType("playwright.sync_api")
+        api.sync_playwright = lambda: None  # type: ignore[attr-defined]
+        pkg.sync_api = api  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "playwright", pkg)
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
+
+    def test_open_reaps_and_replaces_a_dead_driver_session(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(web_mod, "pid_still_running", lambda pid: False)
+        reaped: list[int | None] = []
+        monkeypatch.setattr(
+            web_mod, "_reap_web_session", lambda handle: reaped.append(handle.driver_pid)
+        )
+        self._stub_playwright(monkeypatch)
+        backend = WebBackend()
+        backend._available = True
+        _, stale_runner = _session(backend, driver_pid=4242)
+
+        new_handle = _WebSession(_Dummy(), _Dummy(), _Dummy(), _Page(), _Dummy())
+
+        class _FakeRunner:
+            def __init__(self, name: str) -> None:
+                self.wedged = False
+
+            def call(self, work: Any, *, timeout: float | None = None) -> Any:
+                return new_handle, {"opened": True, "url": _Page.url, "headless": True}
+
+            def shutdown(self) -> None:
+                return None
+
+        monkeypatch.setattr(web_mod, "_Runner", _FakeRunner)
+
+        payload = backend.open("s", "https://example.test/app")
+        assert payload["opened"] is True
+        assert backend._sessions["s"] is new_handle
+        assert stale_runner.shutdowns == 1
+        assert reaped == [4242]
+
+    def test_open_still_refuses_a_live_session(self) -> None:
+        backend = WebBackend()
+        backend._available = True
+        _session(backend)
+        with pytest.raises(WebError) as info:
+            backend.open("s", "https://example.test/app")
+        assert info.value.code == "invalid_state"
+        assert "already open" in info.value.message
+
+    def test_open_still_refuses_a_wedged_but_alive_session(self) -> None:
+        backend = WebBackend()
+        backend._available = True
+        _session(backend, wedged=True)
+        with pytest.raises(WebError) as info:
+            backend.open("s", "https://example.test/app")
+        assert info.value.code == "invalid_state"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="pins the POSIX branch; NT had one already")
 class TestImageGatedReapWorksOnPosix:
     """process_image_path returned None on POSIX, so _reap_driver_pid matched no

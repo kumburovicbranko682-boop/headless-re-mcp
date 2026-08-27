@@ -26,6 +26,12 @@ JsonObject = dict[str, Any]
 
 DEFAULT_ALERT_HISTORY = 128
 
+# The backends session.recover knows how to rebuild. Health rows also cover
+# web and proxy sessions, whose recovery verbs are web.open / proxy.start;
+# feeding those into session.recover would fail every attempt until the
+# abandonment limit and bury the one alert that says what to actually do.
+_RECOVERABLE_BACKENDS = frozenset({"ida", "x64dbg"})
+
 
 class _HealthSource(Protocol):
     def session_health(self, session_id: str | None = None) -> Any: ...
@@ -165,13 +171,20 @@ class Watchdog:
         seen_before = self._dead_streak.get(key, 0)
         self._dead_streak[key] = seen_before + 1
 
-        if not self.policy.auto_recover_backends:
+        recoverable = backend in _RECOVERABLE_BACKENDS
+        if not self.policy.auto_recover_backends or not recoverable:
             if seen_before == 0:
+                detail = "worker process is gone; session.recover was not attempted"
+                if not recoverable:
+                    detail = str(
+                        row.get("last_error")
+                        or "backend is gone; session.recover cannot rebuild this kind"
+                    )
                 self._alert(
                     "backend_dead",
                     session_id=session_id,
                     backend=backend,
-                    detail="worker process is gone; session.recover was not attempted",
+                    detail=detail,
                 )
                 return {"session_id": session_id, "backend": backend, "action": "reported"}
             return {

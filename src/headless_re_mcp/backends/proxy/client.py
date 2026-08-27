@@ -525,6 +525,25 @@ class ProxyBackend:
         inst.stop()
         return {"stopped": True}
 
+    def liveness(self) -> list[JsonObject]:
+        """Passive per-session liveness for the unified health report.
+
+        An instance that never finished starting is skipped rather than
+        reported dead: start() is still holding it, and either publishes a
+        working proxy or unwinds the registration itself.
+        """
+        with self._lock:
+            items = list(self._instances.items())
+        rows: list[JsonObject] = []
+        for session_id, inst in items:
+            if inst.is_alive():
+                rows.append({"session_id": session_id, "alive": True, "error": None})
+            elif inst.crashed_after_start():
+                rows.append(
+                    {"session_id": session_id, "alive": False, "error": inst.exit_reason()}
+                )
+        return rows
+
     def status(self, session_id: str) -> JsonObject:
         with self._lock:
             inst = self._instances.get(session_id)

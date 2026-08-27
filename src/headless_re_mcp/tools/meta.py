@@ -225,7 +225,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         rather than returning the last sweep, and rebuilds a dropped connection
         in place. A dead worker is reported rather than restarted, because a
         restarted debugger is attached to nothing; use session.recover once you
-        are ready to relaunch.
+        are ready to relaunch. Browser and proxy sessions appear here too, as
+        backend web and proxy rows; session.recover cannot rebuild those, so a
+        dead row's last_error names the call that can (web.open / proxy.start).
         """
         return _dump(analysis.session_health(session_id))
 

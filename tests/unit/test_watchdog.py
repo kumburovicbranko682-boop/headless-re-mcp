@@ -78,6 +78,44 @@ def test_a_dead_backend_is_reported_but_not_touched_by_default() -> None:
     assert alert["session_id"] == "s1"
 
 
+def test_a_dead_web_backend_is_never_fed_to_session_recover() -> None:
+    """session.recover only rebuilds ida/x64dbg. Handing it a web row would
+    fail every attempt until abandonment and bury the one alert that names
+    the call that actually works."""
+    row = _row("s1", "web", alive=False, connected=False)
+    row["last_error"] = "browser process exited; call web.open to relaunch it"
+    health = FakeHealth([row])
+    watchdog = Watchdog(health, policy=WatchdogPolicy(auto_recover_backends=True))
+
+    report = watchdog.sweep()
+
+    assert report["dead"] == 1
+    assert report["actions"][0]["action"] == "reported"
+    assert health.recover_calls == []
+    alert = watchdog.recent_alerts()[0]
+    assert alert["kind"] == "backend_dead"
+    assert "web.open" in alert["detail"]
+
+    # The once-per-outage rule holds for unrecoverable kinds too.
+    second = watchdog.sweep()
+    assert second["actions"][0]["action"] == "still_dead"
+    assert len(watchdog.recent_alerts()) == 1
+
+
+def test_a_dead_proxy_backend_is_reported_with_its_recovery_verb() -> None:
+    row = _row("s1", "proxy", alive=False, connected=False)
+    row["last_error"] = None
+    health = FakeHealth([row])
+    watchdog = Watchdog(health, policy=WatchdogPolicy(auto_recover_backends=True))
+
+    watchdog.sweep()
+
+    assert health.recover_calls == []
+    alert = watchdog.recent_alerts()[0]
+    assert alert["kind"] == "backend_dead"
+    assert "session.recover cannot rebuild" in alert["detail"]
+
+
 def test_a_dead_backend_is_recovered_once_the_operator_opts_in() -> None:
     health = FakeHealth([_row("s1", "x64dbg", alive=False, connected=False)])
     watchdog = Watchdog(health, policy=WatchdogPolicy(auto_recover_backends=True))

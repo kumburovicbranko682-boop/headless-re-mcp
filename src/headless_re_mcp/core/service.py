@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
 from threading import Event, RLock
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
@@ -1148,6 +1148,7 @@ class AnalysisService(
                 self.registry.get(session_id)
             self._health.check_once(repair=False)
             backends = self._health.report(session_id)
+            backends.extend(self._passive_backend_rows(session_id))
             return _success(
                 {
                     "backends": backends,
@@ -1162,6 +1163,74 @@ class AnalysisService(
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    def _passive_backend_rows(self, session_id: str | None) -> list[JsonObject]:
+        """Health rows for backends the worker monitor cannot see.
+
+        Web and proxy sessions never register a worker runtime, so a health
+        report built only from the monitor answered ``backends: []`` for them
+        no matter how dead the browser was -- the one tool an unattended
+        caller polls stayed blind to two whole target kinds. Their backends
+        expose passive liveness (a pid check and a thread flag; never an RPC),
+        and the rows keep the monitor's shape so callers and the watchdog
+        read one schema. session.recover cannot rebuild these: last_error
+        names the verb that can.
+        """
+        rows: list[JsonObject] = []
+        now = time()
+        web = getattr(self, "_web_backend", None)
+        if web is not None:
+            for item in web.liveness():
+                sid = str(item.get("session_id") or "")
+                if session_id is not None and sid != session_id:
+                    continue
+                alive = bool(item.get("alive"))
+                wedged = bool(item.get("wedged"))
+                error = None
+                if not alive:
+                    error = "browser process exited; call web.open to relaunch it"
+                elif wedged:
+                    error = "browser thread is wedged; call web.close to reclaim the session"
+                rows.append(
+                    {
+                        "session_id": sid,
+                        "backend": "web",
+                        "worker_alive": alive,
+                        "connected": alive and not wedged,
+                        "healthy": alive and not wedged,
+                        "checked_at": now,
+                        "reconnects": 0,
+                        "failures": 0,
+                        "last_error": error,
+                    }
+                )
+        proxy = getattr(self, "_proxy_backend", None)
+        if proxy is not None:
+            for item in proxy.liveness():
+                sid = str(item.get("session_id") or "")
+                if session_id is not None and sid != session_id:
+                    continue
+                alive = bool(item.get("alive"))
+                reason = item.get("error")
+                error = None
+                if not alive:
+                    error = str(
+                        reason or "mitmproxy thread exited; call proxy.start to restart it"
+                    )
+                rows.append(
+                    {
+                        "session_id": sid,
+                        "backend": "proxy",
+                        "worker_alive": alive,
+                        "connected": alive,
+                        "healthy": alive,
+                        "checked_at": now,
+                        "reconnects": 0,
+                        "failures": 0,
+                        "last_error": error,
+                    }
+                )
+        return rows
 
     def backend_health_snapshot(self) -> list[JsonObject]:
         """Return the last sweep's view without provoking a new one.
