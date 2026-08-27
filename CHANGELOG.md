@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（请求体大小上限漏计非 bytes 缓冲）
+
+- Web 请求体限流中间件按累计字节数拦截超大上传,但只对 `isinstance(body, bytes)` 计数。ASGI
+  规范虽把 body 标注为 `bytes`,服务器却可能把同一批接收字节以 `bytearray` 或 `memoryview`
+  交回——它们占用的进程内存分毫不差,却被计为 0。于是当请求没有诚实的 `content-length` 先行拦截
+  时,以这些缓冲分块投递的上传能绕过本中间件本要守住的上限,界定内存分配的初衷恰在此时落空。
+  现新增 `_body_byte_length` 统一度量 `bytes`/`bytearray`/`memoryview`(后者按 `nbytes`,即便
+  itemsize 非字节也报真实占用),三类缓冲一律计入上限。新增回归覆盖三种缓冲类型的累计。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
