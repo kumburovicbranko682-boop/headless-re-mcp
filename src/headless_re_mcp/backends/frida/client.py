@@ -14,6 +14,9 @@ from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 JsonObject = dict[str, Any]
 T = TypeVar("T")
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# A memory-range protection mask: each slot is the bit or a dash, e.g. 'r-x' or
+# 'rw-'. Passed to Process.enumerateRanges as a minimum; '---' matches all.
+_PROTECTION_RE = re.compile(r"^[r-][w-][x-]$")
 # attach / spawn / Java.perform can block forever on a paused debuggee or a
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
 # slow USB spawn, short enough that a wedged probe cannot keep a worker.
@@ -123,6 +126,24 @@ rpc.exports = {
     // runtime. The pointer method has existed since frida 12, so this works on
     // the whole >=16.5 range the android extra pins.
     return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
+  },
+  ranges: function (protection, limit) {
+    // protection is a min-mask like 'r-x'; '---' matches every mapped range.
+    var all = Process.enumerateRanges(protection);
+    var items = [];
+    var cap = Math.max(0, limit);
+    for (var i = 0; i < all.length && items.length < cap; i++) {
+      var r = all[i];
+      var item = {base: r.base.toString(), size: r.size, protection: r.protection};
+      if (r.file) {
+        // A file-backed range names its mapping; an anonymous range (JIT,
+        // unpacked or injected code) has no file, which is the tell.
+        item.path = r.file.path;
+        item.file_offset = r.file.offset;
+      }
+      items.push(item);
+    }
+    return {ranges: items, total: all.length};
   }
 };
 """
@@ -399,6 +420,60 @@ class FridaClient:
                 "exports": items,
                 "count": len(items),
                 "has_more": has_more,
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def ranges(
+        self,
+        pid: int,
+        *,
+        allowed_pid: int,
+        protection: str = "---",
+        limit: int = 64,
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        mask = (protection or "---").strip()
+        if not _PROTECTION_RE.match(mask):
+            raise FridaError(
+                "invalid_params",
+                "protection must be a 3-char r/w/x mask like 'r-x', 'rw-' or '---'",
+            )
+        capped = max(1, min(int(limit), 512))
+        session = self._attach_local(pid)
+        try:
+            script = session.create_script(_ENUM_SCRIPT)
+            script.load()
+            raw = script.exports_sync.ranges(mask, capped)
+            if isinstance(raw, dict):
+                held = list(raw.get("ranges") or [])
+                total = int(raw.get("total") or len(held))
+            else:
+                held = list(raw or [])
+                total = len(held)
+            items = []
+            for item in held[:capped]:
+                if not isinstance(item, dict):
+                    continue
+                row: JsonObject = {
+                    "base": str(item.get("base", "")),
+                    "size": int(item.get("size", 0) or 0),
+                    "protection": str(item.get("protection", "")),
+                }
+                # A file-backed range names its mapping; an anonymous range
+                # (JIT, unpacked or injected code) has no path, which is the
+                # tell an analyst is looking for.
+                if item.get("path"):
+                    row["path"] = str(item.get("path"))
+                    row["file_offset"] = int(item.get("file_offset", 0) or 0)
+                items.append(row)
+            return {
+                "ranges": items,
+                "count": len(items),
+                "total": total,
+                "has_more": total > len(items),
+                "protection": mask,
             }
         finally:
             with contextlib.suppress(Exception):

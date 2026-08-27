@@ -56,6 +56,27 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
+    @tools.tool(name="frida.ranges")
+    def frida_ranges(
+        session_id: str,
+        protection: str = "---",
+        limit: Annotated[int, Field(ge=1, le=512)] = 64,
+    ) -> dict[str, Any]:
+        """List the session debuggee's mapped memory ranges via a Frida probe.
+
+        Where frida.modules lists loaded libraries, this lists the raw memory
+        map -- including anonymous ranges that no module backs, where injected,
+        JIT or freshly-unpacked code lives. protection is a minimum r/w/x mask
+        ('---' the default matches every range; 'r-x' matches executable ones;
+        'rwx' isolates the writable-executable regions worth suspecting).
+        Answers with ranges (base, size, protection, and path/file_offset for a
+        file-backed range; a range with no path is anonymous), plus count,
+        total, and has_more so a page that filled the limit is not read as the
+        whole map, and the protection that was applied. Limited to the debuggee
+        pid.
+        """
+        return _dump(analysis.frida_ranges(session_id, protection, limit=limit))
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -42,6 +42,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
+
+### 新增（`frida.ranges` 列调试目标内存映射）
+
+- `frida.modules` 只看得到已加载的库；进程里那些不被任何模块支撑的**匿名**内存区——JIT、脱壳后
+  或注入进来的代码就住在这里——此前没有工具能列出来。新增只读 `frida.ranges`：在会话已授权 pid 上跑
+  `Process.enumerateRanges` 探针，回 `ranges`（`base`、`size`、`protection`；文件映射区带 `path` 与
+  `file_offset`，无 `path` 即匿名区，正是分析者要盯的线索），并带 `count`、`total`、`has_more` 使填满
+  limit 的一页不被当成整张内存图，以及本次生效的 `protection`。`protection` 是最小 r/w/x 掩码：缺省
+  `---` 匹配全部，`r-x` 匹配可执行区，`rwx` 单独挑出可写可执行的可疑区；非法掩码按 `invalid_params`
+  拒绝。上限 512，仅限本会话调试 pid，probe 结束即 detach。新增回归测试覆盖分页 has_more、匿名区无
+  path、文件映射带 path/offset 与非法掩码拒绝。
 
 ### 变更（监控台检查器）
 

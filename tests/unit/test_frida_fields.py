@@ -130,6 +130,82 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _RangeApi:
+    def ranges(self, protection: str, limit: int) -> dict[str, Any]:
+        del protection
+        rows: list[dict[str, Any]] = []
+        for index in range(int(limit)):
+            row: dict[str, Any] = {
+                "base": f"0x{index:x}",
+                "size": 4096,
+                "protection": "r-x",
+            }
+            # Even indices are file-backed; odd ones are anonymous.
+            if index % 2 == 0:
+                row["path"] = "/system/lib64/libc.so"
+                row["file_offset"] = index * 4096
+            rows.append(row)
+        return {"ranges": rows, "total": 25}
+
+
+class _RangeScript:
+    exports_sync = _RangeApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _RangeSession:
+    def create_script(self, source: str) -> _RangeScript:
+        return _RangeScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _RangeFrida:
+    def attach(self, pid: int) -> _RangeSession:
+        return _RangeSession()
+
+
+def test_frida_ranges_says_when_the_page_is_not_the_whole_map() -> None:
+    """The raw memory map, with anonymous ranges distinguished from mapped
+    files.
+
+    Measured: total 25, limit 10 -> count 10, has_more True. A file-backed
+    range carries path/file_offset; an anonymous one (JIT/unpacked/injected
+    code) carries neither, which is the tell.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _RangeFrida()
+    payload = client.ranges(1, allowed_pid=1, protection="r-x", limit=10)
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["has_more"] is True
+    assert payload["protection"] == "r-x"
+    file_backed = payload["ranges"][0]
+    assert file_backed["path"] == "/system/lib64/libc.so"
+    assert file_backed["file_offset"] == 0
+    anonymous = payload["ranges"][1]
+    assert "path" not in anonymous
+    assert "file_offset" not in anonymous
+    assert anonymous["protection"] == "r-x"
+    doc = _tool_docstring("frida.ranges")
+    assert "has_more" in doc
+    assert "protection" in doc
+
+
+def test_frida_ranges_rejects_an_invalid_protection_mask() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = _RangeFrida()
+    for bad in ("rwxr", "abc", "xwr", "RW-"):
+        with pytest.raises(FridaError) as caught:
+            client.ranges(1, allowed_pid=1, protection=bad, limit=10)
+        assert caught.value.code == "invalid_params"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
