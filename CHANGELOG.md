@@ -112,6 +112,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（web.network.get 把会话健康故障吞成 200 形状的 body_error）
+
+- `network_get` 用一个 `except Exception` 把 CDP 取不到响应体的情况折叠成
+  `body_error`（重定向、被缓存淘汰的条目——这类「这一条请求没有 body」是合理降级）。
+  但同一个 `except` 也吞掉了 `WebError`：`_Runner.call` 在会话被 wedge/超时/关闭时抛的正是
+  `WebError`（`timeout` / `backend_error` / `invalid_state`）。于是浏览器线程已经卡死的会话被报成
+  一条 200 形状的 `body_error`（读起来像「这条请求恰好没有 body」），而不是无人值守调用方用来
+  触发 `web.close` 恢复所需的「浏览器无响应」信号。`script_source` 早已先 `except WebError: raise`
+  再兜底；这里把 `network_get` 对齐到同一规则：会话健康故障如实上抛，单条请求真的取不到 body 仍
+  照旧降级为 `body_error` 并带回其余请求记录。新增两条直测分别钉住这两个方向。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
