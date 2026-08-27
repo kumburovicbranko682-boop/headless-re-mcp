@@ -24,7 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 完整性（web.dom.snapshot 溢出的完整 DOM 落盘为已登记制品，与 web.network.get / web.script.source 对齐，别在 200 KiB 内联裁剪处把大页 DOM 丢掉）
+### 完整性（js.deobfuscate / js.beautify / wasm.wat / wasm.info 超出内联上限时把完整输出落盘、回 `<key>_path`，别在 400 KiB 处把大段结果丢掉）
+
+- 这四个一次性读工具过去把输出裁到 400 KiB 内联上限、只回 `truncated=True`，超出部分无从取回——而\
+  webcrack 反混淆后的单文件源码、大模块的 WAT 反汇编别处都拿不到。现在共用的 `_bounded_output` 在被裁剪时\
+  把完整输出写入 jsre 暂存区，并按各自负载键回 `code_path` / `wat_path` / `objdump_path`（内联仍给一段有界预览），\
+  与 `web.dom.snapshot` / `web.network.get` 的溢出范式一致。
+- 落盘是会话无关的（这些工具按文件路径取参、没有 session，制品表登记不了），所以和 `js.unpack_bundle` 的\
+  `unpack-<uuid>/` 树共用同一个 `artifact_root/jsre` 暂存目录与同一套 `prune_capped_dir` 上限（≤8 项 / ≤256 MiB），\
+  服务层在 `finally` 里收敛，避免无界增长。单个溢出文件另设 256 MiB 上限，超出则只保留内联答案、不落盘、不留半个\
+  文件；写盘失败同样只降级为"没有 path"，绝不掀翻一次已经产出内联结果的分析。
 
 - `web.dom.snapshot` 过去在浏览器内把 `outerHTML` 裁到 200 KiB 内联上限、只回 `truncated=True`，超出部分\
   无从取回——而大型 SPA 的完整 DOM 别处都拿不到，等于永久丢失。现在改用它的两个同类"大负载"读工具\

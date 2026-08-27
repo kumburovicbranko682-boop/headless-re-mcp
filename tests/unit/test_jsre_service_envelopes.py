@@ -45,20 +45,28 @@ class _FakeClient:
         assert self._data is not None
         return dict(self._data)
 
-    def deobfuscate(self, path: Path, timeout: float = 120.0) -> JsonObject:
-        del path, timeout
+    def deobfuscate(
+        self, path: Path, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
+        del path, timeout, spill_dir
         return self._answer()
 
-    def beautify(self, path: Path, timeout: float = 120.0) -> JsonObject:
-        del path, timeout
+    def beautify(
+        self, path: Path, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
+        del path, timeout, spill_dir
         return self._answer()
 
-    def wat(self, path: Path, timeout: float = 120.0) -> JsonObject:
-        del path, timeout
+    def wat(
+        self, path: Path, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
+        del path, timeout, spill_dir
         return self._answer()
 
-    def info(self, path: Path, timeout: float = 120.0) -> JsonObject:
-        del path, timeout
+    def info(
+        self, path: Path, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
+        del path, timeout, spill_dir
         return self._answer()
 
     def unpack_bundle(
@@ -173,6 +181,50 @@ def test_unpack_maps_an_unexpected_exception_to_internal_error(
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "internal_error"
+
+
+def test_deobfuscate_passes_a_spill_dir_and_prunes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The service hands the backend a jsre scratch dir and, in its finally,
+    trims that dir to the shared cap so session-less spills cannot grow forever.
+
+    These outputs are keyed by a file path, not a session, so nothing registers
+    them and only prune_capped_dir keeps the directory bounded -- the same cap
+    js.unpack_bundle's trees share.
+    """
+    from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_ENTRIES
+
+    jsre_root = (tmp_path.expanduser().resolve()) / "jsre"
+    jsre_root.mkdir()
+    # More pre-existing spills than the cap allows, from earlier calls.
+    for index in range(JSRE_UNPACK_MAX_ENTRIES + 4):
+        (jsre_root / f"old-{index}.js").write_text("x", encoding="utf-8")
+
+    seen: dict[str, Path] = {}
+
+    class _Spiller:
+        def deobfuscate(
+            self, path: Path, timeout: float = 120.0, spill_dir: Path | None = None
+        ) -> JsonObject:
+            del path, timeout
+            assert spill_dir is not None
+            seen["dir"] = spill_dir
+            dest = spill_dir / "deob-new.js"
+            dest.write_text("full", encoding="utf-8")
+            return {"code": "cut", "truncated": True, "code_path": str(dest)}
+
+    _install(monkeypatch, "JsClient", _Spiller())
+    harness = _Harness(tmp_path)
+
+    result = harness.js_deobfuscate("/tmp/app.js")
+
+    assert result.ok is True, result.error
+    assert seen["dir"] == jsre_root
+    entries = list(jsre_root.iterdir())
+    assert len(entries) <= JSRE_UNPACK_MAX_ENTRIES
+    # The just-written spill is newest, so the prune must keep it.
+    assert (jsre_root / "deob-new.js") in entries
 
 
 def test_prune_swallows_a_non_directory_or_missing_root(tmp_path: Path) -> None:

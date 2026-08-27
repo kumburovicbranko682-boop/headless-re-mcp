@@ -73,27 +73,53 @@ class JsReAnalysisMixin:
         root.mkdir(parents=True, exist_ok=True)
         return root / f"{name}-{uuid4().hex}"
 
+    def _jsre_spill_root(self) -> Path:
+        """The scratch area a one-shot's oversized output spills into.
+
+        Shared with js.unpack_bundle's unpack-<uuid>/ trees: one capped
+        directory keyed by nothing (these tools take a file path, not a session),
+        so the artifact table never registers it and only prune_capped_dir keeps
+        it bounded. deob/wat/objdump spills land here as files alongside those
+        trees and share the same count/byte ceiling.
+        """
+        root = self.settings.artifact_root.expanduser().resolve() / "jsre"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _prune_jsre_spills(self, root: Path) -> None:
+        prune_capped_dir(
+            root,
+            max_entries=JSRE_UNPACK_MAX_ENTRIES,
+            max_bytes=JSRE_UNPACK_MAX_BYTES,
+        )
+
     def js_deobfuscate(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        spill_root = self._jsre_spill_root()
         try:
             data = JsClient(getattr(self.settings, "webcrack", None)).deobfuscate(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill_root
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            self._prune_jsre_spills(spill_root)
 
     def js_beautify(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        spill_root = self._jsre_spill_root()
         try:
             data = JsClient(getattr(self.settings, "webcrack", None)).beautify(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill_root
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            self._prune_jsre_spills(spill_root)
 
     def js_unpack_bundle(
         self,
@@ -156,23 +182,29 @@ class JsReAnalysisMixin:
             )
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        spill_root = self._jsre_spill_root()
         try:
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill_root
             )
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            self._prune_jsre_spills(spill_root)
 
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        spill_root = self._jsre_spill_root()
         try:
             data = WasmClient(getattr(self.settings, "wabt", None)).info(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=spill_root
             )
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            self._prune_jsre_spills(spill_root)

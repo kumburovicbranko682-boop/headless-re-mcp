@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import (
     InvalidTimeout,
@@ -19,9 +20,15 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
+# A full deobfuscation / WAT dump spilled past the inline cap is written whole to
+# the jsre scratch area; the file itself is bounded here so one pathological
+# output cannot fill the disk before the directory prune runs. The input is
+# already capped at 16 MiB, so realistic output sits far below this ceiling.
+_MAX_SPILL_BYTES = JSRE_UNPACK_MAX_BYTES
 # Per the tool schema: js.deobfuscate / js.beautify / wasm.* declare le=600,
 # js.unpack_bundle le=1200. Each caller passes its own ceiling into _run.
 _MAX_TIMEOUT_S = 600.0
@@ -124,14 +131,54 @@ def _run(
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _spill_full_output(payload: bytes, spill_dir: Path, filename: str) -> str | None:
+    """Write the complete (pre-inline-cut) output to the jsre scratch area.
+
+    ``_bounded_output`` returns only the first ``_MAX_INLINE`` bytes inline, so a
+    caller who saw ``truncated`` had no way to obtain the rest -- for a single
+    deobfuscated script or a large WAT dump the remainder was simply lost.
+    Mirroring web.network.get / web.dom.snapshot, the whole output goes to a file
+    and its path rides back. Best-effort: a spill that cannot be written (or that
+    is over the per-file cap) leaves only the inline answer rather than failing an
+    analysis that already produced it.
+    """
+    if len(payload) > _MAX_SPILL_BYTES:
+        return None
+    try:
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        dest = spill_dir / filename
+        dest.write_bytes(payload)
+    except OSError:
+        return None
+    _size, over = capped_file_size(dest, cap=_MAX_SPILL_BYTES)
+    if over:
+        return None
+    return str(dest)
+
+
+def _bounded_output(
+    text: str,
+    key: str,
+    *,
+    include_bytes: bool,
+    spill_dir: Path | None = None,
+    spill_name: str | None = None,
+) -> JsonObject:
     payload = text.encode("utf-8", errors="replace")
+    truncated = len(payload) > _MAX_INLINE
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
+        "truncated": truncated,
     }
     if include_bytes:
         result["bytes"] = len(payload)
+    # Only an output that overflowed the inline cap needs a sink; a small answer
+    # travels whole and must not litter the scratch area. The path is reported
+    # as ``<key>_path`` (code_path / wat_path / objdump_path).
+    if truncated and spill_dir is not None and spill_name is not None:
+        spill = _spill_full_output(payload, spill_dir, spill_name)
+        if spill is not None:
+            result[f"{key}_path"] = spill
     return result
 
 
@@ -172,7 +219,9 @@ class JsClient:
             )
         return _require_existing_file(path, missing="input file not found")
 
-    def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def deobfuscate(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved)], timeout=timeout, maximum=_MAX_TIMEOUT_S
@@ -182,12 +231,22 @@ class JsClient:
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(
+                stdout,
+                "code",
+                include_bytes=True,
+                spill_dir=spill_dir,
+                spill_name=f"deob-{uuid4().hex}.js",
+            ),
+            code=code,
+            stderr=stderr,
         )
 
-    def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def beautify(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
-        return self.deobfuscate(path, timeout=timeout)
+        return self.deobfuscate(path, timeout=timeout, spill_dir=spill_dir)
 
     def unpack_bundle(
         self,
@@ -254,7 +313,9 @@ class WasmClient:
             )
         return resolved
 
-    def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def wat(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
@@ -263,10 +324,20 @@ class WasmClient:
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(
+                stdout,
+                "wat",
+                include_bytes=True,
+                spill_dir=spill_dir,
+                spill_name=f"wat-{uuid4().hex}.wat",
+            ),
+            code=code,
+            stderr=stderr,
         )
 
-    def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def info(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
         stdout, stderr, code = _run(
@@ -277,7 +348,15 @@ class WasmClient:
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
+            _bounded_output(
+                stdout,
+                "objdump",
+                include_bytes=False,
+                spill_dir=spill_dir,
+                spill_name=f"objdump-{uuid4().hex}.txt",
+            ),
+            code=code,
+            stderr=stderr,
         )
 
 

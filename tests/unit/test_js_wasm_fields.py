@@ -168,6 +168,147 @@ def test_js_deobfuscate_applies_inline_limit_to_encoded_bytes(
     assert len(str(payload["code"]).encode("utf-8")) <= 5
 
 
+def test_js_deobfuscate_spills_the_full_output_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the inline cap the rest used to be lost; now the whole output lands
+    in the spill dir and code_path points to it, mirroring web.dom.snapshot."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    spill = tmp_path / "spill"
+    body = "z" * 50
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert len(payload["code"]) == 10
+    dest = Path(payload["code_path"])
+    assert dest.is_file()
+    assert dest.parent == spill
+    assert dest.read_text(encoding="utf-8") == body
+    assert dest.name.startswith("deob-")
+    assert dest.suffix == ".js"
+
+
+def test_js_deobfuscate_small_output_does_not_spill_even_with_a_dir(
+    tmp_path: Path,
+) -> None:
+    """A result under the inline cap travels whole: no file, no code_path."""
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    spill = tmp_path / "spill"
+    body = "short"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is False
+    assert "code_path" not in payload
+    assert not spill.exists() or list(spill.iterdir()) == []
+
+
+def test_js_deobfuscate_without_a_spill_dir_keeps_the_old_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller that passes no sink still gets a bare truncated flag, no path
+    and no file -- the default path the backend field tests exercise."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "z" * 50
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src)
+
+    assert payload["truncated"] is True
+    assert "code_path" not in payload
+
+
+def test_deobfuscate_spill_over_the_per_file_cap_leaves_only_the_inline_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spill larger than the per-file ceiling must not be written or half-left
+    on disk: the caller keeps the inline prefix and truncated, but no code_path
+    and no stray file."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    spill = tmp_path / "spill"
+    body = "z" * 50
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    monkeypatch.setattr(mod, "_MAX_SPILL_BYTES", 20)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert "code_path" not in payload
+    assert not spill.exists() or list(spill.iterdir()) == []
+
+
+def test_wasm_wat_and_info_spill_under_their_own_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spill path is named after the payload key, so wat -> wat_path (.wat)
+    and objdump -> objdump_path (.txt), never a shared or generic field."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    spill = tmp_path / "spill"
+    body = "(module)" * 20
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+
+    wat_tool = tmp_path / "wasm2wat.exe"
+    wat_tool.write_bytes(b"")
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        wat_payload = WasmClient(wat_tool).wat(module, spill_dir=spill)
+    wat_dest = Path(wat_payload["wat_path"])
+    assert wat_dest.is_file()
+    assert wat_dest.read_text(encoding="utf-8") == body
+    assert wat_dest.suffix == ".wat"
+
+    objdump_tool = tmp_path / "wasm-objdump.exe"
+    objdump_tool.write_bytes(b"")
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        info_payload = WasmClient(objdump_tool).info(module, spill_dir=spill)
+    info_dest = Path(info_payload["objdump_path"])
+    assert info_dest.is_file()
+    assert info_dest.read_text(encoding="utf-8") == body
+    assert info_dest.suffix == ".txt"
+
+
 def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog repeated code/truncated and never named bytes.
 
@@ -207,6 +348,11 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+    # The spill path each oversized reader offers is named after its key.
+    assert "code_path" in _tool_docstring("js.deobfuscate")
+    assert "code_path" in _tool_docstring("js.beautify")
+    assert "wat_path" in _tool_docstring("wasm.wat")
+    assert "objdump_path" in _tool_docstring("wasm.info")
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:

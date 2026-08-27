@@ -27,11 +27,13 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Deobfuscate and unminify a JavaScript file via webcrack.
 
-        Answers with code and bytes, plus truncated when the text was cut at
-        the buffer. If webcrack exits non-zero but still emitted code, that
-        code is returned with exit_code, tool_failed and stderr set so a
-        partial run is not read as complete. An input over 16 MiB is refused
-        as too_large rather than handed to webcrack.
+        Answers with code and bytes, plus truncated when the inline code is
+        only a prefix. When truncated, the whole output is written to a scratch
+        file and its path returned as code_path, so a large deobfuscation is
+        recoverable rather than lost at the buffer. If webcrack exits non-zero
+        but still emitted code, that code is returned with exit_code,
+        tool_failed and stderr set so a partial run is not read as complete. An
+        input over 16 MiB is refused as too_large rather than handed to webcrack.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
@@ -42,10 +44,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return a readable, unminified form of a JavaScript file via webcrack.
 
         Same payload as js.deobfuscate: Answers with code and bytes, plus
-        truncated when the text was cut at the buffer, and exit_code /
-        tool_failed / stderr when webcrack exits non-zero but still emitted
-        code. An input over 16 MiB is refused as too_large rather than handed
-        to webcrack.
+        truncated when the inline code is only a prefix (with code_path to the
+        full output when that happens), and exit_code / tool_failed / stderr
+        when webcrack exits non-zero but still emitted code. An input over 16
+        MiB is refused as too_large rather than handed to webcrack.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
@@ -75,11 +77,12 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
-        Answers with wat and bytes, plus truncated when the text was cut at
-        the buffer, and exit_code / tool_failed / stderr when wasm2wat exits
-        non-zero but still emitted text. An input over 16 MiB is refused as
-        too_large, and a file that is not a WebAssembly module as
-        invalid_params, rather than handed to wasm2wat.
+        Answers with wat and bytes, plus truncated when the inline wat is only
+        a prefix (with wat_path to the full dump when that happens), and
+        exit_code / tool_failed / stderr when wasm2wat exits non-zero but still
+        emitted text. An input over 16 MiB is refused as too_large, and a file
+        that is not a WebAssembly module as invalid_params, rather than handed
+        to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -90,11 +93,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
         Answers with objdump holding that text, not a sections list, plus
-        truncated when the text was cut at the buffer, and exit_code /
-        tool_failed / stderr when wasm-objdump exits non-zero but still
-        emitted text. An input over 16 MiB is refused as too_large, and a file
-        that is not a WebAssembly module as invalid_params, rather than handed
-        to wasm-objdump.
+        truncated when the inline text is only a prefix (with objdump_path to
+        the full dump when that happens), and exit_code / tool_failed / stderr
+        when wasm-objdump exits non-zero but still emitted text. An input over
+        16 MiB is refused as too_large, and a file that is not a WebAssembly
+        module as invalid_params, rather than handed to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
