@@ -170,8 +170,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
-        Answers with methods, class_name, count, and has_more so a page that
-        filled the limit is not read as every declared method.
+        Answers with methods, class_name, found, count, and has_more so a page
+        that filled the limit is not read as every declared method. found is
+        false when the class is not loaded on the target, which an empty
+        methods list alone cannot distinguish from a loaded class that declares
+        none of its own.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 

@@ -1308,12 +1308,17 @@ class XdbgClient:
 
     def _finish_threads(self) -> None:
         self._monitor_stop.set()
+        # One shared budget keeps teardown bounded: joining the window, stdout,
+        # and stderr threads for two seconds each would let a grandchild that
+        # inherited (and still holds open) a pipe stretch cleanup to six
+        # seconds, one thread at a time.
+        drain_deadline = time.monotonic() + 2.0
         if hasattr(self, "_window_thread"):
-            self._window_thread.join(timeout=2)
+            self._window_thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         if hasattr(self, "_stdout_thread"):
-            self._stdout_thread.join(timeout=2)
+            self._stdout_thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         if hasattr(self, "_stderr_thread"):
-            self._stderr_thread.join(timeout=2)
+            self._stderr_thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         desktop: HiddenDesktop | None = getattr(self, "_desktop", None)
         self._desktop = None
         if desktop is not None:

@@ -117,7 +117,12 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // Read through the NativePointer method, not the legacy Memory.read* free
+    // functions: frida 17 removed those globals, so the old form raised
+    // "TypeError: not a function" and frida.memory.read failed on every modern
+    // runtime. The pointer method has existed since frida 12, so this works on
+    // the whole >=16.5 range the android extra pins.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
@@ -150,14 +155,21 @@ rpc.exports = {
   },
   methods: function (className, limit) {
     var out = [];
+    var found = false;
     Java.perform(function () {
-      var clazz = Java.use(className);
+      var clazz;
+      try {
+        clazz = Java.use(className);
+      } catch (e) {
+        return;  // class is not loaded on the target
+      }
+      found = true;
       var methods = clazz.class.getDeclaredMethods();
       for (var i = 0; i < methods.length && out.length < limit; i++) {
         out.push(methods[i].toString());
       }
     });
-    return out;
+    return {found: found, methods: out};
   }
 };
 """
@@ -660,11 +672,22 @@ class FridaClient:
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
-                    values, has_more = _page(
-                        script.exports_sync.methods(class_name, capped + 1), capped
-                    )
+                    raw = script.exports_sync.methods(class_name, capped + 1)
+                    # found distinguishes "class is not loaded on the target"
+                    # (found false, methods empty) from "loaded, but declares no
+                    # methods of its own" (found true, methods empty) -- an empty
+                    # list alone read as the latter and hid a bad class name. The
+                    # bare-array branch tolerates the older script shape, exactly
+                    # as ``modules`` does.
+                    if isinstance(raw, dict):
+                        found = bool(raw.get("found"))
+                        values, has_more = _page(list(raw.get("methods") or []), capped)
+                    else:
+                        found = True
+                        values, has_more = _page(list(raw or []), capped)
                     return {
                         "class_name": class_name,
+                        "found": found,
                         "methods": values,
                         "count": len(values),
                         "has_more": has_more,
