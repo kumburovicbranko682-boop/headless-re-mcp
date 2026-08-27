@@ -1633,13 +1633,13 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
 def test_imports_read_rejects_a_size_over_the_iat_ceiling(tmp_path: Path) -> None:
     """imports.read must refuse an oversized range at the service boundary.
 
-    The schema declares le=MAX_IAT_READ_BYTES and the native ReadImports rejects
+    The schema declares le=MAX_IMPORT_SCAN_BYTES and the native ReadImports rejects
     anything above MaxImportScanBytes, but the agent transport reaches the
     handler with no schema check. Without a service-side ceiling a caller could
     ask for a gigabyte-wide IAT and occupy a worker until the native side
     refused it; modules_dump already caps its own size the same way.
     """
-    from headless_re_mcp.core.limits import MAX_IAT_READ_BYTES
+    from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
 
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
@@ -1650,17 +1650,53 @@ def test_imports_read_rejects_a_size_over_the_iat_ceiling(tmp_path: Path) -> Non
     assert service.open_dynamic(session_id).ok
 
     # A read exactly at the ceiling is legal and still reaches the worker.
-    ok = service.imports_read(session_id, worker.module_base, MAX_IAT_READ_BYTES)
+    ok = service.imports_read(session_id, worker.module_base, MAX_IMPORT_SCAN_BYTES)
     assert ok.ok and ok.data is not None
     assert any(req[0] == "imports.read" for req in worker.requests)
 
     before = len(worker.requests)
-    too_large = service.imports_read(session_id, worker.module_base, MAX_IAT_READ_BYTES + 1)
+    too_large = service.imports_read(session_id, worker.module_base, MAX_IMPORT_SCAN_BYTES + 1)
     assert not too_large.ok and too_large.error is not None
     assert too_large.error.code == "invalid_params"
     assert too_large.error.details is not None
-    assert too_large.error.details["max_iat_read_bytes"] == MAX_IAT_READ_BYTES
+    assert too_large.error.details["max_import_scan_bytes"] == MAX_IMPORT_SCAN_BYTES
     # The oversized request never travelled to the worker.
+    assert len(worker.requests) == before
+
+
+def test_imports_scan_rejects_a_search_size_over_the_iat_ceiling(tmp_path: Path) -> None:
+    """imports.scan shares the imports.read ceiling for its search window.
+
+    ScanImports rejects a search_size above MaxImportScanBytes and the schema
+    declares le=MAX_IMPORT_SCAN_BYTES, but the agent transport skips the schema.
+    Bounding it in the shared imports_scan keeps a gigabyte-wide scan from
+    occupying a worker; max_candidates is intentionally not capped here because
+    the unpack path amplifies it past the imports.scan ceiling on purpose.
+    """
+    from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    ok = service.imports_scan(
+        session_id, worker.module_base, search_size=MAX_IMPORT_SCAN_BYTES
+    )
+    assert ok.ok and ok.data is not None
+    assert any(req[0] == "imports.scan" for req in worker.requests)
+
+    before = len(worker.requests)
+    too_large = service.imports_scan(
+        session_id, worker.module_base, search_size=MAX_IMPORT_SCAN_BYTES + 1
+    )
+    assert not too_large.ok and too_large.error is not None
+    assert too_large.error.code == "invalid_params"
+    assert too_large.error.details is not None
+    assert too_large.error.details["max_import_scan_bytes"] == MAX_IMPORT_SCAN_BYTES
     assert len(worker.requests) == before
 
 

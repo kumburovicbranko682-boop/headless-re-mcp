@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.addressing import RuntimeModuleCatalog
-from headless_re_mcp.core.limits import MAX_IAT_READ_BYTES, MAX_MODULE_DUMP_BYTES
+from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES, MAX_MODULE_DUMP_BYTES
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _register_capture, _timeline_append
@@ -684,6 +684,34 @@ class DynamicInspectMixin:
                     message="mode must be consecutive|sparse|call_site|all",
                 ),
             )
+        # search_size shares the imports.read ceiling (native MaxImportScanBytes,
+        # which ScanImports rejects above). The schema declares it, but the agent
+        # transport reaches this handler with no schema check, so an oversized
+        # window would otherwise occupy a worker until the native side refused.
+        # (max_candidates is deliberately left to the schema/native pair: the
+        # unpack path amplifies it past the imports.scan ceiling on purpose to
+        # rank a wider pool locally, so a hard cap here would reject a legal
+        # unpack.iat.scan request.)
+        if search_size is not None and (type(search_size) is not int or search_size <= 0):
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="search_size must be a positive integer",
+                ),
+            )
+        if search_size is not None and search_size > MAX_IMPORT_SCAN_BYTES:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="search_size exceeds the maximum IAT scan range",
+                    details={
+                        "search_size": search_size,
+                        "max_import_scan_bytes": MAX_IMPORT_SCAN_BYTES,
+                    },
+                ),
+            )
         params: JsonObject = {
             "module_base": module_base,
             "max_candidates": max_candidates,
@@ -729,17 +757,17 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="size must be a positive integer"),
             )
-        # The imports.read schema declares le=MAX_IAT_READ_BYTES, but the agent
-        # transport reaches this handler with no schema check, so a huge range
-        # would otherwise drive the worker to read far past any real IAT. Bound
-        # it here the same way modules_dump bounds its own dump size.
-        if size > MAX_IAT_READ_BYTES:
+        # The imports.read schema declares le=MAX_IMPORT_SCAN_BYTES, but the
+        # agent transport reaches this handler with no schema check, so a huge
+        # range would otherwise drive the worker to read far past any real IAT.
+        # Bound it here the same way modules_dump bounds its own dump size.
+        if size > MAX_IMPORT_SCAN_BYTES:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
                     code="invalid_params",
                     message="size exceeds the maximum IAT read range",
-                    details={"size": size, "max_iat_read_bytes": MAX_IAT_READ_BYTES},
+                    details={"size": size, "max_import_scan_bytes": MAX_IMPORT_SCAN_BYTES},
                 ),
             )
         return self._dynamic_request(
