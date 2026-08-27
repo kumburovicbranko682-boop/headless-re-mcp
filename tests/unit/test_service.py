@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.models import BackendKind, Session, SessionState
+from headless_re_mcp.core.models import BackendKind, Result, Session, SessionState
 from headless_re_mcp.core.service import AnalysisService, JsonObject, StaticWorker
 
 
@@ -668,5 +669,76 @@ def test_pe_tools_on_apk_and_web_sessions_report_target_mismatch(tmp_path: Path)
         assert web_static.error.code == "target_mismatch"
         assert not web_dynamic.ok and web_dynamic.error is not None
         assert web_dynamic.error.code == "target_mismatch"
+    finally:
+        service.close_all()
+
+
+def test_nonpe_tools_reject_a_session_they_cannot_analyse(tmp_path: Path) -> None:
+    """The symmetric guard to the PE-on-wrong-session test above.
+
+    That test pins the PE tools; this pins the other direction, which had no
+    coverage: every apk.* tool must refuse a non-APK session, and the binary
+    backends (r2, ghidra) must refuse a web session that is backed by no local
+    file. All of these reject with target_mismatch *before* touching a backend,
+    so the guard holds even where androguard / r2 / ghidra are not installed --
+    a regression that dropped the require_target/require_binary check would let
+    the tool try to parse a PE as an APK (or shell out with no file) and surface
+    as an internal_error incident instead of the honest "wrong session kind".
+
+    apk.* is guarded by a single shared helper (_apk_binary), so exercising the
+    whole surface here is what catches a newly added apk tool that forgets it.
+    """
+    pe = tmp_path / "sample.exe"
+    _write_minimal_pe(pe)
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        pe_created = service.create_session(str(pe))
+        assert pe_created.ok and pe_created.data is not None
+        pe_id = str(pe_created.data["session"]["id"])
+
+        web_created = service.create_session("https://example.com/app", target="web")
+        assert web_created.ok and web_created.data is not None
+        web_id = str(web_created.data["session"]["id"])
+
+        # Every apk.* tool, called on a PE session with otherwise-valid default
+        # args, must stop at the APK target guard. Named so a failure points at
+        # the exact tool that skipped the check.
+        apk_on_pe: dict[str, Callable[[], Result[JsonObject]]] = {
+            "apk_open": lambda: service.apk_open(pe_id),
+            "apk_manifest": lambda: service.apk_manifest(pe_id),
+            "apk_permissions": lambda: service.apk_permissions(pe_id),
+            "apk_certificates": lambda: service.apk_certificates(pe_id),
+            "apk_components": lambda: service.apk_components(pe_id),
+            "apk_native_libs": lambda: service.apk_native_libs(pe_id),
+            "apk_classes": lambda: service.apk_classes(pe_id),
+            "apk_methods": lambda: service.apk_methods(pe_id, "Lcom/example/Gate;"),
+            "apk_strings": lambda: service.apk_strings(pe_id),
+            "apk_xrefs": lambda: service.apk_xrefs(pe_id, "callee"),
+            "apk_decompile": lambda: service.apk_decompile(pe_id, "Lcom/example/Gate;"),
+            "apk_export_sources": lambda: service.apk_export_sources(pe_id),
+            "apk_decode": lambda: service.apk_decode(pe_id),
+            "apk_repack": lambda: service.apk_repack(pe_id),
+            "apk_sign": lambda: service.apk_sign(pe_id),
+        }
+        for name, call in apk_on_pe.items():
+            result = call()
+            assert not result.ok, f"{name} unexpectedly ran on a PE session"
+            assert result.error is not None, name
+            assert result.error.code == "target_mismatch", f"{name}: {result.error.code}"
+
+        # A representative apk tool on a web session takes the same guard.
+        apk_on_web = service.apk_methods(web_id, "Lcom/example/Gate;")
+        assert apk_on_web.error is not None
+        assert apk_on_web.error.code == "target_mismatch"
+
+        # r2/ghidra need a local file to analyse; a web session has none, so
+        # require_binary rejects them before any executable is resolved.
+        r2_on_web = service.r2_open(web_id)
+        assert r2_on_web.error is not None
+        assert r2_on_web.error.code == "target_mismatch"
+        ghidra_on_web = service.ghidra_analyze(web_id)
+        assert ghidra_on_web.error is not None
+        assert ghidra_on_web.error.code == "target_mismatch"
     finally:
         service.close_all()
