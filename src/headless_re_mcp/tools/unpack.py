@@ -64,7 +64,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="unpack.xvlkc.unpack")
     def unpack_xvlkc_unpack(
         session_id: str,
-        timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
+        # The service runs this through _detection_timeout, which rejects
+        # anything over MAX_WORKFLOW_TIMEOUT (300s); advertise that same
+        # ceiling so an in-schema 400 is not accepted here only to be refused
+        # downstream as "at most 300 seconds".
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 120.0,
     ) -> dict[str, Any]:
         """Optional XVLKC unpack into a session artifact; never overwrite input.
 
@@ -76,7 +80,9 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="unpack.vmp.dump")
     def unpack_vmp_dump(
         session_id: str,
-        timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
+        # See unpack.xvlkc.unpack: the service caps this at MAX_WORKFLOW_TIMEOUT
+        # (300s) via _detection_timeout, so the schema ceiling matches it.
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 120.0,
         module_name: str | None = None,
         entry_point_rva: int | None = None,
         disable_reloc: bool = False,
@@ -104,7 +110,9 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="unpack.scylla.rebuild")
     def unpack_scylla_rebuild(
         session_id: str,
-        timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
+        # See unpack.xvlkc.unpack: the service caps this at MAX_WORKFLOW_TIMEOUT
+        # (300s) via _detection_timeout, so the schema ceiling matches it.
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 120.0,
     ) -> dict[str, Any]:
         """Optional Scylla IAT/dump helper into a session artifact; never overwrite input.
 
