@@ -7,8 +7,8 @@ on disk -- and nothing exercised it live. The unit tests around it mock the
 subprocess, so "webcrack actually splits a real bundle, and the split preserves
 the cross-module call edge" was unproven.
 
-This gate points the service at a committed two-module webpack bundle and
-asserts, from webcrack's own ``bundle.json`` graph, that:
+This gate points the service at committed two-module bundles and asserts, from
+webcrack's own ``bundle.json`` graph, that:
 
   * the entry module and its dependency land in *separate* files (the split
     happened, not just a reformat);
@@ -16,8 +16,12 @@ asserts, from webcrack's own ``bundle.json`` graph, that:
     dependency file (the inter-module reference survived);
   * the dependency file carries its own body.
 
-It also pins the paging contract on the returned file listing, since callers
-rely on ``total`` / ``has_more`` rather than assuming ``files`` is complete.
+Both bundler families are covered because webcrack detects them through
+different unpackers: webpack (dependency resolved to a numeric ``1.js``) and
+browserify (which carries the require-string map, so the dependency resolves
+back to its real name ``greet.js``). It also pins the paging contract on the
+returned file listing, since callers rely on ``total`` / ``has_more`` rather
+than assuming ``files`` is complete.
 
 skip != pass: with Node/webcrack absent the gate skips loudly instead of
 quietly passing.
@@ -35,7 +39,9 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BUNDLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "webpack_bundle.js"
+_BROWSERIFY_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "browserify_bundle.js"
 _MARKER = "UNPACK_GATE_MARKER"
+_BROWSERIFY_MARKER = "BRIFY_GATE_MARKER"
 
 
 def _read(path: Path) -> str:
@@ -91,6 +97,50 @@ def test_js_unpack_bundle_splits_a_webpack_bundle() -> None:
         # file (the marker did not leak into it).
         assert "hello " in dep_text, dep_text
         assert _MARKER not in dep_text, dep_text
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_splits_a_browserify_bundle() -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — Unpack Gate not run (skip != pass)")
+    assert _BROWSERIFY_FIXTURE.is_file(), f"fixture missing: {_BROWSERIFY_FIXTURE}"
+
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_BROWSERIFY_FIXTURE))
+        assert result.ok, result.error
+        data = result.data
+        assert data["file_count"] >= 3, data
+        assert data.get("tool_failed") is not True, data
+
+        out_dir = Path(data["output_dir"])
+        assert out_dir.is_dir(), out_dir
+
+        graph = json.loads(_read(out_dir / "bundle.json"))
+        # A different unpacker from webpack: prove webcrack took the browserify
+        # path, not that it happened to split something.
+        assert graph["type"] == "browserify", graph
+        modules = {str(m["id"]): m["path"].lstrip("./") for m in graph["modules"]}
+        assert len(modules) >= 2, graph
+
+        entry_id = str(graph["entryId"])
+        entry_rel = modules[entry_id]
+        dep_id = next(mid for mid in modules if mid != entry_id)
+        dep_rel = modules[dep_id]
+        assert entry_rel != dep_rel, modules
+        # Browserify carries the require-string map, so the dependency resolves
+        # to its real name rather than a numeric id -- the distinguishing trait
+        # of this path.
+        assert dep_rel.endswith("greet.js"), modules
+
+        entry_text = _read(out_dir / entry_rel)
+        dep_text = _read(out_dir / dep_rel)
+        assert _BROWSERIFY_MARKER in entry_text, entry_text
+        assert Path(dep_rel).stem in entry_text, (entry_rel, entry_text)
+        assert "hi " in dep_text, dep_text
+        assert _BROWSERIFY_MARKER not in dep_text, dep_text
     finally:
         service.close_all()
 

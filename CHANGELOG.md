@@ -62,11 +62,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报错的版本必定支持它），让 webcrack 覆盖我们刚建好的目录。
 - 新增单测 `test_unpack_passes_force_so_webcrack_overwrites_the_dir_we_made`，在 mock 的
   `_run` 上钉住 `--force` 进入 argv，堵住这类「只 mock 不看命令行」而漏过的回归。
-- 新增实测门 `tests/integration/test_js_unpack_bundle_gate.py`：拿一份提交的两模块 webpack
-  夹具真跑 webcrack，凭 webcrack 自己的 `bundle.json` 模块图证明入口模块与其依赖被拆成**不同
-  文件**、入口保留了标记串与指向依赖文件的 `require` 边、依赖文件带着自己的函数体；并钉住返回
-  文件清单的分页契约（`total` / `has_more` / offset 窗口不重叠）。webcrack 缺席时按
-  skip != pass 明确跳过。
+- 新增实测门 `tests/integration/test_js_unpack_bundle_gate.py`：拿提交的两模块夹具真跑 webcrack，
+  凭 webcrack 自己的 `bundle.json` 模块图证明入口模块与其依赖被拆成**不同文件**、入口保留了标记串
+  与指向依赖文件的 `require` 边、依赖文件带着自己的函数体；并钉住返回文件清单的分页契约
+  （`total` / `has_more` / offset 窗口不重叠）。webpack 与 browserify 两条 bundler 都覆盖——
+  webcrack 走的是不同的拆包器：webpack 依赖解析成数字 `1.js`，browserify 携带 require 字符串映射
+  故依赖还原回真名 `greet.js`，测试对这一差异点分别断言。webcrack 缺席时按 skip != pass 明确跳过。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 

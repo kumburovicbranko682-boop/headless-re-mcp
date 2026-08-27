@@ -391,13 +391,13 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 - 单元测试 1533 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
   （较上一轮 +1：钉住 `js.unpack_bundle` 给 webcrack 传 `--force` 的回归，堵住「只 mock 不看命令行」漏过的失败）
-- 集成 Gate 78 passed / 11 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 78 passed / 12 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄；新增 webpack 拆包
-  实测门 `js.unpack_bundle` 真把两模块 bundle 拆成独立文件并保留 `require` 边——本参照机未装
-  webcrack 故跳过）
-- 11 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（3：
-  js.deobfuscate 与两条 js.unpack_bundle 拆包门）与 wabt（1）、以及 2 个有文档说明的故意跳过
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄；新增拆包实测门
+  `js.unpack_bundle` 对 webpack 与 browserify 两种 bundle 都真拆成独立文件并保留 `require` 边
+  （browserify 依赖还原回真名 greet.js）——本参照机未装 webcrack 故跳过）
+- 12 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（4：
+  js.deobfuscate 与三条 js.unpack_bundle 拆包门）与 wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
