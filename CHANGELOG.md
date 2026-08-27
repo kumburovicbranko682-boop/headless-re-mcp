@@ -285,6 +285,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   执行者都据 `over` 把这种树当作已越界（`prune` 计成至少一字节超预算而淘汰、`_refuse_oversized_tree`
   直接删树报 `too_large`）。文件数安全阀同时抬到 25 万——远高于真实 APK 展开的量级、真正大的树也早
   被字节预算拦下——所以合法的多文件大应用仍被精确量出、不会仅因文件多就被拒。
+- **非 PE 后端的 `timeout` 一律报成不可重试**。apk/web/proxy/jsre/frida/device 六条线各自的 `_as_rpc`
+  把后端异常裹成 `XdbgRpcError` 时只带 `code`/`message`/`details`，从不设 `retryable`，于是全部默认
+  `False`——一个可重试的瞬时 `timeout`（设备卡住、外部工具一时慢），被报得跟永久的 `invalid_params`
+  一模一样。可通用 `TimedOut`/`TimeoutError` 路径、DIE/Exeinfo 扫描器、以及 x64dbg/IDA 后端早就把
+  超时标成 `retryable=True`；唯独这六条非 PE 线漏了，无人值守、按 `retryable` 决定是否重试的编排器
+  于是对一个再调一次就好的停顿彻底放弃。现在六条线共用一个 `backend_error_is_retryable` 判定
+  （落在 `core/results.py`，与 `_failure` 同处一个叶子模块）：只有 `timeout` 算可重试，`backend_error`
+  作为同时涵盖永久故障（畸形 APK、坏参数）的兜底码仍不可重试，免得编排器在永远不会成功的调用上空转。
+  非 PE 的故障契约就此与系统其余部分对齐。
+- **`js.unpack_bundle` 的 `offset` 少了下界声明**。同类分页工具（`apk.*`、`web.*`、`proxy.flows`）的
+  `offset` 都声明为 `Annotated[int, Field(ge=0)]`，唯独它写成裸 `int`——后端本就 `max(0, offset)` 兜底、
+  功能上无碍，但 MCP schema 这份给 Agent/客户端看的契约独此一条没有下界。现在补齐 `ge=0`，与兄弟工具一致。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

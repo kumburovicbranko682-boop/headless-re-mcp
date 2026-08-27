@@ -17,7 +17,7 @@ from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _success, backend_error_is_retryable
 from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
@@ -25,7 +25,12 @@ JsonObject = dict[str, Any]
 
 
 def _as_rpc(exc: ProxyError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=backend_error_is_retryable(exc.code),
+    )
 
 
 class ProxyAnalysisMixin:

@@ -24,6 +24,23 @@ from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
 
+# Backend error codes that name a transient condition a second call can clear.
+# The per-track ``_as_rpc`` wrappers (apk, web, proxy, jsre, frida, device) tag
+# their XdbgRpcError with this so a stalled device or a slow external tool reports
+# ``retryable`` the way the DIE/Exeinfo scanners and the generic ``TimedOut`` path
+# already do. Without it every wrapped backend error defaulted to non-retryable,
+# so an unattended caller that honours the flag read a timeout the same as a
+# permanent ``invalid_params`` and never tried again. Only ``timeout`` qualifies:
+# ``backend_error`` is a catch-all that also covers permanent faults (a malformed
+# APK, a bad argument), so marking it retryable would spend the caller's budget
+# looping on a call that can never succeed.
+RETRYABLE_BACKEND_CODES: frozenset[str] = frozenset({"timeout"})
+
+
+def backend_error_is_retryable(code: str) -> bool:
+    """Whether a wrapped backend error code names a transient, retry-worthy fault."""
+    return code in RETRYABLE_BACKEND_CODES
+
 
 def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=True, data=data, meta=dict(meta))
