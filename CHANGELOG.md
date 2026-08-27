@@ -49,7 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（device.install/uninstall 把无法核实误报成明确成败）
+### 修复（run 的 SSE 事件流可能漏掉终态事件 run.completed/failed）
+
+- 结束一个 run 的每条路径都是**两笔独立事务**：先把 run 翻成终态（`transition`），再补一条终态
+  事件（`run.completed` / `run.failed` / `run.cancelled` / `run.rejected`）。`/api/agent/runs/{id}/events`
+  的 SSE 循环先 `list_events` 再 `get_run`，一旦读到「状态已终态且这轮没有新事件」就 break——可这两笔
+  事务之间存在窗口：状态先落库、终态事件还没落库时，读线程（`asyncio.to_thread` 里的 `list_events`/
+  `get_run` 与事件循环并发）恰好在这轮读到空事件 + 终态状态，于是流在补事件之前就关了，客户端永远收不到
+  它等的那条 run.completed/failed，只看到连接断开。现改为**以事件为准收流**：把循环抽成可测的
+  `_stream_run_events`，只有在推出一条终态事件后才结束（终态事件本就是一个 run 发出的最后一条，其后不会
+  再有）。终态状态降级为兜底——只为一个到了终态却没有终态事件可发的 run（例如被遗弃、没来得及补事件，否则会
+  一直流下去）保留，且该兜底分支先再排空一次，捞起落在窗口里的事件。新增四条回归：终态事件在终态状态之后
+  才落库仍被送达（正是旧逻辑丢掉的那条）、首轮即带终态事件时一轮收流、无事件的终态 run 不会无限流、真 store
+  端到端确认 run.completed 作为最后一帧送达。
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
   三态——null 表示复核跑不起来。但 `_pm_path` 只找 `package:` 行，没做其余 adb 读取（getprop /
