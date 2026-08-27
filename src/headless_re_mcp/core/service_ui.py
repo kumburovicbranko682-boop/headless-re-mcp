@@ -202,7 +202,16 @@ def _ui_finalize_windows(
                 from headless_re_mcp.core.process_tree import probe_child_window_candidates
 
                 children = probe_child_window_candidates(debuggee_pid, list_windows_fn=None)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - the hint probe must never fail the listing
+                # A crashed probe used to look identical to "no child windows":
+                # children became [] and the reply carried no hint, so a caller
+                # facing an empty window list could not tell a launcher whose real
+                # window lives on a child pid from a debuggee that genuinely has
+                # none. Surface the failure so the caller knows to run
+                # ui.process_tree itself instead of concluding the app is headless.
+                detail = " ".join(f"{type(exc).__name__}: {exc}".split())
+                payload["child_window_probe_failed"] = True
+                payload["child_window_probe_error"] = detail[:300]
                 children = []
             if children:
                 payload["hint"] = "windows_on_child_pids"

@@ -30,7 +30,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         allowed_pids, blocked_pids and note. There is no items field and
         no tree field. Child-process windows require allow_child_pids or
         include_same_image_children. The headless debugger PID and MCP host PID
-        are always blocked.
+        are always blocked. When the list is empty the reply probes child PIDs
+        for windows to hint; if that probe itself crashes it carries
+        child_window_probe_failed and child_window_probe_error rather than
+        posing as "no child windows", so run ui.process_tree to look again.
         """
         return _dump(
             analysis.ui_windows_list(

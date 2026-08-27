@@ -49,6 +49,56 @@ def test_ui_windows_list_puts_hwnds_in_windows_not_items() -> None:
     assert "no items" in described
     assert "no tree field" in described
 
+def test_ui_windows_list_says_when_the_child_pid_probe_crashed(monkeypatch) -> None:
+    """A crashed hint probe must not read as "no child windows".
+
+    The empty-list path probes child PIDs for windows to hint. When that probe
+    raised, children became [] and the reply carried no hint -- identical to a
+    debuggee that genuinely has no child windows. A launcher whose real window
+    lives on a child pid then read as headless. The failure now surfaces.
+    """
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ui.is_pid_alive",
+        lambda pid: True,
+    )
+
+    def boom(pid, list_windows_fn=None):
+        raise OSError("probe blew up")
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.process_tree.probe_child_window_candidates",
+        boom,
+    )
+    payload = _ui_finalize_windows(
+        {"windows": []},
+        {"allowed": frozenset({1}), "debuggee_pid": 1, "debugger_pid": 2},
+    )
+    assert payload["child_window_probe_failed"] is True
+    assert "OSError" in payload["child_window_probe_error"]
+    assert "hint" not in payload
+    described = _tool_docstring("ui.windows.list")
+    assert "child_window_probe_failed" in described
+
+
+def test_ui_windows_list_stays_clean_when_the_probe_found_nothing(monkeypatch) -> None:
+    """An honest empty probe carries no failure flags."""
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ui.is_pid_alive",
+        lambda pid: True,
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.process_tree.probe_child_window_candidates",
+        lambda pid, list_windows_fn=None: [],
+    )
+    payload = _ui_finalize_windows(
+        {"windows": []},
+        {"allowed": frozenset({1}), "debuggee_pid": 1, "debugger_pid": 2},
+    )
+    assert "child_window_probe_failed" not in payload
+    assert "child_window_probe_error" not in payload
+    assert "hint" not in payload
+
+
 def test_ui_process_tree_puts_windows_in_debuggee_windows_not_tree() -> None:
     """The catalog said process-tree and never named the payload.
 
