@@ -152,6 +152,40 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-proxy:
+    # mitmproxy is a pure-Python HTTP(S) interceptor with no browser or device
+    # requirement, so both proxy gates run on a hosted runner. Every other proxy
+    # test mocks the DumpMaster; without this job nothing starts a real mitmproxy,
+    # so the start/stop port contract AND the capture pipeline (flows, per-flow
+    # bodies, HAR export, errored-flow recording) are never proven end to end.
+    # skip != pass: with mitmproxy installed the gates run for real.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with the proxy extra
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+          python -c "import mitmproxy; print('mitmproxy', mitmproxy.version.VERSION)"
+
+      - name: Proxy lifecycle and capture gates
+        timeout-minutes: 10
+        run: |
+          python -m pytest \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_proxy_capture_gate.py \
+            -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

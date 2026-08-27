@@ -24,6 +24,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（新增 mitmproxy 捕获 live gate：真流量进 → flows/正文/HAR 出，并进 CI 真跑；skip != pass）
+
+- **代理线（mitmproxy）此前的 live gate 只验「端口契约」（start 真在听、stop 真释放、占用端口被拒），
+  从没有任何测试真把流量穿过代理、验证它到底**录没录到****——而录流量正是代理存在的意义。且 CI 里
+  没有作业装 mitmproxy，于是这条 lifecycle gate 一直 skip。新增
+  `tests/integration/test_proxy_capture_gate.py`：起一个本地 origin HTTP 服务，把一条 GET、一条 POST
+  经**真实运行的** `ProxyBackend` 代理打过去，断言：
+  - **flows**：录到两条流，`method`/`url`（含 query）/`status`/`content_type`/`response_size` 都对得上。
+  - **flow.get**：GET 取回真实响应正文，POST 取回真实**请求**正文（逆 API 时最想看的就是「到底 POST 了
+    什么」）与响应正文。
+  - **export_har**：写出的 HAR 是 1.2 规范齐备的（`startedDateTime`/`time`/`request`/`response`/`cache`/
+    `timings` 六个必填成员都在，否则严格消费者如 Chrome DevTools「Import HAR」会整份拒收），`queryString`
+    正确解析、`response.content` 的 `size`/`mimeType` 与真实响应一致。
+  - **错误流**：向一个没人监听的上游发请求，断言那条失败请求被**录下来**（不是被静默丢弃）且与完成的流可
+    区分——`status` 为 null、带 `error=true` 与 `error_msg`；客户端侧看到 5xx 网关错误。
+  本机用 mitmproxy 12.2.3 实跑通过（3 passed），无 mitmproxy 时带明确原因干净跳过。只跑明文 HTTP，故 runner
+  上无需任何 CA 信任配置。
+- 新增 CI 作业 `linux-proxy`（Ubuntu，3.11/3.12，装 `.[test,dev,proxy]` 即带上 mitmproxy）真跑
+  **两条**代理 gate（lifecycle + capture）——skip != pass：装上 mitmproxy 就真跑，缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
