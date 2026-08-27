@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（控制台配置与人格控制面 Gate）
+
+- 新集成 Gate `tests/integration/test_console_config_persona_gate.py`（纯 Python,任何平台可跑,经
+  真实 `serve-web` 子进程)补上两条此前零端到端覆盖、却都是纯 Python 且驱动真实状态的操作员控制面:
+  - **人格(Agent 系统提示)**:`GET /api/agent/personas` 列出内置项并恰好标记一个 current(且为
+    内置);`select` 钉住选择、未知 id 404、缺 id 400;`import` 用 markdown 内容创建自定义人格并
+    置为 current、重读仍在(持久化到磁盘);空导入 400、删除内置 400、删除未知 404;删除自定义
+    人格后 current 回落到内置项。
+  - **MCP 导出(控制台版 config generate)**:`GET /api/mcp/export?client=cursor|stdio|all` 返回
+    对应客户端形状(Cursor 片段包裹 stdio server、stdio 直给 server 块、all 带 stdio + 三种示例),
+    未知客户端 400;`never_bundle_ida=true`、`claims_universal_unpack=false`、导出 JSON 无密钥;
+    `POST` 无 `confirm` 400,确认后 persist 真把 `mcp.stdio.generated.json` 等文件写到 config 目录
+    且内容为描述 stdio server 的合法 JSON。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
