@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（frida pid 授权边界：先拒绝，再解析设备/附加——且无需装 frida 即可验证）
+
+- frida 是唯一会伸进活进程的非 PE 后端，其唯一安全边界就是会话级 pid 白名单：`attach` /
+  `modules` / `exports` / `memory_read` / `hook_template` 收单个 `allowed_pid`，设备侧
+  `java_enumerate` / `hook_template_device` 收 `allowed_pids` 集合。七个入口都**先过闸**
+  （`_require` / `attach` 内联检查 / `_authorize`），再 `_resolve_device` 或 `_attach_local`——这个
+  顺序本身就是控制点：未授权 pid 必须在任何副作用之前被回绝，否则调用方只要报一个自己无权的 pid
+  再读错误，就能诱使后端去打开 USB/远程设备或附加到未获授权的进程。既有 `test_android_backends.py`
+  里的授权测试用真实 `FridaClient`、frida 缺失即 `skip`，于是无 frida 的 CI 上这个后端最敏感的契约
+  根本没被验证（skip != pass）；它们也只断言 `permission_denied` 码、不钉顺序——一旦重构把
+  `_resolve_device` 挪到过闸之前，未授权调用仍会以错误收场（只是变成设备查找失败的 `not_found`、且
+  设备已被触碰），只看码的断言在装了设备的机器上照样能过。新增 `test_frida_authorization_boundary.py`
+  两头堵：用**假 frida**（`_available=True`、`_frida=object()`）驱动闸门，故处处可跑、无需 android
+  extra，覆盖全部七个入口，并在 `_resolve_device` / `_attach_local`（及 `_frida.attach`）上装探针，
+  任一被触发即判失败。钉住的契约：未授权 pid 抛 `permission_denied`，且回绝途中不解析设备、不附加；
+  另设一条负对照（授权 pid 越过闸门、触发 `_attach_local` 探针）证明回绝来自 pid 不匹配而非夹具一律
+  失败。变更 `java_enumerate` 一处顺序即让设备侧用例与断言授权集的用例双双以探针 `AssertionError` 失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
