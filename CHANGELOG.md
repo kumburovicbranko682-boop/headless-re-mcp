@@ -74,6 +74,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_m11_r2_live_elf_address_mapping`：对 ELF 跑 `aa`/`aflj`，断言 `parsed`、函数计数、
   不报 `image_base`、函数地址为 `va` 且不含 `rva`。原 PE Gate 在 Windows 继续覆盖重定位分支。
 
+### 修复（Ghidra 后端在 Linux 与现代 Ghidra 上都跑不起来）
+
+- 跨平台静态的另一半——Ghidra——此前只有 mock 掉 `analyzeHeadless` 的单元测试，真机从未跑通，
+  掩盖了两个叠加的致命问题。其一，启动器发现顺序在所有平台都先挑 `analyzeHeadless.bat`：每个
+  发行版都同时带 Windows 的 `.bat` 与 POSIX 的无扩展名脚本，而 `.bat` 在 Linux 上没有可执行位，
+  于是每次调用都以 `Permission denied` 告终——Ghidra 后端实际是 Windows 专属。改为按 `os.name`
+  只解析本平台能执行的那个启动器（Windows 取 `.bat`，POSIX 取无扩展名），缺失时如实报
+  `capability_unavailable` 而非在错误脚本上启动失败；新增单元回归钉住两个分支的取舍。
+- 其二，导出用的 postScript 是 Jython 的 `ExportJson.py`，而 Ghidra 11.3 起移除了内置 Jython，
+  现代发行版跑 `.py` 会直接报 `Ghidra was not started with PyGhidra`——`functions`/`symbols`/
+  `xrefs`/`decompile` 在任何 11.3+（Windows 也一样）都彻底不可用，只剩不带 postScript 的
+  `analyze` 能跑。改用 Gson 写的 Java GhidraScript `ExportJson.java`（沿用官方
+  `ExportFunctionInfoScript` 的范式）：Java 脚本由 Ghidra 自带脚本引擎在任意版本、任意平台即时
+  编译，无需 Jython/PyGhidra、不引入新依赖、不改动 `analyzeHeadless` 启动方式（Windows 路径不受影响
+  只是修好了 `.bat` 发现）。载荷形状与目录承诺保持一致（functions 带 name/entry/body_size、symbols
+  带 name/address/type、xrefs 带 from/to/type、decompile 带 function/entry/decompiled/truncated），
+  列表截断标 `has_more`、超长反编译标 `truncated` 的契约由源级单元测试改测 Java 等价物守住。真机
+  Ghidra 12.1.3 实测：对 ELF 夹具正确列出含 `elf_fixture_transform`/`main` 的函数与符号，并反编译出
+  与源码一致的 C。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：

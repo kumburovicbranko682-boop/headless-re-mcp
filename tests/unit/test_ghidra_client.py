@@ -20,7 +20,10 @@ def _fake_home(tmp_path: Path) -> Path:
     home = tmp_path / "ghidra"
     support = home / "support"
     support.mkdir(parents=True)
+    # Every distribution ships both launchers side by side; create both so
+    # discovery finds the one native to whichever OS runs the test.
     (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     return home
 
 
@@ -35,6 +38,29 @@ def _client(tmp_path: Path) -> ghidra_client.GhidraClient:
     client.java = tmp_path / "java.exe"
     client.java.write_bytes(b"")
     return client
+
+
+def test_analyze_headless_discovery_prefers_the_os_native_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both launchers ship together, so Linux must not pick the Windows .bat.
+
+    analyzeHeadless.bat is not executable on POSIX, so returning it made every
+    Ghidra call die with "Permission denied" before it could launch -- the
+    backend was Windows-only in practice despite the client handling both.
+    Discovery has to resolve the launcher this OS can actually exec.
+    """
+    support = tmp_path / "ghidra" / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    home = tmp_path / "ghidra"
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless"
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless.bat"
 
 
 def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
@@ -183,7 +209,7 @@ def _tool_docstring(name: str) -> str:
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
-    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
+    Measured against ExportJson.java: 256 of 5000 functions, 0 items had address
     or size, all 256 had entry and body_size. Looking for address after a
     successful list reads as Ghidra finding no addresses. Symbols have type,
     not namespace. Xrefs are getReferencesTo only.
