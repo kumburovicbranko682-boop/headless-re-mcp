@@ -1414,9 +1414,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     nothing at all. This walks the module's own section table -- a well-defined
     binary format -- to report the version, which sections are present, the
     vector counts (types, imports, functions, exports, ...), the import and
-    export names that identify what the module needs and exposes, and the
-    debug names (module / function) an unstripped build carries, the same way
-    describe_apk does for a package.
+    export names that identify what the module needs and exposes, the linear
+    memory footprint (min/max pages, imported or defined), and the debug names
+    (module / function) an unstripped build carries, the same way describe_apk
+    does for a package.
 
     Fail-closed and bounded: a non-WASM or unreadable file returns ``{}``; a
     malformed tail stops the walk and is reported via ``well_formed`` rather
@@ -1436,6 +1437,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     custom_sections: list[str] = []
     exports: list[dict[str, Any]] = []
     imports: list[dict[str, Any]] = []
+    defined_memories: list[dict[str, Any]] = []
     producers: dict[str, list[str]] | None = None
     name_facts: dict[str, Any] = {}
     has_start = False
@@ -1464,6 +1466,8 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 exports = _wasm_exports(data, body_start, body_end)
             elif section_id == 2:
                 imports = _wasm_imports(data, body_start, body_end)
+            elif section_id == 5:
+                defined_memories = _wasm_memories(data, body_start, body_end)
         elif section_id == 8:
             has_start = True
         elif section_id == 0:
@@ -1484,6 +1488,21 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                     name_facts = _wasm_name_section(data, name_pos + name_len, body_end)
         pos = body_end
         walked += 1
+    # The module's whole linear-memory footprint: imported memories (which come
+    # first in the index space) then the ones the Memory section defines. Each
+    # is min/max pages of 64 KiB, whether the host must supply it or the module
+    # ships it -- the WASM analogue of a native segment's size.
+    memories: list[dict[str, Any]] = [
+        {
+            "min": imp["min"],
+            "max": imp["max"],
+            "shared": imp.get("shared", False),
+            "imported": True,
+        }
+        for imp in imports
+        if imp["kind"] == "memory"
+    ]
+    memories += defined_memories
     return {
         "wasm": {
             "version": version,
@@ -1496,6 +1515,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "table_count": vector_counts.get("table_count"),
             "memory_count": vector_counts.get("memory_count"),
             "has_start": has_start,
+            "memories": memories,
             "custom_sections": custom_sections,
             "producers": producers,
             "module_name": name_facts.get("module_name"),
@@ -1910,14 +1930,19 @@ def _wasm_imports(data: bytes, body_start: int, body_end: int) -> list[dict[str,
         if field is None or pos >= body_end:
             break
         kind = data[pos]
-        pos, ok = _skip_wasm_import_desc(data, pos + 1, kind, body_end)
-        out.append(
-            {
-                "module": module,
-                "name": field,
-                "kind": _WASM_EXTERNAL_KINDS.get(kind, f"kind_{kind}"),
-            }
-        )
+        entry: dict[str, Any] = {
+            "module": module,
+            "name": field,
+            "kind": _WASM_EXTERNAL_KINDS.get(kind, f"kind_{kind}"),
+        }
+        if kind == 2:  # an imported memory carries its own size limits
+            minimum, maximum, shared, pos, ok = _read_wasm_limits(data, pos + 1, body_end)
+            entry["min"] = minimum
+            entry["max"] = maximum
+            entry["shared"] = shared
+        else:
+            pos, ok = _skip_wasm_import_desc(data, pos + 1, kind, body_end)
+        out.append(entry)
         if not ok or pos > body_end:
             break
     return out
@@ -1932,20 +1957,46 @@ def _skip_wasm_import_desc(data: bytes, pos: int, kind: int, body_end: int) -> t
         return pos + 2, pos + 2 <= body_end
     if kind == 1:  # table: element ref type, then limits
         pos += 1
-        return _skip_wasm_limits(data, pos, body_end)
+        _, _, _, pos, ok = _read_wasm_limits(data, pos, body_end)
+        return pos, ok
     if kind == 2:  # memory: limits
-        return _skip_wasm_limits(data, pos, body_end)
+        _, _, _, pos, ok = _read_wasm_limits(data, pos, body_end)
+        return pos, ok
     return pos, False
 
 
-def _skip_wasm_limits(data: bytes, pos: int, body_end: int) -> tuple[int, bool]:
+def _wasm_memories(data: bytes, body_start: int, body_end: int) -> list[dict[str, Any]]:
+    """Limits of each memory the Memory section (id 5) defines."""
+    count, pos, ok = _read_leb_u32(data, body_start)
+    if not ok:
+        return []
+    out: list[dict[str, Any]] = []
+    for _ in range(min(count, _WASM_MAX_NAMES)):
+        minimum, maximum, shared, pos, ok = _read_wasm_limits(data, pos, body_end)
+        if not ok or pos > body_end:
+            break
+        out.append({"min": minimum, "max": maximum, "shared": shared, "imported": False})
+    return out
+
+
+def _read_wasm_limits(
+    data: bytes, pos: int, body_end: int
+) -> tuple[int | None, int | None, bool, int, bool]:
+    """Decode a WASM ``limits`` into ``(min, max, shared, pos, ok)``.
+
+    A limits is a flag byte then a minimum, with a maximum only when the flag's
+    low bit is set; the second bit marks a shared (threads) memory. This is how
+    both a memory/table import descriptor and the defined memory/table sections
+    encode their sizes, so one reader serves both.
+    """
     if pos >= body_end:
-        return pos, False
+        return None, None, False, pos, False
     flag = data[pos]
-    _, pos, ok = _read_leb_u32(data, pos + 1)  # minimum
+    minimum, pos, ok = _read_leb_u32(data, pos + 1)
+    maximum: int | None = None
     if ok and flag & 0x01:  # a maximum follows
-        _, pos, ok = _read_leb_u32(data, pos)
-    return pos, ok
+        maximum, pos, ok = _read_leb_u32(data, pos)
+    return (minimum if ok else None), maximum, bool(flag & 0x02), pos, ok
 
 
 def detect_pe_architecture(path: Path) -> Architecture:

@@ -92,14 +92,76 @@ def test_describe_wasm_lists_import_and_export_names_with_kinds(tmp_path: Path) 
     info = describe_wasm(path)["wasm"]
     assert info["import_count"] == 2
     assert info["export_count"] == 2
+    # A memory import carries its own size limits, so its entry is enriched with
+    # min/max/shared; the other kinds keep the bare module/name/kind shape.
     assert info["imports"] == [
         {"module": "env", "name": "log", "kind": "func"},
-        {"module": "env", "name": "mem", "kind": "memory"},
+        {"module": "env", "name": "mem", "kind": "memory", "min": 1, "max": None, "shared": False},
     ]
     assert info["exports"] == [
         {"name": "memory", "kind": "memory"},
         {"name": "g", "kind": "global"},
     ]
+    # That imported memory is the module's whole linear-memory footprint.
+    assert info["memories"] == [
+        {"min": 1, "max": None, "shared": False, "imported": True}
+    ]
+
+
+def test_defined_memory_limits_with_a_maximum(tmp_path: Path) -> None:
+    # A Memory section (id 5) memory whose flag bit 0 is set carries min then
+    # max pages; the reader reports both as the module's own footprint.
+    mem = _leb(1) + bytes([0x01]) + _leb(2) + _leb(16)  # one memory, min 2, max 16
+    module = _module([_section(5, mem)])
+    path = tmp_path / "mem.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["memory_count"] == 1
+    assert info["memories"] == [{"min": 2, "max": 16, "shared": False, "imported": False}]
+
+
+def test_shared_memory_is_flagged(tmp_path: Path) -> None:
+    # A threads build marks its memory shared (flag bit 1) and always bounds it;
+    # both the shared flag and the max survive.
+    mem = _leb(1) + bytes([0x03]) + _leb(1) + _leb(1)  # shared, min == max == 1
+    module = _module([_section(5, mem)])
+    path = tmp_path / "shared.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["memories"] == [{"min": 1, "max": 1, "shared": True, "imported": False}]
+
+
+def test_imported_and_defined_memories_are_both_reported(tmp_path: Path) -> None:
+    # A module can both import a memory and define one; imported entries lead the
+    # index space, so they lead the footprint list too, each tagged by origin.
+    imports = _leb(1) + _name("env") + _name("mem") + bytes([2]) + bytes([0x00]) + _leb(4)
+    defined = _leb(1) + bytes([0x01]) + _leb(8) + _leb(32)
+    module = _module([_section(2, imports), _section(5, defined)])
+    path = tmp_path / "both.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["memories"] == [
+        {"min": 4, "max": None, "shared": False, "imported": True},
+        {"min": 8, "max": 32, "shared": False, "imported": False},
+    ]
+
+
+def test_module_without_a_memory_reports_an_empty_footprint(tmp_path: Path) -> None:
+    path = tmp_path / "add.wasm"
+    path.write_bytes(_ADD_WASM)
+    info = describe_wasm(path)["wasm"]
+    assert info["memories"] == []
+
+
+def test_a_truncated_memory_limit_stops_the_walk(tmp_path: Path) -> None:
+    # The flag promises a maximum but the bytes end before it; the entry is not
+    # emitted with a guessed max, and the reader does not read past the section.
+    mem = _leb(1) + bytes([0x01]) + _leb(2)  # max missing
+    module = _module([_section(5, mem)])
+    path = tmp_path / "bad.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["memories"] == []
 
 
 def test_describe_wasm_surfaces_every_vector_count_and_custom_name(tmp_path: Path) -> None:

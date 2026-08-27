@@ -77,6 +77,9 @@ _NAMED_WASM = _RICH_WASM + bytes.fromhex(
 # vocabulary describe_wasm reports, so the two views compare directly.
 _WAT_IMPORT_RE = re.compile(r'\(import "([^"]+)" "([^"]+)" \((func|memory|global|table)\b')
 _WAT_EXPORT_RE = re.compile(r'\(export "([^"]+)" \((func|memory|global|table)\b')
+# wasm2wat renders any memory -- imported or defined -- as "(memory (;N;) MIN
+# [MAX] [shared])", the same min/max pages describe_wasm reports as its footprint.
+_WAT_MEMORY_RE = re.compile(r"\(memory \(;\d+;\) (\d+)(?: (\d+))?")
 # With a name section present, wasm2wat names the module ``(module $demo`` and
 # every function ``(func $name`` -- imported or defined -- straight from the
 # same subsections the tool-free reader parses. Declaration sites carry a
@@ -266,6 +269,16 @@ def test_wasm_tool_free_facts_agree_with_wabt(tmp_path: Path) -> None:
         assert wasm["global_count"] == 1
         assert wasm["has_start"] is True
         assert re.search(r"\(start\b", wat), wat
+
+        # The memory footprint: the module imports one memory of min 1 page and
+        # no maximum. wabt decodes the same limits from the same bytes, so the
+        # tool-free (min, max) pairs must match wabt's (min, max) pairs.
+        reader_memory = [(m["min"], m["max"]) for m in wasm["memories"]]
+        assert reader_memory == [(1, None)]
+        wabt_memory = [
+            (int(lo), int(hi) if hi else None) for lo, hi in _WAT_MEMORY_RE.findall(wat)
+        ]
+        assert wabt_memory == reader_memory
     finally:
         service.close_all()
 
