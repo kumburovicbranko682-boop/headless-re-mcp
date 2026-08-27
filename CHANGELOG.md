@@ -1275,8 +1275,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
-
-### 变更（Android 后端清理）
+- **`ApkClient` 解析缓存的复用/失效/淘汰由真实方法路径钉死**：androguard 的整包 DEX 分析动辄
+  几十上百 MB、耗时数秒,所以 `_apk`(仅清单)/`_parsed`(全量 DEX)带缓存。但既有测试要么用手搓
+  的 `(path, 1)` 键预置类级缓存、要么把淘汰循环原地重抄一遍,没有一个真正驱动 `_apk`/`_parsed`,
+  于是这两个方法实际执行的契约全都失活。新增 5 个用例,用计数假的 `APK`/`AnalyzeAPK`(不跑真解析)
+  驱动方法本身:同一文件二次读取复用缓存对象、只解析一次(light 与 full 各自验证);缓存键含
+  `st_mtime_ns`——同路径重打包(改 mtime)后必须未命中重解析,否则分析新构建的 APK 会读到上一版
+  的类;light(清单)与 full(DEX)缓存相互独立,暖的 light 缓存不得满足 full 请求、反之亦然;LRU
+  为真——超过 `_CACHE_LIMIT` 淘汰最久未用者、保留最新者,且对最久条目的一次重读会把它移到最新端
+  从而在下一次溢出中幸存(去掉 `move_to_end`,每轮都被读的热 APK 反而会被扔掉;`popitem(last=False)`
+  写反成 `last=True` 会把最新的淘汰掉)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
