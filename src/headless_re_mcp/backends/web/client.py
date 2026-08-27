@@ -306,9 +306,22 @@ class WebBackend:
         return runner
 
     def open(
-        self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
+        self,
+        session_id: str,
+        url: str,
+        *,
+        headless: bool = True,
+        timeout: float = 30.0,
+        proxy: str | None = None,
     ) -> JsonObject:
         self._check_available()
+        # An upstream proxy lets the browser be driven through an intercepting
+        # proxy (e.g. the proxy.* backend / mitmproxy) so one transaction is seen
+        # by both lines. Empty means direct; the value is a Playwright server URL
+        # like "http://127.0.0.1:8080", not a shell argument, so no injection.
+        proxy_server = proxy.strip() if isinstance(proxy, str) else None
+        if not proxy_server:
+            proxy_server = None
 
         with self._lock:
             if session_id in self._sessions:
@@ -332,7 +345,10 @@ class WebBackend:
             if isinstance(pid, int) and pid > 0:
                 pid_box.append(pid)
             try:
-                browser = pw.chromium.launch(headless=headless)
+                launch_kwargs: JsonObject = {"headless": headless}
+                if proxy_server is not None:
+                    launch_kwargs["proxy"] = {"server": proxy_server}
+                browser = pw.chromium.launch(**launch_kwargs)
                 context = browser.new_context(ignore_https_errors=True)
                 page = context.new_page()
                 cdp = context.new_cdp_session(page)
@@ -349,6 +365,7 @@ class WebBackend:
                     "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
                     "title": _safe_title(page),
                     "headless": headless,
+                    "proxy": proxy_server,
                 }
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):

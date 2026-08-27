@@ -73,7 +73,12 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_open(
-        self, session_id: str, url: str = "", headless: bool = True, timeout: float = 30.0
+        self,
+        session_id: str,
+        url: str = "",
+        headless: bool = True,
+        timeout: float = 30.0,
+        proxy: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -88,7 +93,9 @@ class WebAnalysisMixin:
             target = url.strip() or (session.locator or "")
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")
-            data = self._web.open(session_id, target, headless=headless, timeout=timeout)
+            data = self._web.open(
+                session_id, target, headless=headless, timeout=timeout, proxy=proxy
+            )
             try:
                 session = self.registry.get(session_id)
                 if session.state in {

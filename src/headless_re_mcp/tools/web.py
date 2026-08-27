@@ -31,13 +31,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         url: str = "",
         headless: bool = True,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+        proxy: str = "",
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        Answers with opened, url, title, headless and proxy. There is no
+        session, browser, ok or page field. Pass proxy as an upstream server
+        URL (e.g. http://127.0.0.1:8080) to drive the browser through an
+        intercepting proxy such as the proxy.* backend; empty means direct.
         """
-        return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
+        return _dump(
+            analysis.web_open(
+                session_id, url=url, headless=headless, timeout=timeout, proxy=proxy or None
+            )
+        )
 
     @tools.tool(name="web.navigate")
     def web_navigate(
