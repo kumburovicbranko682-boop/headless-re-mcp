@@ -519,6 +519,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（`wasm.info` 缺 `bytes` 字段）
+
+- jsre 后端的 `_bounded_output` 给 `js.deobfuscate`/`js.beautify`/`wasm.wat` 都带上了 `bytes`
+  （截断前的完整字节数,用来区分「本来就短」和「被 `_MAX_INLINE` 截掉了」),唯独 `wasm.info`
+  用 `include_bytes=False`,截断的 objdump 无法判断丢了多少。现让 `_bounded_output` 恒带
+  `bytes`（去掉 `include_bytes` 开关）,`wasm.info` 与三个兄弟对齐,docstring 补上 `bytes`,
+  并新增截断回归。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、

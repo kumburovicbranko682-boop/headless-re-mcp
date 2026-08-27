@@ -124,15 +124,20 @@ def _run(
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(text: str, key: str) -> JsonObject:
+    """Return one text field, whether it was cut, and the full byte length.
+
+    ``bytes`` is always the pre-truncation size so a caller can tell a genuinely
+    short output from one clipped at ``_MAX_INLINE``. wasm-objdump used to omit
+    it -- the lone exception among these text outputs -- so a truncated info dump
+    could not be told apart from a short one.
+    """
     payload = text.encode("utf-8", errors="replace")
-    result: JsonObject = {
+    return {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
         "truncated": len(payload) > _MAX_INLINE,
+        "bytes": len(payload),
     }
-    if include_bytes:
-        result["bytes"] = len(payload)
-    return result
 
 
 def _note_nonzero_exit(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -181,9 +186,7 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _note_nonzero_exit(
-            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
-        )
+        return _note_nonzero_exit(_bounded_output(stdout, "code"), code=code, stderr=stderr)
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -262,9 +265,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _note_nonzero_exit(
-            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
-        )
+        return _note_nonzero_exit(_bounded_output(stdout, "wat"), code=code, stderr=stderr)
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -276,9 +277,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _note_nonzero_exit(
-            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
-        )
+        return _note_nonzero_exit(_bounded_output(stdout, "objdump"), code=code, stderr=stderr)
 
 
 def _discover_webcrack() -> Path | None:

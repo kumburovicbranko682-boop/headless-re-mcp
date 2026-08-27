@@ -89,7 +89,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
-        Answers with objdump holding that text, not a sections list, plus
+        Answers with objdump holding that text, not a sections list, and bytes
+        (the full length) so a clipped dump is not read as a short one, plus
         truncated when the text was cut at the buffer, and exit_code /
         tool_failed / stderr when wasm-objdump exits non-zero but still
         emitted text. An input over 16 MiB is refused as too_large, and a file
