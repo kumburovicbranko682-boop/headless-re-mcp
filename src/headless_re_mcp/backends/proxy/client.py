@@ -35,6 +35,9 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A cookie value long enough to hold a JWT/session token whole (most are well
+# under this) while bounding a hostile server that ships a megabyte in one.
+_MAX_COOKIE_VALUE = 2048
 # A body at or under this stays inline as text; anything larger, or anything
 # that is not valid UTF-8, spills to a file so the caller never receives a
 # lossy decode masquerading as the real bytes.
@@ -300,6 +303,118 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
     return out, truncated
 
 
+def _attr_map(attrs: Any) -> dict[str, Any]:
+    """Lowercase a Set-Cookie attribute MultiDict for case-insensitive lookup.
+
+    A server may send ``secure`` or ``SECURE``; mitmproxy keeps the case it saw.
+    Folding to lowercase lets the caller test presence and read Domain/Path/
+    SameSite without guessing the casing.
+    """
+    out: dict[str, Any] = {}
+    for accessor in ("items",):
+        getter = getattr(attrs, accessor, None)
+        if getter is None:
+            continue
+        try:
+            try:
+                pairs = list(getter(multi=True))
+            except TypeError:
+                pairs = list(getter())
+        except Exception:  # noqa: BLE001
+            return out
+        for key, value in pairs:
+            out[str(key).lower()] = value
+        return out
+    return out
+
+
+def _cookie_item(
+    name: Any,
+    value: Any,
+    *,
+    source: str,
+    domain: str,
+    path: str,
+    secure: bool,
+    http_only: bool,
+    same_site: str,
+) -> JsonObject:
+    text = str(value or "")
+    item: JsonObject = {
+        "name": str(name),
+        "value": text[:_MAX_COOKIE_VALUE],
+        "domain": domain,
+        "path": path,
+        "source": source,
+        "secure": secure,
+        "http_only": http_only,
+        "same_site": same_site,
+    }
+    if len(text) > _MAX_COOKIE_VALUE:
+        # Say the value was cut and how long it really was: a JWT clipped
+        # mid-string otherwise reads as a short token, and a caller copying it
+        # to replay a session would copy a broken one without knowing.
+        item["value_truncated"] = True
+        item["value_length"] = len(text)
+    return item
+
+
+def _response_cookies(resp: Any, host: str) -> list[JsonObject]:
+    cookies = getattr(resp, "cookies", None)
+    if cookies is None:
+        return []
+    try:
+        pairs = list(cookies.items(multi=True))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[JsonObject] = []
+    for name, spec in pairs:
+        # mitmproxy yields (name, (value, attrs)); tolerate a bare (name, value).
+        if isinstance(spec, tuple) and len(spec) == 2:
+            value, attrs = spec
+        else:
+            value, attrs = spec, None
+        amap = _attr_map(attrs) if attrs is not None else {}
+        out.append(
+            _cookie_item(
+                name,
+                value,
+                source="response",
+                domain=str(amap.get("domain") or host),
+                path=str(amap.get("path") or "/"),
+                secure="secure" in amap,
+                http_only="httponly" in amap,
+                same_site=str(amap.get("samesite") or ""),
+            )
+        )
+    return out
+
+
+def _request_cookies(req: Any, host: str) -> list[JsonObject]:
+    cookies = getattr(req, "cookies", None)
+    if cookies is None:
+        return []
+    try:
+        pairs = list(cookies.items(multi=True))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[JsonObject] = []
+    for name, value in pairs:
+        out.append(
+            _cookie_item(
+                name,
+                value,
+                source="request",
+                domain=host,
+                path="",
+                secure=False,
+                http_only=False,
+                same_site="",
+            )
+        )
+    return out
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -423,6 +538,24 @@ class _FlowRecorder:
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
             return self._raw.get(flow_id)
+
+    def retained_flows(self) -> tuple[list[Any], int]:
+        """Snapshot the flow objects still held whole, oldest first.
+
+        A flow whose body was evicted is a bare _OMITTED_BODY sentinel with no
+        request/response left to read headers from, so it is counted, not
+        returned; the caller reports that count so a short cookie list is not
+        read as "few cookies" when it is really "many flows dropped".
+        """
+        with self._lock:
+            flows: list[Any] = []
+            omitted = 0
+            for flow in self._raw.values():
+                if flow is _OMITTED_BODY:
+                    omitted += 1
+                else:
+                    flows.append(flow)
+            return flows, omitted
 
     def count(self) -> int:
         with self._lock:
@@ -642,6 +775,46 @@ class ProxyBackend:
             "offset": start,
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
+        }
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Cookies observed across the retained flows.
+
+        Server-issued cookies (response Set-Cookie, the RE-relevant ones: they
+        carry the value, Domain, Path and the Secure/HttpOnly/SameSite flags)
+        and the cookies the client sent back (request Cookie: name/value only).
+        Deduplicated by (name, domain, source), so one row per distinct cookie
+        rather than one per flow; the newest occurrence of a response cookie
+        wins. Only the flows still retained are scanned -- flows_scanned and
+        flows_omitted say how many were read versus dropped from the ring, so a
+        short list is not misread as "few cookies".
+        """
+        inst = self._get(session_id)
+        flows, omitted = inst.recorder.retained_flows()
+        observed: dict[tuple[str, str, str], JsonObject] = {}
+        for flow in flows:
+            req = getattr(flow, "request", None)
+            resp = getattr(flow, "response", None)
+            host = str(getattr(req, "host", "") or "")
+            for item in _response_cookies(resp, host) if resp is not None else []:
+                observed[(item["name"], item["domain"], "response")] = item
+            for item in _request_cookies(req, host) if req is not None else []:
+                observed.setdefault((item["name"], item["domain"], "request"), item)
+        items = sorted(
+            observed.values(),
+            key=lambda c: (c["name"], c["domain"], c["source"]),
+        )
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
+        return {
+            "cookies": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
+            "flows_scanned": len(flows),
+            "flows_omitted": omitted,
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

@@ -74,6 +74,31 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.cookies")
+    def proxy_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Cookies seen across captured flows -- session and auth-token discovery.
+
+        Scans the retained flows and reports the cookies observed, without
+        opening each flow by hand. Answers with cookies, each carrying name,
+        value (the token itself, capped at 2048 chars with value_truncated and
+        value_length when a longer one -- e.g. a big JWT -- was cut so a clipped
+        value is not copied as if whole), domain, path, source ("response" for a
+        server Set-Cookie, "request" for a Cookie the client sent), and the
+        secure, http_only and same_site flags (only response cookies carry these;
+        a request cookie is name/value with an empty path and no flags). Rows are
+        deduplicated by (name, domain, source), so one row per distinct cookie,
+        not one per flow. Plus count, total, offset, has_more, flows_scanned and
+        flows_omitted (flows whose body was evicted from the ring, so their
+        headers -- and any cookies -- could not be read); a short list with
+        flows_omitted set is not "few cookies". The list field is cookies, not
+        items.
+        """
+        return _dump(analysis.proxy_cookies(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
