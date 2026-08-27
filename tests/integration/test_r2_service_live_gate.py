@@ -223,6 +223,39 @@ def test_r2_service_lists_sections_with_permissions() -> None:
 
 
 @pytest.mark.integration
+def test_r2_service_lists_the_symbol_table() -> None:
+    """r2.symbols must return the full symbol table, imports flagged and mapped.
+
+    Unlike r2.exports, the symbol table carries every symbol radare2 read and
+    tags each type/bind/is_imported. The committed PE resolves its API imports
+    into the symbol table, so at least one row must be flagged is_imported and
+    come back address-mapped, proving the reader decodes and enriches the whole
+    table. skip != pass when r2 is absent; the in-tree PE keeps it runnable.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _gate_fixture()
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(fixture))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    try:
+        symbols = service.r2_symbols(session_id, timeout=60.0)
+        assert symbols.ok and symbols.data is not None, symbols.error
+        assert symbols.data.get("parsed") is True
+        rows = symbols.data.get("items") or []
+        assert rows, "no symbols decoded"
+        for row in rows:
+            assert isinstance(row.get("name"), str) and row["name"], row
+            assert isinstance(row.get("type"), str), row
+        imported = [row for row in rows if row.get("is_imported")]
+        assert imported, "PE symbol table names none of its imports"
+        _assert_mapped(imported[0].get("address"))
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
 def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     """A native ELF must open as a session and analyse through r2 -- the portable
     backend's whole point on non-Windows targets.
@@ -313,6 +346,24 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         assert "x" in (text_sect.get("perm") or ""), text_sect
         _assert_mapped(text_sect.get("address"))
         assert text_sect["address"].get("architecture") == expect_arch, text_sect
+
+        # Symbols are the full table, a superset of exports: main and the CRT's
+        # local helpers are here even though the export table never lists them.
+        symbols = service.r2_symbols(session_id, timeout=60.0)
+        assert symbols.ok and symbols.data is not None, symbols.error
+        assert symbols.data.get("parsed") is True
+        assert symbols.data.get("architecture") == expect_arch
+        sym_rows = symbols.data.get("items") or []
+        sym_main = next((row for row in sym_rows if row.get("name") == "main"), None)
+        assert sym_main is not None, sorted(row.get("name") for row in sym_rows)
+        assert sym_main.get("type") == "FUNC", sym_main
+        _assert_mapped(sym_main.get("address"))
+        assert sym_main["address"].get("architecture") == expect_arch, sym_main
+        func_names = {row.get("name") for row in sym_rows if row.get("type") == "FUNC"}
+        exported_names = set(exported)
+        # The symbol table names functions the export table does not: that
+        # superset is the whole reason r2.symbols exists beside r2.exports.
+        assert func_names - exported_names, (sorted(func_names), sorted(exported_names))
 
         # xrefs must resolve on the native target too: main calls re_mcp_triple,
         # so a "to" edge into the function has to come back with mapped endpoints.
