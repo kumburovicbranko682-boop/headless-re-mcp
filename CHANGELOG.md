@@ -93,6 +93,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的 webcrack 预建目录回归;`wasm.info` 与用 `wat2wasm` 现编模块的 `wasm.wat`,断言往返文本
   带回函数/导出、`wasm-objdump` 点名 Type/Export/Code 段;外加 `js.beautify` 冒烟。各能力仍
   在对应后端缺失时各自 skip。
+- 抓包线新增活体捕获 Gate(`test_proxy_capture_gate.py`):此前只有 lifecycle Gate 验 start/stop/
+  端口释放,从没有请求真的穿过代理。新 Gate 起一个本地 origin 服务、用 urllib 把一条 GET 经代理
+  发过去,断言录到的 flow 摘要(method/url/status/content_type)、完整明细(经 `flow_get` 拿到
+  请求行与响应体原文)与 HAR 导出都如实反映过线内容;纯 HTTP 免 CA 信任。另钉死在活体会话上读
+  未知 flow id 得到结构化 `not_found` 而非崩。仅当 mitmproxy 缺失时 skip。
+- Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
+  而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
+  一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
+  (落 HAR 文件)此前都无活体覆盖。用 tmp 产物根让 PNG/HAR 落在测试目录内。仅当 Playwright/Chromium
+  缺失时 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
