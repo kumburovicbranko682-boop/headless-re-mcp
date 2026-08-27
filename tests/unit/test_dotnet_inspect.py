@@ -164,10 +164,16 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     assert report.assembly_refs == ({"name": "mscorlib", "version": "4.0.0.0"},)
     # And the report dict carries it for clients.
     assert report.to_dict()["assembly_refs"] == [{"name": "mscorlib", "version": "4.0.0.0"}]
+    # The ModuleRef table is the native complement: the unmanaged DLLs the
+    # assembly P/Invokes into. The fixture binds one the way a P/Invoke build
+    # does. That this and assembly_refs (which sit on opposite sides of the
+    # ModuleRef row) both read correctly proves the new row is sized right.
+    assert report.module_refs == ("kernel32.dll",)
+    assert report.to_dict()["module_refs"] == ["kernel32.dll"]
 
 
-def _assemblyref_rowcount_offset(raw: bytes) -> int:
-    """File offset of the AssemblyRef row count inside the fixture's #~ header.
+def _rowcount_offset(raw: bytes, table_bit: int) -> int:
+    """File offset of a table's row count inside the fixture's #~ header.
 
     Located from the file's own structures (CLI directory -> metadata root ->
     #~ stream -> valid mask) rather than hardcoded, the same way the hostile
@@ -195,8 +201,8 @@ def _assemblyref_rowcount_offset(raw: bytes) -> int:
             tilde = meta + offset
     assert tilde >= 0, "no #~ stream in the fixture"
     valid = struct.unpack_from("<Q", raw, tilde + 8)[0]
-    assert valid & (1 << 0x23), "fixture has no AssemblyRef table"
-    ordinal = bin(valid & ((1 << 0x23) - 1)).count("1")
+    assert valid & (1 << table_bit), f"fixture has no table 0x{table_bit:02x}"
+    ordinal = bin(valid & ((1 << table_bit) - 1)).count("1")
     return tilde + 24 + ordinal * 4
 
 
@@ -209,7 +215,7 @@ def test_a_lying_assemblyref_count_stays_bounded(tmp_path: Path) -> None:
     if not fixture.is_file():
         pytest.skip("minimal .NET fixture missing (skip != pass)")
     raw = bytearray(fixture.read_bytes())
-    offset = _assemblyref_rowcount_offset(bytes(raw))
+    offset = _rowcount_offset(bytes(raw), 0x23)
     struct.pack_into("<I", raw, offset, 0x7FFFFFFF)
     path = tmp_path / "liar_refs.exe"
     path.write_bytes(bytes(raw))
@@ -219,6 +225,23 @@ def test_a_lying_assemblyref_count_stays_bounded(tmp_path: Path) -> None:
     assert report.module_name == "MyModule.dll"
     assert report.assembly_name == "MyAssembly"
     assert len(report.assembly_refs) <= 64
+
+
+def test_a_lying_moduleref_count_stays_bounded(tmp_path: Path) -> None:
+    # ModuleRef's row count is attacker-controlled too; the native-dependency
+    # walk caps at the honest bound rather than allocating for a giant claim,
+    # exactly as the AssemblyRef walk does.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _rowcount_offset(bytes(raw), 0x1A), 0x7FFFFFFF)
+    path = tmp_path / "liar_modrefs.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert len(report.module_refs) <= 64
 
 
 def test_service_dotnet_inspect(tmp_path: Path) -> None:

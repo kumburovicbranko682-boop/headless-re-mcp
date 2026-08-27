@@ -39,6 +39,8 @@ _TYPEDEF_RE = re.compile(r"^\d+:\s+(.+?)\s+\(flist=", re.MULTILINE)
 # monodis --assemblyref prints each row as "1: Version=4.0.0.0" with the
 # referenced assembly's name on the following indented line.
 _ASSEMBLYREF_RE = re.compile(r"^\d+:\s+Version=(\S+)\s*\n\s+Name=(\S+)", re.MULTILINE)
+# monodis --moduleref prints "1: kernel32.dll" per row under a header line.
+_MODULEREF_RE = re.compile(r"^\d+:\s+(\S+)\s*$", re.MULTILINE)
 
 
 def _monodis(*args: str) -> str:
@@ -105,6 +107,15 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
     mono_refs = {(name, version) for version, name in _ASSEMBLYREF_RE.findall(assemblyref_dump)}
     assert mono_refs, assemblyref_dump
 
+    # The ModuleRef table -- the native complement to AssemblyRef: the unmanaged
+    # DLLs the assembly P/Invokes into. It sits just before Assembly in the
+    # walk, on the other side of it from AssemblyRef, so Mono agreeing on this
+    # too brackets the row-sizing check from both directions. The regex matches
+    # only "N: name" rows, so monodis's "ModuleRef Table" header is ignored.
+    moduleref_dump = _monodis("--moduleref")
+    mono_modrefs = set(_MODULEREF_RE.findall(moduleref_dump))
+    assert mono_modrefs, moduleref_dump
+
     # The pure-Python reader, driven through the service exactly as a client
     # would reach it.
     service = _service(tmp_path)
@@ -124,6 +135,8 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
         # must both match Mono's decode of the same AssemblyRef rows.
         reader_refs = {(ref["name"], ref["version"]) for ref in facts["assembly_refs"]}
         assert reader_refs == mono_refs
+        # The native P/Invoke dependency list must match Mono's ModuleRef decode.
+        assert set(facts["module_refs"]) == mono_modrefs
 
         # The resource sits behind the AssemblyRef table in the walk, so its
         # name coming back clean proves the reader stepped over those rows at

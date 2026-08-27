@@ -7,9 +7,10 @@ skip when it is absent. The other half -- ``dotnet.inspect`` /
 ECMA-335 metadata reader that needs no external tool at all. To exercise it
 end to end we need a genuine managed assembly, so this script hand-writes the
 smallest one that carries real metadata: a #~ tables stream with Module,
-TypeDef, Field, MethodDef, MemberRef and Assembly rows, a #Strings heap, and
-two method bodies with actual CIL. No compiler is required; the output is
-deterministic and committed as ``minimal_assembly.exe`` next to this file.
+TypeDef, Field, MethodDef, MemberRef, ModuleRef, Assembly and AssemblyRef rows,
+a #Strings heap, and two method bodies with actual CIL. No compiler is
+required; the output is deterministic and committed as ``minimal_assembly.exe``
+next to this file.
 
 Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 """
@@ -33,6 +34,10 @@ FIELD_NAME = "Secret"
 METHOD_ADD = "Add"
 METHOD_RUN = "Run"
 MEMBERREF_NAME = "WriteLine"
+# The unmanaged DLL a P/Invoke targets: the ModuleRef table (0x1A) names it.
+# Its row sits between MemberRef (0x0A) and Assembly (0x20) in the walk, so it
+# is another table the AssemblyRef/resource reads must step over correctly.
+MODULE_REF_NAME = "kernel32.dll"
 RESOURCE_NAME = "config.json"
 RESOURCE_FLAGS = 0x0001  # Public
 # The AssemblyRef every real compiler emits: the runtime library the assembly
@@ -92,6 +97,7 @@ def build() -> bytes:
     i_asm = add_string(ASSEMBLY_NAME)
     i_field = add_string(FIELD_NAME)
     i_memberref = add_string(MEMBERREF_NAME)
+    i_mod_ref = add_string(MODULE_REF_NAME)
     i_resource = add_string(RESOURCE_NAME)
     i_asm_ref = add_string(ASSEMBLY_REF_NAME)
     i_ns = 0
@@ -121,11 +127,14 @@ def build() -> bytes:
         | (1 << 0x04)  # Field
         | (1 << 0x06)  # MethodDef
         | (1 << 0x0A)  # MemberRef
+        | (1 << 0x1A)  # ModuleRef
         | (1 << 0x20)  # Assembly
         | (1 << 0x23)  # AssemblyRef
         | (1 << 0x28)  # ManifestResource
     )
-    row_counts = {0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x20: 1, 0x23: 1, 0x28: 1}
+    row_counts = {
+        0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1
+    }
 
     tables = bytearray()
     tables += _u32(0)  # Reserved
@@ -149,6 +158,8 @@ def build() -> bytes:
     tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(0) + _u16(1)
     # MemberRef: Class Name Signature
     tables += _u16(0) + _u16(i_memberref) + _u16(0)
+    # ModuleRef: Name -- the unmanaged DLL a P/Invoke binds to.
+    tables += _u16(i_mod_ref)
     # Assembly: HashAlgId Maj Min Build Rev Flags PublicKey Name Culture
     tables += (
         _u32(0x8004)

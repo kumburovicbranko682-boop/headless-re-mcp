@@ -18,6 +18,9 @@ _CLR_METADATA_SIG = b"BSJB"
 # A real app references a few dozen assemblies at most; the cap bounds a
 # hostile row count without losing anything from an honest image.
 _MAX_ASSEMBLY_REFS = 64
+# ModuleRef names the unmanaged DLLs the assembly P/Invokes into -- kernel32,
+# a bundled native .dll, and so on. The same cap bounds a lying row count.
+_MAX_MODULE_REFS = 64
 _FLAG_ILONLY = 0x00000001
 _FLAG_32BITREQUIRED = 0x00000002
 _FLAG_IL_LIBRARY = 0x00000004
@@ -93,6 +96,10 @@ class DotnetInspectReport:
     # the version it was compiled for -- the managed analogue of an ELF's
     # DT_NEEDED list or a Mach-O's dylibs.
     assembly_refs: tuple[JsonObject, ...] = ()
+    # The ModuleRef table: the unmanaged DLLs the assembly P/Invokes into --
+    # its native (rather than managed) dependencies, the interop counterpart to
+    # assembly_refs and the closest managed analogue to a native DT_NEEDED.
+    module_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> JsonObject:
         return {
@@ -114,6 +121,7 @@ class DotnetInspectReport:
             "assembly_version": self.assembly_version,
             "mvid": self.mvid,
             "assembly_refs": list(self.assembly_refs),
+            "module_refs": list(self.module_refs),
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
             ),
@@ -207,6 +215,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     assembly_version: str | None = None
     mvid: str | None = None
     assembly_refs: tuple[JsonObject, ...] = ()
+    module_refs: tuple[str, ...] = ()
     metadata_stats: MetadataStats | None = None
     verified = False
     note = "COR20 present"
@@ -225,6 +234,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     assembly_version,
                     mvid,
                     assembly_refs,
+                    module_refs,
                     metadata_stats,
                 ) = _parse_metadata_root(meta)
                 note = "verified COR20 + BSJB metadata"
@@ -253,6 +263,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         assembly_version=assembly_version,
         mvid=mvid,
         assembly_refs=assembly_refs,
+        module_refs=module_refs,
         note=note,
         metadata_stats=metadata_stats,
     )
@@ -299,20 +310,21 @@ def _parse_metadata_root(
     str | None,
     str | None,
     tuple[JsonObject, ...],
+    tuple[str, ...],
     MetadataStats | None,
 ]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None, None, (), None
+        return None, [], None, None, None, None, (), (), None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None, None, (), None
+        return None, [], None, None, None, None, (), (), None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None, None, (), None
+        return version, [], None, None, None, None, (), (), None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -338,9 +350,10 @@ def _parse_metadata_root(
     assembly_version: str | None = None
     mvid: str | None = None
     refs: tuple[JsonObject, ...] = ()
+    mod_refs: tuple[str, ...] = ()
     stats: MetadataStats | None = None
     try:
-        module_name, assembly_name, assembly_version, mvid, refs, stats = (
+        module_name, assembly_name, assembly_version, mvid, refs, mod_refs, stats = (
             _parse_tables_and_names(meta, stream_map)
         )
     except Exception:
@@ -349,25 +362,42 @@ def _parse_metadata_root(
         assembly_version = None
         mvid = None
         refs = ()
+        mod_refs = ()
         stats = None
-    return version, streams, module_name, assembly_name, assembly_version, mvid, refs, stats
+    return (
+        version,
+        streams,
+        module_name,
+        assembly_name,
+        assembly_version,
+        mvid,
+        refs,
+        mod_refs,
+        stats,
+    )
 
 
 def _parse_tables_and_names(
     meta: bytes,
     stream_map: dict[str, tuple[int, int]],
 ) -> tuple[
-    str | None, str | None, str | None, str | None, tuple[JsonObject, ...], MetadataStats | None
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    tuple[JsonObject, ...],
+    tuple[str, ...],
+    MetadataStats | None,
 ]:
     """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
 
     Returns ``(module_name, assembly_name, assembly_version, mvid,
-    assembly_refs, stats)``.
+    assembly_refs, module_refs, stats)``.
     """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None, None, (), None
+        return None, None, None, None, (), (), None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -382,7 +412,7 @@ def _parse_tables_and_names(
         guids = meta[g_off : g_off + g_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None, None, (), None
+        return None, None, None, None, (), (), None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -391,7 +421,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None, None, (), None
+                return None, None, None, None, (), (), None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
 
@@ -440,8 +470,9 @@ def _parse_tables_and_names(
     assembly_version: str | None = None
     mvid: str | None = None
     assembly_refs: list[JsonObject] = []
+    module_refs: list[str] = []
     if not strings:
-        return None, None, None, None, (), stats
+        return None, None, None, None, (), (), stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -461,6 +492,12 @@ def _parse_tables_and_names(
             name_idx, _ = read_string_index(tables, offset + 2)
             module_name = string_at(name_idx)
             mvid = guid_at(read_guid_index(tables, offset + 2 + string_index_size))
+        elif bit == 0x1A:  # ModuleRef: a single Name -- an unmanaged P/Invoke DLL
+            for i in range(min(rows, _MAX_MODULE_REFS)):
+                name_idx, _ = read_string_index(tables, offset + i * row_size)
+                ref_name = string_at(name_idx)
+                if ref_name is not None:
+                    module_refs.append(ref_name)
         elif bit == 0x20:  # Assembly: HashAlg(4), Major/Minor/Build/Revision(2 each), ...
             major = int.from_bytes(tables[offset + 4 : offset + 6], "little")
             minor = int.from_bytes(tables[offset + 6 : offset + 8], "little")
@@ -492,4 +529,12 @@ def _parse_tables_and_names(
                     }
                 )
         offset += row_size * rows
-    return module_name, assembly_name, assembly_version, mvid, tuple(assembly_refs), stats
+    return (
+        module_name,
+        assembly_name,
+        assembly_version,
+        mvid,
+        tuple(assembly_refs),
+        tuple(module_refs),
+        stats,
+    )
