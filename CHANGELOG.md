@@ -1050,6 +1050,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **持久化调试事件日志的落盘回放路径补齐**（`core/event_log.py` 88%→96%）：既有测试覆盖内存
+  窗口与 conn-None 分支,剩下的是事件真正离开内存进 SQLite 后才出现的行为。新测试直接钉住:
+  `note_unrecovered_gap` 记录一个有效缺口后,读取如实报告 `dropped`/`unrecovered_gap` 并从
+  缺口之后仍在的序号续读;把内存窗口缩到 2 后小批量 append 即触发驱逐,较早的事件落盘、随后
+  的读取经 `_row_to_event` 从磁盘取回且 payload 原样保真、越过窗口且无缺口的游标读作 store
+  重放;重开一个已有数据的库时从表里重建 bounds/窗口/缺口(不逐行回放整段历史),缺口 meta
+  跨重启存活,重开后也只把最新窗口载入内存、其余标记在盘。剩余四行是需人为破坏内部状态才可
+  达的防御分支,未强凑。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
