@@ -95,8 +95,23 @@ class R2Client:
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
-        data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        result = enrich_r2_payload(data, binary=binary)
+        # enrich sets count = len(items) for a parsed list. Setting count to the
+        # requested value here (as this used to) reported instructions that were
+        # never decoded whenever pdj ran into unmapped or undecodable bytes
+        # first, or emitted nothing parseable at all. Report what r2 actually
+        # decoded, carry the number asked for as requested, and flag a short
+        # listing so a caller does not read the request size as the result size
+        # or mistake "that is all r2 could decode from here" for the whole
+        # range.
+        returned = result.get("count")
+        if not isinstance(returned, int):
+            returned = 0
+            result["count"] = 0
+        result["requested"] = count
+        if returned < count:
+            result["partial"] = True
+        return result
 
     def xrefs(
         self,

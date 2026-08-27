@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2.disasm 不再把请求条数谎报为实际反汇编条数）
+
+- `r2.disasm` 过去在富化前写死 `count = 请求条数`。`pdj` 是从给定地址线性反汇编:撞到未映射或
+  无法解码的字节就会少于请求条数,地址处没有代码时一条也解不出。写死请求条数于是把「只解出 3
+  条」甚至「一条没解出」都回成满额的 `count`,调用方据此把请求量当成结果量,断定「这段就这么长」
+  或漏读 r2 其实中途停了。现改为保留 r2 实际解出的条数(富化按 `len(items)` 计),另加 `requested`
+  记录请求量;`count < requested`(撞边界、遇坏字节,或整段无 JSON 输出时)置 `partial=true`,让短
+  列表不被当成整段。r2 完全无可解析输出时 `count` 为 0 而非请求值,并保留 `parsed=false`。该披露与
+  其余 r2 读取器的 `items_truncated/total/limit`(讲 4096 上限截断)正交——`partial` 讲的是本次
+  反汇编没达到请求条数。回归测试以打桩的 `run` 覆盖短列表、满额、零解出三种情形,不依赖真实 r2。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
