@@ -848,8 +848,8 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             if i + 2 + imm > len(il):
                 partial = True
                 break
-            operand = int.from_bytes(il[i + 2 : i + 2 + imm], "little") if imm else None
-            rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})
+            fe_operand = int.from_bytes(il[i + 2 : i + 2 + imm], "little") if imm else None
+            rebuilt.append({"ip": start, "mnemonic": name, "operand": fe_operand})
             i += 2 + imm
             continue
         if op == 0x45:
