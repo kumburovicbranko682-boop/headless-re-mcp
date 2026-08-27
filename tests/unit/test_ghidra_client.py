@@ -268,3 +268,85 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert caught.value.code == "backend_error"
     assert caught.value.message == "export JSON invalid"
     assert error_type in str(caught.value.details["error"])
+
+
+def _run_writing(payload: str, *, exit_code: int) -> Any:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(payload, encoding="utf-8")
+        return Completed(exit_code, b"analyze log", b"script blew up")
+
+    return fake_run
+
+
+def test_ghidra_does_not_call_an_empty_failed_list_export_a_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured: analyzeHeadless exit 1 plus a written {} still answered items=[].
+
+    An unattended export treated the failed run as a binary that has no
+    functions. An empty payload plus a non-zero exit is a backend error.
+    """
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        _run_writing('{"mode": "functions", "items": [], "count": 0}', exit_code=1),
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "analyzeHeadless export failed"
+    assert caught.value.details["exit_code"] == 1
+
+
+def test_ghidra_does_not_call_an_empty_failed_decompile_a_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        _run_writing('{"decompiled": "", "truncated": false}', exit_code=1),
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "analyzeHeadless export failed"
+
+
+def test_ghidra_keeps_a_nonzero_exit_that_still_wrote_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyzeHeadless often exits 1 after a real postScript write; keep it."""
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        _run_writing('{"items": [{"name": "main", "entry": "00401000"}], "count": 1}', exit_code=1),
+    )
+    client = _client(tmp_path)
+
+    listed = client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert listed["items"] == [{"name": "main", "entry": "00401000"}]
+
+
+def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        _run_writing('{"items": [], "count": 0}', exit_code=0),
+    )
+    client = _client(tmp_path)
+
+    listed = client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert listed["items"] == []
