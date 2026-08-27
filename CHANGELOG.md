@@ -317,6 +317,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - `web.console` 的抓取此前只断言调用回 ok、从不看内容。inspect Gate 现轮询到页面 load 期
   `console.log('gate-ready')` 被录进来才算过——`Runtime.enable` 在导航前完成故不漏,证明
   `Runtime.consoleAPICalled`→录制器这条链真的把控制台消息收下,而非空列表也能蒙混。
+- **frida 动态注入线首次有活体 Gate**(`test_frida_live_gate.py`):此前所有 frida 测试都打桩运行时,
+  attach/枚举/读内存整条路径从没对真实进程跑过——而现代 frida 移除了 `Memory` 全局、读内存被迫改走
+  `NativePointer.readByteArray`,恰恰无人活体验证。新 Gate 起一个本地子进程、`attach`(设备 `local`)、
+  枚举模块(断言含 libc)、列 libc 导出(`found`、条目带 name/address)、并按某模块基址 `memory_read`
+  读回 4 字节——每个已加载模块都以 ELF 魔数打头,故断言读回 `\x7fELF`,把上面那处 API 修复对着真实
+  目标钉死。再钉 attach 的 pid 授权守卫:`pid != allowed_pid` 得 `permission_denied`。frida 缺失、或
+  宿主 ptrace 策略拒绝注入(环境限制而非代码缺陷)时 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
