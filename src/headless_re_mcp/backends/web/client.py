@@ -882,10 +882,11 @@ class WebBackend:
             raw = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
             payload, truncated = _bounded_metadata(raw, _MAX_WS_PAYLOAD)
             opcode = frame.get("opcode")
+            kind = _WS_OPCODES.get(opcode, "other") if isinstance(opcode, int) else "other"
             record: JsonObject = {
                 "direction": direction,
                 "opcode": opcode,
-                "type": _WS_OPCODES.get(opcode, "other"),
+                "type": kind,
                 "payload": payload,
                 "payload_len": len(raw.encode("utf-8", errors="replace")),
                 "ts": params.get("timestamp"),
