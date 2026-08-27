@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,28 @@ _DATA_URL = (
     "<script>window.__x=1;console.log('gate-ready');</script>"
     "</head><body>hello</body></html>"
 )
+
+# A valid module with a real interface -- two imports (env.log func, env.mem
+# memory), three exports (add func, g global, mem memory), one global and a
+# start function -- so the tool-free reader's import/export/count/start facts
+# have something to disagree with wabt about. Hand-assembled and wasm-validate
+# clean; see the WASM cross-check below for the section-by-section layout.
+_RICH_WASM = bytes.fromhex(
+    "0061736d01000000"  # magic + version
+    "010a0260000060027f7f017f"  # types: () -> (), (i32,i32) -> i32
+    "02160203656e76036c6f67000003656e76036d656d020001"  # imports: env.log func, env.mem memory
+    "03020101"  # function section: one func of type 1
+    "0606017f0041000b"  # global section: one i32 = 0
+    "07110303616464000101670300036d656d0200"  # exports: add(func), g(global), mem(memory)
+    "080100"  # start section: func 0
+    "0a09010700200020016a0b"  # code: local.get 0, local.get 1, i32.add
+)
+
+# wasm2wat renders imports as (import "M" "N" (KIND ...)) and exports as
+# (export "N" (KIND ...)); KIND is func/memory/global/table -- the same
+# vocabulary describe_wasm reports, so the two views compare directly.
+_WAT_IMPORT_RE = re.compile(r'\(import "([^"]+)" "([^"]+)" \((func|memory|global|table)\b')
+_WAT_EXPORT_RE = re.compile(r'\(export "([^"]+)" \((func|memory|global|table)\b')
 
 
 def _browser_available() -> bool:
@@ -171,6 +194,57 @@ def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
         for section in ("Type", "Function", "Export", "Code"):
             assert section in objdump, f"section {section} missing from objdump"
         assert "add" in objdump, "export name missing from objdump"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_tool_free_facts_agree_with_wabt(tmp_path: Path) -> None:
+    """The stdlib WASM reader and wabt must describe the same module interface.
+
+    describe_wasm walks the section table itself to report imports, exports,
+    counts and the start function with no wabt -- but that reader and the
+    fixture it reads are both ours, so nothing proved its view of a module's
+    interface matches an independent decoder. This drives a module with a real
+    interface (two imports, three exports, a global, a start) through both:
+    create_session for the tool-free facts, wasm2wat for wabt's canonical
+    disassembly, and requires they agree import-for-import and export-for-export.
+    It is the WASM analogue of the .NET gate cross-checking the reader against
+    monodis. Needs wabt; skip != pass when it is absent.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM cross-check not run (skip != pass)")
+    module = tmp_path / "rich.wasm"
+    module.write_bytes(_RICH_WASM)
+    service = AnalysisService()
+    try:
+        # Tool-free facts, straight off the section table at session creation.
+        created = service.create_session(str(module))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        reader_imports = {(i["module"], i["name"], i["kind"]) for i in wasm["imports"]}
+        reader_exports = {(e["name"], e["kind"]) for e in wasm["exports"]}
+
+        # wabt's independent decode of the same bytes.
+        result = service.wasm_wat(str(module))
+        assert result.ok, result.error
+        wat = result.data["wat"]
+        wabt_imports = set(_WAT_IMPORT_RE.findall(wat))
+        wabt_exports = set(_WAT_EXPORT_RE.findall(wat))
+
+        # The two readers must agree on the module's entire interface.
+        expected_imports = {("env", "log", "func"), ("env", "mem", "memory")}
+        expected_exports = {("add", "func"), ("g", "global"), ("mem", "memory")}
+        assert reader_imports == expected_imports
+        assert wabt_imports == expected_imports
+        assert reader_exports == expected_exports
+        assert wabt_exports == expected_exports
+        # And on the counts and the start function wabt renders as (start ...).
+        assert wasm["import_count"] == 2
+        assert wasm["export_count"] == 3
+        assert wasm["global_count"] == 1
+        assert wasm["has_start"] is True
+        assert re.search(r"\(start\b", wat), wat
     finally:
         service.close_all()
 
