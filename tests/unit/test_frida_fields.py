@@ -269,11 +269,41 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     assert "packages" not in payload
     assert payload["count"] == 10
     assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["applications"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.applications")
     assert "Answers with applications" in doc
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_applications_offset_reaches_past_the_first_page() -> None:
+    """applications named total and has_more but had no offset to reach the rest.
+
+    A device with more apps than a page could hold left everything past the cap
+    unreachable -- has_more said "there is more" with no way to ask for it.
+    Offset makes the tail addressable, and the last page reports has_more False
+    without overrunning the collected total.
+    """
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    page = client.applications("usb", offset=20, limit=10)
+    assert page["offset"] == 20
+    assert page["total"] == 25
+    assert page["count"] == 5
+    ids = [row["identifier"] for row in page["applications"]]
+    assert ids == [f"com.app{i}" for i in range(20, 25)]
+    assert page["has_more"] is False
+
+
+def test_frida_applications_refuses_a_negative_offset() -> None:
+    """A negative offset would slice from the tail and mislabel the window."""
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.applications("usb", offset=-1, limit=10)
+    assert caught.value.code == "invalid_params"
 
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:

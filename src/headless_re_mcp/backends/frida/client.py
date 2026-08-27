@@ -580,26 +580,37 @@ class FridaClient:
             ) from exc
         return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
 
-    def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
+    def applications(
+        self, device_id: str | None, *, offset: int = 0, limit: int = 256
+    ) -> JsonObject:
         device = self._resolve_device(device_id)
+        # Floored before the enumerate: a negative offset would slice from the
+        # tail of the app list and mislabel the window.
+        if type(offset) is not int or offset < 0:
+            raise FridaError("invalid_params", "offset must be a non-negative integer")
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
+        start = max(0, int(offset))
+        # enumerate_applications() returns the whole installed set, so unlike the
+        # java enumerations there is no early-stop to preserve: slice by offset
+        # and the tail past the cap stays reachable across pages.
         items = [
             {
                 "identifier": str(app.identifier),
                 "name": str(app.name),
                 "pid": int(getattr(app, "pid", 0) or 0),
             }
-            for app in apps[:capped]
+            for app in apps[start : start + capped]
         ]
         return {
             "applications": items,
             "count": len(items),
             "total": len(apps),
-            "has_more": len(apps) > capped,
+            "offset": start,
+            "has_more": start + len(items) < len(apps),
         }
 
     def spawn(
