@@ -1100,6 +1100,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **`apk.androguard` 能力漏报了三个自己 gate 的工具**：`apk.certificates` / `apk.components` /
+  `apk.native_libs` 都走 `ApkClient`,androguard 缺失时一律回 `capability_unavailable`,和其余七个
+  静态工具一样受 androguard 探针 gate;可目录里只列了七个,悄悄丢了这三个,于是 `capabilities.list` /
+  `.describe` 从不提它们——运维或 agent 查就绪时既看不到它们要 androguard,也不知道 androguard
+  没装时它们会一并消失。上面那条只挡「宣传了不存在的工具名」这一个方向,没有任何东西挡「真实工具没被
+  任何能力宣传」的反方向。三个工具补进能力,并加断言把 androguard 能力钉死到全部十个静态工具。
 - **asyncio 异常钩子首次落测**：进程/线程/unraisable 三个钩子早有测试,唯独 asyncio 的
   没有——没人 await 的任务失败经 loop 异常处理器上报,我们的处理器必须把事故写进 incident 日志
   (走同一个脱敏器,`api_key=...` 不落盘)、loop 交来无异常对象的上下文(回调错误就是这样)时
