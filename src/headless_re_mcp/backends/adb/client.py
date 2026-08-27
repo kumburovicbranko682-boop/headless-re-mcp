@@ -563,9 +563,17 @@ class AdbBackend:
         text = str(raw)
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
+            # Keep the newest chars, then drop the now-partial leading line so a
+            # fragment is never handed back as if it were a whole log entry. The
+            # char cut lands mid-line; the first newline ends that broken line.
             text = text[-_MAX_LOGCAT_CHARS:]
+            newline = text.find("\n")
+            if newline != -1:
+                text = text[newline + 1 :]
+        out_lines = text.splitlines()[-capped:]
         return {
-            "lines": text.splitlines()[-capped:],
+            "lines": out_lines,
+            "count": len(out_lines),
             "requested": capped,
             "truncated": truncated,
         }
