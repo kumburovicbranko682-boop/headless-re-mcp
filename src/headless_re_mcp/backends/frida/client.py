@@ -212,7 +212,11 @@ def _accepts_timeout(func: Any) -> bool:
 
 def _bound_timeout(timeout: float) -> float:
     value = float(timeout)
-    if value <= 0:
+    # ``value != value`` catches NaN, which slips past both ``<= 0`` and the
+    # ``min`` cap (``min(nan, MAX)`` returns nan) and would then make
+    # ``_run_deadline``'s ``Future.result(timeout=nan)`` return immediately --
+    # the same misfire ``clamp_cli_timeout`` already rejects for the CLI siblings.
+    if value != value or value <= 0:
         raise FridaError("invalid_params", "timeout must be positive")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 

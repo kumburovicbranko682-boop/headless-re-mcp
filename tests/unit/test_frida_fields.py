@@ -13,6 +13,27 @@ from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.tools.frida import build_frida_tools
 
 
+def test_frida_bound_timeout_rejects_nan_and_nonpositive() -> None:
+    # The transport can hand a raw model argument straight to a handler with no
+    # schema check. NaN passes ``<= 0`` and survives ``min(nan, MAX)``, so it
+    # would reach _run_deadline's Future.result(timeout=nan) and return at once;
+    # reject it (and non-positive) as invalid_params, and clamp +inf via min.
+    import math
+
+    from headless_re_mcp.backends.frida.client import (
+        MAX_WORKFLOW_TIMEOUT,
+        _bound_timeout,
+    )
+
+    assert _bound_timeout(5.0) == 5.0
+    assert _bound_timeout(10**9) == MAX_WORKFLOW_TIMEOUT
+    assert _bound_timeout(math.inf) == MAX_WORKFLOW_TIMEOUT
+    for bad in (math.nan, 0.0, -1.0):
+        with pytest.raises(FridaError) as caught:
+            _bound_timeout(bad)
+        assert caught.value.code == "invalid_params"
+
+
 def _tool_docstring(name: str) -> str:
     source = Path(build_frida_tools.__code__.co_filename).read_text(encoding="utf-8")
     tree = ast.parse(source)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -395,6 +396,16 @@ class TestWebNavTimeoutIsBounded:
             with pytest.raises(WebError) as info:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"
+
+    def test_bound_nav_timeout_rejects_nan_that_min_cannot_cap(self) -> None:
+        # NaN passes ``<= 0`` (nan <= 0 is False) and survives the ``min`` cap
+        # (min(nan, MAX) is nan), then makes Future.result(timeout=nan) return at
+        # once and wedge the runner -- the exact failure this clamp prevents.
+        with pytest.raises(WebError) as info:
+            _bound_nav_timeout(math.nan)
+        assert info.value.code == "invalid_params"
+        # +inf is harmless: the ceiling clamp still applies.
+        assert _bound_nav_timeout(math.inf) == _MAX_NAV_TIMEOUT_S
 
     def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
         self, monkeypatch: pytest.MonkeyPatch
