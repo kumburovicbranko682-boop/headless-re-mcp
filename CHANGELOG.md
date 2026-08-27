@@ -59,6 +59,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（provider 重试分类漏判 httpx 传输错误，瞬时网络抖动直接打挂整个 run）
+
+- `RetryingProvider` 只在「首个 token 之前」重试瞬时故障，但 `is_retryable` 的降级判定靠对
+  `类名 + 消息` 做子串匹配，两个标记根本匹配不到目标类型：`network` 对应的具体类是
+  `ReadError` / `WriteError` / `CloseError`（类名里都没有 network），`remote protocol` 想匹配
+  `RemoteProtocolError` 却带了个空格、而该类名无空格。结果 `ReadError` / `WriteError` 被判成
+  「永久错误」不再重试；`RemoteProtocolError`（服务端中途断开）只有在消息恰好含 `disconnected`
+  时才因命中 `connect` 侥幸被重试。也就是说一次首 token 之前的瞬时网络抖动，本该退避重试，却把整轮
+  乃至整个 run 打挂——正是这个模块存在的意义所在。现改为按 `TransportError` 继承层级用类名识别：
+  凡是 httpx（或同构客户端）的传输错误（各类 timeout、connect/read/write、`RemoteProtocolError`、
+  `ProxyError` 等）都判为可重试，仅排除两个客户端侧、重试也没用的成员——`LocalProtocolError`
+  （我们把请求构造错了）与 `UnsupportedProtocol`（base_url 协议头不对）。仍不 import 任何 HTTP
+  客户端（只读 `type(exc).__mro__` 的类名），状态码判定与非 httpx 异常的标记降级一律照旧。新增
+  回归用一套本地镜像的 `TransportError` 层级、且消息刻意不含任何瞬时关键词，钉住「按类型而非措辞」
+  判定。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

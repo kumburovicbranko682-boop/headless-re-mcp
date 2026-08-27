@@ -39,6 +39,21 @@ def is_retryable(exc: BaseException) -> bool:
     status = getattr(response, "status_code", None)
     if isinstance(status, int):
         return status in RETRYABLE_STATUS
+    # httpx (and any client mirroring its hierarchy) raises a subclass of
+    # TransportError for every network-level fault: timeouts, connect/read/write
+    # errors, and a peer that hangs up mid-response (RemoteProtocolError). These
+    # are exactly the transient faults a replay before the first token clears.
+    # Its only client-side members -- LocalProtocolError (a request we built
+    # wrong) and UnsupportedProtocol (a bad base_url scheme) -- never improve on
+    # retry. Match by class name so this still imports no HTTP client, and so a
+    # marker phrasing cannot silently drop whole error types: "network" is never
+    # the concrete class (ReadError/WriteError/CloseError are), and "remote
+    # protocol" never matched RemoteProtocolError, whose name carries no space --
+    # so ReadError/WriteError were treated as permanent and RemoteProtocolError
+    # was retried only when its message happened to contain "disconnected".
+    mro = {klass.__name__.casefold() for klass in type(exc).__mro__}
+    if "transporterror" in mro:
+        return not (mro & {"localprotocolerror", "unsupportedprotocol"})
     label = f"{type(exc).__name__} {exc}".casefold()
     return any(marker in label for marker in _TRANSIENT_MARKERS)
 
