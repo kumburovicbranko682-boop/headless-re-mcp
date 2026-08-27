@@ -239,6 +239,56 @@ def test_ghidra_refuses_an_oversized_export_json(
     assert caught.value.code == "too_large"
 
 
+def _capture_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
+    envs: list[dict[str, str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        envs.append(dict(kwargs.get("env") or {}))
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return envs
+
+
+def test_a_valid_max_heap_becomes_a_clean_java_tool_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envs = _capture_env(monkeypatch)
+    client = _client(tmp_path)
+    client.functions(_binary(tmp_path), tmp_path / "project", max_heap="512m")
+    assert envs and envs[0]["JAVA_TOOL_OPTIONS"] == "-Xmx512m"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "2G -XX:OnOutOfMemoryError=touch /tmp/pwned",
+        "1g -javaagent:/tmp/evil.jar",
+        "512m\n-Dfoo=bar",
+        "$(reboot)",
+        "",
+    ],
+)
+def test_a_hostile_max_heap_is_rejected_before_any_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hostile: str
+) -> None:
+    """max_heap is spliced into JAVA_TOOL_OPTIONS, so it must be a bare size.
+
+    The JVM reads that variable as a whitespace-separated option list; anything
+    other than a heap size could inject -javaagent: or an OnOutOfMemoryError
+    command hook. Rejection must happen before analyzeHeadless is spawned.
+    """
+    envs = _capture_env(monkeypatch)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project", max_heap=hostile)
+    assert caught.value.code == "invalid_params"
+    assert envs == []
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [

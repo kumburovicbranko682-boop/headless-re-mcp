@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,11 @@ _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+# A JVM heap size and nothing else: "2G", "512m", "1024". The value is spliced
+# into JAVA_TOOL_OPTIONS, which the JVM parses as a whitespace-separated option
+# list, so an unchecked string could smuggle extra options -- -javaagent:, or
+# -XX:OnOutOfMemoryError=<cmd> which runs a shell command on OOM.
+_MAX_HEAP_RE = re.compile(r"\d+[kKmMgG]?")
 
 
 def _project_lock(project_dir: Path) -> Any:
@@ -269,6 +275,12 @@ class GhidraClient:
         delete_project: bool,
     ) -> tuple[str, str, int]:
         assert self.analyze is not None
+        if not _MAX_HEAP_RE.fullmatch(max_heap):
+            raise GhidraError(
+                "invalid_params",
+                "max_heap must be a JVM heap size such as 2G, 512m, or 1024",
+                max_heap=max_heap,
+            )
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.

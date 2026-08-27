@@ -62,6 +62,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（Ghidra max_heap 校验，堵住 JAVA_TOOL_OPTIONS 注入面）
+
+- Ghidra 适配器把 `max_heap` 直接拼进子进程的 `JAVA_TOOL_OPTIONS`（`-Xmx{max_heap}`）。JVM 把该变量
+  当成以空白分隔的选项列表解析，因此一个未经校验的字符串能夹带额外选项——`-javaagent:`，或
+  `-XX:OnOutOfMemoryError=<命令>`（OOM 时执行 shell 命令）。当前服务层从不透传 `max_heap`（恒为
+  `2G`），所以这是潜在而非在用的注入面；但它是 `GhidraClient` 的公开可调参数，按"收紧契约"就地封死：
+  在唯一的 `_run_headless` 汇聚点用 `\d+[kKmMgG]?` 严格校验，非法值在 spawn 之前即以 `invalid_params`
+  拒绝。回归钉住：合法 `512m` 产出干净的 `-Xmx512m`，而 `2G -XX:OnOutOfMemoryError=...`、
+  `-javaagent:`、含换行/`$()`/空串等敌意值一律在启动前被拒、`run_bounded` 从未被调用。
+
 ### 修复（apk.sign 的 keystore 口令不再出现在命令行上）
 
 - `apk.sign` 此前以 `--ks-pass pass:<口令>` 把 keystore 口令放上 apksigner 的参数向量。Linux 的
