@@ -169,6 +169,15 @@ class _OriginHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(self._BODY)
 
+    def do_POST(self) -> None:  # noqa: N802 - http.server API name
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        self.rfile.read(length)  # drain the request body so the exchange closes
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(self._BODY)))
+        self.end_headers()
+        self.wfile.write(self._BODY)
+
     def log_message(self, *args: object) -> None:  # keep the gate output quiet
         del args
 
@@ -229,6 +238,31 @@ def test_proxy_captures_a_real_request_and_reads_it_back(tmp_path: Path) -> None
         assert "/probe" in detail["request"]["url"]
         assert detail["response"]["status"] == 200
         assert detail["response"].get("body") == _OriginHandler._BODY.decode()
+
+        # A POST exercises request-body capture, which the GET above cannot: send
+        # a JSON payload through the proxy and assert flow_get reads it back from
+        # the real mitmproxy flow's request.raw_content.
+        payload_sent = b'{"probe":"body"}'
+        post_req = urllib.request.Request(
+            target, data=payload_sent, headers={"Content-Type": "application/json"}
+        )
+        with opener.open(post_req, timeout=10) as response:
+            assert response.read() == _OriginHandler._BODY
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if backend.status(session)["flow_count"] >= 2:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("proxy forwarded the POST but captured no second flow")
+        post_flow = next(
+            (f for f in backend.flows(session)["flows"] if f.get("method") == "POST"), None
+        )
+        assert post_flow is not None, backend.flows(session)["flows"]
+        post_detail = backend.flow_get(session, post_flow["id"], tmp_path)
+        assert post_detail["request"]["method"] == "POST"
+        assert post_detail["request"]["size"] == len(payload_sent)
+        assert post_detail["request"].get("body") == payload_sent.decode()
 
         har = backend.export_har(session, tmp_path / "capture.har")
         assert har["entry_count"] >= 1

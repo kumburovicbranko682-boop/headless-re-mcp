@@ -666,6 +666,39 @@ class ProxyBackend:
         if resp_headers_cut:
             response["headers_truncated"] = True
         result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # Request body: the POST/PUT payload a client sent -- the request-side
+        # counterpart to the response body below, and just as load-bearing for
+        # analysing an API call. mitmproxy keeps it as raw_content like the
+        # response, so decode it the same honest way (utf-8, else base64 the exact
+        # bytes and flag it) and spill on the same raw/encoded overflow.
+        req_body = b""
+        try:
+            req_body = req.raw_content or b""
+        except Exception:  # noqa: BLE001
+            req_body = b""
+        request["size"] = len(req_body)
+        req_reserve_used = 0
+        if req_body:
+            req_base64 = False
+            try:
+                req_inline = req_body.decode("utf-8")
+            except UnicodeDecodeError:
+                req_inline = base64.b64encode(req_body).decode("ascii")
+                req_base64 = True
+            _, req_encoded_bytes, req_encoded_cut = fit_json_text(
+                req_inline, reserve=_BODY_FIELD_RESERVE
+            )
+            if len(req_inline) > _MAX_INLINE_BODY or req_encoded_cut:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                req_out = artifact_dir / f"flow-req-{uuid4().hex}.bin"
+                req_out.write_bytes(req_body)
+                request["body_path"] = str(req_out)
+            else:
+                request["body"] = req_inline
+                request["base64_encoded"] = req_base64
+                # An inlined request body eats budget the response body's fit
+                # check must account for, or two bodies could jointly overrun it.
+                req_reserve_used = req_encoded_bytes
         # Decode the body honestly. A response body is often text (JSON, HTML),
         # but just as often binary -- an image, protobuf, or a payload mitmproxy
         # did not decompress. utf-8 with errors="replace" used to hand a binary
@@ -685,7 +718,9 @@ class ProxyBackend:
         # gate alone misses a text body of quotes/backslashes/control chars that
         # is under _MAX_INLINE_BODY chars yet encodes past the budget, which
         # would get the whole flow_get reply discarded for a ~16 KiB summary.
-        _, _encoded_bytes, encoded_cut = fit_json_text(inline, reserve=_BODY_FIELD_RESERVE)
+        _, _encoded_bytes, encoded_cut = fit_json_text(
+            inline, reserve=_BODY_FIELD_RESERVE + req_reserve_used
+        )
         if len(inline) > _MAX_INLINE_BODY or encoded_cut:
             # Spill the raw bytes so the caller reads the exact body from disk
             # rather than a truncated or re-encoded one.

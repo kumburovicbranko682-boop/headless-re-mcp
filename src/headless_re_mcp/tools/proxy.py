@@ -72,17 +72,19 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Fetch one flow's headers and body (large bodies spill to an artifact).
+        """Fetch one flow's headers and bodies (large bodies spill to an artifact).
 
-        Answers with id, request (method, url, headers) and response (status,
-        headers, size). A text body is response.body with response.base64_encoded
-        false; a binary body is base64 in response.body with base64_encoded true,
-        so it is recoverable and not silently mangled into mojibake. A body that
-        is too large to inline -- over 200000 chars, or whose JSON-encoded form
-        would overrun the result budget -- is spilled to response.body_path with
-        no body key. Header maps are coerced to strings and bounded by size;
-        headers_truncated is set on the request or response when its headers were
-        capped. There are no top-level headers or body fields.
+        Answers with id, request (method, url, headers, size) and response
+        (status, headers, size). Both request and response carry a body the same
+        way: a text body is body with base64_encoded false; a binary body is
+        base64 in body with base64_encoded true, so it is recoverable and not
+        silently mangled into mojibake. A body too large to inline -- over 200000
+        chars, or whose JSON-encoded form would overrun the result budget -- is
+        spilled to body_path with no body key (request.body_path for the sent
+        payload, response.body_path for the reply). Header maps are coerced to
+        strings and bounded by size; headers_truncated is set on the request or
+        response when its headers were capped. There are no top-level headers or
+        body fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

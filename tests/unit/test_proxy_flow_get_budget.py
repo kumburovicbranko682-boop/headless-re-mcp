@@ -9,6 +9,7 @@ spills such a body to a file instead, the same way web.network_get does.
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,3 +106,80 @@ def test_flow_get_coerces_byte_header_values_to_json_safe_strings(
 
     assert isinstance(payload["response"]["headers"]["x-bin"], str)
     json.dumps(payload, ensure_ascii=False)  # must not raise
+
+
+def _flow_with_bodies(req_body: bytes, resp_body: bytes) -> Any:
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/api",
+        headers={"content-type": "application/json"},
+        raw_content=req_body,
+    )
+    response = SimpleNamespace(
+        status_code=200, headers={"content-type": "application/json"}, raw_content=resp_body
+    )
+    return SimpleNamespace(request=request, response=response)
+
+
+def test_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """The sent POST payload comes back inline, like the response body."""
+    flow = _flow_with_bodies(b'{"user":"admin"}', b'{"ok":true}')
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert payload["request"]["body"] == '{"user":"admin"}'
+    assert payload["request"]["base64_encoded"] is False
+    assert payload["request"]["size"] == 16
+    assert payload["response"]["body"] == '{"ok":true}'
+
+
+def test_flow_get_base64s_a_binary_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """A non-utf-8 request body is base64'd and flagged, never mojibake."""
+    raw = b"\x00\x01\x02\xff\xfe"
+    flow = _flow_with_bodies(raw, b"ok")
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert payload["request"]["base64_encoded"] is True
+    assert base64.b64decode(payload["request"]["body"]) == raw
+
+
+def test_flow_get_spills_a_large_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """A request body whose encoded form overruns the budget spills to a file."""
+    raw = b'"' * 180_000  # under the char cap but ~360 KB encoded
+    flow = _flow_with_bodies(raw, b"ok")
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert "body" not in payload["request"]
+    spilled = Path(str(payload["request"]["body_path"]))
+    assert spilled.parent == tmp_path
+    assert spilled.read_bytes() == raw
+    assert payload["request"]["size"] == 180_000
+    encoded = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert encoded <= RESULT_BUDGET_BYTES
+
+
+def test_flow_get_two_large_bodies_stay_within_the_budget(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An inlined request body is charged against the response body's fit check.
+
+    Without accounting for the already-inlined request body, a large response
+    body could inline too and the two together overrun the budget. Here a 100 KB
+    request body inlines and a 180 KB response body must therefore spill, keeping
+    the reply under the result budget.
+    """
+    flow = _flow_with_bodies(b"a" * 100_000, b"a" * 180_000)
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert payload["request"]["body"] == "a" * 100_000
+    assert "body" not in payload["response"]
+    assert Path(str(payload["response"]["body_path"])).read_bytes() == b"a" * 180_000
+    encoded = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert encoded <= RESULT_BUDGET_BYTES
