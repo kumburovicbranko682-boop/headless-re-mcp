@@ -84,6 +84,8 @@ python3 -m headless_re_mcp serve-web
 
 `HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围。Playwright 浏览器仍需按上游方式另装，例如 `python3 -m playwright install chromium`。
 
+可移植原生后端（radare2、wabt 的 `wasm2wat`、webcrack）默认需自备。在 Debian/Ubuntu 上可用 `HEADLESS_RE_INSTALL_BACKENDS=1 ./scripts/install-linux.sh` 一并装好，或单独运行 `./scripts/install-linux-backends.sh`：脚本对已在 PATH 上的工具幂等跳过，用 apt 装 radare2/wabt、用 `npm -g` 装 webcrack（webcrack 需 Node 22/24）。装上后 Web 的 `js.*`/`wasm.*` 与 radare2 相关 Gate 才会真正执行，而不是如实跳过（skip ≠ pass）。
+
 ### Windows：从源码
 
 ```powershell
