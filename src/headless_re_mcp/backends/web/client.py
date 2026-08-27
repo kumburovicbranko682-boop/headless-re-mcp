@@ -495,6 +495,22 @@ class WebBackend:
                         entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
+            # Playwright drives the page through an injected "utility world": an
+            # isolated execution context (auxData.isDefault=False) it creates per
+            # frame for its own automation. Its scripts arrive here via
+            # Debugger.scriptParsed with an empty URL, indistinguishable from a
+            # page script, so web.scripts listed Playwright's own instrumentation
+            # as if the page had authored it -- one phantom empty-URL entry per
+            # frame, and script_source on it returns Playwright's internal
+            # bundle. The page's own scripts (including dynamically added ones and
+            # WASM modules the page instantiates) run in the default/main world;
+            # keep only those. The classification rides on the scriptParsed event
+            # itself, so no executionContextCreated bookkeeping is needed. Unknown
+            # or absent auxData fails open (kept), so a real script is never
+            # hidden by a shape this misjudged.
+            aux = params.get("executionContextAuxData")
+            if isinstance(aux, dict) and aux.get("isDefault") is False:
+                return
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
                 params.get("scriptLanguage", "JavaScript"), _MAX_METADATA_BYTES

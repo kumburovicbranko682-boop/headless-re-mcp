@@ -152,6 +152,44 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-browser:
+    # Playwright + Chromium is a pip install plus a browser download (no device,
+    # no display beyond Xvfb-free headless), so the live browser gates run on a
+    # hosted runner. Nothing else launches a real browser, so the CDP capture
+    # path had no live coverage -- which is how web.scripts shipped listing
+    # Playwright's own injected utility-world scripts as if the page had authored
+    # them (an empty-URL phantom per frame). This job drives a real Chromium so
+    # the lifecycle and scripts gates run for real. skip != pass: with the
+    # browser present the gates run, and only skip if it cannot launch.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,browser]"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Web browser gates
+        timeout-minutes: 12
+        run: |
+          python -m pytest \
+            tests/integration/test_web_scripts_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
