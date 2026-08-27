@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+from headless_re_mcp.backends.apk.client import ApkClient, _int_or_original
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -76,3 +76,46 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     assert "Answers with package" in doc
     assert "version_name" in doc
     assert "native_abis" in doc
+
+
+def test_int_or_original_coerces_numeric_strings_only() -> None:
+    """androguard hands back strings; the numeric ones become ints, cleanly.
+
+    A lexicographic SDK comparison is the trap: as strings, "9" > "34" and
+    "100" < "99". Ints compare correctly; non-numeric values (a resource ref,
+    a dotted version name, None) are left exactly as androguard gave them.
+    """
+    assert _int_or_original("34") == 34
+    assert isinstance(_int_or_original("34"), int)
+    assert _int_or_original("0") == 0
+    assert _int_or_original(21) == 21
+    # Not a plain integer -> passed through untouched.
+    assert _int_or_original("1.4") == "1.4"
+    assert _int_or_original("@0x7f010000") == "@0x7f010000"
+    assert _int_or_original("") == ""
+    assert _int_or_original(None) is None
+    # bool is an int subclass but never a version; must not become 1/0.
+    assert _int_or_original(True) is True
+
+
+def test_apk_open_returns_numeric_sdk_fields_as_ints_not_strings() -> None:
+    """version_code/min_sdk/target_sdk come back as ints; version_name stays str.
+
+    The fake mirrors androguard, which returns every manifest value as a string.
+    Before the fix an agent comparing target_sdk numerically hit str-vs-int; the
+    lexicographic fallback ("33" < "9") is exactly the silent wrong answer.
+    """
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert payload["version_code"] == 1
+    assert payload["min_sdk"] == 21
+    assert payload["target_sdk"] == 33
+    for field in ("version_code", "min_sdk", "target_sdk"):
+        assert isinstance(payload[field], int), (field, payload[field])
+    # version_name is a genuine string and must not be coerced.
+    assert payload["version_name"] == "1.0"
+    assert isinstance(payload["version_name"], str)
+    doc = " ".join(_tool_docstring("apk.open").split())
+    assert "version_code, min_sdk and target_sdk are integers" in doc

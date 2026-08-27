@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.open 的 version_code/min_sdk/target_sdk 回整数，SDK 比较不再按字典序）
+
+- androguard 把 AndroidManifest.xml 里每个属性都从二进制 AXML 里读成**字符串**，于是
+  `get_androidversion_code()`、`get_min_sdk_version()`、`get_target_sdk_version()` 回的是
+  `"7"`、`"21"`、`"34"`，而不是 Android 本就定义为整数的那几个字段。后端过去原样透传：拿去做数值
+  比较（「targetSdk 是否 ≥ 23？」）要么 str 与 int 报 TypeError，要么更糟——按字典序比，`"9" > "34"`、
+  `"100" < "99"`，给出一个不报错的错误答案。现抽出 `_int_or_original`：`strip()` 后是纯非负数字串
+  的走 `int()`（`"34"→34`、`"0"→0`），其余形状（`None`、资源引用 `@0x7f...`、带点的版本名）原样回退，
+  绝不凭空造一个 int；`version_name`（如 `"1.4"`）本就是字符串，不经此路。`apk.open` 文档串说明这三个
+  字段是整数、非数字值原样透传、`version_name` 仍是字符串。单测新增 `_int_or_original` 的数字串→int、
+  int 透传、`"1.4"`/资源引用/空串/`None`/`bool` 回退断言，以及一条走 `open()` 断言三字段落成 int（1/21/33）
+  而非字符串、`version_name` 仍是 `"1.0"`；live gate（`test_apk_open_numeric_sdk_live_gate.py`）用真实夹具
+  APK（manifest 声明 versionCode 7、versionName 1.4、minSdk 21、targetSdk 34）先守卫「androguard 今天确实
+  回字符串」（守卫这条守卫：若哪天它开始回 int，本条即是空转，测试会说出来而非空过），再钉死 `apk.open`
+  把三字段回成 7/21/34 的 int、`version_name` 仍是 `"1.4"`。CI 新增 `linux-apk-open-sdk` job 装 androguard
+  跑该 gate，skip≠pass 守卫在 androguard 已装却仍 skip 时判失败。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -44,6 +44,34 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _int_or_original(value: Any) -> Any:
+    """A numeric manifest field (versionCode, min/targetSdk) as an int.
+
+    androguard reads these out of the binary manifest as *strings* -- "7",
+    "21", "34" -- because every AXML attribute surfaces as text. But Android
+    defines ``versionCode`` and the SDK levels as integers, and a caller that
+    treats them as such -- "is targetSdk >= 23?" -- either hits a str/int
+    TypeError or, worse, a silent lexicographic comparison where "100" < "99"
+    and "9" > "34". Coerce a clean non-negative integer to ``int``; leave
+    anything else (``None``, a resource reference like ``@0x7f...``, a malformed
+    value) exactly as androguard returned it, since fabricating an int there
+    would be less faithful than passing the odd value through. ``versionName``
+    is a real string ("1.4") and is never sent through here.
+    """
+    if isinstance(value, bool):  # bool is an int subclass but never a version
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():  # non-negative, no sign/dot/space: a plain integer
+            try:
+                return int(text)
+            except ValueError:
+                return value
+    return value
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -206,9 +234,9 @@ class ApkClient:
             "opened": True,
             "package": package,
             "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
+            "version_code": _int_or_original(apk.get_androidversion_code()),
+            "min_sdk": _int_or_original(apk.get_min_sdk_version()),
+            "target_sdk": _int_or_original(apk.get_target_sdk_version()),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
             "native_abis": sorted(
