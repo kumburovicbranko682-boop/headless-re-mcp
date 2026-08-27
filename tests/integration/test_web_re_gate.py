@@ -83,17 +83,56 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         service.close_all()
 
 
+# A minimal but non-empty valid module, hand-assembled so the gate needs no
+# WASM toolchain to produce it: one function () -> i32 that returns 42, exported
+# as "add". This drives the type/function/export/code sections through both
+# wasm2wat and wasm-objdump -- a header-only module round-trips to just
+# "(module)" and proves nothing about real disassembly.
+_WASM_MODULE = (
+    b"\x00asm\x01\x00\x00\x00"  # magic + version
+    b"\x01\x05\x01\x60\x00\x01\x7f"  # type section: 1 type, () -> i32
+    b"\x03\x02\x01\x00"  # function section: 1 func of type 0
+    b"\x07\x07\x01\x03add\x00\x00"  # export section: "add" -> func 0
+    b"\x0a\x06\x01\x04\x00\x41\x2a\x0b"  # code section: i32.const 42; end
+)
+
+
 @pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    module = tmp_path / "mini.wasm"
+    module.write_bytes(_WASM_MODULE)
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        # Real disassembly of the sections, not just an empty module envelope.
+        assert "(module" in wat
+        assert "func" in wat
+        assert 'export "add"' in wat
+        assert "i32" in wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    # wasm-objdump ships with wabt alongside wasm2wat; the objdump path had no
+    # live coverage at all, so its -h -x wiring could rot unnoticed.
+    if WasmClient()._objdump is None:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "mini.wasm"
+    module.write_bytes(_WASM_MODULE)
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        # The section headers -h lists and the -x details for the export.
+        for section in ("Type", "Function", "Export", "Code"):
+            assert section in objdump, f"{section} section missing from objdump"
+        assert "add" in objdump
     finally:
         service.close_all()

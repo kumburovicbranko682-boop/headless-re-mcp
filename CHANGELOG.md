@@ -104,6 +104,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   并缓存下载；只收集 Ghidra 一个 Gate 文件，因此无需装 Web/Android/抓包后端。Ghidra 版本固定为本地
   实测通过的 12.1.3。
 
+### 新增（WASM 反汇编 Gate 用真实模块，并补上 wasm-objdump 那条从未被实测的路径）
+
+- Web 反混淆那条线的 WASM 侧此前只对「magic+version、无任何 section」的空模块跑 `wasm2wat`，只断言输出里
+  有 `module`——工具能起、但从未证明它真的反汇编出内容；而 `wasm.info`（`wasm-objdump -h -x`，列 section
+  头与导出细节）**完全没有实测覆盖**，其 `-h -x` 拼参与输出处理烂了也无人知晓。改为在 Gate 里手搓一个
+  最小但非空的合法模块（36 字节字节串，含一个 `() -> i32` 返回 42、导出为 `add` 的函数；无需任何 WASM
+  工具链即可生成，源码内按 section 逐段注释可核对）：`wasm2wat` 断言 wat 里出现 `(module`、`func`、
+  `export "add"`、`i32`（真的走了 type/function/export/code 段），并新增 `test_wasm_info_when_wabt_present`
+  对 `wasm-objdump` 断言 Type/Function/Export/Code 四个 section 头与导出名 `add` 都在。wabt 缺失时按工具分别
+  如实 skip（wasm2wat 与 wasm-objdump 各判各的），skip != pass。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
