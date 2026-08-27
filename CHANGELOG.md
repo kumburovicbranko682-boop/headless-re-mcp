@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（回归护栏：unpack 计划/路由建议只许推荐目录里真实存在的工具）
+
+- `build_unpack_plan` 交给调用方的 `steps[].tool` 与 `suggested_tools`，以及
+  `recommend_unpack_route` 自己给出的 `suggested_tools`，都是「下一步就跑这个工具」的具体指令。
+  这些名字是 `unpack/plan.py`、`unpack/recommend.py` 里手写的常量表，与 `tools/catalog.py` 的
+  权威工具名各自维护——一旦目录里改名（例如把 `unpack.confirm_oep` 重命名）而漏改这两张表，
+  计划就会不声不响地叫操作员去跑一个根本不存在的工具，正是本轮反复收敛的「谎报」类问题。既有
+  `test_unpack_plan_routes.py` 只固定了每步的 `id` 与一条写死的 `suggested_tools`，没人拿工具
+  *名字* 与目录对账，这类漂移会静默上线。新增 `test_unpack_plan_catalog_integrity.py` 锁死这条不
+  变量：遍历每个 `force_route`、两条 PE 标志路径（`pe_dotnet` / `pe_vm_like`）以及能触达每个探测
+  路由的候选集（UPX / 通用壳 / .NET / VMProtect / Themida 隐身 / 空），断言所有 `steps[].tool` 与
+  `suggested_tools` 都在 `COMMAND_CATALOG.for_transport(MCP)` 里（目录在任何 handler 绑定前就已给
+  出全部 265 个工具名，护栏很轻）。已实测覆盖当前全部路由无一漏网；负控把某步的
+  `unpack.upx.test` 改成 `unpack.upx.tests_TYPO` 后，护栏以
+  `unpack plan steps name tools absent from the catalog: {'upx': {'unpack.upx.tests_TYPO'}}` 失败，
+  还原后恢复通过。纯测试新增，无产品行为变更；`ruff` 与 `mypy` 均通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
