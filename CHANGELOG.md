@@ -33,6 +33,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   凡暴露 `port` 参数者必须是 integer 且 `minimum==1`、`maximum==65535`;并断言三个已知端口工具确实被扫到(防止枚举
   失效导致空过)。新增端口工具若漏掉该 bound 会在此失败,逼出一次自觉决定。(纯测试新增,无行为变更。)
 
+### 测试（新增 drift guard：非 PE 分页读取工具的 limit/offset 参数在 schema 层一律收敛）
+
+- 非 PE 的所有分页读取（`web.network.list` / `web.console` / `web.scripts` / `web.wasm.list`、`proxy.flows`、
+  `apk.classes` / `apk.methods` / `apk.strings` / `apk.xrefs`、`frida.modules` / `frida.exports` /
+  `frida.applications` / `frida.java.classes` / `frida.java.methods`、`device.properties` / `device.packages`）都接受
+  调用方传入的 `limit`（页大小）与部分的 `offset`。它们与 `port` 同属数值型调用方输入:MCP 路径跑 pydantic schema,
+  但 agent 与 OpenAI-bridge 传输直接调 handler 会跳过它,因此 schema 边界是 fail-fast/对外契约,后端 clamp
+  (`max(1, min(int(limit), MAX))` / `max(0, int(offset))`) 是运行期兜底。此前只钉了 `port` 的 schema 半部。
+- `tests/unit/test_non_pe_pagination_schema_bounds.py` 新增两例(port 守卫的姊妹):扫描整个非 PE 工具面,凡暴露
+  `limit` 者必须是 integer 且 `minimum==1` 并声明正的 `maximum`(无上界的 `limit` 才是要害——跳过 schema 的传输会把它
+  当成"全取",把页大小变成无界抓取);凡暴露 `offset` 者必须是 integer 且 `minimum==0`(不要求上界,超大 offset 只会切到
+  末尾之后返回空页,不可被滥用)。两例都断言各后端的已知分页工具确实被扫到,防止枚举失效导致空过。新增分页工具若漏掉
+  bound 会在此失败。(纯测试新增,无行为变更。)
+
 ### 测试（钉住 proxy.flow_get 的制品登记与登记失败降级契约）
 
 - `proxy.flow_get` 会把请求/响应体各自 spill 到磁盘并登记为独立 kind 的制品(`proxy_flow_request_body` /
