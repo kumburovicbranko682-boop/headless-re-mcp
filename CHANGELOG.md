@@ -64,6 +64,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不可表示机器/非 ELF/截断头，并直测 ELF 目标现在带上 x64（只 va、无 rva）；在真 radare2
   5.5.0 上对 gcc 编的 x86-64 ELF 现场验证 `functions`/`disasm` 均带 `architecture: x64`。
 
+### 修复（r2 对 Mach-O 目标补齐 architecture，PE/ELF/Mach-O 三线到齐）
+
+- **接着上一条：`enrich_r2_payload` 补了 ELF，却仍不认 Mach-O——radare2 照样打开并反汇编
+  Mach-O，可这类目标（分析者手里的 Intel-Mac 样本）回来的地址还是没有 `architecture`。**
+  新增 `macho_architecture()`：与 `pe_preferred_base` / `elf_architecture` 一样只读文件前 8 字节，
+  按 Mach-O magic（`MH_MAGIC`/`MH_MAGIC_64` 及其字节序翻转形式）确定字长与字节序，再按该字节序
+  解紧随其后的 `cputype`，把 `CPU_TYPE_X86` 映射为 x86、`CPU_TYPE_X86_64` 为 x64；ARM/ARM64、
+  其余 CPU、fat/universal 归档（多切片无单一架构）与非 Mach-O 一律返回 `None`，与既有行为一致，
+  省略而不臆测。`enrich_r2_payload` 的解析链扩为 `显式参数 → PE 头 → ELF 头 → Mach-O 头`，各读取器
+  magic 不匹配即返回 `None`，先后顺序只决定谁回答、绝不会误读。`r2.info` 文档同步为
+  「architecture 出自 PE、ELF 或 Mach-O 头」。新增单测覆盖 x86_64/i386/大端头/ARM64/fat/非 Mach-O/
+  截断头，并直测 Mach-O 目标现在带上 x64；在真 radare2 5.9.8 上对手工构造的 x86-64 Mach-O 现场
+  验证 `disasm` 顶层与逐项 `Address` 均带 `architecture: x64`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

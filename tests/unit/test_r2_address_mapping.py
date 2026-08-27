@@ -17,6 +17,7 @@ from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     elf_architecture,
     enrich_r2_payload,
+    macho_architecture,
     parse_r2_json,
     pe_preferred_base,
 )
@@ -141,6 +142,97 @@ def test_enrich_fills_architecture_for_an_elf_target(tmp_path: Path) -> None:
 def test_enrich_explicit_architecture_still_wins_over_elf(tmp_path: Path) -> None:
     """An explicit architecture argument must override the header sniff."""
     binary = _minimal_elf(tmp_path, machine=62)  # EM_X86_64 on disk
+    enriched = enrich_r2_payload(
+        {"raw": json.dumps([{"offset": 0x1000}]), "commands": ["aa", "aflj"]},
+        binary=binary,
+        architecture=Architecture.X86,
+    )
+    assert enriched["architecture"] == "x86"
+
+
+def _minimal_macho(
+    tmp_path: Path,
+    *,
+    cputype: int,
+    name: str = "demo.macho",
+    magic: bytes = b"\xcf\xfa\xed\xfe",  # MH_MAGIC_64, little-endian on disk
+) -> Path:
+    """An 8-byte thin Mach-O prefix: magic + cputype, the only bytes read.
+
+    ``cputype`` is written in the byte order the magic implies (0xFE...-suffixed
+    magics are little-endian, 0xCE/0xCF-suffixed are big-endian), so a test can
+    prove the reader follows the magic rather than assuming little.
+    """
+    order: str = "little" if magic[3:4] == b"\xfe" else "big"
+    data = bytearray(64)
+    data[0:4] = magic
+    data[4:8] = int(cputype).to_bytes(4, order)  # type: ignore[arg-type]
+    path = tmp_path / name
+    path.write_bytes(bytes(data))
+    return path
+
+
+def test_macho_architecture_reads_x86_64(tmp_path: Path) -> None:
+    binary = _minimal_macho(tmp_path, cputype=0x01000007)  # CPU_TYPE_X86_64
+    assert macho_architecture(binary) is Architecture.X64
+
+
+def test_macho_architecture_reads_i386(tmp_path: Path) -> None:
+    # CPU_TYPE_X86 in a 32-bit little-endian Mach-O (MH_MAGIC).
+    binary = _minimal_macho(tmp_path, cputype=0x00000007, magic=b"\xce\xfa\xed\xfe")
+    assert macho_architecture(binary) is Architecture.X86
+
+
+def test_macho_architecture_honours_big_endian_header(tmp_path: Path) -> None:
+    """cputype is a 4-byte field; reading a big-endian Mach-O little-endian would
+    turn CPU_TYPE_X86_64 (0x01000007) into 0x07000001 and drop the architecture."""
+    binary = _minimal_macho(tmp_path, cputype=0x01000007, magic=b"\xfe\xed\xfa\xcf")
+    assert macho_architecture(binary) is Architecture.X64
+
+
+def test_macho_architecture_arm64_is_none(tmp_path: Path) -> None:
+    binary = _minimal_macho(tmp_path, cputype=0x0100000C)  # CPU_TYPE_ARM64
+    assert macho_architecture(binary) is None
+
+
+def test_macho_architecture_fat_universal_is_none(tmp_path: Path) -> None:
+    """A fat archive has several slices; no single architecture to name."""
+    binary = tmp_path / "fat.macho"
+    binary.write_bytes(b"\xca\xfe\xba\xbe" + (2).to_bytes(4, "big") + b"\x00" * 56)
+    assert macho_architecture(binary) is None
+
+
+def test_macho_architecture_non_macho_is_none(tmp_path: Path) -> None:
+    binary = tmp_path / "not.macho"
+    binary.write_bytes(b"\x7fELF" + b"\x00" * 60)
+    assert macho_architecture(binary) is None
+
+
+def test_macho_architecture_truncated_header_is_none(tmp_path: Path) -> None:
+    binary = tmp_path / "short.macho"
+    binary.write_bytes(b"\xcf\xfa\xed\xfe\x07\x00")  # magic + 2 of 4 cputype bytes
+    assert macho_architecture(binary) is None
+
+
+def test_enrich_fills_architecture_for_a_macho_target(tmp_path: Path) -> None:
+    """r2 opens Mach-O too; its disassembly must name the architecture, which
+    used to be dropped because only PE and ELF headers were read."""
+    binary = _minimal_macho(tmp_path, cputype=0x01000007)  # CPU_TYPE_X86_64
+    # Neither PE nor ELF reader claims it, so before the fix arch was None here.
+    assert pe_preferred_base(binary) == (None, None)
+    assert elf_architecture(binary) is None
+    raw = json.dumps([{"offset": 0x100000F00, "name": "start", "size": 24}])
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aa", "aflj"]}, binary=binary)
+    assert enriched["architecture"] == "x64"
+    first = enriched["items"][0]["address"]
+    assert first["architecture"] == "x64"
+    assert first["va"] == 0x100000F00
+    # No image base is read for Mach-O, so va only -- no rva -- plus the arch.
+    assert "rva" not in first
+
+
+def test_enrich_explicit_architecture_still_wins_over_macho(tmp_path: Path) -> None:
+    binary = _minimal_macho(tmp_path, cputype=0x01000007)  # x86_64 on disk
     enriched = enrich_r2_payload(
         {"raw": json.dumps([{"offset": 0x1000}]), "commands": ["aa", "aflj"]},
         binary=binary,

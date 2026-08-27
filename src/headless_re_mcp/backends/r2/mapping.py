@@ -97,6 +97,49 @@ def elf_architecture(binary: Path) -> Architecture | None:
     return None
 
 
+def macho_architecture(binary: Path) -> Architecture | None:
+    """Read the CPU architecture from a thin Mach-O header, without spawning r2.
+
+    r2 opens Mach-O as readily as ELF, yet :func:`enrich_r2_payload` knew only
+    PE and ELF, so a Mach-O target -- an Intel-Mac sample an analyst is
+    disassembling -- came back with no ``architecture`` even though r2
+    disassembled it. Like the PE and ELF readers this is a prefix read: the
+    Mach-O magic in the first four bytes fixes the file's word size and byte
+    order, and ``cputype`` is the four bytes right after it.
+
+    Only the two CPUs the :class:`Architecture` model can name are mapped
+    (``CPU_TYPE_X86`` -> x86, ``CPU_TYPE_X86_64`` -> x64). ARM/ARM64, any other
+    CPU, a fat/universal archive (whose slices share no single architecture,
+    so r2 picks one and naming it here would be a guess), and a non-Mach-O file
+    all yield ``None`` so the field is omitted rather than invented -- the same
+    behaviour those inputs get today.
+    """
+    try:
+        with binary.open("rb") as stream:
+            head = stream.read(8)
+    except OSError:
+        return None
+    if len(head) < 8:
+        return None
+    magic = head[:4]
+    # Thin Mach-O only: MH_MAGIC/MH_MAGIC_64 (little-endian on disk as
+    # CE/CF FA ED FE) and their byte-swapped big-endian forms. cputype follows
+    # the magic and is read in the byte order the magic just established.
+    if magic in (b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe"):
+        cputype = int.from_bytes(head[4:8], "little")
+    elif magic in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf"):
+        cputype = int.from_bytes(head[4:8], "big")
+    else:
+        # 0xCAFEBABE / 0xBEBAFEED (and the 64-bit fat variants) are universal
+        # archives with several slices; anything else is not Mach-O.
+        return None
+    if cputype == 0x00000007:  # CPU_TYPE_X86 (i386)
+        return Architecture.X86
+    if cputype == 0x01000007:  # CPU_TYPE_X86_64 (CPU_TYPE_X86 | CPU_ARCH_ABI64)
+        return Architecture.X64
+    return None
+
+
 def _needed_header_bytes(head: bytes) -> int | None:
     """How far into the file the optional header runs, if this looks like a PE."""
     if len(head) < 0x40 or head[:2] != b"MZ":
@@ -179,9 +222,11 @@ def enrich_r2_payload(
     """Parse *j payloads into items with unified Address fields."""
     module = binary.name
     pe_arch, image_base = pe_preferred_base(binary)
-    # PE first (it also yields the image base for RVA), then the ELF header so a
-    # non-PE target still names its architecture instead of dropping the field.
-    arch = architecture or pe_arch or elf_architecture(binary)
+    # PE first (it also yields the image base for RVA), then the ELF and Mach-O
+    # headers so a non-PE target still names its architecture instead of dropping
+    # the field. Each reader returns None unless the magic matches, so the order
+    # only decides who answers, never a misread.
+    arch = architecture or pe_arch or elf_architecture(binary) or macho_architecture(binary)
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)
