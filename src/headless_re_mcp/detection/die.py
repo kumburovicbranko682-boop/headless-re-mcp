@@ -357,9 +357,13 @@ def _capture_process(
                 returncode = process.poll()
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
-        # truncate a short-lived process's final JSON bytes.
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
+        # truncate a short-lived process's final JSON bytes.  A single shared
+        # budget keeps cleanup bounded: joining each reader for a full second
+        # would let a grandchild that inherited (and still holds open) a pipe
+        # extend the caller's deadline by seconds, one stream at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         # A clean diec exit can still leave a wrapper's detached helper behind;
         # sweep survivors so a successful call never leaks a process.
         from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
@@ -372,8 +376,8 @@ def _capture_process(
             _close_pipe(stdout_pipe)
         if not stderr_thread.is_alive():
             _close_pipe(stderr_pipe)
-        stdout_thread.join(timeout=0.1)
-        stderr_thread.join(timeout=0.1)
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
 
     if returncode is None:
         returncode = -1

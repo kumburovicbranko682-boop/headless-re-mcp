@@ -183,6 +183,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
+
+- `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
+  长分支(`br`/`brfalse`/`brtrue`)与 `ldc.i4` 常量却按无符号解码。按 ECMA-335 这些都是
+  有符号 int32,于是一次向后跳转 `-10` 打成 `4294967286`、`ldc.i4 -1` 打成 `4294967295`——
+  agent 读来判断循环走向的正是这个补码位型而非真实偏移。现把有符号操作数集中到
+  `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
+  无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
+
+### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
+
+- **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
+  frida 17 删掉了 `Memory.read*` 这批全局自由函数，于是这句在现代 runtime 上抛
+  `TypeError: not a function`，`frida.memory.read` 在整条动态分析线上直接坏掉——真机复现：
+  frida 17.17 attach 本地进程，`attach` / `modules` / `exports` 都正常，唯独 `memory.read`
+  报错。改用 NativePointer 方法 `ptr(address).readByteArray(size)`（frida 12 起就有，覆盖
+  `android` extra 声明的 `>=16.5` 全区间）。真机验证：修复后读模块基址前 4 字节返回 ELF 魔数
+  `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
+  以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
@@ -494,6 +514,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`doctor` 的 radare2 探针只看 PATH，无视配置的 `HEADLESS_RE_R2`**。它用的是只查
+  `shutil.which` 的 `probe_command`，而 `r2.*` 工具跑的是 `R2Client(settings.r2)`，直接用
+  配置路径。于是操作者把 `HEADLESS_RE_R2` 指到不在 PATH 上的 r2 时，doctor 报 radare2
+  缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
+  改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
+  webcrack / wabt 一致：先认配置路径，再回落 PATH。
+- **Ghidra headless 会把操作者的 `JAVA_TOOL_OPTIONS` 直接覆盖掉**。`_run_headless`
+  过去 `env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"`，把操作者为代理、编码或 JDK 17+
+  Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。
+  现在把 `-Xmx` 前置拼进已有值：堆上限作为默认仍生效，而操作者显式的 `-Xmx`（JVM 取最后一个）
+  仍然胜出，其余选项一并保留。未设置该变量时结果与之前完全相同（`-Xmx2G`）。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
