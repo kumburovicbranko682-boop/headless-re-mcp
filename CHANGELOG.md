@@ -349,6 +349,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   那个工具。实测 3000 个未清理会话时，单次回包 **993 KiB**。现在与相邻的 `artifacts.list` /
   `audit.list` 一样分页（默认 100，回 `total` / `offset` / `has_more`），同一场景 33 KiB；
   就绪探针也改成只取一行——它要确认的是"存储答不答话"，不是"有多少话要说"。
+- **`session.list` 是协议无关的分页读取器里最后一个 `offset` 没设下界的**。相邻的
+  `apk.classes/methods/strings`、`device.list`、web/proxy 各列表以及 frida 那几个探针都在
+  schema 上把 `offset` 钉在非负，负值当场以 `invalid_params` 拒；`session.list` 的 `offset`
+  却是个无界整数，而服务端用 `max(0, offset)` 兜底，于是 `offset=-5` 被悄悄当成第 0 页返回，
+  而不是报错——正好盖住一个把 `prev_offset - limit` 算到零以下的调用方。现在它的 schema 和
+  兄弟们一样带上非负下界（服务端的兜底保留，仅作纵深防御）。
 - **CLI 后端超时只杀启动器，工具本身留下来继续跑**。jadx、apktool、apksigner 与 Ghidra 的
   `analyzeHeadless` 都是启动 JVM 的脚本，webcrack 启动的是 node，而
   `subprocess.run(timeout=...)` 只杀它直接生出来的那个进程。本机实测：杀掉启动器之后，它启动的

@@ -61,7 +61,7 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.get_session(session_id))
 
     def session_list(
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List sessions known to this MCP server process, one page at a time.
@@ -70,7 +70,8 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         or session_ids field. Each entry is the same nested session object
         session.create returns, so the id is session.id, not a top-level
         session_id. Read total and has_more rather than assuming the page is
-        the whole list.
+        the whole list. offset is refused below zero at the schema, so a page
+        that undershot zero is rejected rather than silently read as page zero.
         """
         return _dump(analysis.list_sessions(offset=offset, limit=limit))
 
