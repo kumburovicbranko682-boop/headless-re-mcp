@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（Detect It Easy 官方 CLI 二次意见真机 Gate）
+
+- `detect.scan(use_die=True)` 的外部 DIE 路线此前只有打桩单测覆盖：真正拉起 `diec -j`、解析它的
+  JSON 成 findings、把有界原始输出落盘并登记进产物库这一整条链，从未被端到端跑过，argv 组装、
+  JSON 解析或产物登记里的回归都看不见。新增 `tests/integration/test_die_second_opinion_gate.py`，
+  用已提交的 UPX 打包件与其未打包原件驱动整条路线：打包件上 DIE 的 `diec` 源状态回 `completed`、
+  产出 `packer` 类别且版本可解析的 UPX finding（与内置 `builtin.pe` 引擎独立地一致判为 UPX），
+  写出的有界 `detection_die` 产物同时落盘、登记进 `artifacts.list` 且回读得到真实的 DIE `detects`
+  文档；对未打包原件 DIE 仍识别出文件格式却不误报 packer。降级路径一并钉死、杜绝静默降级冒充扫过：
+  `settings.diec=None` 且调用方仍要 DIE 时源状态回 `unavailable` 并带告警（内置 findings 照常有效），
+  `use_die=False` 时回 `disabled`（与 `unavailable` 区分），关闭会话后再扫回 `invalid_request`，
+  `probe_die` 在装了官方 CLI 时回 `READY` 且报出版本与 JSON 能力。在一台装了官方 `diec` 3.21
+  的 Linux 上跑通 6/6；缺 `diec` 时如实跳过，skip 不等于 pass。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
