@@ -208,6 +208,39 @@ class TestCapturesAreReachableAndReclaimable:
         finally:
             service.close_all()
 
+    def test_a_capture_with_no_file_on_disk_is_disclosed_not_hidden(
+        self, tmp_path: Path
+    ) -> None:
+        """A backend that names a path but writes nothing must not read as success.
+
+        Registration is skipped because there is no file, but returning the
+        payload bare left no artifact_id and no reason -- indistinguishable from
+        an ordinary capture. The absence has to be said out loud.
+        """
+        service = self._service(tmp_path)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            def name_a_path_but_write_nothing(
+                _session_id: str, out_path: Path, *, full_page: bool = False
+            ) -> dict:  # type: ignore[type-arg]
+                return {"path": str(out_path)}
+
+            service._web_backend.screenshot = name_a_path_but_write_nothing  # type: ignore[attr-defined]
+            result = service.web_screenshot(session_id)
+
+            assert result.ok, result.error
+            assert result.data is not None
+            assert "artifact_id" not in result.data
+            assert result.data["artifact_missing"] is True
+            assert not Path(result.data["artifact_path"]).exists()
+            # Nothing was registered, so retention has nothing to reclaim here.
+            listed = service.repository.list_artifacts(session_id)
+            assert listed["artifacts"] == []
+        finally:
+            service.close_all()
+
 
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
