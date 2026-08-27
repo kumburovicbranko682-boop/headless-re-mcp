@@ -146,6 +146,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """List internal (non-external) DEX classes with pagination.
 
@@ -156,8 +157,18 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         larger offset still has collected rows -- and count may be below the
         requested limit when the result-size budget trimmed the page, so read
         count, not limit, and page on has_more.
+
+        contains narrows a large app to the classes worth reading: it is a
+        case-insensitive substring of the class name (dotted or Lsmali/form),
+        so contains="crypto" finds every crypto class without paging the whole
+        DEX. When set, total counts only matches and the reply adds filtered
+        true; the examined cap still applies, so scan_capped true with a
+        filter means matches beyond the scanned window may exist. A blank or
+        whitespace-only value is ignored rather than matching everything.
         """
-        return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_classes(session_id, offset=offset, limit=limit, contains=contains)
+        )
 
     @tools.tool(name="apk.methods")
     def apk_methods(
@@ -185,6 +196,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
 
@@ -196,8 +208,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         when the result-size budget trimmed the page (each string can be 2000
         chars), so read count, not limit, and page on has_more. There is no
         items or constants field.
+
+        contains narrows the pool to strings worth reading: it is a
+        case-insensitive substring of the constant (tested against the full
+        value, matching apk.string_xrefs), so contains="http" finds every URL
+        without paging the whole DEX. When set, total counts only matches and
+        the reply adds filtered true; scan_capped keeps its meaning (the
+        examined cap was hit first). Use apk.string_xrefs to then find where a
+        matched string is referenced. A blank or whitespace-only value is
+        ignored rather than matching everything.
         """
-        return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_strings(session_id, offset=offset, limit=limit, contains=contains)
+        )
 
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(

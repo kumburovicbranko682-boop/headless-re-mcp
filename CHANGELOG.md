@@ -1361,6 +1361,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   抓到的 `console.log('gate-ready')`:`text_contains="gate-ready"` 与 `level="log"` 都留住它并置 `filtered`/`captured`,不匹配子串给出空的已过滤视图、`level="error"` 不含该条——端到端走真实 `_console_matches`
   而非仅单测 fake。
 
+- **`apk.classes`/`apk.strings` 只能按 offset/limit 翻页,面对一个几万类、几千串的真实 App,想找到关心的那个类或那条串只能整页翻——与已加过滤的抓包面(`web.network.list`/`web.console`/`proxy.flows`)
+  一样繁。** 现给两者各加一个 `contains`(大小写不敏感子串)过滤,与那几个面同源:`apk.classes(contains="crypto")` 直接列出所有 crypto 类、`apk.strings(contains="http")` 直接列出所有 URL,不必翻遍整个 DEX。
+  过滤在扫描时施加(上限计的是「已检视数」而非「命中数」,故有无过滤时走的是同一段 `_MAX_CLASSES_COLLECT`/`_MAX_STRINGS_COLLECT` 检视窗口,无过滤时行为逐字节不变);类名按点分/smali 名比对,字符串按
+  完整常量比对(与 `apk.string_xrefs` 一致,故 contains 查询在两个工具间吻合)。命中后 `total` 只计匹配数并新增 `filtered`(为真);`scan_capped` 语义不变——带过滤且为真时意味「检视窗口之外可能还有匹配」,
+  故过滤落空不被读成「无此类/无此串」。空白过滤串按「无过滤」处理,既不匹配全部也不匹配空。这是修改既有工具而非新增,工具面计数不变。单测(`test_apk_fields.py`):类名 contains 精确/大小写、落空给出空的已过滤列表、
+  空白串忽略且外部类仍排除;字符串 contains 大小写、子串在常量中部命中(证明是子串非前缀)、空白串忽略。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`classes(contains="sample")` 留住 Sample 类并置
+  `filtered`、无意义串给出空的已过滤列表;`strings(contains="MARKER")` 留住标记串并置 `filtered`——走真实 androguard 扫描而非 mock。
+
 - **新增 `apk.disassemble`:直接从 androguard 读出某方法的 Dalvik 字节码指令,回答 `apk.xrefs` 只能指到而答不出的「这个方法到底做了什么」。** 现有反编译 `apk.decompile`(jadx,需 Java/JRE)与
   `apk.decode`(apktool 的 baksmali)都依赖外部工具,本机没装就用不了;本工具走 androguard 的 `EncodedMethod.get_instructions`,**不需要 jadx/JRE 或 apktool**,与 WASM 那套无依赖二进制读取同一思路。
   按 `class_name`+`method_name` 定位(类名接受点分 `com.example.X` 或 smali `Lcom/example/X;` 两种形式);方法名有重载时,`overloads` 列出该名下所有描述符、默认按描述符排序取第一个,传 `descriptor`

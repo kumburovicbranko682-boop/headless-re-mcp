@@ -692,6 +692,114 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     assert "Answers with classes" in doc
     assert "has_more" in doc
 
+
+_MIXED_CLASSES = [
+    _FakeClass("Lcom/example/CryptoUtil;"),
+    _FakeClass("Lcom/example/crypto/AesHelper;"),
+    _FakeClass("Lcom/example/net/HttpClient;"),
+    _FakeClass("Lcom/other/Foo;"),
+    _FakeClass("Lext/Skip;", external=True),
+]
+
+
+def test_apk_classes_contains_filters_case_insensitively_and_flags_filtered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """contains keeps only classes whose name holds the needle, any case.
+
+    Measured: five classes (one external, skipped) -> contains 'crypto' keeps
+    the two crypto classes, total 2, filtered True; 'CRYPTO' keeps the same two,
+    proving the match ignores case; an unmatched needle yields an empty, honest
+    list with filtered True (not the whole DEX).
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeClassParsed(list(_MIXED_CLASSES))
+    )
+    payload = client.classes(tmp_path / "app.apk", contains="crypto")
+    assert payload["classes"] == [
+        "Lcom/example/CryptoUtil;",
+        "Lcom/example/crypto/AesHelper;",
+    ]
+    assert payload["total"] == 2
+    assert payload["filtered"] is True
+    upper = client.classes(tmp_path / "app.apk", contains="CRYPTO")
+    assert upper["total"] == 2
+    miss = client.classes(tmp_path / "app.apk", contains="nosuchclass")
+    assert miss["classes"] == []
+    assert miss["total"] == 0
+    assert miss["filtered"] is True
+
+
+def test_apk_classes_blank_contains_is_ignored_not_matched(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A whitespace-only contains behaves as no filter, not match-all/none.
+
+    Measured: contains '   ' -> all four internal classes, and no filtered flag,
+    so an accidentally-blank argument does not silently widen or empty the list.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeClassParsed(list(_MIXED_CLASSES))
+    )
+    payload = client.classes(tmp_path / "app.apk", contains="   ")
+    assert payload["total"] == 4  # the external class is still excluded
+    assert "filtered" not in payload
+    doc = _tool_docstring("apk.classes")
+    assert "contains" in doc
+    assert "filtered" in doc
+
+
+_MIXED_STRINGS = [
+    _FakeStringAnalysis("https://api.example.com/login", []),
+    _FakeStringAnalysis("http://plain.example/health", []),
+    _FakeStringAnalysis("GET /users", []),
+    _FakeStringAnalysis("device_SECRET_token", []),
+]
+
+
+def test_apk_strings_contains_filters_case_insensitively_and_flags_filtered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """contains keeps only constants that hold the needle, tested on the full value.
+
+    Measured: four strings -> contains 'http' keeps the two URLs, total 2,
+    filtered True; 'HTTP' keeps the same two (case-insensitive); 'secret' matches
+    a substring in the middle of a value, proving the test is a substring of the
+    whole constant, not a prefix.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed(list(_MIXED_STRINGS))
+    )
+    payload = client.strings(tmp_path / "app.apk", contains="http")
+    assert payload["strings"] == [
+        "http://plain.example/health",
+        "https://api.example.com/login",
+    ]
+    assert payload["total"] == 2
+    assert payload["filtered"] is True
+    assert client.strings(tmp_path / "app.apk", contains="HTTP")["total"] == 2
+    middle = client.strings(tmp_path / "app.apk", contains="secret")
+    assert middle["strings"] == ["device_SECRET_token"]
+
+
+def test_apk_strings_blank_contains_is_ignored_not_matched(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A whitespace-only contains behaves as no filter, not match-all/none."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed(list(_MIXED_STRINGS))
+    )
+    payload = client.strings(tmp_path / "app.apk", contains="  ")
+    assert payload["total"] == 4
+    assert "filtered" not in payload
+    doc = _tool_docstring("apk.strings")
+    assert "contains" in doc
+    assert "filtered" in doc
+
 class _FakeApkMethod:
     def __init__(self, index: int) -> None:
         self.name = f"m{index}"

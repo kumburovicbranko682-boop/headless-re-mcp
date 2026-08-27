@@ -79,6 +79,17 @@ def test_m11_androguard_apk_surface() -> None:
 
     assert any("Sample" in name for name in classes["classes"]), classes["classes"]
 
+    # The class-name filter runs against the real DEX: a case-insensitive
+    # substring keeps the Sample class and flags the narrowing, while a needle in
+    # no class name yields an empty, honest list (filtered, not the whole DEX).
+    sample_only = client.classes(_APK, contains="sample")
+    assert sample_only["filtered"] is True
+    assert sample_only["total"] >= 1
+    assert all("sample" in name.casefold() for name in sample_only["classes"])
+    miss_classes = client.classes(_APK, contains="no-such-class-marker")
+    assert miss_classes["classes"] == []
+    assert miss_classes["filtered"] is True
+
     methods = client.methods(_APK, _CLASS)
     names = {m["name"] for m in methods["methods"]}
     # caller/callee are the two methods the xref assertion below depends on.
@@ -88,6 +99,13 @@ def test_m11_androguard_apk_surface() -> None:
     assert any(
         "APK_GATE_MARKER_STRING" in value for value in strings["strings"]
     ), strings["strings"]
+
+    # The string filter runs against the real DEX too: a substring of the marker
+    # keeps it and flags filtered, so an agent can find a hardcoded URL/key
+    # without paging every constant.
+    marker_only = client.strings(_APK, contains="MARKER")
+    assert marker_only["filtered"] is True
+    assert any("MARKER" in value for value in marker_only["strings"]), marker_only["strings"]
 
     # caller -> callee is a real invoke edge in the dex, so asking for callers of
     # callee must return caller. A wrong parse yields an empty caller list.

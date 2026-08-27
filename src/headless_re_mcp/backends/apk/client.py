@@ -68,6 +68,21 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _norm_contains(value: str | None) -> str | None:
+    """A case-folded substring needle, or None when the filter is absent/blank.
+
+    Returns the needle already case-folded so the match site is a plain ``in``.
+    A whitespace-only value is treated as "no filter" rather than a match-all
+    (the empty substring is in every string) so an accidentally-blank argument
+    does not silently widen the list to everything. Mirrors the proxy.flows /
+    web.network.list filter normalization so the list surfaces behave the same.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    return text.casefold() if text else None
+
+
 _LOGGING_QUIETED = False
 
 
@@ -807,17 +822,30 @@ class ApkClient:
             "has_more": has_more,
         }
 
-    def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def classes(
+        self, path: Path, *, offset: int = 0, limit: int = 100, contains: str | None = None
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        needle = _norm_contains(contains)
         names: list[str] = []
         scan_more = False
+        # Cap on internal classes examined, not on matches stored: a filtered
+        # scan still walks (and bounds work at) the same _MAX_CLASSES_COLLECT
+        # classes as the unfiltered list, keeping the two identical when no
+        # filter is set. A case-insensitive substring decides storage, so the
+        # whole examined window is searched even when few classes match.
+        examined = 0
         for klass in parsed.analysis.get_classes():
             if klass.is_external():
                 continue
-            if len(names) >= _MAX_CLASSES_COLLECT:
+            if examined >= _MAX_CLASSES_COLLECT:
                 scan_more = True
                 break
-            names.append(klass.name)
+            examined += 1
+            name = klass.name
+            if needle is not None and needle not in name.casefold():
+                continue
+            names.append(name)
         names.sort()
         window = names[offset : offset + limit]
         # Bound the page by its JSON-encoded size, not just the row count: a
@@ -826,14 +854,21 @@ class ApkClient:
         # Trimming before has_more is computed keeps it honest -- a budget-cut
         # page still reports more to fetch, so the caller can page past it.
         window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
-        return {
+        result: JsonObject = {
             "classes": window,
             "count": len(window),
             "total": len(names),
             "offset": offset,
             "has_more": offset + len(window) < len(names),
+            # True when the examined cap was hit before the class walk ended, so a
+            # filtered miss is not read as "no such class" when more went unseen.
             "scan_capped": scan_more,
         }
+        if needle is not None:
+            # total now counts only matches; flag the narrowing so a filtered page
+            # is not mistaken for the whole class list. Mirrors network_list.
+            result["filtered"] = True
+        return result
 
     def methods(
         self,
@@ -884,15 +919,28 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+    def strings(
+        self, path: Path, *, offset: int = 0, limit: int = 200, contains: str | None = None
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        needle = _norm_contains(contains)
         seen: set[str] = set()
         scan_more = False
+        # Cap on strings examined, not on matches stored, so a filtered scan
+        # walks the same _MAX_STRINGS_COLLECT window as the unfiltered list. The
+        # substring is tested against the full constant, then the truncated form
+        # is stored -- the same match/display split apk.string_xrefs uses, so a
+        # contains query agrees across the two tools.
+        examined = 0
         for item in parsed.analysis.get_strings():
-            if len(seen) >= _MAX_STRINGS_COLLECT:
+            if examined >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            examined += 1
+            raw = str(item.get_value())
+            if needle is not None and needle not in raw.casefold():
+                continue
+            seen.add(raw[:_MAX_STRING_LEN])
         values = sorted(seen)
         window = values[offset : offset + limit]
         # Bound the page by encoded size too, and this one bites the soonest:
@@ -900,7 +948,7 @@ class ApkClient:
         # ~400 KB -- well past the budget -- before the row count ever caps. See
         # classes().
         window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
-        return {
+        result: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
@@ -908,6 +956,11 @@ class ApkClient:
             "has_more": offset + len(window) < len(values),
             "scan_capped": scan_more,
         }
+        if needle is not None:
+            # total now counts only matching strings; flag the narrowing so a
+            # filtered page is not read as the whole string pool. See classes().
+            result["filtered"] = True
+        return result
 
     def xrefs(
         self,
