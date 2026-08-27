@@ -2,38 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_ENTRIES
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service_device import (
-    _MAX_DEVICE_ARTIFACTS,
     DeviceAnalysisMixin,
-    prune_device_artifacts,
     refuse_oversized_device_file,
 )
-
-
-def test_prune_keeps_only_the_newest_captures(tmp_path: Path) -> None:
-    directory = tmp_path / "device"
-    directory.mkdir()
-    for index in range(80):
-        path = directory / f"screenshot-{index:03d}.png"
-        path.write_bytes(b"x" * 256 * 1024)
-        # Distinct mtimes so "newest" is the highest index, not a tie.
-        os.utime(path, (index + 1, index + 1))
-
-    prune_device_artifacts(directory, keep=32)
-
-    left = sorted(path.name for path in directory.iterdir())
-    assert len(left) == 32
-    assert left[0] == "screenshot-048.png"
-    assert left[-1] == "screenshot-079.png"
-    total = sum(path.stat().st_size for path in directory.iterdir())
-    assert total == 32 * 256 * 1024
 
 
 class _Harness(DeviceAnalysisMixin):
@@ -52,7 +31,10 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
     """80 shots of 256 KiB left 20.0 MiB. Retention never saw them.
 
     Device tools key by serial; the artifact table needs a session_id, so
-    these files are not registered. The directory itself has to be the bound.
+    these files are not registered. The directory itself has to be the bound,
+    enforced in place by prune_capped_dir against the shared unregistered-capture
+    caps (this asserts the real production limit, not a device-local mirror of
+    it that could silently drift).
     """
     harness = _Harness(tmp_path)
     for _ in range(80):
@@ -61,9 +43,9 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
 
     directory = tmp_path / "device"
     files = list(directory.iterdir())
-    assert len(files) == _MAX_DEVICE_ARTIFACTS
+    assert len(files) == UNREGISTERED_CAPTURE_MAX_ENTRIES
     total = sum(path.stat().st_size for path in files)
-    assert total == _MAX_DEVICE_ARTIFACTS * 256 * 1024
+    assert total == UNREGISTERED_CAPTURE_MAX_ENTRIES * 256 * 1024
 
 
 @pytest.mark.parametrize(
