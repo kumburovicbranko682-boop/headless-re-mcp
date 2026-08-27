@@ -134,9 +134,40 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     assert payload["truncated"] is True
     assert payload["package"] == "com.example.app"
     assert len(payload["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    # bytes is the full document, so it exceeds the inlined prefix's cap; a
+    # truncated manifest is then read as "there is this much more", not whole.
+    assert payload["bytes"] == len(_ManifestBody().get_xml())
+    assert payload["bytes"] > _MAX_MANIFEST_CHARS
     doc = _tool_docstring("apk.manifest")
     assert "manifest_xml" in doc
     assert "truncated" in doc
+    assert "bytes" in doc
+
+
+class _SmallMultibyteManifest:
+    """A short manifest whose characters are multi-byte in UTF-8."""
+
+    def get_android_manifest_axml(self) -> _SmallMultibyteManifest:
+        return self
+
+    def get_xml(self) -> bytes:
+        # 3 chars, 9 UTF-8 bytes: bytes must count encoding, not characters.
+        return "\u4f60\u597d\u554a".encode()
+
+    def get_package(self) -> str:
+        return "com.example.app"
+
+
+def test_apk_manifest_bytes_counts_utf8_not_characters(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A small manifest stays inline, and bytes reflects UTF-8, not char count."""
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _SmallMultibyteManifest())
+    payload = client.manifest(tmp_path / "app.apk")
+    assert payload["truncated"] is False
+    assert payload["manifest_xml"] == "\u4f60\u597d\u554a"
+    assert payload["bytes"] == 9
 
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:

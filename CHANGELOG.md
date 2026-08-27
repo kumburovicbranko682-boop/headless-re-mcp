@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.manifest` 现在交代被截断的清单到底有多大）
+
+- `apk.manifest` 把解码后的清单 XML 切到 20 万字符,只回一个 `truncated` 布尔。于是一份被切的清单——
+  不管丢了 1 KB 还是 1 MB——回来长一个样;而被切掉的尾部往往正是 `<application>` 下的
+  activity/service/receiver 声明,逆向者最想看的部分。调用方无从判断自己少看了多少。
+- 现在回包新增 `bytes`(整份清单的 UTF-8 字节数),与 `web.script.source`、`frida.memory.read` 等
+  一致的「我少看了多少」信号:`manifest_xml` 是前缀,`bytes` 是全量大小,`truncated` 为真时二者之差即
+  被丢弃的量。字节数按 UTF-8 计而非字符数(多字节清单不会把 3 个汉字数成 3 字节)。未超上限时行为不变。
+- 新增回归:超限清单回 `bytes` 且大于内联上限、`manifest_xml` 仍为定长前缀,以及多字节小清单内联不截断
+  且 `bytes` 按 UTF-8(9 字节)而非字符数(3)计。`apk.manifest` 描述点名 `bytes`。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
