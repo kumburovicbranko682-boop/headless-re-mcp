@@ -50,9 +50,16 @@ _SITE_HTML = (
     "<body>hello-net</body></html>"
 )
 _SITE_JS_MARKER = "net-gate-marker-9449"
-_SITE_JS = f"console.log('net-gate-ready'); window.__netgate = '{_SITE_JS_MARKER}';\n"
+# The fetch to /redir (302 -> /redir-target) makes the browser walk a redirect,
+# which is how the HAR redirect-chain capture is exercised end to end.
+_SITE_JS = (
+    f"console.log('net-gate-ready'); window.__netgate = '{_SITE_JS_MARKER}';"
+    "fetch('/redir').then(()=>{window.__redirdone=1;}).catch(()=>{});\n"
+)
 _SITE_COOKIE_NAME = "netgate"
 _SITE_COOKIE_VALUE = "chip-9449"
+_REDIR_PATH = "/redir"
+_REDIR_TARGET = "/redir-target"
 
 
 class _GateHandler(BaseHTTPRequestHandler):
@@ -60,6 +67,20 @@ class _GateHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _REDIR_PATH:
+            self.send_response(302)
+            self.send_header("Location", _REDIR_TARGET)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == _REDIR_TARGET:
+            body = b"redir-ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         is_js = self.path == "/app.js"
         if is_js:
             body, ctype = _SITE_JS.encode("utf-8"), "application/javascript"
@@ -341,7 +362,12 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                         return False
                     jc = {c["name"] for c in js["request"]["cookies"]}
                     dc = {c["name"] for c in doc["response"]["cookies"]}
-                    return _SITE_COOKIE_NAME in jc and _SITE_COOKIE_NAME in dc
+                    redirected = any(
+                        e["request"]["url"].endswith(_REDIR_PATH)
+                        and e["response"]["status"] == 302
+                        for e in log["entries"]
+                    )
+                    return _SITE_COOKIE_NAME in jc and _SITE_COOKIE_NAME in dc and redirected
 
                 log = _poll(_export_log, _cookies_present)
                 assert log["version"] == "1.2", log
@@ -419,6 +445,25 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                     c for c in doc_entry["response"]["cookies"] if c["name"] == _SITE_COOKIE_NAME
                 )
                 assert doc_cookie.get("path") == "/", doc_cookie
+
+                # The redirect chain is captured as its own hop: the fetch to
+                # /redir is a 302 whose redirectURL points at the target, kept as
+                # a distinct entry rather than overwritten by the redirect target.
+                redir_hop = next(
+                    (
+                        e
+                        for e in log["entries"]
+                        if e["request"]["url"].endswith(_REDIR_PATH)
+                        and e["response"]["status"] == 302
+                    ),
+                    None,
+                )
+                assert redir_hop is not None, [
+                    (e["request"]["url"], e["response"]["status"]) for e in log["entries"]
+                ]
+                assert redir_hop["response"]["redirectURL"].endswith(_REDIR_TARGET), redir_hop[
+                    "response"
+                ]["redirectURL"]
             finally:
                 service.web_close(session_id)
         finally:
