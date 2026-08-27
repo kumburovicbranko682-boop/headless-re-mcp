@@ -61,6 +61,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`artifacts.read` 分页却不给 `has_more`,一页填满被当成读完了）
+
+- `artifacts.read` 是整个工具面上**唯一**分页却不回 `has_more` 的读取器:它只回 `size`(整件大小),
+  把「这一页是不是全部」的判断甩给调用方——得先把 `data` 的十六进制解码、数出字节数、再和 `size`
+  一比才知道。别的分页读取器(`timeline.list`、`web.*`、`proxy.flows`、`apk.*`)一律显式回 `has_more`,
+  正是为了「填满一页别当成读完」。可 spilled body / HAR / 反编译产物 / 内存转储都靠 `artifacts.read`
+  取回:一个无人值守的分页器拿默认 4 KiB 上限去读 200 MB 转储,看到 `data`、没有 `has_more`,就在文件头
+  停下,以为读全了——正是这一层本该杜绝的陷阱。
+- 现在结果多回两个字段:`bytes_returned`(本页实际字节数——`limit` 只是「请求」,末页短于它)与
+  `has_more`(`offset + bytes_returned < size` 时为真)。调用方据 `bytes_returned` 推进 `offset` 无需解码,
+  据 `has_more` 判断是否续读,与全面其它读取器一致。读到 EOF 或越过 EOF 时 `bytes_returned=0`、`has_more=false`,
+  不误报「还有」;一页读完整件时 `has_more=false`。`artifacts.read` 描述点名 `size`/`bytes_returned`/`has_more`
+  三者语义,并让调用方「一直翻到 `has_more` 为 false」取回全文。
+- 新增回归:100 字节的件按 40/40/20 三页读,前两页 `has_more=true`、末页 `bytes_returned=20` 且
+  `has_more=false`;`offset=100`(EOF)与 `offset=250`(越界)均 `bytes_returned=0`、`has_more=false`;一页读满
+  100 字节 `has_more=false`;并断言描述里点名 `has_more` 与 `bytes_returned`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
