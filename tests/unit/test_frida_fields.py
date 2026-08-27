@@ -80,54 +80,91 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert "has_more" in doc
 
 class _ExportApi:
+    """Mirror the injected script: cap items at the limit, report the real total.
+
+    ``total`` reflects the whole export table (enumerateExports already walked
+    it), independent of the page size the caller asked for.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+
     def exports(self, name: str, count: int) -> dict[str, Any]:
+        returned = min(int(count), self._total)
         return {
             "found": True,
             "module": name,
             "base": "0x1",
             "exports": [
                 {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
+                for index in range(returned)
             ],
+            "total": self._total,
         }
 
 
-class _ExportScript:
-    exports_sync = _ExportApi()
-
-    def load(self) -> None:
-        return None
-
-
-class _ExportSession:
-    def create_script(self, source: str) -> _ExportScript:
-        return _ExportScript()
-
-    def detach(self) -> None:
-        return None
-
-
-class _ExportFrida:
-    def attach(self, pid: int) -> _ExportSession:
-        return _ExportSession()
+def _export_client(total: int) -> FridaClient:
+    script = type("_S", (), {"exports_sync": _ExportApi(total), "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    frida = type("_F", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    return client
 
 
 def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     """The catalog named found, module, base and exports, and stopped there.
 
-    Measured: 11 exports requested for a page of 10 -> count 10, has_more
-    True. An overnight pass that treated exports as the whole table had no
-    field to notice the rest.
+    Measured: a 40-export table paged at 10 -> count 10, has_more True, and
+    total 40 so a caller knows how much is left. modules already reports its
+    total; exports left the caller unable to tell 40 exports from 4000.
     """
-    client = FridaClient()
-    client._available = True
-    client._frida = _ExportFrida()
+    client = _export_client(40)
     payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
     assert payload["count"] == 10
     assert len(payload["exports"]) == 10
     assert payload["has_more"] is True
+    assert payload["total"] == 40
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "total" in doc
+
+
+def test_frida_exports_reports_total_and_no_more_when_the_table_fits() -> None:
+    """A table smaller than the limit returns every export, has_more False, and
+    a total equal to the count -- not a total silently equal to the page."""
+    client = _export_client(6)
+    payload = client.exports(1, "libc.so", allowed_pid=1, limit=64)
+    assert payload["count"] == 6
+    assert payload["total"] == 6
+    assert payload["has_more"] is False
+
+
+def test_frida_exports_degrades_when_an_older_script_omits_total() -> None:
+    """An injected script without the field must not raise; total is dropped."""
+
+    class _NoTotal:
+        def exports(self, name: str, count: int) -> dict[str, Any]:
+            del count
+            return {"found": True, "module": name, "base": "0x1", "exports": []}
+
+    script = type("_S", (), {"exports_sync": _NoTotal(), "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    client = FridaClient()
+    client._available = True
+    client._frida = type("_F", (), {"attach": lambda self, pid: session})()
+    payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
+    assert "total" not in payload
+    assert payload["found"] is True
 
 
 class _Dev:

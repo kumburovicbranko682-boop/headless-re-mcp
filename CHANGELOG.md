@@ -71,6 +71,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（frida.exports 补齐 total,与 frida.modules 对齐)
+
+- `frida.exports` 此前只回 `count` 与 `has_more`:调用方知道「还有」,却无从得知这个模块到底有
+  多少导出,只能盲翻下一页。而 `frida.modules` 早已返回 `total`。注入脚本里 `enumerateExports()`
+  本就把整张表走了一遍,`all.length` 是白得的真实总数——现在脚本连同 `total` 一起返回(未找到
+  模块时为 0),Python 端按 `modules` 的做法把它透出;类型有守卫,旧脚本缺该字段时降级回原形状
+  而非报错。回归测试覆盖分页(40 项按 10 翻,total=40)、整表放得下(total 等于 count 而非页
+  大小)、以及旧脚本无 total 时的降级。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
