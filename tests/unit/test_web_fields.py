@@ -175,6 +175,44 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+class _RecordingCdp:
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, method: str) -> None:
+        del method
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+def test_web_capture_flags_a_request_that_carried_a_body() -> None:
+    """A POST with a body must be marked; a bodyless GET must not be.
+
+    Measured: requestWillBeSent with hasPostData -> entry has_post_data True;
+    the same event without it -> no has_post_data key, so its absence cleanly
+    means "no request body", and web.network.get knows when to fetch one.
+    """
+    cdp = _RecordingCdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "p1",
+         "request": {"url": "https://a.test/login", "method": "POST", "hasPostData": True},
+         "type": "XHR"}
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "g1",
+         "request": {"url": "https://a.test/home", "method": "GET"},
+         "type": "Document"}
+    )
+    assert handle.requests["p1"]["has_post_data"] is True
+    assert "has_post_data" not in handle.requests["g1"]
+    doc = _tool_docstring("web.network.list")
+    assert "has_post_data" in doc
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

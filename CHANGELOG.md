@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 补回请求体——实际 POST 了什么）
+
+- web 抓包此前只能拿到响应体:`network.get` 走 `Network.getResponseBody`,而请求负载
+  (POST/PUT 实际发出去的内容)完全没有出口。逆向一个 Web API 时,"实际 POST 了什么"和响应
+  同等重要——代理侧早就把这条当作诚实性问题补齐了,web 侧却拿不到,列表里连"这条请求带了
+  body"都看不出来。现 `on_request` 读 `hasPostData`,给带体的请求在条目上置 `has_post_data`
+  (`network.list` 一并回出);`network.get` 据此按需取 `Network.getRequestPostData`,把请求体
+  以与响应体相同的内联/溢写/截断规则回成 `request_body`/`request_body_truncated`/
+  `request_body_path`,CDP 已丢弃时回 `request_body_error`(告诉过调用方有 body,就不能再静默
+  抹掉)。CDP 的请求 post data 只有纯字符串、无 base64 标志,故请求体从不按 base64 处理;无体的
+  GET 不带任何 `request_body*` 键。文档串同步说明,并新增直测:带体请求回 `has_post_data` /
+  `request_body`、请求体被丢弃回 `request_body_error`、无体 GET 无 `request_body*` 键。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
