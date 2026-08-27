@@ -69,6 +69,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`。安全性质（不在 artifact 根外建目录）在两个平台都成立；这次让「非法输入」
   在所有平台得到一致的拒绝码。
 
+### 修复（守卫与 Linux 平台支持对齐）
+
+- 随 Linux 核心支持一起落地的若干契约变更此前漏更了对应测试守卫，导致 CI（Windows 与 Linux
+  单测）双双变红。对齐如下，均为守卫/桩数据更新，不改运行时行为：能力目录 `ui.win32` 已从
+  「无探针恒 ready」改为由真实 `win32_ui` 探针驱动（Linux 上如实报不支持），测试改以探针状态
+  表达就绪并单测保留 `status_probe=None → ready` 规则；`config generate` 就绪判定新增
+  `platform` 必需探针，测试桩补上它；README 头部工具计数句式重写后更新其一致性正则；
+  监控台 `pick-file` 路由改用共享的 `is_windows_host()`，测试改为打桩该函数而非进程级 `os`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
