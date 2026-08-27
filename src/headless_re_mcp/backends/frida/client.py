@@ -123,6 +123,16 @@ rpc.exports = {
     // runtime. The pointer method has existed since frida 12, so this works on
     // the whole >=16.5 range the android extra pins.
     return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
+  },
+  module_by_address: function (address) {
+    // address arrives as a hex string so a 64-bit pointer survives the RPC
+    // hop intact: frida marshals numbers as JS doubles, which lose precision
+    // above 2^53, and userspace pointers on arm64 already reach ~0x7f_ffff_ffff.
+    var m = Process.findModuleByAddress(ptr(address));
+    if (m === null) {
+      return {found: false};
+    }
+    return {found: true, name: m.name, base: m.base.toString(), size: m.size, path: m.path};
   }
 };
 """
@@ -421,6 +431,46 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def module_by_address(self, pid: int, address: int, *, allowed_pid: int) -> JsonObject:
+        self._require(pid, allowed_pid)
+        if type(address) is not int or address <= 0:
+            raise FridaError("invalid_params", "address must be a positive integer")
+        session = self._attach_local(pid)
+        try:
+            script = session.create_script(_ENUM_SCRIPT)
+            script.load()
+            raw = script.exports_sync.module_by_address(hex(address))
+            if not isinstance(raw, dict):
+                raise FridaError("backend_error", "unexpected frida module_by_address payload")
+            if not raw.get("found"):
+                # Not an error: the address is real but maps to anonymous, stack
+                # or heap memory that belongs to no loaded module. Say so plainly
+                # rather than raising, so the caller can tell "no module here"
+                # from "the probe failed".
+                return {"found": False, "address": address}
+            base_str = str(raw.get("base") or "")
+            try:
+                base_int = int(base_str, 16) if base_str.lower().startswith("0x") else int(base_str)
+            except (TypeError, ValueError):
+                base_int = 0
+            result: JsonObject = {
+                "found": True,
+                "address": address,
+                "module": str(raw.get("name", "")),
+                "base": base_str,
+                "size": int(raw.get("size", 0) or 0),
+                "path": str(raw.get("path", "")),
+            }
+            # offset is what makes a raw pointer usable against a disassembly:
+            # skip it only if the base failed to parse, rather than emit a
+            # misleading offset computed from a zero base.
+            if base_int:
+                result["offset"] = address - base_int
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

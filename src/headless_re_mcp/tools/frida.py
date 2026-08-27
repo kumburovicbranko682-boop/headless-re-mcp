@@ -67,6 +67,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
+    @tools.tool(name="frida.module_by_address")
+    def frida_module_by_address(
+        session_id: str,
+        address: Annotated[int, Field(ge=1)],
+    ) -> dict[str, Any]:
+        """Resolve one absolute address to its containing module in the session debuggee.
+
+        Given a raw pointer (say one seen in frida.memory.read output, an export
+        address, or a hook argument), answers with found; when found also module,
+        base, size, path and offset (address minus module base) so the pointer
+        maps onto a disassembly. found is false when the address is valid but
+        belongs to anonymous, stack or heap memory with no loaded module -- a
+        real answer, not an error. Uses a short-lived Frida probe limited to the
+        debuggee pid.
+        """
+        return _dump(analysis.frida_module_by_address(session_id, address))
+
     @tools.tool(name="frida.hook.template")
     def frida_hook_template(
         session_id: str,

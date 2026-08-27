@@ -130,6 +130,100 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _AddrApi:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+        self.seen: Any = None
+
+    def module_by_address(self, address: Any) -> dict[str, Any]:
+        self.seen = address
+        return dict(self._payload)
+
+
+def _addr_client(payload: dict[str, Any]) -> tuple[FridaClient, _AddrApi]:
+    api = _AddrApi(payload)
+    script = type("_S", (), {"exports_sync": api, "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    frida = type("_F", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    return client, api
+
+
+def test_frida_module_by_address_reports_module_and_offset() -> None:
+    """A raw pointer resolves to its module plus the offset into it.
+
+    Measured: address 0x1234 in a module based at 0x1000 -> found True,
+    module libfoo.so, offset 0x234. offset is what maps the pointer onto a
+    disassembly; a reply that named only the module would leave the agent to
+    recompute it by hand.
+    """
+    payload = {
+        "found": True,
+        "name": "libfoo.so",
+        "base": "0x1000",
+        "size": 0x800,
+        "path": "/data/app/libfoo.so",
+    }
+    client, api = _addr_client(payload)
+    result = client.module_by_address(1, 0x1234, allowed_pid=1)
+    assert result["found"] is True
+    assert result["module"] == "libfoo.so"
+    assert result["base"] == "0x1000"
+    assert result["size"] == 0x800
+    assert result["path"] == "/data/app/libfoo.so"
+    assert result["offset"] == 0x1234 - 0x1000
+    assert result["address"] == 0x1234
+    # The address crossed the RPC as a hex string so a 64-bit pointer keeps its
+    # precision instead of being rounded through a JS double.
+    assert isinstance(api.seen, str)
+    assert api.seen.lower().startswith("0x")
+    doc = _tool_docstring("frida.module_by_address")
+    assert "found" in doc
+    assert "offset" in doc
+
+
+def test_frida_module_by_address_reports_no_module_as_found_false() -> None:
+    """An address in anonymous/stack/heap memory is a real answer, not an error.
+
+    Measured: findModuleByAddress returned null -> found False with the
+    address echoed and no module/offset. An agent can tell "no module here"
+    from "the probe failed", instead of reading a raised error either way.
+    """
+    client, _ = _addr_client({"found": False})
+    result = client.module_by_address(1, 0x7FFFDEAD, allowed_pid=1)
+    assert result["found"] is False
+    assert result["address"] == 0x7FFFDEAD
+    assert "module" not in result
+    assert "offset" not in result
+
+
+def test_frida_module_by_address_omits_offset_when_base_will_not_parse() -> None:
+    """A base that will not parse drops offset rather than emitting a zero-based one."""
+    client, _ = _addr_client(
+        {"found": True, "name": "m", "base": "not-a-pointer", "size": 1, "path": ""}
+    )
+    result = client.module_by_address(1, 0x2000, allowed_pid=1)
+    assert result["found"] is True
+    assert result["base"] == "not-a-pointer"
+    assert "offset" not in result
+
+
+def test_frida_module_by_address_rejects_a_nonpositive_address() -> None:
+    client, _ = _addr_client(
+        {"found": True, "name": "x", "base": "0x1", "size": 1, "path": ""}
+    )
+    for bad in (0, -1):
+        with pytest.raises(FridaError) as caught:
+            client.module_by_address(1, bad, allowed_pid=1)
+        assert caught.value.code == "invalid_params"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

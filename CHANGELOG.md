@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,17 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（`frida.module_by_address` 按地址解析所属模块）
+
+- 新增只读工具 `frida.module_by_address`：给一个绝对地址（`frida.memory.read` 里看到的指针、
+  某个导出地址或 hook 参数），用短命 Frida 探针经 `Process.findModuleByAddress` 解析出它落在
+  哪个已加载模块里。命中回 `found` 加 `module`、`base`、`size`、`path` 以及 `offset`
+  （地址减模块基址）——`offset` 才是把裸指针对上反汇编的关键；`base` 解析失败时宁可省略
+  `offset` 也不拿零基址算出误导值。地址落在匿名/栈/堆等无模块内存时回 `found=false` 并带上
+  `address`，这是如实答案而非报错，调用方据此能把「这里没有模块」与「探针失败」区分开。
+  地址以十六进制字符串过 RPC，避免 64 位指针在 frida 的 JS double 序列化里丢精度。仅限会话
+  debuggee pid。Android/Web 动态线的 Frida 工具随之 12 → 13。
 
 ### 新增（监控台工作台）
 
