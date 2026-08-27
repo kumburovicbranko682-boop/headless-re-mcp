@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -581,6 +581,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   调试与工具元数据的途径。返回 `sections/count/total/offset/has_more`，`total` 上限 5000、越限置
   `scan_capped`；`truncated` 在某段声明的大小越过模块尾部或某长度畸形时为 true（已读到的段——含那段
   短段——照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.names`：纯 Python 解析 .wasm 的 `name` 自定义段（模块的符号表），**不需要 wabt**，把
+  函数索引还原成源码名——是读 `_malloc` 还是读 `func[214]` 的区别。补足 `wasm.sections`（只报告存在
+  `name` 段）与 `wasm.exports`（只给模块选择导出的少数名字）。返回 `has_name_section`（stripped 模块
+  为 false，此时 `functions` 空、`total` 0，而非报错）、`module`（模块自己的名字，或 null），与
+  `functions`——一页 `{index, name}`，`index` 是函数索引空间里的位置（先数导入函数、符合 WASM 规范）。
+  只提取 module（子段 0）与 function（子段 1）名表，local/label 名跳过。返回
+  `count/total/offset/has_more`，`total` 上限 50000、越限置 `scan_capped`；`truncated` 在某子段声明的
+  大小越过段尾或某长度畸形时为 true（已读到的名字照常返回）。非 WebAssembly 文件按 `invalid_params`
+  拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

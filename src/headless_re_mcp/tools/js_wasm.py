@@ -149,6 +149,35 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Recover a WebAssembly module's debug names (its symbol table), wabt-free.
+
+        The optional "name" custom section is a module's symbol table: it maps
+        function indices to source names, the difference between reading _malloc
+        and reading func[214]. This parses it in pure Python, so unlike wasm.info
+        / wasm.wat it needs no wabt installed, and it complements wasm.sections
+        (which only reports that a "name" section exists) and wasm.exports (which
+        shows only the handful of names the module chose to expose). Answers with
+        has_name_section (false for a stripped module -- then functions is empty
+        and total 0, not an error), module (the module's own name, or null), and
+        functions, a page of {index, name} where index is the position in the
+        function index space (imported functions counted first, per the WASM
+        spec). Only the module (subsection 0) and function (subsection 1) name
+        maps are surfaced; local and label names are skipped. Answers with count,
+        total, offset and has_more so a filled page is not read as every name;
+        total is capped at 50000 with scan_capped when more may exist, and
+        truncated is true when a subsection's declared size runs past the section
+        or a length is malformed (names read so far are still returned). A file
+        that is not a WebAssembly module is refused as invalid_params, one over
+        16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.sections")
     def wasm_sections(
         path: str,

@@ -78,6 +78,14 @@ _WASM_SECTION_NAMES = {
 _WASM_VEC_SECTION_IDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12})
 _MAX_WASM_SECTIONS_COLLECT = 5000
 _MAX_WASM_SECTIONS_PAGE = 1000
+# wasm.names reads the "name" custom section, the module's debug symbol table.
+# Its subsections id 0 (module name) and 1 (function namemap) are the useful
+# ones; the collect cap is larger because a symbolized module names thousands
+# of functions.
+_WASM_NAME_SUBSEC_MODULE = 0
+_WASM_NAME_SUBSEC_FUNCTION = 1
+_MAX_WASM_NAMES_COLLECT = 50000
+_MAX_WASM_NAMES_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -500,6 +508,131 @@ def parse_wasm_sections(path: Path, *, offset: int = 0, limit: int = 100) -> Jso
         "total": len(rows),
         "offset": start,
         "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _find_custom_section(raw: bytes, want: str) -> tuple[bytes | None, bool]:
+    """Return (body_after_name, truncated) for the first custom section named want.
+
+    body_after_name is the section content that follows the section's own name
+    string, i.e. the bytes a subsection parser should read. None means no such
+    custom section was found; truncated is set if the walk hit a section whose
+    declared size ran past the module.
+    """
+    truncated = False
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            end = pos + size
+            if end > total:
+                truncated = True
+                break
+            if sec_id == 0:
+                name, name_end = _read_wasm_name(raw, pos)
+                if name == want:
+                    return raw[name_end:end], truncated
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    return None, truncated
+
+
+def _parse_namemap(data: bytes, rows: list[JsonObject]) -> bool:
+    """Fill rows with {index, name} from a namemap; return True if the cap was hit."""
+    count, pos = _read_uleb(data, 0)
+    for _ in range(count):
+        if len(rows) >= _MAX_WASM_NAMES_COLLECT:
+            return True
+        idx, pos = _read_uleb(data, pos)
+        name, pos = _read_wasm_name(data, pos)
+        rows.append({"index": idx, "name": name})
+    return False
+
+
+def _parse_name_section(
+    body: bytes,
+) -> tuple[str | None, list[JsonObject], bool, bool]:
+    """Parse a name section body; return (module, func_rows, scan_more, truncated)."""
+    module_name: str | None = None
+    func_rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        pos = 0
+        total = len(body)
+        while pos < total:
+            sub_id = body[pos]
+            pos += 1
+            sub_size, pos = _read_uleb(body, pos)
+            sub_end = pos + sub_size
+            if sub_end > total:
+                return module_name, func_rows, scan_more, True
+            if sub_id == _WASM_NAME_SUBSEC_MODULE:
+                module_name, _ = _read_wasm_name(body, pos)
+            elif sub_id == _WASM_NAME_SUBSEC_FUNCTION:
+                scan_more = _parse_namemap(body[pos:sub_end], func_rows)
+            pos = sub_end
+    except _WasmParseError:
+        return module_name, func_rows, scan_more, True
+    return module_name, func_rows, scan_more, False
+
+
+def parse_wasm_names(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Recover a WebAssembly module's debug names (its symbol table), wabt-free.
+
+    The optional "name" custom section is a module's symbol table: it maps
+    function indices to source names, and the difference between reading _malloc
+    and reading func[214]. This parses it in pure Python, so unlike wasm.info /
+    wasm.wat it needs no wabt installed, and it complements wasm.sections (which
+    only reports that a "name" section exists) and wasm.exports (which shows
+    only the handful of names the module chose to expose). Answers with
+    has_name_section (false for a stripped module -- then functions is empty and
+    total 0, not an error), module (the module's own name, or null), and
+    functions, a page of {index, name} where index is the position in the
+    function index space (imported functions counted first, per the WASM spec).
+    Only the module (subsection 0) and function (subsection 1) name maps are
+    surfaced; local and label names are skipped. Returns count, total, offset
+    and has_more so a filled page is not read as every name; total is capped at
+    50000 with scan_capped when more may exist, and truncated is true when a
+    subsection's declared size runs past the section or a length is malformed
+    (names read so far are still returned). A file that is not a WebAssembly
+    module is refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    body, truncated = _find_custom_section(raw, "name")
+    module_name: str | None = None
+    func_rows: list[JsonObject] = []
+    scan_more = False
+    has_name_section = body is not None
+    if body is not None:
+        module_name, func_rows, scan_more, body_truncated = _parse_name_section(body)
+        truncated = truncated or body_truncated
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_NAMES_PAGE))
+    window = func_rows[start : start + cap]
+    return {
+        "module": module_name,
+        "has_name_section": has_name_section,
+        "functions": window,
+        "count": len(window),
+        "total": len(func_rows),
+        "offset": start,
+        "has_more": start + len(window) < len(func_rows),
         "scan_capped": scan_more,
         "truncated": truncated,
     }
