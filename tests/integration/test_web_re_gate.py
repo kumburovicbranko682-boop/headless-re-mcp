@@ -7,6 +7,8 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -77,10 +79,42 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # The fixture hides "H3adl3ss" behind a rotated array of \x-escaped
+        # strings and reaches members through _0xarr["split"] indirection.
+        # Deobfuscation that actually ran restores the literal and the plain
+        # member names; a pass that merely reprinted the source would not.
+        assert "H3adl3ss" in code, code
+        for member in ("charCodeAt", "split", "reduce"):
+            assert member in code, code
     finally:
         service.close_all()
+
+
+def _assemble_wasm(tmp_path: Path) -> Path | None:
+    """Assemble a one-function module with wat2wasm, or None if it is absent."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        return None
+    wat = tmp_path / "add.wat"
+    wat.write_text(
+        '(module (func $add (export "add") '
+        "(param i32 i32) (result i32) local.get 0 local.get 1 i32.add))",
+        encoding="utf-8",
+    )
+    module = tmp_path / "add.wasm"
+    try:
+        subprocess.run(
+            [wat2wasm, str(wat), "-o", str(module)],
+            check=True,
+            capture_output=True,
+            timeout=60.0,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    return module if module.is_file() else None
 
 
 @pytest.mark.integration
@@ -95,5 +129,34 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
         assert "module" in result.data["wat"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_wat_and_info_recover_a_real_function(tmp_path: Path) -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
+    module = _assemble_wasm(tmp_path)
+    if module is None:
+        pytest.skip("wat2wasm not available to assemble a fixture — skip != pass")
+    service = AnalysisService()
+    try:
+        wat = service.wasm_wat(str(module))
+        assert wat.ok, wat.error
+        text = wat.data["wat"]
+        # The disassembly must show the function, its export, and the opcode --
+        # not just that the file parsed as a module.
+        assert "(func" in text
+        assert "i32.add" in text
+        assert "add" in text
+
+        info = service.wasm_info(str(module))
+        assert info.ok, info.error
+        dump = info.data["objdump"]
+        # wasm-objdump enumerates the sections and resolves the export name.
+        assert "Type" in dump
+        assert "Export" in dump
+        assert "add" in dump
     finally:
         service.close_all()
