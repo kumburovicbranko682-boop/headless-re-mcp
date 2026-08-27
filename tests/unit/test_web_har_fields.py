@@ -42,6 +42,9 @@ class _Handle:
             "resourceType": "XHR",
             "request_headers": {"Authorization": "Bearer t"},
             "response_headers": {"Content-Type": "text/plain", "Set-Cookie": "s=1"},
+            "response_size": 1500,
+            "response_encoded_size": 600,
+            "transfer_size": 720,
         }
     }
 
@@ -99,3 +102,8 @@ def test_web_har_export_is_conformant_and_carries_headers(
     assert resp_headers["Set-Cookie"] == "s=1"
     query = {q["name"]: q["value"] for q in req["queryString"]}
     assert query == {"a": "1", "b": "2"}
+    # The captured sizes must reach the HAR: content.size is the decoded body,
+    # bodySize the on-wire body, and _transferSize the total transfer.
+    assert resp["content"]["size"] == 1500
+    assert resp["bodySize"] == 600
+    assert entry["_transferSize"] == 720

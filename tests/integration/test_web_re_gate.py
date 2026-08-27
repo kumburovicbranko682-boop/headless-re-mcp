@@ -291,6 +291,25 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             assert "json" in resp_headers.get("content-type", "")
             assert "response_headers" not in request, "the list row must omit headers"
 
+            # The response size is accrued from dataReceived/loadingFinished,
+            # which land after responseReceived, so poll until the flow finished
+            # and assert the decoded body size matches the bytes we served.
+            def _data_sized() -> dict[str, Any] | None:
+                for candidate in service.web_network_list(session_id, limit=1000).data[
+                    "requests"
+                ]:
+                    if str(candidate.get("url", "")).endswith("/data.json") and candidate.get(
+                        "response_size"
+                    ) is not None:
+                        return candidate
+                return None
+
+            sized = _poll(_data_sized)
+            assert sized is not None, "the /data.json response size was never captured"
+            assert sized["response_size"] == len(_LOCAL_DATA_JSON)
+            assert sized.get("finished") is True
+            assert int(sized.get("transfer_size", 0)) >= len(_LOCAL_DATA_JSON)
+
             # The POST payload the page sent is what an API reverser is after;
             # assert network_get hands back the request body, not just responses.
             def _login_request() -> dict[str, Any] | None:
@@ -365,12 +384,14 @@ def test_web_cdp_screenshot_and_har_export() -> None:
                     f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
                 )
 
-            # Wait for a subresource so the HAR has more than the top document.
+            # Wait for the subresource to finish (size accrued), so the HAR has
+            # more than the top document and its content.size is populated.
             def _data_seen() -> bool:
                 listing = service.web_network_list(session_id, limit=1000)
                 assert listing.ok, listing.error
                 return any(
                     str(r.get("url", "")).endswith("/data.json")
+                    and r.get("response_size") is not None
                     for r in listing.data["requests"]
                 )
 
@@ -416,6 +437,10 @@ def test_web_cdp_screenshot_and_har_export() -> None:
             assert resp_headers.get("x-gate-marker") == "webre-gate-header", (
                 "the HAR did not carry the captured response header"
             )
+            # The captured response size must reach HAR content.size, not the
+            # old hardcoded 0, so a viewer shows a real payload size.
+            assert data_entry["response"]["content"]["size"] == len(_LOCAL_DATA_JSON)
+            assert int(data_entry.get("_transferSize", 0)) >= len(_LOCAL_DATA_JSON)
         finally:
             service.close_all()
 

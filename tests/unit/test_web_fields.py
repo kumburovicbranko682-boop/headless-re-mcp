@@ -228,6 +228,65 @@ def test_web_loading_failed_marks_the_request_instead_of_leaving_it_pending() ->
     assert "error_text" in doc
 
 
+def test_web_accumulates_response_sizes_from_data_and_loading_finished() -> None:
+    """Chunked dataReceived + loadingFinished must yield the response's size.
+
+    Without them a captured response has no size at all -- network.list can't
+    flag a heavy response and the HAR reports content.size 0. Fire two body
+    chunks and a finish the way Chromium does and assert the decoded and
+    on-wire body sizes sum and the transfer total is kept, and that a chunk for
+    an evicted request id is ignored rather than crashing.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    assert "Network.dataReceived" in cdp.handlers
+    assert "Network.loadingFinished" in cdp.handlers
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://x/big.json", "method": "GET"},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.dataReceived"](
+        {"requestId": "r1", "dataLength": 1000, "encodedDataLength": 400}
+    )
+    cdp.handlers["Network.dataReceived"](
+        {"requestId": "r1", "dataLength": 500, "encodedDataLength": 200}
+    )
+    cdp.handlers["Network.loadingFinished"](
+        {"requestId": "r1", "encodedDataLength": 720}
+    )
+    # A stray chunk for an evicted/unknown id must not raise or resurrect it.
+    cdp.handlers["Network.dataReceived"](
+        {"requestId": "ghost", "dataLength": 9, "encodedDataLength": 9}
+    )
+
+    entry = handle.requests["r1"]
+    assert entry["response_size"] == 1500
+    assert entry["response_encoded_size"] == 600
+    assert entry["transfer_size"] == 720
+    assert entry["finished"] is True
+    assert "ghost" not in handle.requests
+    doc = _tool_docstring("web.network.list")
+    assert "response_size" in doc
+    assert "transfer_size" in doc
+
+
 def test_web_captures_bounded_request_and_response_headers() -> None:
     """Headers (auth, cookies, content type) must be captured and bounded.
 

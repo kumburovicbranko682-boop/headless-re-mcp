@@ -543,6 +543,37 @@ class WebBackend:
                     if err_truncated or blocked_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_data_received(params: JsonObject) -> None:
+            # CDP streams the body in chunks; summing the chunk lengths is the
+            # only way to know a response's size without fetching the whole
+            # body. dataLength is the decoded (post-gzip) size, encodedDataLength
+            # the bytes actually on the wire.
+            data_len = params.get("dataLength")
+            enc_len = params.get("encodedDataLength")
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is None:
+                    return
+                if isinstance(data_len, int) and data_len >= 0:
+                    entry["response_size"] = int(entry.get("response_size", 0)) + data_len
+                if isinstance(enc_len, int) and enc_len >= 0:
+                    entry["response_encoded_size"] = (
+                        int(entry.get("response_encoded_size", 0)) + enc_len
+                    )
+
+        def on_loading_finished(params: JsonObject) -> None:
+            # The authoritative total transfer size (headers + encoded body),
+            # and the marker that the response completed rather than stalling.
+            total = params.get("encodedDataLength")
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is None:
+                    return
+                entry["finished"] = True
+                if isinstance(total, int | float) and total >= 0:
+                    entry["transfer_size"] = int(total)
+                entry.setdefault("response_size", 0)
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -601,6 +632,8 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.dataReceived", on_data_received)
+        cdp.on("Network.loadingFinished", on_loading_finished)
         cdp.on("Network.loadingFailed", on_loading_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
@@ -938,14 +971,22 @@ class WebBackend:
                         "httpVersion": "HTTP/1.1",
                         "cookies": [],
                         "headers": _har_headers(e.get("response_headers")),
-                        "content": {"size": 0, "mimeType": e.get("mimeType") or ""},
+                        "content": {
+                            "size": int(e.get("response_size") or 0),
+                            "mimeType": e.get("mimeType") or "",
+                        },
                         "redirectURL": "",
                         "headersSize": -1,
-                        "bodySize": -1,
+                        "bodySize": int(e["response_encoded_size"])
+                        if e.get("response_encoded_size") is not None
+                        else -1,
                     },
                     "cache": {},
                     "timings": {"send": 0, "wait": 0, "receive": 0},
                     "_resourceType": e.get("resourceType"),
+                    "_transferSize": int(e["transfer_size"])
+                    if e.get("transfer_size") is not None
+                    else -1,
                 }
                 for e in handle.requests.values()
             ]

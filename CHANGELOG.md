@@ -311,6 +311,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **`web.network.*` 从不记录响应大小，HAR 里 `content.size` 恒为 0**。CDP 只订阅了 requestWillBeSent/
+  responseReceived/loadingFailed，漏掉 `Network.dataReceived`（分块传来的响应体，`dataLength` 为解压后字节、
+  `encodedDataLength` 为在线字节）与 `Network.loadingFinished`（总传输字节、完成标志）。于是 `web.network.list`
+  的每条都没有大小，分析者无法在不逐个拉 body 的前提下看出哪条响应有几 MB；导出的 HAR 里 `response.content.size`
+  硬编码 0、`bodySize` 恒 -1，HAR 查看器把每条都显示成空响应。现新增两个处理器：`dataReceived` 累加得到
+  `response_size`（解码体大小）与 `response_encoded_size`（在线体大小），`loadingFinished` 记 `transfer_size`
+  （含头的总传输）并置 `finished`；三者随列表行返回（不计入被剥离的 header 字段）。HAR 的 `content.size` 用解码体、
+  `bodySize` 用在线体、条目另带 `_transferSize`。活体门断言 `/data.json` 响应完成后 `response_size` 等于服务端实际
+  下发的字节、`finished` 为真、`transfer_size` 不小于体大小，且导出的 HAR 里该条 `content.size` 正是该长度（不再是 0）；
+  单测直接驱动两次 dataReceived + 一次 loadingFinished，校验解码/在线体累加、总传输记录、以及对已淘汰 requestId 的分块
+  安全忽略（缺浏览器时活体门 skip≠pass）。
 - **抓包把响应体按在线字节原样返回，gzip/br 压缩的 API 响应读出来是二进制乱码**。`_message_body` 取的是
   `message.raw_content`——即在线字节，对 `Content-Encoding: gzip/br/deflate/zstd` 的响应仍是压缩态；docstring 甚至写着
   「decoded body」，其实根本没解。绝大多数现代 API 都压缩响应，于是 `proxy.flow.get` 读回的 `body`/`body_path`、连同

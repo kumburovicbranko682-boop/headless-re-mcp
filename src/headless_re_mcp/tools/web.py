@@ -72,7 +72,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with requests (url, method, status, resourceType), count,
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. A request that carried a payload is flagged has_request_body,
+        visible. A finished response carries response_size (decoded body
+        bytes), response_encoded_size (on-wire body bytes) and transfer_size
+        (total transfer incl. headers), and is flagged finished -- so a large
+        response is spottable without fetching its body. A request that carried
+        a payload is flagged has_request_body,
         so web.network.get can be pointed at it to fetch request_body.
         A request the browser blocked or aborted (CSP, CORS, net::ERR_*,
         cancellation) is flagged failed with error_text (and blocked_reason
@@ -203,7 +207,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         the cap. There is no har, entries or artifact field. The log is
         conformant HAR 1.2 -- each entry carries startedDateTime, timings,
         cookies, queryString, cache and the captured request/response headers
-        -- so DevTools Import HAR and HAR viewers accept it.
+        -- so DevTools Import HAR and HAR viewers accept it. response.content.size
+        (decoded body bytes) and response.bodySize (on-wire body bytes) are
+        populated from the captured sizes, with _transferSize on the entry.
         """
         return _dump(analysis.web_har_export(session_id))
 
