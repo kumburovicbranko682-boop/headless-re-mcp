@@ -212,6 +212,43 @@ class TestFridaSpawnValidationPrecedesAvailability:
         assert info.value.code == "capability_unavailable"
 
 
+class TestFridaJavaEnumerateValidatesBeforeResolvingDevice:
+    """Mode / class_name are checked before the device is resolved.
+
+    java_enumerate drives the Android Java layer over device_id="usb", where
+    _resolve_device is a multi-second USB probe (or capability_unavailable when
+    frida is missing). An unknown mode, or "methods" without a class_name, is a
+    malformed request that can never succeed, so it must surface invalid_params
+    before that round trip rather than be masked behind a device error. The mode
+    check sits after _authorize (this file's convention), so frida has to be
+    present to reach it (skip != pass).
+    """
+
+    @pytest.mark.parametrize(
+        "mode,class_name",
+        [("bogus", None), ("", None), ("methods", None), ("methods", "   ")],
+    )
+    def test_bad_request_is_invalid_params_before_the_device_is_resolved(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+        class_name: str | None,
+    ) -> None:
+        client = FridaClient()
+        if not client.available:
+            pytest.skip("frida not installed — mode check gated behind _authorize (skip != pass)")
+
+        def _must_not_resolve(device_id: object) -> Any:
+            raise AssertionError("device resolved before the request was validated")
+
+        monkeypatch.setattr(client, "_resolve_device", _must_not_resolve)
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate(
+                "usb", 4242, allowed_pids=[4242], mode=mode, class_name=class_name
+            )
+        assert info.value.code == "invalid_params"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False

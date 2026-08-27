@@ -641,6 +641,16 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
+        # Validate the mode (and the class_name that "methods" requires) before
+        # resolving the device: an unknown mode is wrong regardless of any
+        # device, and _resolve_device is a multi-second USB/remote round trip
+        # (or capability_unavailable when frida is missing) that would otherwise
+        # mask the malformed request behind a device error rather than the
+        # precise invalid_params the caller needs.
+        if mode not in ("classes", "methods"):
+            raise FridaError("invalid_params", "mode must be classes or methods", mode=mode)
+        if mode == "methods" and not (isinstance(class_name, str) and class_name.strip()):
+            raise FridaError("invalid_params", "class_name is required")
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
         deadline = _bound_timeout(timeout)
@@ -662,19 +672,16 @@ class FridaClient:
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
                     return {"classes": values, "count": len(values), "has_more": has_more}
-                if mode == "methods":
-                    if not class_name:
-                        raise FridaError("invalid_params", "class_name is required")
-                    values, has_more = _page(
-                        script.exports_sync.methods(class_name, capped + 1), capped
-                    )
-                    return {
-                        "class_name": class_name,
-                        "methods": values,
-                        "count": len(values),
-                        "has_more": has_more,
-                    }
-                raise FridaError("invalid_params", "mode must be classes or methods")
+                # mode == "methods", with class_name already validated above.
+                values, has_more = _page(
+                    script.exports_sync.methods(class_name, capped + 1), capped
+                )
+                return {
+                    "class_name": class_name,
+                    "methods": values,
+                    "count": len(values),
+                    "has_more": has_more,
+                }
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()
