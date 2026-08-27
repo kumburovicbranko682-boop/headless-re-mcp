@@ -300,6 +300,15 @@ class GhidraClient:
                 "export JSON invalid",
                 error=f"{type(exc).__name__}: {exc}",
             ) from exc
+        except RecursionError as exc:
+            # Deeply nested export JSON under _MAX_EXPORT_BYTES still exhausts
+            # the recursion limit; refuse it as a named backend error rather
+            # than letting a raw RecursionError escape analyze/export.
+            raise GhidraError(
+                "backend_error",
+                "export JSON nests too deeply to parse",
+                error=f"{type(exc).__name__}",
+            ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
         if code != 0 and not _export_has_content(payload, mode):

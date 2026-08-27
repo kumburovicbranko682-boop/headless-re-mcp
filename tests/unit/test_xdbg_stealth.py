@@ -84,6 +84,60 @@ def test_apply_profile_writes_disabled_and_quiets_server(tmp_path) -> None:
     assert "AutostartServer=1" not in text
 
 
+def test_read_current_section_treats_a_corrupt_ini_as_unknown(tmp_path) -> None:
+    """A malformed scylla_hide.ini must read as "no profile", not crash.
+
+    ConfigParser.read swallows only OSError; a file with no section header or a
+    duplicate key raises configparser.Error and a wrong-encoding file raises
+    UnicodeDecodeError. None is an OSError, so the old except OSError let both
+    escape read_current_section as an internal_error for the status query even
+    though a broken on-disk ini is hostile input, not a server fault.
+    """
+    no_header = tmp_path / "noheader.ini"
+    no_header.write_text("CurrentProfile=Basic\ngarbage line\n", encoding="utf-8")
+    assert read_current_section(no_header) is None
+
+    dup_option = tmp_path / "dup.ini"
+    dup_option.write_text(
+        "[SETTINGS]\nCurrentProfile=Basic\nCurrentProfile=Disabled\n", encoding="utf-8"
+    )
+    assert read_current_section(dup_option) is None
+
+
+def test_read_current_section_reads_a_utf16_ini(tmp_path) -> None:
+    """ScyllaHide can write the ini as utf-16; the utf-8 attempt must fall back.
+
+    Reading a utf-16 file as utf-8 raises UnicodeDecodeError rather than
+    returning empty, so the old fallback (only tried when the utf-8 read was
+    empty) never ran and the decode error escaped. The reader now tries utf-16
+    on a decode failure and recovers the profile.
+    """
+    utf16 = tmp_path / "utf16.ini"
+    utf16.write_text("[SETTINGS]\nCurrentProfile=Themida x86/x64\n", encoding="utf-16")
+    assert read_current_section(utf16) == "Themida x86/x64"
+
+
+def test_apply_profile_repairs_a_corrupt_existing_ini(tmp_path) -> None:
+    """apply_profile over a corrupt ini must succeed by reseeding, not fault.
+
+    _load_or_seed reads the existing ini to preserve settings; a corrupt file
+    used to raise a raw configparser.Error out of the set. It now reads as
+    unusable, so a clean parser is seeded and the requested profile is written
+    -- ScyllaHide would rewrite a broken ini anyway, so this repairs it.
+    """
+    headless = _plugin_headless(tmp_path, Architecture.X64)
+    layout = layout_for_headless(headless, Architecture.X64)
+    assert layout is not None
+    layout.ini.write_text("total garbage without any header\n", encoding="utf-8")
+
+    applied = apply_profile(layout, "vmp", require_plugin=True)
+    assert applied["section"] == "VMProtect x86/x64"
+    assert read_current_section(layout.ini) == "VMProtect x86/x64"
+    text = layout.ini.read_text(encoding="utf-8")
+    assert "AutostartServer=0" in text
+    assert "ServerPort=0" in text
+
+
 def test_armadillo_rejected_on_x64(tmp_path) -> None:
     headless = _plugin_headless(tmp_path, Architecture.X64)
     layout = layout_for_headless(headless, Architecture.X64)

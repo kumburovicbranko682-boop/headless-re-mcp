@@ -3085,15 +3085,31 @@ def _workflow_timeout(value: float) -> float | ValueError:
     return float(value)
 
 
-def _detection_timeout(value: float) -> float:
+def _bounded_tool_timeout(value: float, *, maximum: float) -> float:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not isfinite(value)
-        or not 0 < value <= 300.0
+        or not 0 < value <= maximum
     ):
-        raise ValueError("timeout must be greater than 0 and at most 300 seconds")
+        raise ValueError(
+            f"timeout must be greater than 0 and at most {maximum:g} seconds"
+        )
     return float(value)
+
+
+def _detection_timeout(value: float) -> float:
+    # Detection scans (DIE, unpack.recommend) and the UPX CLI declare le=300.
+    return _bounded_tool_timeout(value, maximum=300.0)
+
+
+def _external_tool_timeout(value: float) -> float:
+    # de4dot / NETReactorSlayer / XVLKC / VMPDump / Scylla declare le=600 in
+    # their schema (see tools.limits.ExternalToolTimeout: external unpackers
+    # legitimately outlast a debugger op). Routing them through the 300-second
+    # _detection_timeout rejected a schema-valid 301..600 request as
+    # invalid_request; keep the service ceiling equal to the tool schema.
+    return _bounded_tool_timeout(value, maximum=600.0)
 
 
 def _workflow_status_for_state(state: WorkflowState) -> WorkflowRunStatus:

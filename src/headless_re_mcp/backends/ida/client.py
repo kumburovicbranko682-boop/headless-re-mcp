@@ -313,7 +313,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     break
                 try:
                     payload = json.loads(stripped)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
+                    # RecursionError: a line of deeply nested JSON (well within
+                    # _MAX_RPC_LINE_CHARS) blows CPython's recursion limit.
+                    # Treat it like any other non-message line so this reader
+                    # thread logs and continues rather than dying on it.
                     self._stdout_log.append(stripped)
                     continue
                 if isinstance(payload, dict):

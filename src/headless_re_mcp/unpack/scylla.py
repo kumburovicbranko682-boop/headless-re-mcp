@@ -10,6 +10,7 @@ run fail closed without claiming IAT recovery.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -153,6 +154,33 @@ def _collect_newest_pe(work_dir: Path, work_input: Path) -> Path:
     return newest[0]
 
 
+def _validate_positive_number(value: float, name: str) -> float:
+    """Reject a NaN/inf/non-positive deadline before spawning Scylla.
+
+    The shared ``_capture_process`` derives ``deadline = monotonic() +
+    timeout``; a NaN or inf value makes ``remaining <= 0`` never true and the
+    poll loop fall to a fixed 0.05s sleep forever, so the deadline is silently
+    disabled and a wedged tool holds a worker until cancellation or the output
+    cap. The tool schema keeps ``0 < timeout <= 600`` but the agent transport
+    calls handlers straight from model arguments, so validate here as
+    die/upx/exeinfope already do at their own entry points.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ScyllaError(
+            ScyllaErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: repr(value)},
+        )
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0:
+        raise ScyllaError(
+            ScyllaErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: converted},
+        )
+    return converted
+
+
 def run_scylla(
     executable: Path,
     input_path: Path,
@@ -164,6 +192,7 @@ def run_scylla(
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> ScyllaResult:
     """Run Scylla on a work copy; publish the newest PE output to output_path."""
+    timeout = _validate_positive_number(timeout, "timeout")
     exe = Path(executable).expanduser()
     source = Path(input_path).expanduser().resolve(strict=True)
     destination = Path(output_path).expanduser()

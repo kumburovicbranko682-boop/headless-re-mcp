@@ -17,6 +17,7 @@ overwritten. Configure via ``HEADLESS_RE_VMP_DUMPER``. Not bundled;
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -117,6 +118,33 @@ class VmpDumperResult:
             "supported_arch": VMPDUMP_ARCH,
             "claims_universal_unpack": False,
         }
+
+
+def _validate_positive_number(value: float, name: str) -> float:
+    """Reject a NaN/inf/non-positive deadline before spawning VMPDump.
+
+    The shared ``_capture_process`` derives ``deadline = monotonic() +
+    timeout``; a NaN or inf value makes ``remaining <= 0`` never true and the
+    poll loop fall to a fixed 0.05s sleep forever, so the deadline is silently
+    disabled and a wedged dumper holds a worker until cancellation or the output
+    cap. The tool schema keeps ``0 < timeout <= 600`` but the agent transport
+    calls handlers straight from model arguments, so validate here as
+    die/upx/exeinfope already do at their own entry points.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise VmpDumperError(
+            VmpDumperErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: repr(value)},
+        )
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0:
+        raise VmpDumperError(
+            VmpDumperErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: converted},
+        )
+    return converted
 
 
 def build_vmpdump_argv(
@@ -288,6 +316,7 @@ def run_vmp_dumper(
     only (never passed as argv). File-only ``exe <path>`` mode is intentionally
     unsupported — that is not the upstream CLI.
     """
+    timeout = _validate_positive_number(timeout, "timeout")
     del max_file_size  # retained for call-site compatibility; unused in process mode
     exe = Path(executable).expanduser()
     source = Path(input_path).expanduser().resolve(strict=True)

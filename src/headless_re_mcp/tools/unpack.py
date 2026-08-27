@@ -4,6 +4,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
@@ -332,7 +333,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         module_base: int,
         search_start: int | None = None,
-        search_size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)] | None = None,
+        search_size: Annotated[int, Field(ge=1, le=MAX_IMPORT_SCAN_BYTES)] | None = None,
         max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
         mode: str = "all",
         timeout: RunControlTimeout = 60.0,

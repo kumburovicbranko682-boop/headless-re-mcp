@@ -475,6 +475,37 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert error_type in str(caught.value.details["error"])
 
 
+def test_ghidra_reports_deeply_nested_export_as_a_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Export JSON that nests past the recursion limit is a named backend error.
+
+    A payload of ``[[[...]]]`` stays under _MAX_EXPORT_BYTES yet exhausts
+    CPython's recursion limit inside json.loads. That RecursionError is not a
+    JSONDecodeError, so without an explicit arm it escaped analyze/export as a
+    raw builtin instead of the backend_error every other corrupt export yields.
+    """
+    depth = 50_000
+    nested = ("[" * depth) + ("]" * depth)
+    assert len(nested) < ghidra_client._MAX_EXPORT_BYTES
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(nested, encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert "nests too deeply" in caught.value.message
+
+
 def _run_writing(payload: str, *, exit_code: int) -> Any:
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
         del kwargs

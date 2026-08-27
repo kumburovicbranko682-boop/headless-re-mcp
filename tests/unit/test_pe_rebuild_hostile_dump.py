@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    parse_runtime_headers,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -226,3 +231,109 @@ def test_overlapping_sections_that_multiply_the_dump_are_refused() -> None:
 
     assert "section table" in str(caught.value)
     assert time.perf_counter() - started < 5.0, "and refused before the copies"
+
+
+def _header_only_image(*, magic: int = 0x10B, length: int | None = None) -> bytes:
+    """A DOS+PE prefix whose optional header the caller can truncate.
+
+    optional_size is set honest-small (2 bytes, just the magic) so the declared
+    ``optional + optional_size`` window fits, but the fixed optional-header
+    fields the parser reads at absolute offsets (entry point, alignments, the
+    data directory table) sit past the end of ``length`` bytes.
+    """
+    pe_offset = 0x80
+    optional = pe_offset + 24
+    size = length if length is not None else optional + 2
+    data = bytearray(size)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, pe_offset + 4, 0x14C)  # machine
+    struct.pack_into("<H", data, pe_offset + 6, 1)  # NumberOfSections
+    struct.pack_into("<H", data, pe_offset + 20, 2)  # SizeOfOptionalHeader
+    struct.pack_into("<H", data, optional, magic)  # optional magic
+    return bytes(data)
+
+
+def test_a_truncated_optional_header_is_refused_not_faulted() -> None:
+    """The fixed optional-header fields are read past the declared size.
+
+    optional_size only covers the magic, so ``optional + optional_size`` fits,
+    but AddressOfEntryPoint, the alignments and the data directory table live at
+    fixed offsets the image is too short to hold. Before the guard this faulted
+    struct.unpack_from with a raw struct.error, which escapes as an internal
+    error; the parser now refuses the dump by name like every other unusable
+    header it sees.
+    """
+    truncated = _header_only_image()
+
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        parse_runtime_headers(truncated)
+    # remap_dump_to_file parses the same headers, so the refusal reaches the
+    # public entry point rather than faulting inside it.
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        remap_dump_to_file(truncated)
+
+
+def _understated_optional_header_dump() -> bytes:
+    """A dump whose SizeOfOptionalHeader is smaller than the real header.
+
+    size_of_headers is computed from that declared size, so the rebuilt file's
+    header area is too small to hold the 16 data directories NumberOfRvaAndSizes
+    still advertises. The single section carries no payload, so ``out`` never
+    grows past that short header -- exactly the shape that made the volatile
+    directory cleanup read past the end of the buffer.
+    """
+    pe_offset = 0x180
+    optional_size = 16
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    data = bytearray(512)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x14C)  # machine i386
+    struct.pack_into("<H", data, file_header + 2, 1)  # NumberOfSections
+    struct.pack_into("<H", data, file_header + 16, optional_size)  # SizeOfOptionalHeader
+    struct.pack_into("<H", data, optional, 0x10B)  # PE32 magic
+    struct.pack_into("<I", data, optional + 92, 16)  # NumberOfRvaAndSizes
+    section = optional + optional_size
+    data[section : section + 8] = b".s0\0\0\0\0\0"  # empty section, no payload
+    return bytes(data)
+
+
+def test_an_understated_optional_header_does_not_fault_the_directory_cleanup() -> None:
+    """remap re-reads NumberOfRvaAndSizes when clearing volatile directories.
+
+    parse_runtime_headers clamps what it reads, but the cleanup pass read the
+    count straight from the header and indexed the data directory array in the
+    rebuilt buffer, which the understated SizeOfOptionalHeader left too short.
+    Before the guard this faulted struct.unpack_from mid-rebuild; it now bounds
+    the cleanup to the entries that fit and rebuilds without leaking a
+    struct.error.
+    """
+    dump = _understated_optional_header_dump()
+
+    rebuilt, _report = remap_dump_to_file(dump)
+
+    assert len(rebuilt) > 0
+
+
+def test_a_truncated_optional_header_never_raises_struct_error() -> None:
+    """Whatever the image length, the parser never leaks a bare struct.error.
+
+    Every prefix from just-the-magic up to a full PE32 optional header either
+    parses or is refused by name; none of them fault struct.unpack_from.
+    """
+    pe_offset = 0x80
+    optional = pe_offset + 24
+    for length in range(optional + 2, optional + 96 + 8):
+        image = _header_only_image(length=length)
+        try:
+            parse_runtime_headers(image)
+        except PeRebuildError:
+            continue
+        except struct.error as exc:  # pragma: no cover - the bug this guards
+            raise AssertionError(
+                f"parse faulted struct.error at length {length}: {exc}"
+            ) from exc

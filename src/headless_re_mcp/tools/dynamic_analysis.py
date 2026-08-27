@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
@@ -245,7 +246,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         module_base: Annotated[int, Field(ge=1)],
         search_start: int | None = None,
-        search_size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)] | None = None,
+        search_size: Annotated[int, Field(ge=1, le=MAX_IMPORT_SCAN_BYTES)] | None = None,
         max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
         mode: str = "all",
         timeout: RunControlTimeout = 60.0,
@@ -271,7 +272,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def imports_read(
         session_id: str,
         iat_va: Annotated[int, Field(ge=0)],
-        size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)],
+        size: Annotated[int, Field(ge=1, le=MAX_IMPORT_SCAN_BYTES)],
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Read one confirmed IAT range and resolve thunks against loaded exports.
@@ -308,7 +309,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         address: Annotated[int, Field(ge=0)],
         bp_type: Annotated[str, Field(pattern="^(r|w|x|rw|access|write|execute)$")] = "x",
-        size: Annotated[int, Field(ge=1, le=8)] = 1,
+        size: Literal[1, 2, 4, 8] = 1,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
         """Set a hardware breakpoint with structured type/size enums only.

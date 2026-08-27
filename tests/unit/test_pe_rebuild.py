@@ -102,6 +102,43 @@ def test_rebuild_imports_adds_himps_section(tmp_path: Path) -> None:
     assert any(section.name.startswith(".himps") for section in pe.pe.sections)
 
 
+def test_rebuild_imports_reports_a_non_ascii_name_instead_of_faulting() -> None:
+    """A named import is ASCII per the PE format; a non-ASCII name is corrupt.
+
+    _encode_name uses a strict encode, so a non-ASCII name faulted the rebuild
+    with a bare UnicodeEncodeError that escapes as an internal error -- while the
+    module name a few lines away already used a total encode. The named entry is
+    now reported as unfixed like any other unresolvable thunk and skipped, so the
+    rebuild still places the real ASCII import rather than a mangled one.
+    """
+    dump = _make_runtime_dump()
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [
+        {"kind": "api", "module": "kernel32.dll", "name": "VirtualAlloc", "ordinal": 0},
+        {"kind": "api", "module": "kernel32.dll", "name": "Load\u00c4Library", "ordinal": 0},
+    ]
+
+    rebuilt, report = rebuild_imports(remapped, entries)
+
+    assert any("non-ASCII" in item for item in report.unfixed), report.unfixed
+    assert b"VirtualAlloc" in rebuilt
+    assert "Load\u00c4Library".encode("utf-8") not in rebuilt
+
+
+def test_rebuild_imports_refuses_when_only_non_ascii_names_remain() -> None:
+    """Dropping the unusable names can leave nothing to rebuild; refuse by name.
+
+    The refusal must be the module's PeRebuildError (a ValueError ->
+    invalid_request), not the UnicodeEncodeError the strict encode raised before.
+    """
+    dump = _make_runtime_dump()
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [{"kind": "api", "module": "kernel32.dll", "name": "\u4e2d\u6587Api"}]
+
+    with pytest.raises(PeRebuildError, match="no resolved API entries"):
+        rebuild_imports(remapped, entries)
+
+
 def test_pe_rebuild_report_always_lists_checksum_unfixed() -> None:
     dump = _make_runtime_dump()
     _, remap_report = remap_dump_to_file(dump, entry_point_rva=0x1000)

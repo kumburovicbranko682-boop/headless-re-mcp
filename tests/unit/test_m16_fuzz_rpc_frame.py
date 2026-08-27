@@ -64,6 +64,20 @@ def test_encode_rejects_oversized() -> None:
         encode_rpc_frame(huge)
 
 
+def test_frame_parser_refuses_deeply_nested_json() -> None:
+    # A body of ``[[[...]]]`` stays far under MAX_FRAME_BYTES yet exhausts
+    # CPython's recursion limit inside json.loads. The parser must surface the
+    # same structured rpc_protocol_error it gives any other malformed frame,
+    # not leak a raw RecursionError.
+    depth = 100_000
+    body = (("[" * depth) + ("]" * depth)).encode("utf-8")
+    assert len(body) < MAX_FRAME_BYTES
+    frame = len(body).to_bytes(4, "little") + body
+    with pytest.raises(XdbgRpcError) as caught:
+        parse_rpc_frame(frame)
+    assert caught.value.code == "rpc_protocol_error"
+
+
 def test_json_roundtrip_via_stdlib() -> None:
     raw = json.dumps({"ok": True, "protocol": "headless-re-xdbg", "version": 1, "id": "9"})
     frame = len(raw.encode()).to_bytes(4, "little") + raw.encode()

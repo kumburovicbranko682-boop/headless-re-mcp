@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1628,6 +1629,136 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
     )
     assert not too_large.ok and too_large.error is not None
     assert too_large.error.code == "dump_too_large"
+
+
+def test_imports_read_rejects_a_size_over_the_iat_ceiling(tmp_path: Path) -> None:
+    """imports.read must refuse an oversized range at the service boundary.
+
+    The schema declares le=MAX_IMPORT_SCAN_BYTES and the native ReadImports rejects
+    anything above MaxImportScanBytes, but the agent transport reaches the
+    handler with no schema check. Without a service-side ceiling a caller could
+    ask for a gigabyte-wide IAT and occupy a worker until the native side
+    refused it; modules_dump already caps its own size the same way.
+    """
+    from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    # A read exactly at the ceiling is legal and still reaches the worker.
+    ok = service.imports_read(session_id, worker.module_base, MAX_IMPORT_SCAN_BYTES)
+    assert ok.ok and ok.data is not None
+    assert any(req[0] == "imports.read" for req in worker.requests)
+
+    before = len(worker.requests)
+    too_large = service.imports_read(session_id, worker.module_base, MAX_IMPORT_SCAN_BYTES + 1)
+    assert not too_large.ok and too_large.error is not None
+    assert too_large.error.code == "invalid_params"
+    assert too_large.error.details is not None
+    assert too_large.error.details["max_import_scan_bytes"] == MAX_IMPORT_SCAN_BYTES
+    # The oversized request never travelled to the worker.
+    assert len(worker.requests) == before
+
+
+def test_imports_scan_rejects_a_search_size_over_the_iat_ceiling(tmp_path: Path) -> None:
+    """imports.scan shares the imports.read ceiling for its search window.
+
+    ScanImports rejects a search_size above MaxImportScanBytes and the schema
+    declares le=MAX_IMPORT_SCAN_BYTES, but the agent transport skips the schema.
+    Bounding it in the shared imports_scan keeps a gigabyte-wide scan from
+    occupying a worker; max_candidates is intentionally not capped here because
+    the unpack path amplifies it past the imports.scan ceiling on purpose.
+    """
+    from headless_re_mcp.core.limits import MAX_IMPORT_SCAN_BYTES
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    ok = service.imports_scan(
+        session_id, worker.module_base, search_size=MAX_IMPORT_SCAN_BYTES
+    )
+    assert ok.ok and ok.data is not None
+    assert any(req[0] == "imports.scan" for req in worker.requests)
+
+    before = len(worker.requests)
+    too_large = service.imports_scan(
+        session_id, worker.module_base, search_size=MAX_IMPORT_SCAN_BYTES + 1
+    )
+    assert not too_large.ok and too_large.error is not None
+    assert too_large.error.code == "invalid_params"
+    assert too_large.error.details is not None
+    assert too_large.error.details["max_import_scan_bytes"] == MAX_IMPORT_SCAN_BYTES
+    assert len(worker.requests) == before
+
+
+def test_breakpoints_hardware_set_rejects_a_non_power_of_two_size(tmp_path: Path) -> None:
+    """A debug register length only encodes 1, 2, 4 or 8 bytes.
+
+    The tool schema now advertises exactly that set, but the agent transport
+    skips the schema, so the service is the real guard. size=3 sits inside the
+    old ge=1/le=8 window yet the native ParseHardwareSize refuses it; the service
+    rejects it with invalid_params before dispatching, so no request reaches the
+    worker.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    before = len(worker.requests)
+    bad = service.breakpoints_hardware_set(session_id, 0x140001000, bp_type="x", size=3)
+    assert not bad.ok and bad.error is not None
+    assert bad.error.code == "invalid_params"
+    assert len(worker.requests) == before
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda svc, sid: svc.breakpoints_hardware_remove(sid, -1),
+        lambda svc, sid: svc.breakpoints_memory_set(sid, -1, bp_type="a"),
+        lambda svc, sid: svc.breakpoints_memory_remove(sid, -1),
+    ],
+)
+def test_breakpoint_set_remove_reject_a_negative_address_before_dispatch(
+    tmp_path: Path,
+    call: Callable[[AnalysisService, str], Result[JsonObject]],
+) -> None:
+    """Every breakpoint address path fails fast like breakpoints.hardware.set.
+
+    The schema declares address ge=0, but the agent transport skips the schema,
+    so the service is the real guard. breakpoints.hardware.set already refused a
+    negative address; its hardware.remove/memory.set/memory.remove siblings
+    forwarded it to the worker, which reads address as unsigned and rejects it
+    only after a round-trip. The service now rejects it with invalid_params
+    before dispatching, so no request reaches the worker.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    before = len(worker.requests)
+    bad = call(service, session_id)
+    assert not bad.ok and bad.error is not None
+    assert bad.error.code == "invalid_params"
+    assert len(worker.requests) == before
 
 
 def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:

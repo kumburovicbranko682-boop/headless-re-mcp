@@ -8,6 +8,7 @@ obtained themselves.
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from contextlib import suppress
@@ -95,6 +96,33 @@ class De4dotResult:
         }
 
 
+def _validate_positive_number(value: float, name: str) -> float:
+    """Reject a NaN/inf/non-positive deadline before spawning de4dot.
+
+    ``_capture_process`` derives ``deadline = monotonic() + timeout``; a NaN or
+    inf value makes ``remaining <= 0`` never true and ``sleep(min(0.05,
+    remaining))`` fall to ``0.05`` forever, so the deadline is silently disabled
+    and a wedged tool holds a worker until cancellation or the output cap. The
+    tool schema keeps ``0 < timeout <= 600`` but the agent transport calls
+    handlers straight from model arguments, so validate here as die/upx/exeinfope
+    already do at their own entry points.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise De4dotError(
+            De4dotErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: repr(value)},
+        )
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0:
+        raise De4dotError(
+            De4dotErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: converted},
+        )
+    return converted
+
+
 def run_de4dot(
     executable: Path,
     input_path: Path,
@@ -106,6 +134,7 @@ def run_de4dot(
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> De4dotResult:
     """Run ``de4dot -f <input> -o <output>`` with hard bounds."""
+    timeout = _validate_positive_number(timeout, "timeout")
     exe = Path(executable).expanduser()
     source = Path(input_path).expanduser().resolve(strict=True)
     destination = Path(output_path).expanduser()

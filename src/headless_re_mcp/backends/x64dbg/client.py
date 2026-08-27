@@ -14,6 +14,7 @@ from threading import Event, Lock, RLock, Thread
 from typing import Any, TextIO
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.bounded_run import InvalidTimeout, clamp_cli_timeout
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.backends.common.text_stream import read_bounded_text_line
 from headless_re_mcp.backends.x64dbg.limits import MAX_FRAME_BYTES
@@ -41,6 +42,17 @@ _PROTOCOL = "headless-re-xdbg"
 _PROTOCOL_VERSION = 1
 _MAX_FRAME_BYTES = MAX_FRAME_BYTES
 _MAX_DISPATCH_TIMEOUT_MS = 30_000
+# Callers name their own deadline. The x64dbg run-control tool schema declares
+# ``0 < timeout <= 300``, but the agent/OpenAI transports invoke the handler
+# straight from model arguments with no schema check (the recurring gap
+# clamp_cli_timeout exists for). Left unchecked, a NaN reaches
+# ``int(timeout * 1000)`` in ``_request`` and escapes as a raw "cannot convert
+# float NaN to integer" ValueError -- surfaced to the caller as a bare
+# invalid_request -- and a huge value sets an effectively unbounded transport
+# deadline even though the worker-side dispatch caps at
+# ``_MAX_DISPATCH_TIMEOUT_MS``. ``request`` clamps at the boundary, the same
+# guard the IDA worker's ``request`` applies.
+_MAX_REQUEST_TIMEOUT_S = 300.0
 # A reconnect can only succeed once the worker finishes whatever request the
 # dropped connection left it running, so allow for that without letting a stuck
 # worker block the caller indefinitely.
@@ -624,6 +636,10 @@ class XdbgClient:
         *,
         timeout: float = 10.0,
     ) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_REQUEST_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise XdbgRpcError("invalid_params", str(exc)) from exc
         with self._request_lock:
             if self._closed:
                 raise XdbgRpcError("session_closed", "x64dbg RPC client is closed")
@@ -1205,6 +1221,12 @@ class XdbgClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise XdbgRpcError(
                 "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
+            ) from exc
+        except RecursionError as exc:
+            # Deeply nested JSON within the frame cap exhausts the recursion
+            # limit; keep the same rpc_protocol_error contract as rpc_frame.
+            raise XdbgRpcError(
+                "rpc_protocol_error", "RPC response nests too deeply to parse"
             ) from exc
         if not isinstance(response, dict):
             raise XdbgRpcError("rpc_protocol_error", "RPC response must be an object")

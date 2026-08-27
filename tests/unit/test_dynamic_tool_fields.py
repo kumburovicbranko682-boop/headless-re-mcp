@@ -7,6 +7,7 @@ from pathlib import Path
 
 from headless_re_mcp.core.events import DebugEvent, DebugEventBatch
 from headless_re_mcp.tools.dynamic import build_dynamic_tools
+from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
 
 
 def _tool_docstring(name: str) -> str:
@@ -295,3 +296,41 @@ def test_dynamic_attach_schema_matches_native_pid_bounds() -> None:
     props = input_schema_for(handler)["properties"]
     assert props["pid"]["minimum"] == 1
     assert props["pid"]["maximum"] == 0xFFFFFFFF
+
+
+def test_hardware_breakpoint_size_schema_matches_the_native_length_set() -> None:
+    """The catalog advertised hardware breakpoint lengths the CPU cannot set.
+
+    Measured: input schema size was ge=1, le=8, so it claimed 3, 5, 6 and 7 as
+    valid. A debug register length field only encodes 1, 2, 4 or 8 bytes, so
+    native ParseHardwareSize switches on exactly {1, 2, 4, 8} and the Python
+    service rejects anything else with invalid_params. A caller reading the
+    schema would pick size=3, pass the schema, and then get rejected -- the
+    catalog promised a length the worker never accepts. The schema now advertises
+    the same discrete set both layers enforce.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    start = native.index("bool ParseHardwareSize")
+    chunk = native[start : native.index("\n}", start)]
+    assert "case 1:" in chunk
+    assert "case 2:" in chunk
+    assert "case 4:" in chunk
+    assert "case 8:" in chunk
+    assert 'InvalidField("size", "size must be one of 1|2|4|8 for this architecture")' in chunk
+
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "breakpoints.hardware.set"
+    )
+    props = input_schema_for(handler)["properties"]
+    assert props["size"].get("enum") == [1, 2, 4, 8]
+    assert "maximum" not in props["size"]
+    assert props["size"]["default"] == 1

@@ -147,16 +147,16 @@ class JadxClient:
                 # tree, which is whoever jadx happened to emit first -- not
                 # necessarily the class the caller named.
                 #
-                # rglob reads its argument as a glob, and the JVM permits ``*``
-                # and ``?`` in a class name (obfuscators emit them; only
-                # ``. ; [ /`` are reserved). So ``com.example.Foo*`` arrived here
-                # as the pattern ``Foo*.java``: the literal never exists, the
-                # exact lookup above always missed, and the walk then matched a
-                # *different* class (a lone ``Foobar.java``) and returned its
-                # source under the requested name. Escaping the basename makes the
-                # walk match the literal filename -- a genuine ``Foo*.java`` that
-                # jadx sanitised onto disk still resolves, while a wildcard that
-                # names nothing honestly falls through to not_found.
+                # rglob reads its argument as a glob, so a class_name carrying
+                # glob metacharacters (``com.example.Foo*``) reached here as a
+                # pattern: the literal ``Foo*.java`` never exists so the exact
+                # lookup above always misses, and ``rglob("Foo*.java")`` then
+                # matched a *different* class (the lone ``Foobar.java``) and
+                # returned its source under the requested name. A Java identifier
+                # cannot contain ``* ? [``, so escaping only ever turns a bogus
+                # wildcard into the literal filename it should have been -- a real
+                # emitted class still matches -- and the walk resolves the named
+                # class or nothing.
                 matches = []
                 for path in sources.rglob(glob.escape(candidate.name)):
                     try:

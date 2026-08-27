@@ -246,20 +246,38 @@ def inspect_layout(layout: StealthLayout | None) -> JsonObject:
     }
 
 
-def read_current_section(ini_path: Path) -> str | None:
-    parser = _parser()
-    try:
-        read = parser.read(ini_path, encoding="utf-8")
-    except OSError:
-        return None
-    if not read:
+def _read_ini(ini_path: Path) -> configparser.ConfigParser | None:
+    """Load ``ini_path`` into a fresh parser, or ``None`` if it is unusable.
+
+    ScyllaHide writes this file and a hand-edit or a copy from an extracted
+    tree can leave it corrupt, so it is untrusted input. ``ConfigParser.read``
+    swallows only ``OSError`` internally (a missing file yields an empty
+    result, not a raise); a file that cannot be parsed raises
+    ``configparser.Error`` (no section header, duplicate keys) and one that is
+    not valid in the requested encoding raises ``UnicodeDecodeError``. Neither
+    is an ``OSError``, so the old ``except OSError`` let both escape as an
+    ``internal_error`` for what is a corrupt on-disk ini, not a server fault --
+    and its utf-16 fallback never ran, because a utf-16 file read as utf-8
+    raises rather than returning empty. Try both encodings; treat a decode
+    failure as "wrong encoding, try the next" and a parse failure as "corrupt,
+    give up", returning ``None`` either way so callers degrade instead of
+    crashing.
+    """
+    for encoding in ("utf-8", "utf-16"):
+        parser = _parser()
         try:
-            read = parser.read(ini_path, encoding="utf-16")
-        except OSError:
+            if parser.read(ini_path, encoding=encoding):
+                return parser
+        except (OSError, UnicodeDecodeError):
+            continue
+        except configparser.Error:
             return None
-        if not read:
-            return None
-    if not parser.has_section("SETTINGS"):
+    return None
+
+
+def read_current_section(ini_path: Path) -> str | None:
+    parser = _read_ini(ini_path)
+    if parser is None or not parser.has_section("SETTINGS"):
         return None
     value = parser.get("SETTINGS", "CurrentProfile", fallback="").strip()
     return value or None
@@ -376,11 +394,14 @@ def _seed_parser() -> configparser.ConfigParser:
 
 
 def _load_or_seed(ini_path: Path) -> configparser.ConfigParser:
-    parser = _parser()
-    if ini_path.is_file():
-        loaded = parser.read(ini_path, encoding="utf-8")
-        if not loaded:
-            parser.read(ini_path, encoding="utf-16")
+    # A corrupt on-disk ini reads as None here rather than raising; reseeding a
+    # clean parser lets apply_profile repair the file instead of failing the
+    # set with a raw configparser error, and ScyllaHide would rewrite a broken
+    # ini anyway. _read_ini already returns a fully populated parser or None, so
+    # there is never partial garbage to merge on top of the seed.
+    parser = _read_ini(ini_path) if ini_path.is_file() else None
+    if parser is None:
+        parser = _parser()
     if not parser.has_section("SETTINGS"):
         seeded = _seed_parser()
         for section in seeded.sections():

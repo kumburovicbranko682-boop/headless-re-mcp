@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from headless_re_mcp.core.events import DEFAULT_DEBUG_EVENT_BATCH, MAX_DEBUG_EVENT_BATCH
+from headless_re_mcp.core.limits import MAX_STATIC_INLINE_TEXT
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
@@ -61,7 +62,7 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
         return _dump(analysis.get_session(session_id))
 
     def session_list(
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List sessions known to this MCP server process, one page at a time.
@@ -109,8 +110,8 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def static_functions(
         session_id: str,
-        offset: int = 0,
-        limit: int = 100,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List analyzed functions.
 
@@ -121,9 +122,9 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def static_strings(
         session_id: str,
-        offset: int = 0,
-        limit: int = 100,
-        max_length: int = 4096,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        max_length: Annotated[int, Field(ge=1, le=MAX_STATIC_INLINE_TEXT)] = 4096,
     ) -> dict[str, Any]:
         """List analyzed strings.
 

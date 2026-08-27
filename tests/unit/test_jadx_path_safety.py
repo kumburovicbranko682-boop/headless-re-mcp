@@ -106,12 +106,12 @@ def test_jadx_simple_name_fallback_does_not_treat_a_wildcard_as_a_glob(
     """A class_name with glob metacharacters must not match a different class.
 
     When the exact source path is absent, decompile falls back to a basename
-    walk. rglob reads its argument as a glob, and the JVM permits ``*`` in a
-    class name, so ``com.example.Foo*`` reached rglob as ``Foo*.java`` and
-    matched the lone ``Foobar.java``, returning that class's source under the
-    requested name. Escaping the basename makes the walk match the literal
-    filename, which does not exist, so the caller gets an honest not_found
-    instead of a different class's source.
+    walk. rglob reads its argument as a glob, so ``com.example.Foo*`` -- whose
+    literal ``Foo*.java`` can never exist, since a Java identifier has no ``*``
+    -- used to reach rglob as the pattern ``Foo*.java`` and match the lone
+    ``Foobar.java``, returning that class's source under the requested name.
+    Escaping the basename turns the bogus wildcard into a literal that matches
+    nothing, so the caller gets an honest not_found instead of the wrong source.
     """
     out = tmp_path / "out"
     src = out / "sources" / "com" / "example"
@@ -135,7 +135,7 @@ def test_jadx_simple_name_fallback_still_resolves_a_relocated_class(
 
     Escaping the rglob pattern only neutralises glob metacharacters; a genuine
     class name (no wildcards) whose file landed under a different package layout
-    than its dotted name implies is still resolved by its unique basename.
+    than its dotted name implies is still found by its unique basename.
     """
     out = tmp_path / "out"
     src = out / "sources" / "relocated" / "pkg"

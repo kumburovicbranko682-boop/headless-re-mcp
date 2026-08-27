@@ -151,11 +151,23 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional = file_header + 20
     if optional + optional_size > len(image):
         raise PeRebuildError("optional header is truncated")
+    # optional_size is the target's declared size, but every field below is read
+    # at a fixed absolute offset regardless of it. A dump that understates
+    # optional_size -- or an image shorter than a real optional header -- would
+    # otherwise fault struct.unpack_from mid-parse and escape as an internal
+    # error instead of the named PeRebuildError refusal this module promises, so
+    # guard the fixed window (and the directory array) explicitly before reading.
+    if optional + 2 > len(image):
+        raise PeRebuildError("optional header is truncated")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
 
+    dir_count_off = optional + (108 if pe32_plus else 92)
+    dir_off = optional + (112 if pe32_plus else 96)
+    if dir_off > len(image):
+        raise PeRebuildError("optional header is truncated")
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
         _u64(image, optional + 24) if pe32_plus else _u32(image, optional + 28)
@@ -166,9 +178,9 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     size_of_headers = _u32(image, optional + 60)
     subsystem = _u16(image, optional + 68)
     dll_characteristics = _u16(image, optional + 70)
-    dir_count_off = optional + (108 if pe32_plus else 92)
-    dir_off = optional + (112 if pe32_plus else 96)
-    dir_count = min(_u32(image, dir_count_off), 16)
+    # The data directory array follows the fixed fields; a dump can declare more
+    # entries than it actually carries, so read only the ones that fit.
+    dir_count = min(_u32(image, dir_count_off), 16, max(0, (len(image) - dir_off) // 8))
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8
@@ -340,16 +352,24 @@ def remap_dump_to_file(
         struct.pack_into("<I", out, opt + 16, entry_point_rva)
         report.changes.append(f"AddressOfEntryPoint={entry_point_rva:#x}")
 
-    # Clear volatile directories that are usually stale after dump.
+    # Clear volatile directories that are usually stale after dump. size_of_headers
+    # is derived from the dump's declared SizeOfOptionalHeader, so a dump that
+    # understates it (and whose sections add no payload) can leave the data
+    # directory array past the end of ``out``. parse_runtime_headers already
+    # clamped what it read, but this re-reads NumberOfRvaAndSizes straight from
+    # the header, so bound it to the entries that fit rather than faulting struct
+    # on best-effort cleanup.
     dir_count_off = opt + (108 if pe32_plus else 92)
     dir_off = opt + (112 if pe32_plus else 96)
-    dir_count = min(_u32(out, dir_count_off), 16)
-    for index in (_DIR_BOUND_IMPORT, _DIR_SECURITY, _DIR_BASERELOC):
-        if index < dir_count:
-            base = dir_off + index * 8
-            if _u32(out, base) or _u32(out, base + 4):
-                struct.pack_into("<II", out, base, 0, 0)
-                report.changes.append(f"cleared data directory[{index}]")
+    if dir_off <= len(out):
+        available = (len(out) - dir_off) // 8
+        dir_count = min(_u32(out, dir_count_off), 16, max(0, available))
+        for index in (_DIR_BOUND_IMPORT, _DIR_SECURITY, _DIR_BASERELOC):
+            if index < dir_count:
+                base = dir_off + index * 8
+                if _u32(out, base) or _u32(out, base + 4):
+                    struct.pack_into("<II", out, base, 0, 0)
+                    report.changes.append(f"cleared data directory[{index}]")
 
     report.unfixed.append("checksum not recalculated")
     report.unfixed.append("TLS / exception / delay-import directories not rebuilt")
@@ -403,16 +423,27 @@ def rebuild_imports(
                 ordinal = int(name.split("_", 1)[1])
             except (IndexError, ValueError):
                 ordinal = 0
+        by_ordinal = bool(
+            isinstance(ordinal, int)
+            and ordinal > 0
+            and (not name or name.startswith("ordinal_"))
+        )
+        # A named import is written into the Hint/Name table, which the PE
+        # format defines as ASCII. A non-ASCII name would fault _encode_name's
+        # strict encode mid-rebuild (a bare UnicodeEncodeError escaping as an
+        # internal error); the module name a few lines down already uses a total
+        # encode. Treat it like any other unresolvable entry -- reported, not
+        # silently mangled into a bogus import -- so only real names are placed.
+        if not by_ordinal and not name.isascii():
+            unresolved += 1
+            report.unfixed.append(f"api entry {module}: non-ASCII import name {name!r}")
+            continue
         by_module.setdefault(module.lower(), []).append(
             {
                 "module": module,
                 "name": name,
                 "ordinal": int(ordinal) if isinstance(ordinal, int) else 0,
-                "by_ordinal": bool(
-                    isinstance(ordinal, int)
-                    and ordinal > 0
-                    and (not name or name.startswith("ordinal_"))
-                ),
+                "by_ordinal": by_ordinal,
             }
         )
 

@@ -32,6 +32,11 @@ def _detection_timeout(timeout: float) -> float:
     return real(timeout)
 
 
+def _external_tool_timeout(timeout: float) -> float:
+    from headless_re_mcp.core.service import _external_tool_timeout as real
+    return real(timeout)
+
+
 class UnpackCliMixin:
     """UPX and external unpacker CLI helpers.
 
@@ -466,7 +471,7 @@ class UnpackCliMixin:
                     session.require_pe(),
                     out_path,
                     input_sha256=session.sha256,
-                    timeout=_detection_timeout(timeout),
+                    timeout=_external_tool_timeout(timeout),
                 )
             session = self.registry.get(session_id)
             if session.state in {
@@ -615,7 +620,7 @@ class UnpackCliMixin:
                     session.require_pe(),
                     out_path,
                     input_sha256=session.sha256,
-                    timeout=_detection_timeout(timeout),
+                    timeout=_external_tool_timeout(timeout),
                     pid=debuggee_pid,
                     module_name=resolved_module,
                     entry_point_rva=entry_point_rva,
@@ -720,7 +725,7 @@ class UnpackCliMixin:
                     session.require_pe(),
                     out_path,
                     input_sha256=session.sha256,
-                    timeout=_detection_timeout(timeout),
+                    timeout=_external_tool_timeout(timeout),
                 )
             session = self.registry.get(session_id)
             if session.state in {
