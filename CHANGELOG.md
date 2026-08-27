@@ -576,6 +576,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`js.unpack_bundle` 的 `offset` 在 schema 上没有下限**。其余分页工具
+  （`apk.classes/methods/strings`、`web.network.list`、`web.scripts`、`web.wasm.list`、
+  `proxy.flows`）都用 `Field(ge=0)`，负 offset 在边界即被拒；唯独它声明成裸 `int`。webcrack
+  后端本就用 `max(0, int(offset))` 夹住，这里补齐边界那一半：schema 现在也带 `minimum: 0`，
+  负 offset 与兄弟工具一样直接 `invalid_params`，不再只靠后端悄悄夹。
 
 ### 新增（项目文档）
 
