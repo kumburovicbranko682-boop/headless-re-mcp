@@ -82,7 +82,7 @@ python3 -m headless_re_mcp serve
 python3 -m headless_re_mcp serve-web
 ```
 
-`HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围。Playwright 浏览器仍需按上游方式另装，例如 `python3 -m playwright install chromium`。
+`HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围；含 `browser` extra 时脚本会自动执行 `playwright install chromium`（失败只警告不中断）。`HEADLESS_RE_INSTALL_BACKENDS=1` 会再经 apt 安装 Linux CI 同款 FOSS 后端（radare2 / UPX / wabt / apktool / apksigner）；jadx 未进 apt，需从[上游 release](https://github.com/skylot/jadx/releases) 自取并放入 PATH。
 
 ### Windows：从源码
 
