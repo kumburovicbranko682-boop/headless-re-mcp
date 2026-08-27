@@ -566,6 +566,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
   切一刀。脚本补上 `has_more` / `truncated`。
+- **`analyzeHeadless` 退出非零却留下空 `{}` 时被当成空成功**。脚本失败后遗留的空导出会让
+  `ghidra.functions/symbols/xrefs` 回 `items=[]`、`ghidra.decompile` 回空 C，无人值守的
+  导出据此把失败的运行读成「这个二进制没有函数」。现在非零退出且导出无内容记为
+  `backend_error`；`analyzeHeadless` 常在真正写出 postScript 结果后仍退出 1，这种带内容的
+  非零退出仍算成功。
 - **`proxy.ca.install_android` 和 `frida.server.ensure` 每次新建一个 AdbBackend**。
   那个实例记不住本进程建过的转发，`close_all` 拆不掉它们。改为走服务持有的那一个。
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
