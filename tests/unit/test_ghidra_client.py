@@ -128,6 +128,87 @@ def test_ghidra_prefers_the_platform_launcher_when_both_are_present(
     assert ghidra_client._find_analyze_headless(home) == windows
 
 
+def _make_home(tmp_path: Path, *, feature: str | None) -> Path:
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    if feature is not None:
+        (home / "Ghidra" / "Features" / feature).mkdir(parents=True)
+    return home
+
+
+def test_ghidra_uses_jython_launch_for_pre_11_3_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Jython Ghidra (<= 11.2) runs analyzeHeadless directly."""
+    home = _make_home(tmp_path, feature="Jython")
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    client = ghidra_client.GhidraClient(home=home, java=tmp_path / "java")
+    assert client.pyghidra_mode is False
+    launcher = client._launcher({})
+    assert launcher == [str(home / "support" / "analyzeHeadless")]
+
+
+def test_ghidra_uses_pyghidra_launch_for_11_3_plus_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyGhidra Ghidra (>= 11.3, no Jython) is launched through CPython.
+
+    analyzeHeadless alone reports "Ghidra was not started with PyGhidra" there, so
+    the client must invoke ``python -m pyghidra.ghidra_launch ... AnalyzeHeadless``
+    and hand JPype a JAVA_HOME derived from the resolved java.
+    """
+    home = _make_home(tmp_path, feature="PyGhidra")
+    java_home = tmp_path / "jdk"
+    (java_home / "bin").mkdir(parents=True)
+    java = java_home / "bin" / "java"
+    java.write_text("", encoding="utf-8")
+    python = tmp_path / "python3"
+    python.write_text("", encoding="utf-8")
+
+    client = ghidra_client.GhidraClient(home=home, java=java, python=python)
+    assert client.pyghidra_mode is True
+
+    env: dict[str, str] = {}
+    launcher = client._launcher(env)
+    assert launcher == [
+        str(python),
+        "-m",
+        "pyghidra.ghidra_launch",
+        "--install-dir",
+        str(home),
+        "ghidra.app.util.headless.AnalyzeHeadless",
+    ]
+    # JPype cannot find the JVM without JAVA_HOME; the launcher derives it.
+    assert env["JAVA_HOME"] == str(java_home)
+
+
+def test_ghidra_prefers_jython_when_both_features_are_present(tmp_path: Path) -> None:
+    """Adding the Jython extension back to a newer Ghidra takes the simpler path."""
+    home = _make_home(tmp_path, feature="Jython")
+    (home / "Ghidra" / "Features" / "PyGhidra").mkdir(parents=True)
+    assert ghidra_client._needs_pyghidra(home) is False
+
+
+def test_ghidra_pyghidra_install_needs_the_package_to_be_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyGhidra install is only available when the pyghidra package imports.
+
+    The launcher is present on 11.3+ regardless, so availability must also confirm
+    the CPython host can import pyghidra, or every call would fail at launch.
+    """
+    home = _make_home(tmp_path, feature="PyGhidra")
+    client = ghidra_client.GhidraClient(home=home, java=tmp_path / "java")
+
+    monkeypatch.setattr(ghidra_client, "_pyghidra_importable", lambda _python: False)
+    assert client.available is False
+    monkeypatch.setattr(ghidra_client, "_pyghidra_importable", lambda _python: True)
+    assert client.available is True
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

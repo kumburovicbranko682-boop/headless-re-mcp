@@ -167,7 +167,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install Ghidra (last Jython release, matches ExportJson.py runtime)
+      - name: Install Ghidra (Jython generation, direct analyzeHeadless launch)
         run: |
           curl -fsSL -o /tmp/ghidra.zip \
             https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip
@@ -201,6 +201,63 @@ jobs:
           if skipped:
               sys.exit(f"ghidra-headless gate skipped despite an installed Ghidra: {skipped}")
           print(f"ghidra-headless gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
+  linux-ghidra-pyghidra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Ghidra (PyGhidra generation) and the pyghidra package
+        run: |
+          curl -fsSL -o /tmp/ghidra.zip \
+            https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip
+          unzip -q /tmp/ghidra.zip -d "$HOME/ghidra"
+          GHIDRA_HOME="$HOME/ghidra/ghidra_12.1.3_PUBLIC"
+          echo "HEADLESS_RE_GHIDRA_HOME=$GHIDRA_HOME" >> "$GITHUB_ENV"
+          # Ghidra 11.3+ dropped Jython; the .py export script runs through
+          # PyGhidra, which the client launches via `python -m pyghidra.ghidra_launch`.
+          # Install the pyghidra wheel Ghidra ships so that CPython can host the JVM.
+          python -m pip install -U pip
+          python -m pip install --no-index \
+            -f "$GHIDRA_HOME/Ghidra/Features/PyGhidra/pypkg/dist" pyghidra
+
+      - name: Install the package
+        run: |
+          python -m pip install -e ".[test,dev]"
+
+      - name: Ghidra headless gate runs for real via PyGhidra (skip != pass)
+        run: |
+          test ! -d "$HEADLESS_RE_GHIDRA_HOME/Ghidra/Features/Jython"
+          python -c "import pyghidra; print('pyghidra', pyghidra.__version__)"
+          cc --version
+          python -m pytest tests/integration/test_ghidra_headless_live_gate.py \
+            -rs --tb=short --junitxml=ghidra-pyghidra-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("ghidra-pyghidra-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # A PyGhidra Ghidra, a JDK, pyghidra and a C compiler were all just
+          # installed, so a skip here means the PyGhidra launch path could not drive
+          # the export surface -- exactly the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no ghidra-pyghidra gate was collected")
+          if skipped:
+              sys.exit(f"ghidra-pyghidra gate skipped despite an installed PyGhidra Ghidra: {skipped}")
+          print(f"ghidra-pyghidra gate ran for real: {[c.get('name') for c in cases]}")
           PY
 
   webui:

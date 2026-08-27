@@ -15,11 +15,18 @@ not defined`，必须改用 `getScriptArgs()`。两者均已修复：启动器�
 Windows 选 `.bat`，另一个降级为兜底，并加了 hermetic 单测钉住），`ExportJson.py` 改用 `getScriptArgs()`。新增
 `tests/integration/test_ghidra_headless_live_gate.py`：编译一个带具名函数与独特字符串的小 ELF，驱动真实客户端走完整
 面——按名字找回 `add_numbers`/`multiply`/`main`，经 xrefs 找到 `main` 对 `add_numbers` 的调用，并把 `add_numbers`
-的算术（`return param_1 + param_2;`）与 `main` 里的标记串反编译回来。覆盖以 Jython 跑 `.py` postScript 的 Ghidra
-（≤ 11.2，即 `ExportJson.py` 标注的 `@runtime Jython`）；Ghidra 11.3 起移除 Jython、改用 PyGhidra（需 CPython 宿主
-JVM 的另一种启动模型），那是单独的后续项，已在 docstring 说明，避免把 green 误读成“最新 Ghidra 也能跑”。新增
-`linux-ghidra-headless` CI job：装 JDK 21 + Ghidra 11.2.1、跑该 gate 并解析 junitxml，Ghidra 已装却 skip 时判失败
-（skip ≠ pass）。
+的算术（`return param_1 + param_2;`）与 `main` 里的标记串反编译回来。
+
+并进一步让 Ghidra 线在“当代”Ghidra 上也能真跑：Ghidra 11.3 移除了跑 `.py` postScript 的 Jython，改用 PyGhidra——
+它无法由 `analyzeHeadless` 直接驱动（会报“Ghidra was not started with PyGhidra”），必须由 CPython 经
+`python -m pyghidra.ghidra_launch ... AnalyzeHeadless` 宿主 JVM。客户端据安装的 feature 布局自动选路：有
+`Features/Jython`（≤ 11.2）走原 `analyzeHeadless` 直连；否则有 `Features/PyGhidra`（≥ 11.3）走 PyGhidra 启动，并在
+未设 `JAVA_HOME` 时按解析到的 java 推导好交给 JPype。`ExportJson.py` 去掉了 `@runtime Jython` 标记（该标记会把新
+Ghidra 的脚本硬路由到已被移除的 Jython provider 而中止）——不带标记时 Ghidra 按 `.py` 扩展名选 provider，旧装选
+Jython、新装选 PyGhidra，脚本正文两代通用。`doctor` 的 ghidra 探针也随之诚实化：PyGhidra 装但 `pyghidra` 包不可导入
+时报 `detected`（并提示从 `Ghidra/Features/PyGhidra/pypkg/dist` 安装），不再当成 `ready`。同一 gate 现由两个 CI job
+分别指向 Ghidra 11.2.1（Jython 直连）与 12.1.3（PyGhidra，额外装随发行版附带的 pyghidra wheel）跑通，两条启动路径都
+落到真机覆盖；Ghidra 已装却 skip 时判失败（skip ≠ pass）。选路与 PyGhidra 启动器构造另有 hermetic 单测钉住。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在

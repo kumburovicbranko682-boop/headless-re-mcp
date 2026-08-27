@@ -1,6 +1,13 @@
 # Export bounded JSON for Headless RE-MCP (analyzeHeadless -postScript).
 # @category HeadlessRE
-# @runtime Jython
+#
+# No @runtime tag on purpose: the tag pins one script provider, but Jython Ghidra
+# (<= 11.2) and PyGhidra Ghidra (>= 11.3) need different ones, and tagging Jython
+# made newer Ghidra route the script to a Jython stub that aborts. Left untagged,
+# Ghidra selects the provider by the .py extension -- Jython on old installs,
+# PyGhidra on new -- and the same script runs on both. The flat-API globals this
+# script uses (getScriptArgs, currentProgram, DecompInterface, ...) are injected
+# by both providers, so the body is identical.
 
 
 import json

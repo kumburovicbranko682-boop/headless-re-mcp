@@ -1206,7 +1206,13 @@ def probe_ghidra(settings: Settings) -> Probe:
             {},
             "Set HEADLESS_RE_GHIDRA_HOME to a Ghidra install with support/analyzeHeadless.",
         )
-    from headless_re_mcp.backends.ghidra.client import _find_analyze_headless
+    import sys
+
+    from headless_re_mcp.backends.ghidra.client import (
+        _find_analyze_headless,
+        _needs_pyghidra,
+        _pyghidra_importable,
+    )
 
     analyze = _find_analyze_headless(home)
     if analyze is None or not analyze.is_file():
@@ -1226,10 +1232,30 @@ def probe_ghidra(settings: Settings) -> Probe:
             {"home": str(home), "analyze_headless": str(analyze)},
             "Install a JRE and put java on PATH before treating Ghidra as ready.",
         )
+    pyghidra_mode = _needs_pyghidra(home)
+    details = {
+        "home": str(home),
+        "analyze_headless": str(analyze),
+        "java": java,
+        "runtime": "pyghidra" if pyghidra_mode else "jython",
+    }
+    if pyghidra_mode and not _pyghidra_importable(Path(sys.executable)):
+        # Ghidra 11.3+ dropped Jython: analyzeHeadless alone cannot run the .py
+        # export script, so a present launcher is not enough -- the pyghidra
+        # package must be importable to host the JVM. Report detected, not ready,
+        # so a strict check does not call this Ghidra usable when it is not.
+        return Probe(
+            "ghidra",
+            ProbeStatus.DETECTED,
+            "Ghidra needs PyGhidra but the pyghidra package is not installed",
+            details,
+            "pip install the pyghidra wheel from "
+            "Ghidra/Features/PyGhidra/pypkg/dist so .py scripts can run.",
+        )
     return Probe(
         "ghidra",
         ProbeStatus.READY,
         "Ghidra analyzeHeadless is available",
-        {"home": str(home), "analyze_headless": str(analyze), "java": java},
+        details,
         None,
     )

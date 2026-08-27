@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -32,14 +34,31 @@ class GhidraError(RuntimeError):
 
 
 class GhidraClient:
-    def __init__(self, home: Path | None = None, java: Path | None = None) -> None:
+    def __init__(
+        self,
+        home: Path | None = None,
+        java: Path | None = None,
+        python: Path | None = None,
+    ) -> None:
         self.home = home
         self.java = java or _which("java")
         self.analyze = _find_analyze_headless(home)
+        # Ghidra 11.3 dropped the bundled Jython that ran .py postScripts and
+        # replaced it with PyGhidra, which cannot be driven by analyzeHeadless
+        # directly -- it needs CPython to host the JVM via
+        # `python -m pyghidra.ghidra_launch ... AnalyzeHeadless`. Detect which
+        # generation this install is by its feature layout so the same
+        # ExportJson.py runs on both.
+        self.pyghidra_mode = _needs_pyghidra(home)
+        self.python = python or Path(sys.executable)
 
     @property
     def available(self) -> bool:
-        return self.analyze is not None and self.java is not None
+        if self.java is None:
+            return False
+        if self.pyghidra_mode:
+            return self.home is not None and _pyghidra_importable(self.python)
+        return self.analyze is not None
 
     def analyze_binary(
         self,
@@ -197,7 +216,9 @@ class GhidraClient:
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
             out_path.unlink()
-        addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
+        addr = (
+            "" if address is None else (hex(address) if isinstance(address, int) else str(address))
+        )
         capped = max(1, min(int(limit), 1024))
         extra = [
             "-scriptPath",
@@ -279,6 +300,32 @@ class GhidraClient:
             payload.setdefault("found", bool(payload.get("function")))
         return payload
 
+    def _launcher(self, env: dict[str, str]) -> list[str]:
+        """The argv prefix that starts AnalyzeHeadless for this Ghidra generation.
+
+        Jython Ghidra (<= 11.2) runs the analyzeHeadless launcher directly. PyGhidra
+        Ghidra (>= 11.3) has no Jython, so analyzeHeadless alone reports "Ghidra was
+        not started with PyGhidra"; it must be launched through CPython so PyGhidra
+        can host the JVM. JPype needs JAVA_HOME to find that JVM, so derive it from
+        the resolved java when the operator has not set it.
+        """
+        if not self.pyghidra_mode:
+            assert self.analyze is not None
+            return [str(self.analyze)]
+        assert self.home is not None
+        if not env.get("JAVA_HOME") and self.java is not None:
+            java_home = self.java.resolve().parent.parent
+            if (java_home / "bin").is_dir():
+                env["JAVA_HOME"] = str(java_home)
+        return [
+            str(self.python),
+            "-m",
+            "pyghidra.ghidra_launch",
+            "--install-dir",
+            str(self.home),
+            "ghidra.app.util.headless.AnalyzeHeadless",
+        ]
+
     def _run_headless(
         self,
         project_dir: Path,
@@ -289,7 +336,6 @@ class GhidraClient:
         max_heap: str,
         delete_project: bool,
     ) -> tuple[str, str, int]:
-        assert self.analyze is not None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free. Prepend, do
@@ -297,24 +343,17 @@ class GhidraClient:
         # or the --add-opens a JDK 17+ Ghidra needs, and clobbering it here would
         # silently break analyzeHeadless on their machine. Ours goes first so the
         # heap bound is the default while an explicit operator -Xmx, which the JVM
-        # parses last, still wins.
+        # parses last, still wins. The JVM honours JAVA_TOOL_OPTIONS whether it is
+        # started by the analyzeHeadless script or by PyGhidra's embedded launch,
+        # so the same bound applies to both.
         existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
         env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
-        cmd = [
-            str(self.analyze),
-            str(project_dir),
-            "HeadlessRE",
-            "-import",
-            str(binary),
-            *extra,
-        ]
+        cmd = [*self._launcher(env), str(project_dir), "HeadlessRE", "-import", str(binary), *extra]
         if delete_project:
             cmd.append("-deleteProject")
         try:
             with _project_lock(project_dir):
-                completed = run_bounded(
-                    cmd, timeout=timeout, creationflags=creationflags, env=env
-                )
+                completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
         except TimedOut as exc:
             # analyzeHeadless is a script that starts a JVM. Killing the script
             # alone left that JVM analysing a large binary with nobody waiting
@@ -351,6 +390,36 @@ def _export_has_content(payload: JsonObject, mode: str) -> bool:
 def _which(name: str) -> Path | None:
     found = shutil.which(name)
     return Path(found) if found else None
+
+
+def _needs_pyghidra(home: Path | None) -> bool:
+    """True when this install runs .py scripts through PyGhidra rather than Jython.
+
+    Ghidra 11.3+ ships a PyGhidra feature and no bundled Jython; 11.2 and earlier
+    ship Jython. When someone adds the Jython extension back to a newer Ghidra the
+    Jython feature reappears, so prefer the simpler direct path whenever Jython is
+    present and only fall to PyGhidra when it is the only Python available.
+    """
+    if home is None:
+        return False
+    features = home / "Ghidra" / "Features"
+    if (features / "Jython").is_dir():
+        return False
+    return (features / "PyGhidra").is_dir()
+
+
+def _pyghidra_importable(python: Path) -> bool:
+    if Path(python) == Path(sys.executable):
+        return importlib.util.find_spec("pyghidra") is not None
+    try:
+        result = subprocess.run(
+            [str(python), "-c", "import pyghidra"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def _find_analyze_headless(home: Path | None) -> Path | None:

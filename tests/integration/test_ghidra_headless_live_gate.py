@@ -22,11 +22,13 @@ decompiles both the arithmetic of ``add_numbers`` and the marker string in
 ``main``. ``-O0 -no-pie`` keeps the helpers un-inlined and their addresses stable
 so xrefs/decompile land where the function listing reported.
 
-Scope: this covers Ghidra that runs ``.py`` postScripts under Jython (<= 11.2,
-which is what ``ExportJson.py`` is written for -- it is tagged ``@runtime
-Jython``). Ghidra 11.3 removed Jython in favour of PyGhidra, which needs a
-different launch model (CPython hosting the JVM); supporting that is a separate
-follow-up, called out here so a green is not read as "works on the newest Ghidra".
+This gate is deliberately Ghidra-generation agnostic: it drives whatever
+``HEADLESS_RE_GHIDRA_HOME`` points at. The client picks the launch model from the
+install's feature layout -- analyzeHeadless directly for Jython Ghidra (<= 11.2),
+or ``python -m pyghidra.ghidra_launch`` for PyGhidra Ghidra (>= 11.3, which has no
+Jython) -- so the same assertions exercise whichever runtime CI installs. Both
+launch paths are covered in CI by two jobs pointing this gate at an 11.2 and a 12
+install respectively.
 
 Skip != pass: the gate skips with a reason when Ghidra (HEADLESS_RE_GHIDRA_HOME),
 java or a C compiler is absent, and runs for real when all are present. CI
