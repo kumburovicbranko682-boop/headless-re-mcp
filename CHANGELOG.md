@@ -175,6 +175,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
+- **`proxy.flow.get` 把小体积二进制响应体解成乱码**。小于内联阈值的响应体走的是
+  `body.decode("utf-8", errors="replace")`：二进制体（图片、protobuf、加密负载等）里每个非
+  UTF-8 字节都被替换成 U+FFFD，既有损、又不可还原，还不带任何"这是二进制"的标记，调用方把
+  mojibake 当成了响应内容。现在先严格解码：能解成 UTF-8 的照旧原样返回，解不动的按 base64 回
+  并置 `response.base64_encoded=true`，与 `web.network.get` 对齐。溢出落盘（原始字节）一路不变。
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭

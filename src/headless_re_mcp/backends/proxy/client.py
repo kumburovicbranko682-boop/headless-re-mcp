@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import logging
@@ -31,6 +32,8 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or below this is returned inline; anything larger spills to a file.
+_MAX_INLINE_BODY = 200_000
 _OMITTED_BODY = object()
 
 
@@ -511,13 +514,22 @@ class ProxyBackend:
                 "size": len(body),
             },
         }
-        if len(body) > 200_000:
+        if len(body) > _MAX_INLINE_BODY:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)
             result["response"]["body_path"] = str(out)
         else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+            try:
+                result["response"]["body"] = body.decode("utf-8")
+            except UnicodeDecodeError:
+                # A binary body (image, protobuf, encrypted payload) is not text.
+                # Decoding with errors="replace" turned every non-UTF-8 byte into
+                # U+FFFD -- lossy, unrecoverable, and unflagged, so a caller read
+                # mojibake as the response. Hand it back as decodable base64 with
+                # the same base64_encoded flag web.network.get uses.
+                result["response"]["body"] = base64.b64encode(body).decode("ascii")
+                result["response"]["base64_encoded"] = True
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

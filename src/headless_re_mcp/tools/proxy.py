@@ -74,8 +74,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with id, request (method, url, headers) and response (status,
         headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        larger is response.body_path and there is no body key. A binary
+        response.body is base64 with response.base64_encoded true; text is
+        returned as-is. There are no top-level headers or body fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

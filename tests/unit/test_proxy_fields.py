@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -159,6 +160,55 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+
+
+def _flow_get_backend(monkeypatch: Any, raw_content: bytes) -> ProxyBackend:
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", headers={"accept": "*/*"}
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "application/octet-stream"},
+        raw_content=raw_content,
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    return backend
+
+
+def test_proxy_flow_get_returns_binary_body_as_base64(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A small binary body was decoded utf-8/replace -- lossy and unflagged.
+
+    Measured: 256 non-text bytes came back as U+FFFD mojibake with no signal
+    it was binary. Now response.body is decodable base64 and
+    response.base64_encoded is true, matching web.network.get.
+    """
+    raw = bytes(range(256))
+    backend = _flow_get_backend(monkeypatch, raw)
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["response"]["base64_encoded"] is True
+    assert "body_path" not in payload["response"]
+    assert base64.b64decode(payload["response"]["body"]) == raw
+
+
+def test_proxy_flow_get_returns_text_body_verbatim(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A UTF-8 text body stays readable with no base64_encoded flag."""
+    backend = _flow_get_backend(monkeypatch, "hÉllo—世界".encode())
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["response"]["body"] == "hÉllo—世界"
+    assert "base64_encoded" not in payload["response"]
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
