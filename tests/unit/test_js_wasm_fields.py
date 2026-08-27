@@ -57,6 +57,34 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_wasm_info_refuses_when_objdump_is_missing_though_wat_is_present(
+    tmp_path: Path,
+) -> None:
+    """available is gated on wasm2wat, but wasm.info needs wasm-objdump too.
+
+    A wabt install that ships wasm2wat but not wasm-objdump (a partial unpack,
+    a renamed binary) still reports available True, yet wasm.info has no tool to
+    run. It must refuse with capability_unavailable -- before touching the input
+    file or spawning anything -- rather than carry a None tool into a subprocess.
+    The split state is forced directly so the check does not depend on whatever
+    wabt happens to sit on the test host's PATH.
+    """
+    client = WasmClient()
+    client._wasm2wat = tmp_path / "wasm2wat.exe"
+    client._objdump = None
+    assert client.available is True
+
+    def explode(*_args: Any, **_kwargs: Any) -> Completed:
+        raise AssertionError("a missing wasm-objdump must not reach a subprocess")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", explode),
+        pytest.raises(JsReError) as caught,
+    ):
+        client.info(tmp_path / "never-written.wasm")
+    assert caught.value.code == "capability_unavailable"
+
+
 def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named wat and never named the length field.
 
