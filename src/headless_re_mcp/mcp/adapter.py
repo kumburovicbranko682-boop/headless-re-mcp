@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Any
@@ -23,6 +24,7 @@ from headless_re_mcp.tools.binding import BoundTool
 # further tool calls, which is honest backpressure rather than silent starvation.
 _TOOL_THREADS = 16
 _tool_limiter: anyio.CapacityLimiter | None = None
+_tool_slots = threading.BoundedSemaphore(_TOOL_THREADS)
 
 
 def _limiter() -> anyio.CapacityLimiter:
@@ -69,16 +71,45 @@ def offload(
 
     The catalog timeout is the outer deadline. ``abandon_on_cancel`` lets a
     disconnect return immediately; ``fail_after`` does the same when the
-    catalog bound fires, so the limiter slot is reusable instead of waiting
-    out a backend that has already missed it. Default is 60s, the same as
+    catalog bound fires. A separate hard slot remains occupied until the
+    abandoned handler really exits; otherwise every timeout could start one
+    more stuck AnyIO worker. Default is 60s, the same as
     ``ResourcePolicy.timeout_seconds``.
     """
     bound = max(0.1, float(timeout))
 
     @wraps(handler)
     async def offloaded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        slots = _tool_slots
+        if not slots.acquire(blocking=False):
+            return {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "tool_concurrency_limit",
+                    "message": f"all {_TOOL_THREADS} tool workers are still occupied",
+                    "details": {"limit": _TOOL_THREADS},
+                    "retryable": True,
+                },
+                "meta": {},
+            }
+        state_lock = threading.Lock()
+        state = {"owned": True, "started": False}
+
         def call() -> dict[str, Any]:
-            return handler(*args, **kwargs)
+            with state_lock:
+                if not state["owned"]:
+                    # Cancellation won before AnyIO started this worker. The
+                    # caller is already gone, so do not execute stale work.
+                    return {}
+                state["started"] = True
+            try:
+                return handler(*args, **kwargs)
+            finally:
+                with state_lock:
+                    if state["owned"]:
+                        state["owned"] = False
+                        slots.release()
 
         try:
             with anyio.fail_after(bound):
@@ -99,6 +130,13 @@ def offload(
                 },
                 "meta": {},
             }
+        finally:
+            with state_lock:
+                release_unstarted = state["owned"] and not state["started"]
+                if release_unstarted:
+                    state["owned"] = False
+            if release_unstarted:
+                slots.release()
 
     return offloaded
 
