@@ -227,6 +227,10 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "output" not in payload
     assert payload["entry_count"] == 4
     assert payload["path"].endswith("capture.har")
+    # size is the written HAR's byte length; it reaches the caller but the
+    # catalog named path/entry_count/truncated and stopped.
+    assert payload["size"] == len(Path(payload["path"]).read_bytes())
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "size" in doc

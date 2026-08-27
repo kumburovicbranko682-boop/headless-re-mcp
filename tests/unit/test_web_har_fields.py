@@ -59,6 +59,10 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "artifact" not in payload
     assert payload["entry_count"] == 1
     assert payload["path"].endswith("c.har")
+    # size is the written HAR's byte length; it reaches the caller but the
+    # catalog named path/entry_count/truncated and stopped.
+    assert payload["size"] == len(Path(payload["path"]).read_bytes())
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "size" in doc
