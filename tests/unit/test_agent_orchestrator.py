@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -13,7 +14,7 @@ import pytest
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import compact_messages
-from headless_re_mcp.agent.models import RunStatus
+from headless_re_mcp.agent.models import AgentMessage, RunStatus
 from headless_re_mcp.agent.orchestrator import AgentOrchestrator, thread_system_prompt
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.agent.redaction import redact
@@ -1047,3 +1048,227 @@ async def test_reasoning_deltas_are_flushed_to_the_event_log(tmp_path: Path) -> 
     assert "".join(str(event.data.get("delta") or "") for event in reasoning) == "hmm ok"
     visible = [event for event in events if event.type == "message.delta"]
     assert "".join(str(event.data.get("delta") or "") for event in visible) == "answer"
+
+
+def _assert_tool_messages_are_all_answered(messages: Sequence[JsonObject]) -> None:
+    """Every ``role="tool"`` message must follow an assistant that announced its id.
+
+    This is the invariant an OpenAI-compatible chat API enforces with a 400
+    ("messages with role 'tool' must be a response to a preceding message with
+    'tool_calls'"). A conversation the orchestrator hands the provider that
+    violates it kills the run on the first request.
+    """
+    announced: set[str] = set()
+    for message in messages:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                identifier = call.get("id")
+                assert identifier, f"assistant tool_call has no id: {call!r}"
+                announced.add(str(identifier))
+        elif message.get("role") == "tool":
+            identifier = message.get("tool_call_id")
+            assert identifier in announced, f"orphaned tool message: {message!r}"
+
+
+def _history_orchestrator(store: AgentStore, tmp_path: Path) -> AgentOrchestrator:
+    return AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+    )
+
+
+def test_history_rebuild_pairs_a_tool_result_with_a_synthesized_tool_calls(
+    tmp_path: Path,
+) -> None:
+    """A stored assistant/tool pair rebuilds into a provider-valid turn.
+
+    The store never persists the assistant ``tool_calls`` block -- the messages
+    table has no column for it -- so replaying the rows verbatim (the old
+    behaviour) left the tool result with no preceding ``tool_calls`` and every
+    follow-up run 400'd on its first request. The rebuild reconstructs that
+    block from the tool_calls table so the pairing the provider requires is
+    restored.
+    """
+    store = AgentStore(tmp_path / "history.db")
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=60.0
+    )
+    store.propose_tool_call(run.id, "call_1", "test.read", {"value": 7}, ["read_only"])
+    rows = [
+        AgentMessage("m0", thread.id, "user", "inspect it", None, None, "t0"),
+        AgentMessage("m1", thread.id, "assistant", "calling a tool", run.id, None, "t1"),
+        AgentMessage("m2", thread.id, "tool", '{"ok": true}', run.id, "call_1", "t2"),
+    ]
+    conversation = _history_orchestrator(store, tmp_path)._conversation_from_history(rows)
+
+    _assert_tool_messages_are_all_answered(conversation)
+    assistant = next(item for item in conversation if item.get("role") == "assistant")
+    assert assistant["content"] == "calling a tool"
+    calls = assistant["tool_calls"]
+    assert len(calls) == 1
+    assert calls[0]["id"] == "call_1"
+    assert calls[0]["function"]["name"] == "test.read"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"value": 7}
+    tool_message = next(item for item in conversation if item.get("role") == "tool")
+    assert tool_message["tool_call_id"] == "call_1"
+    assert tool_message["content"] == '{"ok": true}'
+
+
+def test_history_rebuild_synthesizes_an_assistant_for_a_text_less_tool_turn(
+    tmp_path: Path,
+) -> None:
+    """A tool-only turn (the model called a tool without speaking) still pairs.
+
+    When the model returns tool calls and no text, no assistant row is written
+    at all, so the rebuild has nothing to attach the ``tool_calls`` to and must
+    mint a text-less assistant. Two such turns land as consecutive tool rows;
+    both ids must be answered by the assistant that precedes them.
+    """
+    store = AgentStore(tmp_path / "text-less.db")
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=60.0
+    )
+    store.propose_tool_call(run.id, "call_a", "test.read", {"value": 1}, ["read_only"])
+    store.propose_tool_call(run.id, "call_b", "test.read", {"value": 2}, ["read_only"])
+    rows = [
+        AgentMessage("m0", thread.id, "user", "inspect it", None, None, "t0"),
+        AgentMessage("m1", thread.id, "tool", '{"ok": true, "n": 1}', run.id, "call_a", "t1"),
+        AgentMessage("m2", thread.id, "tool", '{"ok": true, "n": 2}', run.id, "call_b", "t2"),
+    ]
+    conversation = _history_orchestrator(store, tmp_path)._conversation_from_history(rows)
+
+    _assert_tool_messages_are_all_answered(conversation)
+    assistant = next(item for item in conversation if item.get("role") == "assistant")
+    assert assistant["content"] is None
+    assert {call["id"] for call in assistant["tool_calls"]} == {"call_a", "call_b"}
+
+
+def test_history_rebuild_pairs_an_id_less_tool_call(tmp_path: Path) -> None:
+    """A provider that emitted no call id still rebuilds into a valid pair.
+
+    Some providers omit the tool_call id, so the stored ``tool_call_id`` is
+    null. The rebuild mints one id and uses it for both the assistant entry and
+    the tool message, so they still pair even though nothing linked them on
+    disk.
+    """
+    store = AgentStore(tmp_path / "id-less.db")
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=60.0
+    )
+    rows = [
+        AgentMessage("m0", thread.id, "user", "inspect it", None, None, "t0"),
+        AgentMessage("m1", thread.id, "assistant", "calling", run.id, None, "t1"),
+        AgentMessage("m2", thread.id, "tool", '{"ok": true}', run.id, None, "t2"),
+    ]
+    conversation = _history_orchestrator(store, tmp_path)._conversation_from_history(rows)
+
+    _assert_tool_messages_are_all_answered(conversation)
+    assistant = next(item for item in conversation if item.get("role") == "assistant")
+    minted = assistant["tool_calls"][0]["id"]
+    assert minted
+    tool_message = next(item for item in conversation if item.get("role") == "tool")
+    assert tool_message["tool_call_id"] == minted
+
+
+def test_history_rebuild_survives_a_trimmed_tool_call_row(tmp_path: Path) -> None:
+    """A tool result whose tool_calls row was retention-trimmed still pairs.
+
+    The tool_calls table is trimmed independently of the messages table, so a
+    long thread can keep a tool result row after its call arguments are gone.
+    The rebuild degrades that entry to a structurally valid placeholder rather
+    than dropping the pairing and re-orphaning the tool message.
+    """
+    store = AgentStore(tmp_path / "trimmed.db")
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=60.0
+    )
+    rows = [
+        AgentMessage("m0", thread.id, "user", "inspect it", None, None, "t0"),
+        AgentMessage("m1", thread.id, "assistant", "calling", run.id, None, "t1"),
+        AgentMessage("m2", thread.id, "tool", '{"ok": true}', run.id, "gone_call", "t2"),
+    ]
+    conversation = _history_orchestrator(store, tmp_path)._conversation_from_history(rows)
+
+    _assert_tool_messages_are_all_answered(conversation)
+    assistant = next(item for item in conversation if item.get("role") == "assistant")
+    assert assistant["tool_calls"][0]["id"] == "gone_call"
+    assert assistant["tool_calls"][0]["function"]["name"] == "unknown"
+
+
+class _CapturingProvider:
+    """Records the messages of every request so a follow-up run can be inspected."""
+
+    def __init__(self, scripts: list[tuple[ProviderToolCall, ...]]) -> None:
+        self.scripts = scripts
+        self.round = 0
+        self.captured: list[list[JsonObject]] = []
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del tools, model, enable_thinking, reasoning_effort
+        self.captured.append([dict(message) for message in messages])
+        calls = self.scripts[self.round] if self.round < len(self.scripts) else ()
+        self.round += 1
+        return self._events(calls)
+
+    async def _events(self, calls: tuple[ProviderToolCall, ...]) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent("text_delta", text="ok")
+        yield ProviderEvent("completed", tool_calls=calls)
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_run_sends_a_provider_valid_tool_history(tmp_path: Path) -> None:
+    """End to end: run one calls a tool, run two must replay a valid history.
+
+    The FakeProvider used elsewhere ignores the messages, so this pins the real
+    wiring -- list_messages -> _conversation_from_history -> the provider -- and
+    asserts on what the second run actually put on the wire, which is where a
+    real provider would 400 before the rebuild existed.
+    """
+
+    def read() -> JsonObject:
+        return {"ok": True, "data": {"seen": True}}
+
+    provider = _CapturingProvider([(ProviderToolCall("c1", "test.tool", {}),), (), ()])
+    store = AgentStore(tmp_path / "e2e.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "call the tool then stop")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(read)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+
+    first = await runner.start_run(thread.id)
+    assert await _wait_status(
+        store, first["id"], {RunStatus.COMPLETED, RunStatus.FAILED}
+    ) is RunStatus.COMPLETED
+
+    second = await runner.start_run(thread.id)
+    assert await _wait_status(
+        store, second["id"], {RunStatus.COMPLETED, RunStatus.FAILED}
+    ) is RunStatus.COMPLETED
+
+    # The last request is the follow-up run's first (and only) round: the tool
+    # result stored by run one has to reach it paired with an assistant that
+    # announced the call, or a real provider rejects the whole request.
+    replayed = provider.captured[-1]
+    _assert_tool_messages_are_all_answered(replayed)
+    assert any(message.get("role") == "tool" for message in replayed)

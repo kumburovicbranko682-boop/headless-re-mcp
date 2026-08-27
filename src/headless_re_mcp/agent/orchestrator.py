@@ -371,6 +371,72 @@ class AgentOrchestrator:
         self.store.transition(run_id, RunStatus.CANCELLED, error="cancelled")
         self.store.append_event(run_id, "run.cancelled", {"status": RunStatus.CANCELLED.value})
 
+    def _conversation_from_history(self, messages: list[Any]) -> list[JsonObject]:
+        """Rebuild a provider-valid conversation from the stored thread rows.
+
+        The store keeps the assistant's visible text and each tool result as
+        their own rows, but never the ``tool_calls`` block that links the two:
+        the messages table has no column for it, and a tool-only assistant turn
+        writes no assistant row at all. Replaying those rows verbatim -- what
+        this used to do -- yields a ``role="tool"`` message with no preceding
+        assistant ``tool_calls``, which an OpenAI-compatible API rejects with a
+        400 ("messages with role 'tool' must be a response to a preceding
+        message with 'tool_calls'"). Within a single run the loop below still
+        builds the pairing itself; the break was only ever on a *follow-up*
+        run, where the whole conversation comes back through here, so a mission
+        that made one tool call in run 1 could never start run 2.
+
+        Each run of consecutive tool rows answers one assistant turn, so they
+        are regrouped under a reconstructed ``tool_calls`` block -- attached to
+        the assistant text turn right before them when there was one, or a
+        text-less assistant when the model only called tools. The call name and
+        (already redacted) arguments come from the tool_calls table; a row that
+        was trimmed from that table degrades to a structurally valid placeholder
+        rather than dropping the pairing. The synthesized call id is shared
+        between the assistant entry and its tool message so they pair even when
+        the provider gave no id and the stored ``tool_call_id`` is null.
+        """
+        conversation: list[JsonObject] = []
+        index = 0
+        total = len(messages)
+        while index < total:
+            message = messages[index]
+            if message.role != "tool":
+                conversation.append({"role": message.role, "content": message.content})
+                index += 1
+                continue
+            tool_calls: list[JsonObject] = []
+            tool_messages: list[JsonObject] = []
+            while index < total and messages[index].role == "tool":
+                row = messages[index]
+                call_id = row.tool_call_id or uuid.uuid4().hex
+                name = "unknown"
+                arguments = "{}"
+                if row.run_id and row.tool_call_id:
+                    try:
+                        record = self.store.get_tool_call(row.run_id, row.tool_call_id)
+                    except KeyError:
+                        record = None
+                    if record is not None:
+                        name = str(record.get("name") or "unknown")
+                        arguments = json.dumps(
+                            record.get("arguments") or {}, ensure_ascii=False, sort_keys=True
+                        )
+                tool_calls.append(
+                    {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+                )
+                tool_messages.append(
+                    {"role": "tool", "tool_call_id": call_id, "content": row.content}
+                )
+                index += 1
+            previous = conversation[-1] if conversation else None
+            if previous is not None and previous.get("role") == "assistant" and "tool_calls" not in previous:
+                previous["tool_calls"] = tool_calls
+            else:
+                conversation.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+            conversation.extend(tool_messages)
+        return conversation
+
     async def _run_loop(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
         if run is None:
@@ -381,10 +447,7 @@ class AgentOrchestrator:
         if thread is None:
             raise KeyError(run.thread_id)
         stored_messages = self.store.list_messages(run.thread_id)
-        conversation: list[JsonObject] = [
-            {"role": message.role, "content": message.content, **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {})}
-            for message in stored_messages
-        ]
+        conversation: list[JsonObject] = self._conversation_from_history(stored_messages)
         conversation.insert(0, {"role": "system", "content": thread_system_prompt(thread.session_id, self.persona_provider() if self.persona_provider else None)})
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})

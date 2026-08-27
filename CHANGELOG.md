@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Agent 续跑重建历史丢失 tool_calls，provider 直接 400）
+
+- Agent 每次续跑都从 `sessions.db` 的消息行重建对话，但存储里从没有把助手的
+  `tool_calls` 块落盘——messages 表根本没有这一列，助手只存可见文本（无文本的纯工具轮
+  连助手行都不写），工具结果各自成行。旧的重建逐行照搬，于是产生一个前面没有
+  `tool_calls` 的 `role="tool"` 消息，OpenAI 兼容接口对此直接返回 400（"messages with
+  role 'tool' must be a response to a preceding message with 'tool_calls'"）。单个 run 内部
+  循环自己会配对，所以只在**续跑**里断——一个在 run 1 里调过一次工具的任务永远起不了
+  run 2，任务在调度器看来只是烧光轮次预算却拿不到完成标记。现新增
+  `_conversation_from_history`：把连续的工具结果按轮归组，重建出对应的 `tool_calls`
+  块——有可见文本就挂到它前面那条助手上，纯工具轮则合成一条无文本助手；调用名与
+  （已脱敏的）参数取自 `tool_calls` 表，被 retention 裁掉的行降级为结构合法的占位而不是
+  丢掉配对；合成的 call id 在助手条目与工具消息间共用，即便 provider 没给 id、落盘
+  `tool_call_id` 为空也能配上。回归测试覆盖跨 run 重放、纯工具轮、无 id 配对、裁表容错，
+  以及一条端到端断言：续跑首个请求发出的消息里每条工具消息都有前置助手宣告其 id。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
