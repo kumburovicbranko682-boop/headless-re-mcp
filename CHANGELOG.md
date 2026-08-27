@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2（**含整条 `r2.*` 服务面 in-PE 端到端**）/ Ghidra（**functions/decompile/symbols/xrefs 四模式**）/ **本机 Frida 动态插桩（attach/枚举/内存读取/hook）** 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web 动态抓取（network.list/get 响应体、har.export、screenshot、script.source 对真实本地页）** / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2（**含整条 `r2.*` 服务面 in-PE 端到端**）/ Ghidra（**functions/decompile/symbols/xrefs 四模式**）/ **本机 Frida 动态插桩（attach/枚举/内存读取/hook）** 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -51,6 +51,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   断言符号表里带回夹具那三个具名函数（`main`/`compute`/`helper`，各带 name/address/type），且对
   `helper` 入口的交叉引用里含被恢复出的调用边（`compute` 调它两次），而不只是 data/indirection 假边。
   至此 `ExportJson.py` 四种模式全部端到端跑过。
+- **Web 动态抓取此前只在 `data:` URL 上验证 scripts/console/dom**——那种页面不走任何网络,于是 MCP 客户端真正
+  依赖的抓取面（`web.network.list` / `web.network.get` 取响应体 / `web.har.export` / `web.screenshot` /
+  `web.script.source`）从没对着真实流量跑过。这些全挂在开会话时接上的 CDP Network/Debugger 事件上,正是那类
+  会悄悄烂掉、随协议版本敏感的管道（frida-17 的内存读取就是同一种形状）。新增 gate 让一个页面从临时
+  `http.server` 拉一个子资源,经 `AnalysisService` 逐个证明:文档与脚本两条请求都带状态码与 MIME 被抓到、
+  脚本响应体（getResponseBody）与脚本源码（getScriptSource）都带回被服务端塞进去的 marker、`wasm.list`
+  对无 wasm 的页干净地解析成空集、HAR 落成能被解析且含这两条请求的真实文件、截图是真正的 PNG 字节。
+  浏览器起不来时才 skip。
 - **Android 反编译此前从未端到端跑过**：既有 Android gate 只在一份合成 APK 上验证分类与优雅降级，
   从不真正反编译（那需要真实 `classes.dex` 与一套 jadx 安装），jadx 单元测试也只 mock 子进程——
   正是这类 mock 让上面两个 Ghidra bug 长期蒙混过关。新增 gate 构造一份货真价实的 Android 制品
