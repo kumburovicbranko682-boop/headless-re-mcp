@@ -348,3 +348,72 @@ def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
     # The explicit empty effects list persisted by the grant stays fail-closed
     # on reload, rather than being repopulated by the packed-analysis preset.
     assert reloaded.auto_approve_effects == frozenset()
+
+
+def test_the_reload_resume_contract_carries_a_runs_thread_and_transcript(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """The three reads the console makes to rebuild a conversation after reload.
+
+    A browser reload keeps only the run id (in ``history.state``). To restore
+    the conversation the console must (1) learn which thread that run belongs
+    to, (2) reload the thread's persisted transcript, and (3) replay the run's
+    events to bring a pending approval back. The client reads ``run.thread_id``,
+    the thread ``messages``, and the history ``events`` by name; if any of those
+    stopped carrying what it expects, a reload would silently strand the run on
+    a blank page -- the exact durability the console promises. Pin the three
+    shapes together so a server-side rename cannot break resume unnoticed.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        thread_id = client.post(
+            "/api/agent/threads", headers=headers, json={"title": "reload"}
+        ).json()["thread"]["id"]
+
+        # Stand in for a run paused at an approval: a user turn, a run, the
+        # assistant reply the run persisted, and the approval it is waiting on.
+        store = app.state.agent_store
+        store.add_message(thread_id, "user", "danger approve")
+        run = store.create_run(
+            thread_id, provider_profile="default", model="fake", deadline_seconds=30
+        )
+        store.add_message(thread_id, "assistant", "tool round finished", run_id=run.id)
+        store.append_event(
+            run.id,
+            "approval.required",
+            {
+                "tool_call_id": "tc1",
+                "name": "report.generate",
+                "args_sha256": "abc",
+                "effects": ["file_write"],
+                "arguments": {},
+            },
+        )
+
+        # (1) The run names the thread it belongs to, so the client can reselect it.
+        run_body = client.get(f"/api/agent/runs/{run.id}", headers=headers).json()
+        assert run_body["run"]["thread_id"] == thread_id
+
+        # (2) The thread yields the persisted transcript rather than a blank page.
+        thread_body = client.get(f"/api/agent/threads/{thread_id}", headers=headers).json()
+        assert [message["content"] for message in thread_body["messages"]] == [
+            "danger approve",
+            "tool round finished",
+        ]
+
+        # (3) The run's events replay the pending approval, with its tool-call id.
+        history = client.get(
+            f"/api/agent/runs/{run.id}/events/history", headers=headers
+        ).json()
+        approval = next(
+            event for event in history["events"] if event["type"] == "approval.required"
+        )
+        assert approval["data"]["tool_call_id"] == "tc1"
+
+        # A stale run id in history.state must resolve to a clean 404, never a
+        # 500, so a resume onto a since-deleted run degrades instead of erroring.
+        assert client.get("/api/agent/runs/does-not-exist", headers=headers).status_code == 404
