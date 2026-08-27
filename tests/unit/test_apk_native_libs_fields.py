@@ -33,6 +33,21 @@ class _FakeApk:
         return [f"lib/arm64-v8a/l{index}.so" for index in range(300)] + ["classes.dex"]
 
 
+class _FakeApkWithDirEntries:
+    """A package whose zip carries directory markers, as re-zipped APKs do."""
+
+    def get_files(self) -> list[str]:
+        return [
+            "lib/",
+            "lib/arm64-v8a/",
+            "lib/arm64-v8a/libfoo.so",
+            "lib/arm64-v8a/gdbserver",
+            "lib/x86/",
+            "lib/x86/libbar.so",
+            "resources.arsc",
+        ]
+
+
 def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     """The catalog said libraries and ABIs; the parser has no such fields.
 
@@ -55,3 +70,28 @@ def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     assert "Answers with native_libs" in doc
     assert "abis" in doc
     assert "has_more" in doc
+
+
+def test_apk_native_libs_excludes_zip_directory_entries() -> None:
+    """A directory marker is not a native library.
+
+    androguard's get_files() surfaces zip directory entries ("lib/",
+    "lib/arm64-v8a/") next to real payloads whenever the archive stores them --
+    standard aapt output does not, but apktool-rebuilt and otherwise re-zipped
+    APKs, which an RE session routinely handles, do. Listing those markers put
+    "lib/arm64-v8a/" in the native_libs list and counted them, so a package
+    shipping three payloads reported six "libraries". The list must contain only
+    the actual files, count must match, and the ABI set is unaffected.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApkWithDirEntries()  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    assert payload["native_libs"] == [
+        "lib/arm64-v8a/gdbserver",
+        "lib/arm64-v8a/libfoo.so",
+        "lib/x86/libbar.so",
+    ]
+    assert payload["count"] == 3
+    assert all(not name.endswith("/") for name in payload["native_libs"])
+    assert payload["abis"] == ["arm64-v8a", "x86"]
+    assert payload["has_more"] is False
