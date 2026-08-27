@@ -265,18 +265,25 @@ class PersistentDebugEventLog:
             want_start = cursor + 1
             unrecovered = False
             dropped = 0
-            if self._gap_through >= want_start:
-                # Skip past known unrecovered hole.
-                dropped = self._gap_through - cursor
-                want_start = self._gap_through + 1
-                unrecovered = dropped > 0
+            # Gaps are found by walking actual presence below, not by jumping to
+            # self._gap_through. That jump skipped every stored event between the
+            # cursor and the gap and counted them as dropped -- a single
+            # overwrite at sequence N made a consumer lagging at 0 lose all of
+            # 1..N-1 even though every one was still on disk, and report them
+            # lost. It is the opposite of the replay this log exists to give. A
+            # ring overwrite leaves its sequences absent from the store, so the
+            # loop hits them as holes anyway; gap_through added nothing but the
+            # skip.
 
             selected: list[DebugEvent] = []
             seq = want_start
             while seq <= latest and len(selected) < limit:
                 event = self._lookup(seq)
                 if event is None:
-                    # Soft hole: treat as unrecovered gap until next present event.
+                    # A sequence held nowhere is an unrecovered gap: the drain
+                    # never copied it (ring overwrite) or the disk trim dropped
+                    # it. Report the span and resume at the next present event --
+                    # inventing it would be worse than admitting the loss.
                     nxt = self._next_present(seq)
                     if nxt is None:
                         break

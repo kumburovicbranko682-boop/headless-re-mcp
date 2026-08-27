@@ -57,14 +57,50 @@ def test_append_skips_a_duplicate_sequence() -> None:
     assert [event.sequence for event in served.batch.events] == [1]
 
 
-def test_append_with_a_contiguity_hole_records_a_gap() -> None:
+def test_append_with_a_contiguity_hole_serves_the_events_around_it() -> None:
+    """A hole at sequence 2 must not swallow the stored event 1 in front of it.
+
+    Event 1 is on disk and readable; only 2 was overwritten. Reporting the hole
+    (dropped == 1) is right, but the read used to jump straight to
+    gap_through + 1 and hand back only [3], counting 1 as dropped as well -- a
+    captured, replayable event reported lost. The loss report and the loss must
+    match, and here they did not.
+    """
     log = PersistentDebugEventLog()
     log.append_events([_event(1)])
     log.append_events([_event(3)])  # 3 > latest(1)+1 -> gap through 2
     served = log.read_after(0, limit=10)
     assert served.unrecovered_gap is True
-    assert served.batch.dropped == 2
-    assert [event.sequence for event in served.batch.events] == [3]
+    assert served.batch.dropped == 1
+    assert [event.sequence for event in served.batch.events] == [1, 3]
+
+
+def test_a_gap_does_not_discard_the_stored_events_before_it() -> None:
+    """The whole point of the durable log: a lagged consumer replays what was
+    stored, right up to a gap.
+
+    One overwrite at 101 used to make a consumer reading from 0 lose every one
+    of 1..100 -- all on disk -- and jump to 103, reporting 102 dropped. Paging
+    from the start must instead walk 1..100, meet the 101/102 hole exactly once,
+    and go on to 103+, with dropped counting only the two that were truly lost.
+    """
+    log = PersistentDebugEventLog()
+    log.append_events([_event(i) for i in range(1, 101)])
+    log.append_events([_event(i) for i in range(103, 111)])
+
+    seen: list[int] = []
+    total_dropped = 0
+    cursor = 0
+    for _ in range(200):
+        page = log.read_after(cursor, limit=10)
+        if not page.batch.events:
+            break
+        seen.extend(event.sequence for event in page.batch.events)
+        total_dropped += page.batch.dropped
+        cursor = page.batch.next_cursor
+
+    assert seen == list(range(1, 101)) + list(range(103, 111))
+    assert total_dropped == 2
 
 
 def test_evict_to_window_is_a_noop_without_a_database() -> None:

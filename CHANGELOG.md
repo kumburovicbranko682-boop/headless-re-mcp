@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（持久调试事件日志在缺口前丢弃已落盘、可重放的事件）
+
+- `PersistentDebugEventLog.read_after` 在读取前先看 `self._gap_through`（已知最高缺失序号）：
+  只要它 `>= want_start`,就直接把游标跳到 `gap_through + 1`,并把 `cursor+1..gap_through`
+  整段计入 `dropped`。可这段里往往还有**已经落盘、完全可读**的事件——原生环缓冲在序号 N 被
+  覆盖前,1..N-1 早已被 drain 抄进 SQLite。于是一个滞后到游标 0 的消费者,遇到 101 处的一次
+  覆盖,就把 1..100 全部丢掉、直接跳到 103,还把这 100 条仍在盘上的事件报成 `dropped`——
+  正是这个“真序列重放”日志存在的意义的反面:动作发生过、被捕获了、却在重放里读作从未发生。
+  现移除该预跳:缺口一律由下方逐序号走实际存在性的循环发现(被覆盖的序号本就在库里缺席,
+  循环照样会撞上并经 `_next_present` 跳过、只把真正缺失的计入 `dropped`),既服务缺口前的
+  每一条已存事件,`dropped` 也只数真丢的那些。`snapshot_resync_required` 也因此推迟到消费者
+  真正读到缺口那一页,而非一进来就整段重同步。新增回归:1,2,3 + 缺口 + 6,7 全部返回且
+  `dropped=1`;1..100 后一个缺口再到 103+,分页从头走完 108 条、`dropped` 只记 2。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
