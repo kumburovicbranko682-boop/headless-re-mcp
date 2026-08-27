@@ -907,6 +907,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   睡眠解释器验证通过。上一条的 `_read_with_script` 映射也在此得到印证:这个「移除的 API」故障是以干净的
   `backend_error` 冒出来的,而非 internal_error 事故。另加一条静态单测钉住枚举脚本用 NativePointer 读法、
   不含被移除的 `Memory.readByteArray` 全局,让没装 frida 的 CI 也能挡住回归。
+- **`frida.java.classes`/`frida.java.methods` 在近代 frida 上取回空列表**。这两个 Java 枚举 RPC 在
+  `Java.perform`/`enumerateLoadedClasses` 之后同步 `return out`。frida 17 起捆绑的 frida-java-bridge 7.x
+  把 `enumerateLoadedClasses` 改成异步回调,于是同步返回在任何当前 frida 上都拿回空(或残缺)列表,而
+  frida 16 仍好使——与 `memory.read` 同属版本漂移。现两个 RPC 都改为返回 Promise:`classes` 从
+  `onComplete` resolve(命中上限时经 `finish()` 提前 resolve,取代现代 bridge 不再支持的抛「哨兵字符串」
+  提前跳出),`methods` 在走完 `getDeclaredMethods()` 后 resolve。这在 frida 16(Promise 在 executor 返回
+  前就 resolve)与 17(稍后 resolve)上读起来都对,`exports_sync` 两者都会 await,Python 侧不变。已在
+  frida 17.17.0 实测 `exports_sync` 确会 await 一个返回 Promise 的 RPC(延时 `setTimeout` resolve 的值原样
+  取回);ART 上 `enumerateLoadedClasses` 的异步时序本身需要真实 Android 设备,故此处未跑(skip≠pass),
+  修法依据 frida 17 迁移说明与一份吻合的上游报告(frida-mcp)。另加静态单测钉住 Promise/onComplete 形态与
+  哨兵抛出的移除,让没有设备的 CI 也能挡住回归。
 
 ### 变更（Android 后端清理）
 
