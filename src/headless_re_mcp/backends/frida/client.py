@@ -117,7 +117,13 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // readByteArray returns null when the range is not fully mapped; turn that
+    // into an empty result rather than letting it read back as a page of zeros.
+    var buf = Memory.readByteArray(ptr(address), size);
+    if (buf === null) {
+      return [];
+    }
+    return Array.from(new Uint8Array(buf));
   }
 };
 """
@@ -403,12 +409,22 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            result: JsonObject = {
                 "address": address,
                 "size": size,
+                "bytes": len(data),
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            if len(data) < size:
+                # Memory.readByteArray returns null for a range that is not
+                # fully mapped -- a guard page partway through yields a short
+                # read -- and that arrives here as fewer bytes than asked. Say
+                # so, so `size` (the request) is never read as the length of
+                # `data` (what actually came back); empty data with a nonzero
+                # size then reads as unreadable, not as a page of zeros.
+                result["truncated"] = True
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
