@@ -109,6 +109,44 @@ def test_knowledge_paginates(repository: Any) -> None:
     assert [entry["key"] for entry in page["entries"]] == ["0002", "0003"]
 
 
+def test_knowledge_kinds_tally_covers_every_match_not_just_the_page(
+    repository: Any,
+) -> None:
+    """kinds must be the whole-set breakdown, matching total, across pages.
+
+    kinds sits next to total, so a caller reads it as "how many findings of
+    each kind does this session hold". It used to be built from the page's
+    rows, so a paged reply under-reported every kind: page two of a session
+    with eight functions and three apis reported a handful, not 8 + 3. The
+    tally now counts every matching row and sums to total on any page.
+    """
+    for index in range(8):
+        repository.record_knowledge(
+            session_id="s1", kind="function", key=f"f{index:04d}", value={}
+        )
+    for index in range(3):
+        repository.record_knowledge(
+            session_id="s1", kind="api", key=f"a{index:04d}", value={}
+        )
+
+    whole = repository.list_knowledge("s1")
+    assert whole["total"] == 11
+    assert whole["kinds"] == {"api": 3, "function": 8}
+
+    # A page that carries only api rows still reports the full breakdown, and
+    # the tally keeps summing to total rather than to this page's count.
+    page = repository.list_knowledge("s1", offset=0, limit=2)
+    assert page["count"] == 2
+    assert page["has_more"] is True
+    assert page["kinds"] == {"api": 3, "function": 8}
+    assert sum(page["kinds"].values()) == page["total"]
+
+    # Filtering by kind scopes both total and kinds to that kind.
+    only_fn = repository.list_knowledge("s1", kind="function", limit=2)
+    assert only_fn["total"] == 8
+    assert only_fn["kinds"] == {"function": 8}
+
+
 def test_a_finding_too_large_to_store_is_refused_not_silently_cut(repository: Any) -> None:
     """The store used to slice JSON text at 8000 characters.
 

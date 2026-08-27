@@ -300,6 +300,8 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with entries (each: session_id, kind, key, value, created_at,
         updated_at), plus count, total, offset, limit, has_more and kinds.
+        kinds is the per-kind tally of the whole matching set (it sums to
+        total), not just the entries on this page.
         """
         return _dump(
             analysis.knowledge_query(
