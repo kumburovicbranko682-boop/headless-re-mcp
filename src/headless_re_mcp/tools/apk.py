@@ -183,7 +183,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with apk, size, signed (false until apk.sign), and note.
         There is no output, path or repacked field. A successful rebuild is
-        still unsigned.
+        still unsigned. An empty or non-zip output (apktool can exit 0 yet
+        leave a truncated file) is reported as backend_error, not as a rebuilt
+        apk, so an unusable file never reaches apk.sign.
         """
         return _dump(analysis.apk_repack(session_id, decoded_dir=decoded_dir, timeout=timeout))
 
