@@ -21,6 +21,10 @@ DEFAULT_LIMIT: Final[int] = 64
 MAX_LIMIT: Final[int] = 256
 MAX_IL_BYTES: Final[int] = 4096
 MAX_IL_INSNS: Final[int] = 256
+# Materialising the whole #Strings heap is bounded so a large or crafted heap
+# cannot grow memory without limit. When the walk stops here the caller must
+# disclose it -- see _collect_strings_heap / enumerate_metadata.
+MAX_STRING_ENTRIES: Final[int] = 10000
 CAPABILITY: Final[str] = "dotnet_metadata"
 
 _TBL_TYPEDEF: Final[int] = 0x02
@@ -140,9 +144,15 @@ def enumerate_metadata(
         )
     inspect_dotnet(path, require_verified=require_verified)
     meta = _load_metadata_context(Path(path))
+    heap_capped = False
     if kind_norm == "strings":
-        items = list(_iter_strings_heap(meta))
+        items, heap_capped = _collect_strings_heap(meta)
         note = "ASCII/#Strings heap entries (not full #US decode)"
+        if heap_capped:
+            note += (
+                f"; heap holds more than {MAX_STRING_ENTRIES} strings -- listing "
+                "capped and total under-reports"
+            )
     elif kind_norm == "types":
         items = list(_iter_typedefs(meta))
         note = "TypeDef Name/Namespace from #~ + #Strings"
@@ -163,7 +173,9 @@ def enumerate_metadata(
         offset=offset,
         limit=limit,
         total=total,
-        truncated=offset + len(window) < total,
+        # A capped heap means strings past the cap exist but are unreachable
+        # here, so the page is truncated even when this window reaches `total`.
+        truncated=offset + len(window) < total or heap_capped,
         note=note,
     )
 
@@ -624,23 +636,31 @@ def _iter_memberrefs(meta: _MetaCtx) -> Iterable[JsonObject]:
         }
 
 
-def _iter_strings_heap(meta: _MetaCtx) -> Iterable[JsonObject]:
+def _collect_strings_heap(meta: _MetaCtx) -> tuple[list[JsonObject], bool]:
+    """Walk the #Strings heap, stopping at the entry cap.
+
+    Returns the collected entries and whether the heap held more strings past
+    the cap. The second value is the honesty signal: without it a heap with
+    more than MAX_STRING_ENTRIES strings (ordinary for a large assembly) paged
+    to the cap and reported truncated=False, claiming the listing was complete
+    when thousands of strings had been dropped.
+    """
     data = meta.strings
+    items: list[JsonObject] = []
     if not data:
-        return
+        return items, False
     i = 1
-    count = 0
     while i < len(data):
         end = data.find(b"\0", i)
         if end < 0:
             end = len(data)
         raw = data[i:end]
         if raw:
-            count += 1
-            yield {"index": i, "value": raw.decode("utf-8", errors="replace")}
+            if len(items) >= MAX_STRING_ENTRIES:
+                return items, True
+            items.append({"index": i, "value": raw.decode("utf-8", errors="replace")})
         i = end + 1
-        if count >= 10000:
-            break
+    return items, False
 
 
 def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject:
