@@ -11,6 +11,7 @@ refused by the PE-only tools through require_pe.
 from __future__ import annotations
 
 import glob
+import struct
 from pathlib import Path
 
 import pytest
@@ -437,7 +438,12 @@ def _elf64_relro(*, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0
 
 
 def _elf64_dynamic_with_strtab(
-    strtab: bytes, *, rpath: int | None = None, runpath: int | None = None
+    strtab: bytes,
+    *,
+    rpath: int | None = None,
+    runpath: int | None = None,
+    verneed: bytes | None = None,
+    verneed_num: int = 1,
 ) -> bytes:
     """A dynamic ELF whose DT_STRTAB points at ``strtab``.
 
@@ -445,7 +451,9 @@ def _elf64_dynamic_with_strtab(
     straight to its file offset, the same trick the DT_NEEDED builder uses, so
     the reader resolves the string table exactly as it does on a real image.
     ``rpath``/``runpath`` add a DT_RPATH/DT_RUNPATH tag whose value is the given
-    string-table offset.
+    string-table offset. ``verneed`` appends a .gnu.version_r blob behind the
+    dynamic array and points DT_VERNEED at it, declaring ``verneed_num``
+    records.
     """
     entries: list[tuple[int, int]] = []
     if rpath is not None:
@@ -455,17 +463,43 @@ def _elf64_dynamic_with_strtab(
     entries += [
         (5, 176),  # DT_STRTAB (vaddr == file offset of the string table)
         (10, len(strtab)),  # DT_STRSZ
-        (0, 0),  # DT_NULL
     ]
-    dyn = b"".join(
-        tag.to_bytes(8, "little") + val.to_bytes(8, "little") for tag, val in entries
-    )
     ph_off = 64
     strtab_off = ph_off + 56 * 2  # == 176, matching DT_STRTAB above
     dyn_off = strtab_off + len(strtab)
+    if verneed is not None:
+        # The verneed blob sits right behind the dynamic array; with the
+        # vaddr == offset PT_LOAD its file offset is its virtual address too.
+        vn_off = dyn_off + (len(entries) + 3) * 16  # + DT_VERNEED/NUM/NULL rows
+        entries += [(0x6FFFFFFE, vn_off), (0x6FFFFFFF, verneed_num)]
+    entries.append((0, 0))  # DT_NULL
+    dyn = b"".join(
+        tag.to_bytes(8, "little") + val.to_bytes(8, "little") for tag, val in entries
+    )
     program = _phdr64(1, p_offset=0, p_filesz=0x10000, p_vaddr=0) + _phdr64(2, dyn_off, len(dyn))
     ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
-    return ehdr + program + strtab + dyn
+    return ehdr + program + strtab + dyn + (verneed or b"")
+
+
+def _verneed_blob(entries: list[tuple[int, list[int]]]) -> bytes:
+    """A .gnu.version_r blob: one Verneed record per ``(file_off, name_offs)``.
+
+    ``file_off`` names the library and each ``name_offs`` entry one required
+    version tag, all as offsets into the dynamic string table. Records and
+    their Vernaux chains are laid out contiguously with the standard 16-byte
+    hops, the way ld emits them.
+    """
+    out = bytearray()
+    for index, (file_off, name_offs) in enumerate(entries):
+        aux = bytearray()
+        for j, name_off in enumerate(name_offs):
+            vna_next = 16 if j + 1 < len(name_offs) else 0
+            # vna_hash, vna_flags, vna_other, vna_name, vna_next
+            aux += struct.pack("<IHHII", 0, 0, 0, name_off, vna_next)
+        vn_next = 16 + len(aux) if index + 1 < len(entries) else 0
+        # vn_version, vn_cnt, vn_file, vn_aux, vn_next
+        out += struct.pack("<HHIII", 1, len(name_offs), file_off, 16, vn_next) + bytes(aux)
+    return bytes(out)
 
 
 def _write(tmp_path: Path, name: str, data: bytes) -> Path:
@@ -587,6 +621,80 @@ def test_a_search_path_offset_past_the_string_table_stays_out(tmp_path: Path) ->
     )
     facts = describe_native(path)["native"]
     assert "runpath" not in facts
+
+
+def test_version_needs_report_library_and_version_tags(tmp_path: Path) -> None:
+    # DT_VERNEED is the minimum-runtime fact: which version tags of which
+    # libraries the loader must satisfy. readelf -V decodes the same chain.
+    strtab = b"\x00libc.so.6\x00GLIBC_2.2.5\x00GLIBC_2.34\x00"
+    verneed = _verneed_blob([(1, [11, 23])])  # libc.so.6: 2.2.5 then 2.34
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verneed=verneed))
+    facts = describe_native(path)["native"]
+    assert facts["version_needs"] == [
+        {"file": "libc.so.6", "versions": ["GLIBC_2.2.5", "GLIBC_2.34"]}
+    ]
+
+
+def test_version_needs_chain_several_libraries(tmp_path: Path) -> None:
+    # One Verneed record per library, linked by vn_next -- the shape ld emits
+    # for a binary that imports versioned symbols from more than one library.
+    strtab = b"\x00libc.so.6\x00libm.so.6\x00GLIBC_2.35\x00"
+    verneed = _verneed_blob([(1, [21]), (11, [21])])
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verneed=verneed, verneed_num=2)
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_needs"] == [
+        {"file": "libc.so.6", "versions": ["GLIBC_2.35"]},
+        {"file": "libm.so.6", "versions": ["GLIBC_2.35"]},
+    ]
+
+
+def test_no_verneed_leaves_the_fact_out(tmp_path: Path) -> None:
+    # A dynamic binary with no versioned imports (or a static one) has no
+    # minimum-runtime chain; the fact is omitted rather than an empty list.
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_needed())
+    assert "version_needs" not in describe_native(path)["native"]
+
+
+def test_a_truncated_verneed_chain_reports_what_parsed(tmp_path: Path) -> None:
+    # vn_next pointing past the file is hostile input: the walk keeps the
+    # record it already read and stops, rather than raising or looping.
+    strtab = b"\x00libc.so.6\x00GLIBC_2.34\x00"
+    record = bytearray(_verneed_blob([(1, [11])]))
+    record[12:16] = (0x7FFFFFFF).to_bytes(4, "little")  # vn_next -> far past EOF
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_dynamic_with_strtab(strtab, verneed=bytes(record), verneed_num=2),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_needs"] == [{"file": "libc.so.6", "versions": ["GLIBC_2.34"]}]
+
+
+def test_a_verneed_with_a_wrong_revision_is_ignored(tmp_path: Path) -> None:
+    # vn_version must be 1 (the only revision ever defined); anything else
+    # means the chain is garbage, so no fact is invented from it.
+    strtab = b"\x00libc.so.6\x00GLIBC_2.34\x00"
+    record = bytearray(_verneed_blob([(1, [11])]))
+    record[0:2] = (7).to_bytes(2, "little")
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verneed=bytes(record))
+    )
+    assert "version_needs" not in describe_native(path)["native"]
+
+
+def test_a_lying_vernaux_count_stays_bounded(tmp_path: Path) -> None:
+    # vn_cnt is attacker-controlled; a huge claim walks at most the capped
+    # number of aux records and keeps only the names that resolve.
+    strtab = b"\x00libc.so.6\x00GLIBC_2.34\x00"
+    record = bytearray(_verneed_blob([(1, [11])]))
+    record[2:4] = (0xFFFF).to_bytes(2, "little")  # vn_cnt: 65535 claimed
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verneed=bytes(record))
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_needs"] == [{"file": "libc.so.6", "versions": ["GLIBC_2.34"]}]
 
 
 def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:

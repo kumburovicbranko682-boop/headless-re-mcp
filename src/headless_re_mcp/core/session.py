@@ -7,7 +7,7 @@ import json
 import re
 import zipfile
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -419,6 +419,17 @@ _DT_STRSZ = 10
 # readelf -d reports the same tags, so the native gate can cross-check them.
 _DT_RPATH = 15
 _DT_RUNPATH = 29
+# Versioned-symbol requirements (.gnu.version_r): DT_VERNEED points at a chain
+# of Verneed records, one per depended-on library, each chaining Vernaux
+# records that name the version tags it demands (e.g. GLIBC_2.34 out of
+# libc.so.6). This is the true minimum-runtime fact for a dynamic ELF -- the
+# analogue of Mach-O's min_os -- and readelf -V prints the same chain, so the
+# toolchain gate can cross-check it. The caps bound a hostile chain: no real
+# binary needs more than a few dozen libraries or versions.
+_DT_VERNEED = 0x6FFFFFFE
+_DT_VERNEEDNUM = 0x6FFFFFFF
+_ELF_MAX_VERNEED = 64
+_ELF_MAX_VERNAUX = 128
 _DT_BIND_NOW = 24
 _DT_FLAGS = 30
 _DT_FLAGS_1 = 0x6FFFFFFB
@@ -2267,6 +2278,11 @@ def _elf_layout_facts(
                     facts["rpath"] = names["rpath"]
                 if names["runpath"] is not None:
                     facts["runpath"] = names["runpath"]
+                # The version tags the loader must satisfy per library -- the
+                # ELF minimum-runtime fact (readelf -V shows the same chain).
+                # Absent for a binary with no versioned imports.
+                if names["version_needs"]:
+                    facts["version_needs"] = names["version_needs"]
         else:
             pie = False
         if pie is not None:
@@ -2470,6 +2486,8 @@ def _elf_dynamic_names(
     runpath_off: int | None = None
     strtab_va: int | None = None
     strsz: int | None = None
+    verneed_va: int | None = None
+    verneed_num: int | None = None
     for i in range(count):
         entry = table[i * entsize : (i + 1) * entsize]
         if len(entry) < entsize:
@@ -2491,6 +2509,10 @@ def _elf_dynamic_names(
             strtab_va = val
         elif tag == _DT_STRSZ:
             strsz = val
+        elif tag == _DT_VERNEED:
+            verneed_va = val
+        elif tag == _DT_VERNEEDNUM:
+            verneed_num = val
     if strtab_va is None:
         return None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
@@ -2516,13 +2538,76 @@ def _elf_dynamic_names(
             return None
         return [part for part in value.split(":") if part]
 
+    version_needs: list[dict[str, Any]] = []
+    if verneed_va is not None:
+        vn_off = _elf_vaddr_to_off(verneed_va, loads)
+        if vn_off is not None:
+            version_needs = _elf_version_needs(stream, order, vn_off, verneed_num, read_name)
+
     return {
         "needed": [name for off in needed_offsets if (name := read_name(off))],
         "soname": read_name(soname_off) if soname_off is not None else None,
         "rpath": read_paths(rpath_off),
         "runpath": read_paths(runpath_off),
+        "version_needs": version_needs,
         "canary": any(sym in blob for sym in _ELF_CANARY_SYMBOLS),
     }
+
+
+def _elf_version_needs(
+    stream: BinaryIO,
+    order: str,
+    off: int,
+    declared: int | None,
+    read_name: Callable[[int], str | None],
+) -> list[dict[str, Any]]:
+    """The Verneed chain: which version tags of which libraries the loader
+    must satisfy before the binary runs (e.g. GLIBC_2.34 out of libc.so.6).
+
+    Each 16-byte Verneed record names one library (``vn_file``) and chains
+    ``vn_cnt`` 16-byte Vernaux records, each naming one required version tag
+    (``vna_name``); ``vn_next``/``vna_next`` are the relative hops between
+    records. Every count and hop is bounded and a malformed record stops the
+    walk, so a hostile chain degrades to a shorter list rather than a large
+    read or an unbounded loop.
+    """
+    results: list[dict[str, Any]] = []
+    count = min(declared, _ELF_MAX_VERNEED) if declared else _ELF_MAX_VERNEED
+    pos = off
+    for _ in range(count):
+        stream.seek(pos)
+        record = stream.read(16)
+        if len(record) < 16:
+            break
+        vn_version = int.from_bytes(record[0:2], order)  # type: ignore[arg-type]
+        vn_cnt = int.from_bytes(record[2:4], order)  # type: ignore[arg-type]
+        vn_file = int.from_bytes(record[4:8], order)  # type: ignore[arg-type]
+        vn_aux = int.from_bytes(record[8:12], order)  # type: ignore[arg-type]
+        vn_next = int.from_bytes(record[12:16], order)  # type: ignore[arg-type]
+        if vn_version != 1:  # the only revision ever defined; anything else is garbage
+            break
+        versions: list[str] = []
+        aux_pos = pos + vn_aux
+        for _ in range(min(vn_cnt, _ELF_MAX_VERNAUX) if vn_aux > 0 else 0):
+            stream.seek(aux_pos)
+            aux = stream.read(16)
+            if len(aux) < 16:
+                break
+            vna_name = int.from_bytes(aux[8:12], order)  # type: ignore[arg-type]
+            vna_next = int.from_bytes(aux[12:16], order)  # type: ignore[arg-type]
+            version = read_name(vna_name)
+            if version:
+                versions.append(version)
+            if vna_next == 0:
+                break
+            aux_pos += vna_next
+        file_name = read_name(vn_file)
+        if file_name:
+            results.append({"file": file_name, "versions": versions})
+        if vn_next == 0:
+            break
+        pos += vn_next
+    return results
 
 
 def _elf_iter_notes(

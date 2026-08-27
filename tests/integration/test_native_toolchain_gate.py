@@ -15,7 +15,10 @@ Two triage themes the other native gates cannot cover from system binaries:
   LC_BUILD_VERSION) -- which Unix and how old a kernel/OS. A plain gcc link
   carries the ABI-tag note readelf -n decodes as "OS: Linux, ABI: x.y.z", and
   the fixture's LC_BUILD_VERSION is what the r2 gate checks against radare2's
-  os line; here llvm-objdump confirms its platform/minos/sdk.
+  os line; here llvm-objdump confirms its platform/minos/sdk. The same plain
+  link also carries the DT_VERNEED chain (which GLIBC_x.y tags of which
+  libraries the loader must satisfy -- the library-level minimum-runtime
+  fact), which readelf -V must decode identically.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -40,6 +43,10 @@ _READELF_RPATH_RE = re.compile(r"\(RPATH\)\s+Library rpath: \[([^\]]*)\]")
 _READELF_RUNPATH_RE = re.compile(r"\(RUNPATH\)\s+Library runpath: \[([^\]]*)\]")
 # readelf -n prints the GNU ABI tag as "    OS: Linux, ABI: 3.2.0".
 _READELF_ABI_RE = re.compile(r"OS: (\w+), ABI: (\d+\.\d+\.\d+)")
+# readelf -V renders the Verneed chain as "File: libc.so.6  Cnt: 3" record
+# lines followed by one "Name: GLIBC_2.34  Flags: ..." line per version tag.
+_READELF_VERNEED_FILE_RE = re.compile(r"Version: 1\s+File: (\S+)\s+Cnt: \d+")
+_READELF_VERNEED_NAME_RE = re.compile(r"Name: (\S+)\s+Flags:")
 
 # llvm-objdump --macho --all-headers prints the LC_BUILD_VERSION block as
 # "cmd LC_BUILD_VERSION" followed by platform/sdk/minos lines.
@@ -85,6 +92,33 @@ def _readelf_paths(readelf: str, binary: Path) -> tuple[list[str] | None, list[s
         return [part for part in match.group(1).split(":") if part]
 
     return parse(_READELF_RPATH_RE), parse(_READELF_RUNPATH_RE)
+
+
+def _readelf_version_needs(readelf: str, binary: Path) -> list[dict[str, Any]]:
+    """The Verneed chain as readelf -V decodes it, in the reader's fact shape.
+
+    readelf renders each Verneed record as a "Version: 1  File: ...  Cnt: n"
+    line followed by one "Name: ...  Flags: ..." line per Vernaux, so the
+    names after a File line belong to that file -- rebuilt here with a real
+    line walk over the "Version needs" section only.
+    """
+    result = subprocess.run(
+        [readelf, "-V", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    parts = result.stdout.split("Version needs section", 1)
+    needs: list[dict[str, Any]] = []
+    if len(parts) < 2:
+        return needs
+    for line in parts[1].splitlines():
+        file_match = _READELF_VERNEED_FILE_RE.search(line)
+        if file_match:
+            needs.append({"file": file_match.group(1), "versions": []})
+            continue
+        name_match = _READELF_VERNEED_NAME_RE.search(line)
+        if name_match and needs:
+            needs[-1]["versions"].append(name_match.group(1))
+    return needs
 
 
 def _session_native(service: AnalysisService, binary: Path) -> tuple[str, dict[str, Any]]:
@@ -172,6 +206,43 @@ def test_elf_abi_tag_agrees_with_readelf(tmp_path: Path) -> None:
         # the same OS name and minimum kernel version.
         assert native["abi_os"] == readelf_os
         assert native["min_kernel"] == readelf_kernel
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_version_needs_agree_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — verneed gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — verneed gate not run (skip != pass)")
+
+    # A plain dynamic link imports versioned libc symbols, so the linker emits
+    # the DT_VERNEED chain this gate cross-checks.
+    probe = _compile_probe(gcc, tmp_path, "probe_verneed")
+    ground_truth = _readelf_version_needs(readelf, probe)
+    if not ground_truth:
+        pytest.skip("toolchain emitted no version-needs chain — gate not run (skip != pass)")
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, probe)
+        # The tool-free Verneed walk and readelf -V decode the same chain:
+        # the same libraries in the same order, each demanding the same
+        # version tags in the same order.
+        assert native["version_needs"] == ground_truth
+        # And the chain is the real thing: a freshly linked probe demands at
+        # least one GLIBC_x.y tag out of libc.
+        libc = next(
+            (need for need in ground_truth if str(need["file"]).startswith("libc.so")), None
+        )
+        assert libc is not None, ground_truth
+        assert libc["versions"], ground_truth
+        assert all(str(tag).startswith("GLIBC_") for tag in libc["versions"])
     finally:
         if session_id is not None:
             service.close_session(session_id)
