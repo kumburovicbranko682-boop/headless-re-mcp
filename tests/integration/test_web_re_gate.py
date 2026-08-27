@@ -56,8 +56,20 @@ def test_web_cdp_open_and_inspect() -> None:
             assert scripts.ok, scripts.error
             assert isinstance(scripts.data["scripts"], list)
 
+            # The page logs 'gate-ready' during load; asserting only console.ok
+            # would let console capture regress silently (the reason that log is
+            # in the fixture at all). Prove the message the page emitted came
+            # back, carrying the documented type/text entry shape.
             console = service.web_console(session_id)
             assert console.ok, console.error
+            entries = console.data["console"]
+            gate_logs = [
+                entry
+                for entry in entries
+                if "gate-ready" in entry.get("text", "")
+            ]
+            assert gate_logs, f"console.log('gate-ready') was not captured: {entries}"
+            assert gate_logs[0]["type"] == "log"
 
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
