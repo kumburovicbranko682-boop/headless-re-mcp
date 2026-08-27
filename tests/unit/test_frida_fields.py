@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -348,6 +349,144 @@ def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     assert time.monotonic() - started < 2.0
     assert caught.value.code == "timeout"
     assert killed == [4242]
+
+
+class _LateSession:
+    """A session whose attach lands after the deadline.
+
+    Records whether new work (create_script) was started and whether the
+    session was detached, so a test can tell an abandoned probe from one the
+    worker kept driving past the timeout.
+    """
+
+    def __init__(self, script_created: Event, detached: Event) -> None:
+        self._script_created = script_created
+        self._detached = detached
+
+    def create_script(self, source: str) -> _Script:
+        del source
+        self._script_created.set()
+        return _Script()
+
+    def detach(self) -> None:
+        self._detached.set()
+
+
+def test_frida_hook_template_abandons_a_session_that_arrives_after_timeout() -> None:
+    """A local attach landing after the deadline must not start hook work.
+
+    The deadline callback runs while the worker is still inside the native
+    attach, so the session list is empty and the timeout returns. When attach
+    lands late the worker used to load a script into a session the caller had
+    already abandoned. It must detach that session without driving it further.
+    """
+    script_created = Event()
+    detached = Event()
+
+    class _Frida:
+        def attach(self, pid: int) -> _LateSession:
+            del pid
+            time.sleep(0.15)
+            return _LateSession(script_created, detached)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, "noop", allowed_pid=1, timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late native session remained attached after timeout"
+    assert not script_created.is_set(), "worker loaded a hook into an abandoned session"
+
+
+def test_frida_hook_template_device_abandons_a_session_that_arrives_after_timeout() -> None:
+    """A device attach landing after the deadline must not start hook work."""
+    script_created = Event()
+    detached = Event()
+
+    class _Device:
+        def attach(self, pid: int) -> _LateSession:
+            del pid
+            time.sleep(0.15)
+            return _LateSession(script_created, detached)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 1, "noop", allowed_pids={1}, timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late native session remained attached after timeout"
+    assert not script_created.is_set(), "worker loaded a hook into an abandoned session"
+
+
+def test_frida_java_enumerate_abandons_a_session_that_arrives_after_timeout() -> None:
+    """A device attach landing after the deadline must not start Java work."""
+    script_created = Event()
+    detached = Event()
+
+    class _Device:
+        def attach(self, pid: int) -> _LateSession:
+            del pid
+            time.sleep(0.15)
+            return _LateSession(script_created, detached)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert detached.wait(0.5), "late native session remained attached after timeout"
+    assert not script_created.is_set(), "worker ran Java work in an abandoned session"
+
+
+def test_frida_spawn_kills_a_process_that_arrives_after_timeout() -> None:
+    """A device.spawn returning late must be killed, not resumed and orphaned.
+
+    The deadline callback runs while the worker is still inside the native
+    spawn, so the pid list is empty and the timeout returns. When spawn lands
+    late the worker used to resume that process; the caller was already gone,
+    so it stayed running with nothing tracking it. It must be killed instead.
+    """
+    resumed = Event()
+    killed = Event()
+    killed_pids: list[int] = []
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            time.sleep(0.15)
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            resumed.set()
+
+        def kill(self, pid: int) -> None:
+            killed_pids.append(pid)
+            killed.set()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=0.05)
+
+    assert caught.value.code == "timeout"
+    assert killed.wait(0.5), "process spawned after timeout was left running"
+    assert killed_pids == [4242]
+    assert not resumed.is_set(), "worker resumed a process the caller had abandoned"
 
 
 def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:

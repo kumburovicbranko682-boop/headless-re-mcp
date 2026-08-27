@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from inspect import signature
-from threading import Thread
+from threading import Event, Thread
 from typing import Any, TypeVar
 
 from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
@@ -426,10 +426,21 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        expired = Event()
+
+        def cleanup_sessions() -> None:
+            expired.set()
+            _detach_all(sessions)
 
         def work() -> JsonObject:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
             sessions.append(session)
+            # The deadline callback may have run before attach returned, when
+            # the session list was still empty. Detach here so a native attach
+            # that lands after the timeout does not stay resident in the target.
+            if expired.is_set():
+                _detach_all(sessions)
+                raise _timeout_error(deadline)
             try:
                 script = session.create_script(source)
                 script.load()
@@ -445,12 +456,12 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
             if _is_timeout(exc):
-                _detach_all(sessions)
+                cleanup_sessions()
                 raise _timeout_error(deadline) from exc
             raise
 
@@ -582,6 +593,11 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
+        expired = Event()
+
+        def cleanup_spawned() -> None:
+            expired.set()
+            _kill_spawned(device, pids)
 
         def work() -> int:
             try:
@@ -591,6 +607,12 @@ class FridaClient:
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
             pids.append(spawned)
+            # The deadline callback may have run before spawn returned, when the
+            # pid list was still empty. Kill here so a process spawned after the
+            # timeout is stopped rather than left running and unresumed.
+            if expired.is_set():
+                _kill_spawned(device, pids)
+                raise _timeout_error(deadline)
             try:
                 _invoke(device.resume, spawned, timeout=deadline)
             except FridaError:
@@ -611,13 +633,11 @@ class FridaClient:
             return spawned
 
         try:
-            pid = _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _kill_spawned(device, pids)
-            )
+            pid = _run_deadline(work, timeout=deadline, on_timeout=cleanup_spawned)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
-            _kill_spawned(device, pids)
+            cleanup_spawned()
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
@@ -640,6 +660,11 @@ class FridaClient:
         capped = max(1, min(int(limit), 2000))
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        expired = Event()
+
+        def cleanup_sessions() -> None:
+            expired.set()
+            _detach_all(sessions)
 
         def work() -> JsonObject:
             try:
@@ -649,6 +674,12 @@ class FridaClient:
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
             sessions.append(session)
+            # The deadline callback may have run before attach returned, when
+            # the session list was still empty. Detach here so a native attach
+            # that lands after the timeout does not stay resident in the target.
+            if expired.is_set():
+                _detach_all(sessions)
+                raise _timeout_error(deadline)
             try:
                 script = session.create_script(_JAVA_SCRIPT)
                 script.load()
@@ -675,13 +706,11 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
-            )
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
-            _detach_all(sessions)
+            cleanup_sessions()
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
@@ -707,6 +736,11 @@ class FridaClient:
         device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        expired = Event()
+
+        def cleanup_sessions() -> None:
+            expired.set()
+            _detach_all(sessions)
 
         def work() -> JsonObject:
             try:
@@ -716,6 +750,12 @@ class FridaClient:
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
             sessions.append(session)
+            # The deadline callback may have run before attach returned, when
+            # the session list was still empty. Detach here so a native attach
+            # that lands after the timeout does not stay resident in the target.
+            if expired.is_set():
+                _detach_all(sessions)
+                raise _timeout_error(deadline)
             try:
                 script = session.create_script(source)
                 script.load()
@@ -731,13 +771,11 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
-            )
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
-            _detach_all(sessions)
+            cleanup_sessions()
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"hook template failed: {exc}") from exc
