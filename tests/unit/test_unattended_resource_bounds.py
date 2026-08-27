@@ -2227,6 +2227,45 @@ def test_kill_walk_is_not_clamped_to_the_ui_page_size() -> None:
     assert _child_enum_limit(_MAX_KILL_DESCENDANTS + 10) == _MAX_KILL_DESCENDANTS
 
 
+@pytest.mark.skipif(os.name == "nt", reason="session process groups are POSIX (skip != pass)")
+def test_a_group_kill_with_a_deadline_only_returns_once_the_members_read_dead() -> None:
+    """SIGKILL is a request, not a state change; ``wait_s`` covers the gap.
+
+    The successful-exit sweeps in die/exeinfope/upx assert 'nothing of the
+    tool survives' the moment they return. Without the bounded wait the killed
+    helper still read as running in /proc for a scheduler tick after the
+    signal call -- measured on this machine, that tick was enough to fail an
+    immediate liveness probe.
+    """
+    import subprocess
+    import sys
+    from contextlib import suppress
+
+    from headless_re_mcp.core.process_tree import terminate_pid_tree, terminate_process_group
+
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", _EXIT0_LAUNCHER],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+    stdout, _ = launcher.communicate(timeout=10.0)
+    child = int(stdout.strip().split()[0])
+    try:
+        assert launcher.returncode == 0
+        assert _pid_is_alive(child) is True
+        killed = terminate_process_group(launcher.pid, wait_s=2.0)
+        assert child in killed
+        # No polling on purpose: the deadline-bearing call itself must not
+        # return while a killed member still reads as running.
+        assert _pid_is_alive(child) is False
+    finally:
+        with suppress(Exception):
+            terminate_pid_tree(child)
+
+
 class TestOnlyAMissingSessionSaysSessionNotFound:
     """Any KeyError used to be reported as a missing session.
 

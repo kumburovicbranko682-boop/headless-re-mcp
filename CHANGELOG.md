@@ -59,6 +59,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
+- 成功路径的会话组清扫现在**等到击杀真正生效**才返回:SIGKILL 是异步的,信号调用返回时
+  目标可能仍在 /proc 里读作运行中(实测 die/upx 在返回瞬间 helper 仍是 `R` 态,下一个
+  调度片才消失),导致"调用返回后不再有工具进程碰样本"这一承诺在竞态窗口内不成立。
+  `terminate_process_group` 新增可选 `wait_s`(默认 0,既有调用方行为不变),按 /proc
+  状态有界等待每个被杀成员读作已死(僵尸即算死,收尸归 init);
+  `terminate_leftover_process_tree` 把自己的截止时间透传给组清扫。
 
 ### 修复（监控台回环护栏）
 
