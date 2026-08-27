@@ -969,6 +969,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
+- 新增回归（`apk.permissions` 两份清单各自可溢出、旧 androguard 缺 `get_requested_permissions`
+  时回退）：回包由 `get_permissions()`（声明/使用集）与 `get_requested_permissions()`（manifest
+  的完整 `<uses-permission>` 集）两次**独立**调用拼成，`has_more = declared_more or requested_more`
+  让任一侧被截都能让调用方知道回包不完整。既有 `permissions` 测试只截声明侧（300→256，
+  `declared_more=True`），requested 侧只有一条 `["R"]`，于是「requested 侧也计入 `has_more`」
+  与「缺 `get_requested_permissions` 时回退到声明列表」两条对同质夹具全然惰性：去掉
+  `or requested_more` 照样过，回退路径根本不跑。新增用例给出镜像场景——声明寥寥而 manifest
+  请求数百，`declared_more=False` 时只有 `requested_more` 能置起 `has_more`，且 `count` 仍数
+  声明侧、两份列表保持相异；再让 `get_requested_permissions` 抛错，断言 requested 回退到声明
+  列表（连同其 `_more` 标志）而非空列表或让异常逃逸。以变异验证（`has_more` 丢掉
+  `or requested_more`、回退改回空列表）均被新用例逐一捕获，既有测试仍绿。
 - **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
   adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
   的项重新挂回跟踪列表。
