@@ -36,8 +36,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_manifest(session_id: str) -> dict[str, Any]:
         """Return the decoded AndroidManifest.xml for the APK session.
 
-        Answers with package and manifest_xml, plus truncated when the XML
-        was cut at the buffer.
+        Answers with package, manifest_xml, and bytes (the full manifest's
+        UTF-8 size), plus truncated when the XML was cut at the buffer.
+        bytes is how much the inlined manifest_xml is missing, so a cut
+        manifest is not read as the whole document.
         """
         return _dump(analysis.apk_manifest(session_id))
 
