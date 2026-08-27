@@ -9,6 +9,7 @@ the local path, generalised rather than removed.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from headless_re_mcp.backends.adb import AdbBackend, AdbError
@@ -17,7 +18,11 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _ensure_repository,
+    _record_backend,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -61,6 +66,47 @@ class FridaDeviceMixin:
 
     def _save_auth(self, session_id: str, auth: JsonObject) -> None:
         self.registry.update_metadata(session_id, {_AUTH_KEY: auth})
+
+    def _audit_frida(
+        self,
+        session_id: str,
+        action: str,
+        result: Result[JsonObject],
+        params: JsonObject,
+        *fields: str,
+    ) -> None:
+        """Record a frida device mutation in the durable audit log, best-effort.
+
+        frida.spawn and frida.server.ensure change the target device the same
+        way device.launch / device.install do -- spawn launches a process under
+        instrumentation, server.ensure pushes and starts a frida-server binary
+        -- so they belong in the same audit trail those adb-path mutations
+        already write to. They are session-scoped, so unlike device.* they also
+        own a timeline entry; but the timeline is trimmed with the session,
+        while this line survives cross-session, which is exactly why ui.drive
+        audits alongside its own timeline entry rather than instead of it. Pure
+        enumerations (devices, applications, java.*) read and mutate nothing, so
+        they are not audited. Best-effort -- the process is already spawned or
+        the server already running, so a failed audit write must not turn that
+        into a failed tool call -- and it copies only structural result fields
+        (pids, ports, running/pushed booleans) which carry no secrets; the store
+        redacts regardless. A failed call is still recorded, with its error
+        code, the way ui.drive audits both outcomes.
+        """
+        if result.ok and isinstance(result.data, dict):
+            summary: JsonObject = {name: result.data.get(name) for name in fields}
+        else:
+            summary = {}
+            if result.error is not None:
+                summary["code"] = result.error.code
+        with suppress(Exception):
+            _ensure_repository(self).append_audit(
+                session_id=session_id,
+                action=action,
+                params_summary=params,
+                ok=result.ok,
+                result_summary=summary,
+            )
 
     def frida_devices(self) -> Result[JsonObject]:
         try:
@@ -131,11 +177,21 @@ class FridaDeviceMixin:
             _timeline_append(
                 self, session_id, "frida.server.ensure", "frida-server ensured", serial=serial
             )
-            return _success(data, session_id=session_id, backend="frida")
+            result: Result[JsonObject] = _success(data, session_id=session_id, backend="frida")
         except (FridaError, AdbError) as exc:
-            return _failure(_as_rpc(exc), session_id=session_id)
+            result = _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
-            return _failure(exc, session_id=session_id)
+            result = _failure(exc, session_id=session_id)
+        self._audit_frida(
+            session_id,
+            "frida.server.ensure",
+            result,
+            {"serial": serial, "port": port},
+            "running",
+            "pushed",
+            "port",
+        )
+        return result
 
     def frida_applications(self, session_id: str, limit: int = 256) -> Result[JsonObject]:
         try:
@@ -166,11 +222,13 @@ class FridaDeviceMixin:
             _timeline_append(
                 self, session_id, "frida.spawn", "frida spawned package", package=package, pid=pid
             )
-            return _success(data, session_id=session_id, backend="frida")
+            result: Result[JsonObject] = _success(data, session_id=session_id, backend="frida")
         except (FridaError, AdbError) as exc:
-            return _failure(_as_rpc(exc), session_id=session_id)
+            result = _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
-            return _failure(exc, session_id=session_id)
+            result = _failure(exc, session_id=session_id)
+        self._audit_frida(session_id, "frida.spawn", result, {"package": package}, "pid")
+        return result
 
     def frida_java_classes(
         self, session_id: str, name_filter: str = "", limit: int = 200, pid: int = 0

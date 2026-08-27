@@ -206,7 +206,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
-        """Session opens/closes, UI drives and device mutations, with arguments and outcome.
+        """Session lifecycle, UI drives and device mutations, with arguments and outcome.
 
         Answers with entries, plus count, total, offset, limit and has_more.
         There is no events field. Narrower than it sounds: a static write
@@ -217,7 +217,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         captures (pull, screenshot, whose files are never registered elsewhere)
         -- are keyed by serial and own no session timeline, so they are audited
         here with a null session_id; pass no session_id to see them alongside
-        the session-scoped rows.
+        the session-scoped rows. The frida-path device mutations, frida.spawn
+        (launches a process) and frida.server.ensure (pushes and starts a
+        frida-server binary), are the same class of change and are audited too,
+        but they run inside a session, so they carry that session_id and survive
+        here after the session's own timeline is trimmed.
         """
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 

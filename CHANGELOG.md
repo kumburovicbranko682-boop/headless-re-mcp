@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（frida 路径的设备变更补齐审计日志）
+
+- 上一步把 adb 路径的设备变更(device.install/launch/push/…)写入了审计日志,但同一类"改动目标设备"
+  的 frida 路径没进去,于是设备变更审计留了个口子:`frida.spawn` 在设备上以插桩方式拉起一个进程、
+  `frida.server.ensure` 往设备推送并启动一个 frida-server 二进制——论侵入性不亚于 device.launch/install
+  ——却只落在按会话的时间线里。时间线随会话被裁剪清掉,审计日志则跨会话留存,这正是 `ui.drive`
+  为何既写时间线又写审计。现在这两个 frida 设备变更同样写入审计日志。
+- 与 device.* 不同,它们跑在某个会话内,所以带真实 `session_id` 落库:既能在按该会话过滤的 `audit.list`
+  里看到,也能在不带过滤的列举里看到,而且在该会话自己的时间线被裁剪之后依然留在审计里。纯枚举
+  (frida.devices/applications/java.*)只读、不改动任何东西,因此不记。
+- 记账是尽力而为:进程已经拉起、server 已经在跑,一次审计写入失败绝不能把已成功的 spawn 变成失败的
+  工具调用;写入只拷贝结构化字段(pid、端口、running/pushed 布尔),不含机密,store 侧另有脱敏兜底。
+  失败的调用也照记(带其错误码),与 `ui.drive` 同时审计成败两种结局一致。
+- `audit.list` 描述更新为点名这两个 frida 设备变更并解释其会话内性质;新增
+  `tests/unit/test_frida_audit.py` 钉住:spawn/server.ensure 各记一条带会话 id 的审计、失败仍记且带
+  错误码、纯枚举不记、按会话过滤看得到、以及审计写失败不拖垮 spawn。
+
 ### 新增（有副作用的 device.* 操作进入审计日志）
 
 - 高风险的设备变更——`device.connect/install/uninstall/launch/force_stop/push/forward`——此前在任何
