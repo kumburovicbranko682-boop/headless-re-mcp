@@ -34,6 +34,16 @@ _MAX_METADATA_BYTES = 1024
 _LISTENER_CLOSE_WAIT_S = 5.0
 _OMITTED_BODY = object()
 
+# mitmproxy keeps its addon context (ctx.master, ctx.options) in module-level
+# globals that every DumpMaster overwrites in its constructor. Two masters
+# coming up on their own threads therefore share one context: while the second
+# is still registering its options, the first master's running() hooks read the
+# half-built global and blow up (the keepserving addon reads ctx.options.rfile,
+# which the readfilestdin addon has not added yet -- "No such option: rfile").
+# Serialising bring-up end to end -- construction through the running() phase --
+# is the only thing that makes more than one in-process capture safe.
+_STARTUP_LOCK = threading.Lock()
+
 
 class ProxyError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
@@ -297,6 +307,22 @@ class _FlowRecorder:
             return self._retained_bytes
 
 
+class _ReadyMarker:
+    """A mitmproxy addon that flags when the running() phase has completed.
+
+    Appended after every default addon, so its running() hook fires last: once
+    it is set, all the built-in hooks (keepserving among them) have already run
+    against this master's fully built options. Holding the startup lock until
+    then is what keeps the next master's construction from racing them.
+    """
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+
+    def running(self) -> None:
+        self._event.set()
+
+
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
         self.host = host
@@ -306,6 +332,7 @@ class _ProxyInstance:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._master: Any = None
         self._started = threading.Event()
+        self._ready = threading.Event()
         self._error: BaseException | None = None
 
     def start(self, timeout: float = 15.0) -> None:
@@ -327,23 +354,31 @@ class _ProxyInstance:
                 host=self.host,
                 port=self.port,
             )
-        self._thread = threading.Thread(
-            target=self._run, name=f"mitmproxy-{self.port}", daemon=True
-        )
-        self._thread.start()
-        deadline = time.monotonic() + max(1.0, timeout)
-        while time.monotonic() < deadline:
-            if self._error is not None:
-                raise ProxyError("backend_error", f"mitmproxy failed to start: {self._error}")
-            if not self._thread.is_alive():
-                raise ProxyError("backend_error", "mitmproxy exited during startup")
-            if _port_accepts(self.host, self.port):
-                return
-            time.sleep(0.05)
-        self.stop()
-        raise ProxyError(
-            "timeout", "mitmproxy did not begin listening in time", port=self.port
-        )
+        # Hold the lock across the whole bring-up, not just construction: a
+        # master's running() hooks fire after the port is already accepting, so
+        # releasing at port-accept would let the next master's constructor race
+        # them on the shared global context. Readiness therefore waits on both
+        # the marker (running() done) and the port.
+        with _STARTUP_LOCK:
+            self._thread = threading.Thread(
+                target=self._run, name=f"mitmproxy-{self.port}", daemon=True
+            )
+            self._thread.start()
+            deadline = time.monotonic() + max(1.0, timeout)
+            while time.monotonic() < deadline:
+                if self._error is not None:
+                    raise ProxyError(
+                        "backend_error", f"mitmproxy failed to start: {self._error}"
+                    )
+                if not self._thread.is_alive():
+                    raise ProxyError("backend_error", "mitmproxy exited during startup")
+                if self._ready.is_set() and _port_accepts(self.host, self.port):
+                    return
+                time.sleep(0.05)
+            self.stop()
+            raise ProxyError(
+                "timeout", "mitmproxy did not begin listening in time", port=self.port
+            )
 
     def _run(self) -> None:
         loop: asyncio.AbstractEventLoop | None = None
@@ -364,6 +399,7 @@ class _ProxyInstance:
             except TypeError:
                 master = DumpMaster(opts)
             master.addons.add(self.recorder)
+            master.addons.add(_ReadyMarker(self._ready))
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())
