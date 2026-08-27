@@ -60,6 +60,36 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _drain_proxy_listeners(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close the master's listening sockets before the loop is torn down.
+
+    mitmdump frees its ports by exiting the process, so nothing on the library
+    side ever closes them: ``Master.run()`` returns from ``shutdown()`` without
+    stopping the proxyserver addon's listeners (and skips ``done()`` entirely
+    when shutdown lands during startup). The listening socket is a plain fd
+    owned by no task, so the cancel-and-close unwind below does not release it
+    either -- measured on mitmproxy 12, the port stayed accepting after the
+    thread was gone, for the rest of the service's life. Stopping the server
+    instances explicitly is the only close anyone performs.
+
+    Runs on the loop's own thread while the loop is not running; version drift
+    in the addon API degrades to the old unwind rather than an error.
+    """
+    if master is None or loop.is_closed():
+        return
+    try:
+        addon = master.addons.get("proxyserver")
+    except Exception:  # noqa: BLE001 - teardown must never mask the run's outcome
+        return
+    update = getattr(getattr(addon, "servers", None), "update", None)
+    if update is None:
+        return
+    with contextlib.suppress(Exception):
+        # Bounded: a server stop that wedges must not hold this thread past
+        # stop()'s join, or the whole proxy thread leaks with the port.
+        loop.run_until_complete(asyncio.wait_for(update([]), timeout=5.0))
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -348,8 +378,10 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Stop the listeners
+            # explicitly -- run() does not on shutdown -- then unwind the tasks.
             if loop is not None:
+                _drain_proxy_listeners(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)

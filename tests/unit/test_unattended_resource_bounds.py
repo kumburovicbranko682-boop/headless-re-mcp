@@ -366,6 +366,84 @@ class TestFailedProxyStartLeavesNothingBehind:
             logging.getLogger().removeHandler(other)
 
 
+class TestStoppedProxyReleasesItsPort:
+    """mitmdump frees its ports by exiting the process; an embedded master
+    must close its listeners itself.
+
+    ``Master.run()`` returns from ``shutdown()`` without stopping the
+    proxyserver addon's listeners, and the loop unwind cannot reach a
+    listening socket no task owns -- measured on mitmproxy 12, the port stayed
+    accepting after the proxy thread was gone, for the rest of the service's
+    life. The explicit drain is the only close anyone performs, so it has to
+    run on every unwind, before the loop it needs is torn down.
+    """
+
+    def test_the_drain_stops_the_proxyserver_listeners(self) -> None:
+        import asyncio
+        import socket
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy.client import _drain_proxy_listeners
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        seen: list[list[Any]] = []
+
+        async def update(modes: Any) -> bool:
+            seen.append(list(modes))
+            listener.close()
+            return True
+
+        addon = SimpleNamespace(servers=SimpleNamespace(update=update))
+        master = SimpleNamespace(addons=SimpleNamespace(get=lambda name: addon))
+        loop = asyncio.new_event_loop()
+        try:
+            assert _port_accepts("127.0.0.1", port, timeout=1.0) is True
+            _drain_proxy_listeners(master, loop)
+        finally:
+            loop.close()
+            listener.close()
+        # Asked the addon to converge on "no listeners", exactly once.
+        assert seen == [[]]
+        assert _port_accepts("127.0.0.1", port, timeout=0.2) is False
+
+    def test_a_master_without_the_servers_api_degrades_quietly(self) -> None:
+        """Version drift in the addon API must fall back to the old unwind."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy.client import _drain_proxy_listeners
+
+        def _broken_get(name: str) -> Any:
+            raise RuntimeError("no addons registry in this version")
+
+        bare = SimpleNamespace(addons=SimpleNamespace(get=lambda name: object()))
+        loop = asyncio.new_event_loop()
+        try:
+            _drain_proxy_listeners(None, loop)
+            _drain_proxy_listeners(
+                SimpleNamespace(addons=SimpleNamespace(get=_broken_get)), loop
+            )
+            _drain_proxy_listeners(bare, loop)
+        finally:
+            loop.close()
+        # A loop that is already closed is refused rather than crashed on.
+        _drain_proxy_listeners(bare, loop)
+
+    def test_the_run_unwind_drains_before_the_loop_teardown(self) -> None:
+        """The drain awaits on the loop, so it must run before the loop dies."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance._run)
+        drain = source.index("_drain_proxy_listeners")
+        unwind = source.index("_shutdown_loop")
+        assert drain < unwind
+
+
 class TestConcurrentStartDoesNotLeakABackend:
     def test_two_proxy_starts_for_one_session_only_keep_one_instance(
         self, monkeypatch: Any
