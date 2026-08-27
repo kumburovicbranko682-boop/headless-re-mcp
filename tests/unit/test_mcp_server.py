@@ -316,6 +316,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "proxy.stop",
         "proxy.status",
         "proxy.flows",
+        "proxy.hosts",
         "proxy.flow.get",
         "proxy.replay",
         "proxy.export_har",

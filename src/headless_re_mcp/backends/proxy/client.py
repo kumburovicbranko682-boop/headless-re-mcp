@@ -35,6 +35,12 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# proxy.hosts page cap, plus per-host caps on the distinct method/status lists.
+# Distinct methods and statuses for one host are a tiny set in practice; the
+# caps only stop a hostile capture from making one host's row unbounded.
+_MAX_HOSTS_PAGE = 1000
+_MAX_HOST_METHODS = 32
+_MAX_HOST_STATUSES = 64
 # A body at or under this stays inline as text; anything larger, or anything
 # that is not valid UTF-8, spills to a file so the caller never receives a
 # lossy decode masquerading as the real bytes.
@@ -298,6 +304,75 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
         total += entry_bytes
         out[name] = text
     return out, truncated
+
+
+def _summarize_hosts(flows: object, *, offset: int, limit: int) -> JsonObject:
+    """Aggregate flow summaries into a per-host footprint, most-contacted first.
+
+    Pure over the list ``recorder.snapshot()`` returns so it can be pinned
+    without a live proxy. Each host row carries flows (how many went to it),
+    errors (flows that never completed -- a null status), response_bytes (the
+    summed decoded body size, the download footprint), and the distinct methods
+    and statuses seen. A completed flow contributes its status; an errored one
+    (status null) is counted only under errors, so a host answering nothing but
+    refusals is not read as having served 200s. Hosts sort by descending flow
+    count with the host name as a stable tie-break, so paging is deterministic.
+    """
+    items = flows if isinstance(flows, list) else []
+    buckets: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        host_value = entry.get("host")
+        host = host_value if isinstance(host_value, str) else ""
+        bucket = buckets.get(host)
+        if bucket is None:
+            bucket = {
+                "flows": 0,
+                "errors": 0,
+                "response_bytes": 0,
+                "methods": set(),
+                "statuses": set(),
+            }
+            buckets[host] = bucket
+            order.append(host)
+        bucket["flows"] += 1
+        if entry.get("error") is True:
+            bucket["errors"] += 1
+        size = entry.get("response_size")
+        if isinstance(size, int) and size > 0:
+            bucket["response_bytes"] += size
+        method = entry.get("method")
+        if isinstance(method, str) and method:
+            bucket["methods"].add(method)
+        status = entry.get("status")
+        if isinstance(status, int) and not isinstance(status, bool):
+            bucket["statuses"].add(status)
+    hosts: list[JsonObject] = []
+    for host in order:
+        bucket = buckets[host]
+        hosts.append(
+            {
+                "host": host,
+                "flows": bucket["flows"],
+                "errors": bucket["errors"],
+                "response_bytes": bucket["response_bytes"],
+                "methods": sorted(bucket["methods"])[:_MAX_HOST_METHODS],
+                "statuses": sorted(bucket["statuses"])[:_MAX_HOST_STATUSES],
+            }
+        )
+    hosts.sort(key=lambda item: (-item["flows"], item["host"]))
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_HOSTS_PAGE))
+    window = hosts[start : start + cap]
+    return {
+        "hosts": window,
+        "count": len(window),
+        "total": len(hosts),
+        "offset": start,
+        "has_more": start + len(window) < len(hosts),
+    }
 
 
 class _FlowRecorder:
@@ -643,6 +718,10 @@ class ProxyBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+
+    def hosts(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        inst = self._get(session_id)
+        return _summarize_hosts(inst.recorder.snapshot(), offset=offset, limit=limit)
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

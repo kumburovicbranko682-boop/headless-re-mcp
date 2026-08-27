@@ -74,6 +74,28 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.hosts")
+    def proxy_hosts(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Summarise captured flows by host: the target's network footprint.
+
+        Aggregates every retained flow into one row per host so an analyst sees
+        which backends a target talks to without paging the whole flow log. Each
+        row has host, flows (how many went there), errors (flows that never
+        completed -- a null status), response_bytes (summed decoded body size),
+        and the distinct methods and statuses seen. A host answering only
+        refusals shows errors with no 2xx in statuses, so it is not read as
+        having served content. Answers with hosts, count, total, offset and
+        has_more; rows sort by descending flow count with host as a stable
+        tie-break. This is an aggregate over the same ring proxy.flows pages, so
+        it reflects only flows still retained, not the whole session history.
+        The list field is hosts, not items.
+        """
+        return _dump(analysis.proxy_hosts(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
