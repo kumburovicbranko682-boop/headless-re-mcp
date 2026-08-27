@@ -720,6 +720,87 @@ def test_web_cdp_flags_a_blocked_request() -> None:
             service.close_all()
 
 
+_COOKIE_PAGE = (
+    b"<!doctype html><html><head><title>cookie-gate</title></head>"
+    b"<body>cookies</body></html>"
+)
+
+
+@contextmanager
+def _cookie_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            # An HttpOnly session cookie (the token an analyst hunts) plus an
+            # ordinary one. Secure is omitted: Chromium rejects Secure cookies
+            # over plain http, and this origin is http.
+            self.send_header(
+                "Set-Cookie", "sid=s3cr3t-token; Path=/; HttpOnly; SameSite=Lax"
+            )
+            self.send_header("Set-Cookie", "theme=dark; Path=/")
+            self.send_header("Content-Length", str(len(_COOKIE_PAGE)))
+            self.end_headers()
+            self.wfile.write(_COOKIE_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_cdp_reads_the_cookie_jar() -> None:
+    """web had no way to read cookies -- the auth/session state itself.
+
+    A page's Set-Cookie response is where the session token lives, and it never
+    appears in the DOM or console. Drive a page that sets an HttpOnly session
+    cookie and assert web.cookies surfaces it with its value and the HttpOnly
+    flag, so the jar an analyst needs is actually reachable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web cookie Gate not run (skip != pass)")
+    with _cookie_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _sid_cookie() -> dict[str, Any] | None:
+                jar = service.web_cookies(session_id)
+                assert jar.ok, jar.error
+                for cookie in jar.data["cookies"]:
+                    if cookie.get("name") == "sid":
+                        return cookie
+                return None
+
+            sid = _poll(_sid_cookie, timeout=15.0)
+            assert sid is not None, "the session cookie was never read back"
+            assert sid["value"] == "s3cr3t-token"
+            assert sid["http_only"] is True
+            assert sid.get("same_site") == "Lax"
+
+            names = {c.get("name") for c in service.web_cookies(session_id).data["cookies"]}
+            assert "theme" in names, "an ordinary cookie was lost"
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

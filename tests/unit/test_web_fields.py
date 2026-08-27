@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import (
+    _MAX_COOKIES,
     _MAX_HEADER_VALUE_BYTES,
     _MAX_METADATA_BYTES,
     _MAX_URL_BYTES,
@@ -476,6 +477,89 @@ def test_web_console_and_exception_carry_their_source_location() -> None:
     doc = _tool_docstring("web.console")
     assert "line" in doc
     assert "column" in doc
+
+
+class _CookieRunner:
+    def call(self, work: Any, *, timeout: float = 0.0) -> Any:
+        del timeout
+        return work()
+
+
+class _CookieContext:
+    def __init__(self, cookies: list[dict[str, Any]]) -> None:
+        self._cookies = cookies
+
+    def cookies(self) -> list[dict[str, Any]]:
+        return self._cookies
+
+
+class _CookieHandle:
+    def __init__(self, cookies: list[dict[str, Any]]) -> None:
+        self.context = _CookieContext(cookies)
+        self.runner = _CookieRunner()
+
+
+def test_web_cookies_returns_a_bounded_jar_with_flags(monkeypatch: Any) -> None:
+    """web had no way to read the cookie jar -- the auth/session state itself.
+
+    Drive the context's cookies() and assert the value (the token you are
+    after) comes back, the security flags are normalised to http_only/secure/
+    same_site, a persistent cookie keeps expires while a session one (-1) does
+    not, and an oversized value is bounded and flagged rather than returned raw.
+    """
+    long_value = "j" * (_MAX_HEADER_VALUE_BYTES + 500)
+    raw = [
+        {
+            "name": "sid",
+            "value": "abc123",
+            "domain": "example.com",
+            "path": "/",
+            "httpOnly": True,
+            "secure": True,
+            "sameSite": "Lax",
+            "expires": 1893456000,
+        },
+        {"name": "sess", "value": long_value, "domain": "x", "path": "/", "expires": -1},
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _CookieHandle(raw))
+    payload = backend.cookies("s")
+
+    assert payload["count"] == 2
+    assert payload["has_more"] is False
+    sid = payload["cookies"][0]
+    assert sid["name"] == "sid"
+    assert sid["value"] == "abc123"
+    assert sid["http_only"] is True
+    assert sid["secure"] is True
+    assert sid["same_site"] == "Lax"
+    assert sid["expires"] == 1893456000
+
+    sess = payload["cookies"][1]
+    # A session cookie's -1 expiry is not surfaced as a real timestamp.
+    assert "expires" not in sess
+    assert len(str(sess["value"]).encode("utf-8")) <= _MAX_HEADER_VALUE_BYTES
+    assert sess["metadata_truncated"] is True
+    # Flags default to False, never absent, so "unknown" cannot read as "set".
+    assert sess["http_only"] is False
+    assert sess["secure"] is False
+
+    doc = _tool_docstring("web.cookies")
+    assert "http_only" in doc
+    assert "same_site" in doc
+
+
+def test_web_cookies_caps_a_huge_jar(monkeypatch: Any) -> None:
+    """A page setting thousands of cookies must not return an unbounded list."""
+    raw = [
+        {"name": f"c{index}", "value": "v", "domain": "x", "path": "/"}
+        for index in range(_MAX_COOKIES + 25)
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _CookieHandle(raw))
+    payload = backend.cookies("s")
+    assert payload["count"] == _MAX_COOKIES
+    assert payload["has_more"] is True
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

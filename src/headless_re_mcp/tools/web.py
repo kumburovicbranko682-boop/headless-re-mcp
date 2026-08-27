@@ -132,6 +132,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(session_id: str) -> dict[str, Any]:
+        """List the browser context's cookies (the auth/session jar).
+
+        Answers with cookies, count, and has_more so a jar that filled the cap
+        is not read as every cookie. Each entry carries name, value (the token
+        or session id you are usually after, bounded like a header value),
+        domain, path, http_only, secure, same_site when set, and expires only
+        for a persistent cookie (a session cookie has none). A name or value
+        cut to its cap is marked metadata_truncated. There is no jar or items
+        field.
+        """
+        return _dump(analysis.web_cookies(session_id))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

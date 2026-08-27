@@ -47,6 +47,9 @@ _MAX_METADATA_BYTES = 1024
 # are bounded before entering the per-request ring.
 _MAX_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
+# A context's cookie jar: bounded on count (an ad-heavy page can set dozens per
+# domain) and, like headers, on each value (session JWTs run to kilobytes).
+_MAX_COOKIES = 500
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -856,6 +859,49 @@ class WebBackend:
             "has_more": len(held) > capped,
             "dropped": dropped,
         }
+
+    def cookies(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.context.cookies()
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cookie read failed: {exc}") from exc
+            items: list[JsonObject] = []
+            has_more = False
+            for cookie in raw or []:
+                if len(items) >= _MAX_COOKIES:
+                    has_more = True
+                    break
+                if not isinstance(cookie, dict):
+                    continue
+                name, name_cut = _bounded_metadata(cookie.get("name"), _MAX_METADATA_BYTES)
+                # The value is the payload an analyst is usually after (auth
+                # tokens, session ids) -- return it, but bounded like a header
+                # value so a kilobyte JWT cannot bloat the reply unbounded.
+                value, value_cut = _bounded_metadata(cookie.get("value"), _MAX_HEADER_VALUE_BYTES)
+                entry: JsonObject = {
+                    "name": name,
+                    "value": value,
+                    "domain": _bounded_metadata(cookie.get("domain"), _MAX_METADATA_BYTES)[0],
+                    "path": _bounded_metadata(cookie.get("path"), _MAX_METADATA_BYTES)[0],
+                    "http_only": bool(cookie.get("httpOnly")),
+                    "secure": bool(cookie.get("secure")),
+                }
+                same_site = cookie.get("sameSite")
+                if same_site:
+                    entry["same_site"] = _bounded_metadata(same_site, _MAX_METADATA_BYTES)[0]
+                expires = cookie.get("expires")
+                if isinstance(expires, int | float) and expires >= 0:
+                    # Session cookies come back as -1; only surface a real expiry.
+                    entry["expires"] = expires
+                if name_cut or value_cut:
+                    entry["metadata_truncated"] = True
+                items.append(entry)
+            return {"cookies": items, "count": len(items), "has_more": has_more}
+
+        return self._runner(handle).call(work)
 
     def scripts(
         self,

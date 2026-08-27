@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **266（148 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **267（149 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -311,6 +311,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **Web 线读不到 Cookie——也就是会话/鉴权状态本身**。抓包线能看到 `Cookie`/`Set-Cookie` 头，但浏览器的
+  Cookie 罐（含 HttpOnly——JS 读不到、只在罐里、且往往正是那枚会话令牌）此前没有任何工具能取。新增只读的
+  `web.cookies`：驱动上下文的 `context.cookies()`，回 `cookies`/`count`/`has_more`，每条带 `name`、`value`
+  （通常要找的令牌/会话 id，像头部值一样有界）、`domain`、`path`、`http_only`、`secure`、置了才给的 `same_site`，
+  以及仅持久 Cookie 才有的 `expires`（会话 Cookie 的 -1 不当成真实时间戳外泄）；名字或值被裁到上限则标
+  `metadata_truncated`。罐数量按 500 设上限（广告页一域能塞几十枚），安全标志一律给 False 而非缺省，避免「未知」
+  被读成「未设」。活体门用本地站点下发一枚 HttpOnly 会话 Cookie + 一枚普通 Cookie，断言 `web.cookies` 取回其值与
+  HttpOnly 标志、SameSite，且普通 Cookie 也在（缺浏览器时 skip≠pass）；单测覆盖标志归一化、会话 vs 持久 expires、
+  超长值有界、以及大罐按上限截断。该工具计入读效果，工具面因此 266→267。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分
