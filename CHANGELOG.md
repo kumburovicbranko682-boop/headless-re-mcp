@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`frida.memory.read` 把读不到的内存当成读到一片空/零）
+
+- `FridaClient.memory_read` 走 JS 代理的 `ptr(address).readByteArray(size)`。对未映射或受保护的
+  区间,`readByteArray` 返回 `null`,代理端 `Array.from(new Uint8Array(null))` 得 `[]`,Python 侧
+  `bytes([])` 得 `b""`。原实现照样回 `{address, size(=请求值), encoding, data:""}`——一个 `size≥1`
+  的读取拿回空数据却报成功,读作“这段可读、且是一片零”。探测非法/未映射地址的 agent 会据此断定
+  该地址可读,把不可访问误当成已读的零区。现在:读取回空即判定该区间不可访问,抛
+  `backend_error`(带 `address`/`size`),把假的“空即已读”改成诚实的失败;成功读取(拿到字节)时
+  行为不变。工具描述也点明不可读区间会失败而非回空。新增回归:空返回抛 `backend_error` 且
+  details 带 address/size;可读区间照常回十六进制。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

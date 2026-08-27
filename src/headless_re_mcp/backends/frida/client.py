@@ -415,6 +415,20 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            if not data:
+                # readByteArray returns null when the range is not accessible,
+                # which the agent's Array.from turns into [] and bytes() into
+                # b"". Returned under the requested size, an empty read of a
+                # >=1-byte request reads as a successful read of a zeroed region:
+                # an agent probing an unmapped or protected address concludes it
+                # is readable. A request that came back with nothing did not
+                # succeed, so say so rather than hand back empty-as-read.
+                raise FridaError(
+                    "backend_error",
+                    "memory range is not readable (unmapped or protected)",
+                    address=address,
+                    size=size,
+                )
             return {
                 "address": address,
                 "size": size,

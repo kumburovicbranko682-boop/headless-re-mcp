@@ -130,6 +130,56 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ReadApi:
+    def __init__(self, payload: list[int]) -> None:
+        self._payload = payload
+
+    def read(self, address: int, size: int) -> list[int]:
+        del address, size
+        return self._payload
+
+
+def _read_client(payload: list[int]) -> FridaClient:
+    api = _ReadApi(payload)
+    script = type("_RS", (), {"exports_sync": api, "load": lambda self: None})()
+    session = type(
+        "_RSess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    frida = type("_RFrida", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    return client
+
+
+def test_frida_memory_read_refuses_an_unreadable_range_rather_than_read_it_empty() -> None:
+    """readByteArray returns null for an unmapped or protected range, which the
+    agent turns into [] and the client into b"".
+
+    Handed back under the requested size, an empty read of a >=1-byte request
+    used to read as a successful read of a zeroed region: an agent probing an
+    inaccessible address would conclude it is readable and full of zeroes. A
+    read that returned nothing did not succeed, so it must fail rather than
+    report empty-as-read.
+    """
+    client = _read_client([])
+    with pytest.raises(FridaError) as excinfo:
+        client.memory_read(1, 0x1000, 64, allowed_pid=1)
+    assert excinfo.value.code == "backend_error"
+    assert excinfo.value.details.get("address") == 0x1000
+    assert excinfo.value.details.get("size") == 64
+
+
+def test_frida_memory_read_returns_hex_for_a_readable_range() -> None:
+    client = _read_client([0xDE, 0xAD, 0xBE, 0xEF])
+    payload = client.memory_read(1, 0x2000, 4, allowed_pid=1)
+    assert payload["data"] == "deadbeef"
+    assert payload["size"] == 4
+    assert payload["encoding"] == "hex"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
