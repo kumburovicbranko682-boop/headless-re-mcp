@@ -43,6 +43,12 @@ _STUB_SECTION_NAME = re.compile(
     r"^(upx[1-9]\w*|\.upx|aspack|themida|vmp\d*|.*stub.*)$",
     re.IGNORECASE,
 )
+# UPX names sections UPX0, UPX1, ... The packed data and the decompression stub
+# live in UPX1+; UPX0 is the (RWX, so "executable") region the stub decompresses
+# the original code *into* -- i.e. where the OEP ends up. ``_STUB_SECTION_NAME``
+# deliberately matches only ``upx[1-9]`` for that reason, but the generic
+# short-executable heuristic below would otherwise catch UPX0 too.
+_UPX_FAMILY_SECTION = re.compile(r"^\.?upx\d+$", re.IGNORECASE)
 # VMProtect-like / weird protector section names (e.g. .fkF / .'FL).
 _VMP_LIKE_SECTION = re.compile(
     r"(vmp|themida|\.fk|\.\'|\.boot)",
@@ -182,6 +188,16 @@ def stub_rva_ranges_from_sections(
         chars = int(section.get("characteristics") or 0)
         executable = bool(chars & _IMAGE_SCN_MEM_EXECUTE)
         named_stub = bool(_STUB_SECTION_NAME.match(name) or _VMP_LIKE_SECTION.search(name))
+        # A UPX-family section that is not itself a stub (UPX0) is the unpack
+        # destination, never a stub range. Without this, a real UPX0 -- which
+        # carries MEM_EXECUTE, so ``executable`` is true, and is a 4-char
+        # non-dotted unknown name -- is caught by ``weird_exec`` below and marks
+        # the region the OEP lands in as stub. That both suppresses the
+        # ``left_stub_region`` signal (rip in UPX0 reads as "still in the stub")
+        # and, in ``score_oep_candidates``, penalises the true OEP candidate for
+        # the most common packer. The test fixture only escaped this by omitting
+        # ``characteristics`` so its UPX0 was non-executable.
+        upx_destination = bool(_UPX_FAMILY_SECTION.match(name)) and not named_stub
         weird_exec = (
             name_key not in known
             and executable
@@ -194,7 +210,7 @@ def stub_rva_ranges_from_sections(
             and name_key not in known
             and (executable or named_stub or len(name) <= 4)
         )
-        if named_stub or weird_exec or weird_dot:
+        if not upx_destination and (named_stub or weird_exec or weird_dot):
             ranges.append((rva, size))
     return ranges
 
