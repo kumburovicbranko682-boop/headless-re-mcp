@@ -31,6 +31,12 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# flow_get inlines a flow's header maps. A retained flow is bounded to
+# _MAX_STORED_BODY, so its headers alone can still be megabytes -- the same
+# reason the flow summary caps url and content_type. Bound the count and each
+# value so one hostile response cannot dominate the tool result.
+_MAX_HEADERS = 200
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
 _OMITTED_BODY = object()
 
 
@@ -174,6 +180,36 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
+    """Bound the header map a flow inlines into a result.
+
+    A retrievable flow is at most ``_MAX_STORED_BODY``, so its headers can still
+    reach megabytes on their own. Returning them verbatim is the same lie the
+    flow summary already refuses for url and content_type: one response with a
+    giant token or hundreds of headers would dominate the tool result. Cap the
+    number of headers and each value, and say when the map was cut.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return {}, False
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001 - header containers vary across versions
+        return {}, False
+    out: dict[str, str] = {}
+    truncated = False
+    for key, value in items:
+        if len(out) >= _MAX_HEADERS:
+            truncated = True
+            break
+        name, name_cut = _bounded_metadata(key, _MAX_METADATA_BYTES)
+        text, value_cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        out[name] = text
+        if name_cut or value_cut:
+            truncated = True
+    return out, truncated
 
 
 class _FlowRecorder:
@@ -498,18 +534,26 @@ class ProxyBackend:
             body = resp.raw_content or b"" if resp else b""
         except Exception:  # noqa: BLE001
             body = b""
+        req_headers, req_headers_cut = _bounded_headers(req)
+        resp_headers, resp_headers_cut = _bounded_headers(resp)
+        request: JsonObject = {
+            "method": req.method,
+            "url": req.pretty_url,
+            "headers": req_headers,
+        }
+        if req_headers_cut:
+            request["headers_truncated"] = True
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": resp_headers,
+            "size": len(body),
+        }
+        if resp_headers_cut:
+            response["headers_truncated"] = True
         result: JsonObject = {
             "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+            "request": request,
+            "response": response,
         }
         if len(body) > 200_000:
             artifact_dir.mkdir(parents=True, exist_ok=True)

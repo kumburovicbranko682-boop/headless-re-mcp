@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import headless_re_mcp.backends.proxy.client as proxy_client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
@@ -159,6 +160,48 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+
+
+def test_proxy_flow_get_bounds_inlined_headers(tmp_path: Path, monkeypatch: Any) -> None:
+    """A retained flow's headers can reach megabytes and were inlined whole.
+
+    Measured: 500 response headers plus one 20000-byte value -> the response
+    map is capped at _MAX_HEADERS, each value at _MAX_HEADER_VALUE_BYTES, and
+    response.headers_truncated is set. A header map returned verbatim is the
+    same result-dominating payload the flow summary already refuses for url.
+    """
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", headers={"accept": "text/plain"}
+    )
+    big_headers = {"x-token": "z" * 20_000}
+    big_headers.update({f"x-h{index}": "v" for index in range(500)})
+    response = SimpleNamespace(
+        status_code=200,
+        headers=big_headers,
+        raw_content=b"body",
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    resp = payload["response"]
+    assert resp["headers_truncated"] is True
+    assert len(resp["headers"]) <= proxy_client._MAX_HEADERS
+    longest = max(
+        len(value.encode("utf-8")) for value in resp["headers"].values()
+    )
+    assert longest <= proxy_client._MAX_HEADER_VALUE_BYTES
+    assert "headers_truncated" not in payload["request"]
+    assert payload["request"]["headers"] == {"accept": "text/plain"}
+    doc = _tool_docstring("proxy.flow.get")
+    assert "headers_truncated" in doc
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
