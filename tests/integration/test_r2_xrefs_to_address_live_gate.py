@@ -85,7 +85,8 @@ def test_r2_xrefs_returns_callers_of_the_address_not_the_whole_binary() -> None:
     payload = client.xrefs(_FIXTURE, helper_va, timeout=60)
     assert payload["commands"] == ["aa", f"axtj @ {helper_va}"]
     items = payload["items"]
-    assert [int(item["from"]) for item in sorted(items, key=lambda i: int(i["from"]))] == caller_from
+    returned_from = sorted(int(item["from"]) for item in items)
+    assert returned_from == caller_from
 
     for item in items:
         assert item["type"] == "CALL"
