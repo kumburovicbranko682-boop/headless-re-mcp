@@ -282,6 +282,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   残缺表当短表继续。新增四条直测：两臂 switch 后 `ret` 落在正确 ip、空 switch 也跨过
   count 字、目标数超过剩余字节判 partial、count 字被截断判 partial。已做变异验证：去掉
   该分支后四条中的失配即触发。
+- 同一路径补齐一处更常见的错位：操作码表有 `.0`–`.3` 的 load/store 与 `ldc.i4`/
+  `ldc.i4.0`–`.8`，却漏了夹在它们中间、同样常见的短式 `ldarg.s`/`ldarga.s`/`starg.s`/
+  `ldloc.s`/`ldloca.s`/`stloc.s` 与 `ldc.i4.s`——它们各带 1 字节操作数（无符号槽位号，
+  或 `ldc.i4.s` 的有符号 int8）。凡是局部变量多于 4 个的方法都会用到，缺表时不是少个
+  名字，而是只前进 1 字节、把那个操作数字节当成下一条操作码，`ldloc.s 5` 之后整段
+  逐字节错位。现补入这七个（`ldc.i4.s` 并入 `_SIGNED_OPERANDS`，槽位号仍无符号）。
+  新增三条直测：短式 load/store 跨过索引后 `ret` 落在正确 ip、`ldc.i4.s 0xFF` 解为 -1、
+  槽位号 `0xFF` 仍解为 255。变异验证：抽掉这七条即失配。
 
 ### 修复（内存版仓库时间线无界增长）
 
