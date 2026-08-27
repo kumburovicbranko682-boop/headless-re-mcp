@@ -276,7 +276,7 @@ class GhidraClient:
         # which architecture -- so functions/decompiled code read as x86 when
         # they might be x64 or arm64. Name it from the header, the same way the
         # r2 backend does, and only when a format recognises it (omitted, not
-        # guessed, otherwise). read once here rather than in the foreign script.
+        # guessed, otherwise). Read once here rather than in the foreign script.
         arch = binary_architecture(binary)
         if arch is not None:
             payload["architecture"] = arch.value
