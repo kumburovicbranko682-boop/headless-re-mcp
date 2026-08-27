@@ -69,6 +69,7 @@ def test_flow_get_spills_a_small_binary_body_instead_of_mangling_it(
         method="GET",
         pretty_url="http://x/img",
         headers={"accept": "*/*"},
+        raw_content=b"",
     )
     response = SimpleNamespace(
         status_code=200,
@@ -123,6 +124,68 @@ def test_flow_get_spills_a_binary_request_body_too(
     resp = payload["response"]
     assert resp["spill_reason"] == "binary"
     assert Path(req["body_path"]) != Path(resp["body_path"])
+
+
+def test_flow_get_marks_a_failed_body_read_instead_of_inventing_an_empty_one(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A body read that raised used to look like a response that sent nothing.
+
+    Measured: raw_content raising -> the response part carries body_read_failed
+    and neither body nor size, so status=200 with a failed decode can never be
+    read as "the server sent an empty body". The request side, whose read
+    succeeded, is unaffected.
+    """
+
+    class _Resp:
+        status_code = 200
+        headers: dict[str, str] = {"content-type": "text/plain"}
+
+        @property
+        def raw_content(self) -> bytes:
+            raise ValueError("decode boom")
+
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/broken",
+        headers={"accept": "*/*"},
+        raw_content=b"",
+    )
+    backend = _backend_with_flow(monkeypatch, SimpleNamespace(request=request, response=_Resp()))
+
+    payload = backend.flow_get("s", "f4", tmp_path)
+
+    resp = payload["response"]
+    assert resp["status"] == 200
+    assert resp["body_read_failed"] is True
+    assert "body" not in resp
+    assert "size" not in resp
+    assert "body_path" not in resp
+    # The healthy side keeps its honest empty body.
+    assert payload["request"]["body"] == ""
+    assert payload["request"]["size"] == 0
+
+
+def test_flow_get_still_reports_a_genuinely_empty_body_as_empty(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A bodyless 204 keeps body="" and size=0; only a raising read is flagged."""
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/none",
+        headers={},
+        raw_content=b"",
+    )
+    response = SimpleNamespace(status_code=204, headers={}, raw_content=b"")
+    backend = _backend_with_flow(monkeypatch, SimpleNamespace(request=request, response=response))
+
+    payload = backend.flow_get("s", "f5", tmp_path)
+
+    resp = payload["response"]
+    assert resp["status"] == 204
+    assert resp["body"] == ""
+    assert resp["size"] == 0
+    assert "body_read_failed" not in resp
 
 
 def test_service_registers_a_spilled_flow_body_under_its_part(

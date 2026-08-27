@@ -49,6 +49,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`proxy.flow.get` 把读体失败伪装成空响应）
+
+- mitmproxy 的 `raw_content` 是惰性解码，可能在读取时抛异常。`_raw_body` 过去把这种失败
+  吞成 `b""`，于是 `proxy.flow.get` 答复 `status=200`、`size=0`、`body=""`——无人值守的
+  agent 把一次解码失败当成「服务器什么都没发」。现在读体失败的一侧带 `body_read_failed`
+  且不带 `body`/`size`（整个抓取不失败，头和状态照常返回），真正的空体仍是 `body=""`、
+  `size=0`，两者不再混同。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

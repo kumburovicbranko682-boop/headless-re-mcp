@@ -215,32 +215,39 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
-def _raw_body(part: Any) -> bytes:
-    """The raw bytes of a request/response, or empty when there is no body.
+def _raw_body(part: Any) -> bytes | None:
+    """The raw bytes of a request/response, empty when bodyless, None on failure.
 
     mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
-    failure there is not a reason to fail the whole fetch, so it reads as an
-    empty body the same way a bodyless message does.
+    failure there is not a reason to fail the whole fetch (the headers and
+    status are still good), but it used to read as an empty body -- status 200
+    with size 0 and body "" -- so an unattended agent took a failed decode as
+    evidence the server sent nothing. ``None`` lets the caller mark the part
+    with ``body_read_failed`` instead of inventing an empty body.
     """
     if part is None:
         return b""
     try:
         content = part.raw_content
-    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
-        return b""
+    except Exception:  # noqa: BLE001 - surfaced as body_read_failed, not empty
+        return None
     if isinstance(content, (bytes, bytearray)):
         return bytes(content)
     return b""
 
 
-def _emit_body(raw: bytes, artifact_dir: Path) -> JsonObject:
+def _emit_body(raw: bytes | None, artifact_dir: Path) -> JsonObject:
     """Describe one message body without ever handing back a lossy decode.
 
     Text within the inline cap comes back as ``body``; a larger body, or one
     that is not valid UTF-8, spills to a ``.bin`` artifact and comes back as
     ``body_path`` with ``spill_reason`` so a caller can tell "too big to inline"
     from "not text" and never mistakes replacement characters for real bytes.
+    A body whose read raised (``raw is None``) comes back as ``body_read_failed``
+    with no ``body`` or ``size`` at all, so it can never pass for an empty one.
     """
+    if raw is None:
+        return {"body_read_failed": True}
     out: JsonObject = {"size": len(raw)}
     if not raw:
         out["body"] = ""
