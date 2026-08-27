@@ -7,8 +7,11 @@
 # non-PE lines depend on installs on a stock GitHub-hosted Ubuntu image
 # (radare2 + a C compiler for r2, wabt + webcrack for the JS/WASM statics,
 # Playwright's Chromium for the web driver, mitmproxy for the interception
-# proxy), so the portable gates run for real on the platform the project now
-# calls a first-class core.
+# proxy, and jadx + apktool -- both self-contained Java tools -- for the
+# Android decompile/repack lines), so the portable gates run for real on the
+# platform the project now calls a first-class core. apksigner is the one
+# Android tool left out: it ships only in the Android SDK build-tools, too
+# heavy for a hosted runner, and the sign path already has unit coverage.
 name: linux-integration
 
 on:
@@ -34,6 +37,9 @@ jobs:
           node-version: "24"
 
       - name: Install portable backends
+        env:
+          JADX_VERSION: "1.5.1"
+          APKTOOL_VERSION: "2.10.0"
         run: |
           # radare2 (portable-static) and wabt (wasm2wat / wasm-objdump for the
           # WASM static) come from apt; the C compiler for the r2 ELF fixture is
@@ -41,6 +47,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y radare2 wabt
           npm install -g webcrack
+
+          # jadx (Android decompile) and apktool (Android decode/repack) are
+          # self-contained Java tools; the image already has a JRE. Both land on
+          # PATH so Settings.load() discovers them via shutil.which, exactly like
+          # an operator install.
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          unzip -q -d "$HOME/jadx" /tmp/jadx.zip
+          ln -sf "$HOME/jadx/bin/jadx" "$HOME/.local/bin/jadx"
+          curl -fsSL -o "$HOME/.local/bin/apktool.jar" \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          printf '#!/bin/sh\nexec java -jar "%s/.local/bin/apktool.jar" "$@"\n' "$HOME" \
+            > "$HOME/.local/bin/apktool"
+          chmod +x "$HOME/.local/bin/apktool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install package
         run: |
@@ -60,6 +82,8 @@ jobs:
           r2 -v | head -n 1
           wasm2wat --version || true
           webcrack --version || true
+          jadx --version || true
+          apktool --version || true
           python -c "import androguard, adbutils; print('androguard+adbutils ok')"
           python -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)"
 
@@ -71,6 +95,8 @@ jobs:
           export PYTHONPATH=src
           python -m pytest \
             tests/integration/test_android_re_gate.py \
+            tests/integration/test_android_jadx_gate.py \
+            tests/integration/test_android_apktool_gate.py \
             tests/integration/test_web_re_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_web_dynamic_gate.py \

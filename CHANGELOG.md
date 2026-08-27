@@ -130,6 +130,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (smali 与点号两种拼法都要解析到)、`apk.strings` 找回 DEX 里那条字符串、`apk.xrefs` 从字节码还原出
   `entry -> leaf` 这条调用。缺 androguard 时如实 skip(skip 不等于 pass)。
 
+### 新增（jadx 反编译实测 Gate：还原出的 Java 就是 DEX 里的调用）
+
+- Android 工具链的另一条线——jadx(`apk.export_sources` / `apk.decompile`)——此前零真机覆盖:它是
+  开进 per-session 产物目录的有界子进程,argv 拼装、sources 根目录逃逸护栏、类名到路径的映射一旦断掉,
+  只会在真机上暴露。新增 `test_android_jadx_gate`,复用上面那个纯 Python 现造的合法 APK:其唯一类
+  `com.headlessre.gate.Gate` 里 `entry()` 用 invoke-static 调 `leaf()`,断言 jadx 还原出的 Java 必须
+  含 `package`、`class Gate` 且 `entry` 体内出现 `leaf();` 这一句调用——不是"文件非空"而已,而是真字节码
+  往返回了 Java。点号与 smali 两种类名拼法都要解析到同一个类。缺 jadx/JRE 时如实 skip(skip 不等于 pass)。
+
+### 新增（apktool 重打包实测 Gate：APK 过一遍 decode→build 仍可解析）
+
+- Android 重打包线的工具(`apk.decode` / `apk.repack`)此前零真机覆盖:apktool 把 DEX baksmali、把清单
+  decode,再从那棵树 build 回一个可安装 APK,两步都是开进 per-session 产物目录的有界子进程。新增
+  `test_android_apktool_gate`:对现造的合法 APK 跑 decode,断言产出 smali 树且 `Gate.smali` 里真有
+  `leaf`(证明 DEX 被反汇编),再 `apk.repack` build 回一个未签名 APK,最后把重打包产物交回 androguard——
+  必须仍解析出同样的包名/主 Activity/native ABI,一次悄悄损坏归档的 build 会被当场抓住。签名步骤
+  (`apk.sign`)刻意不纳入:apksigner 只在 Android SDK build-tools 里、对托管 runner 太重,且该路径已有单测
+  (口令不上 argv)。缺 apktool/JRE 或 androguard 时如实 skip(skip 不等于 pass)。
+
 ### 新增（浏览器动态读取 Gate：拿回来的就是页面真发生的）
 
 - 浏览器动态线过去只有「开得起来、scripts/console/DOM 列得出」(`test_web_re_gate`)与「关得掉」
@@ -148,9 +167,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `windows-integration.yml` 的形态),但无需自托管 runner:非 PE 那几条线依赖的后端都能在 GitHub 自带的
   Ubuntu 镜像上装齐——apt 装 radare2 与 wabt、镜像自带 C 编译器供 r2 ELF 夹具、npm 装 webcrack、
   Playwright 装 Chromium、pip 装 mitmproxy。装完先打印各后端版本(装失败与 Gate 跳过可区分),再按非 PE
-  范围跑 `test_android_re_gate` / `test_web_re_gate` / `test_web_lifecycle_gate` / `test_web_dynamic_gate` /
-  `test_proxy_lifecycle_gate` / `test_proxy_capture_gate` / `test_m11_r2_live_gate` / `test_agent_browser_smoke`,
-  `-rs` 打印每条跳过原因。PE 流水线的 Gate 需要 IDA/x64dbg/Windows 夹具,不纳入本 job。
+  范围跑 `test_android_re_gate` / `test_android_jadx_gate` / `test_android_apktool_gate` / `test_web_re_gate` /
+  `test_web_lifecycle_gate` / `test_web_dynamic_gate` / `test_proxy_lifecycle_gate` / `test_proxy_capture_gate` /
+  `test_m11_r2_live_gate` / `test_agent_browser_smoke`,`-rs` 打印每条跳过原因。jadx 与 apktool 是自带的 Java
+  工具(镜像已有 JRE),下载后落在 PATH 上供 `Settings.load()` 发现;apksigner 因只在 Android SDK
+  build-tools 里、对托管 runner 太重而不纳入。PE 流水线的 Gate 需要 IDA/x64dbg/Windows 夹具,不纳入本 job。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
