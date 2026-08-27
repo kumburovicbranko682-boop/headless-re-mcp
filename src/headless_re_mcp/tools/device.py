@@ -71,6 +71,24 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.stat")
+    def device_stat(serial: str, remote_path: str) -> dict[str, Any]:
+        """Stat one device path over adb's sync protocol (no shell).
+
+        Answers with path and exists. When exists is true, also type
+        (file/directory/symlink/char_device/block_device/fifo/socket/unknown),
+        size, mode_string (the ls-style "-rwxr-xr-x"), perm_octal (e.g. "0755"),
+        the setuid/setgid/sticky booleans, and mtime (ISO 8601) when the device
+        reported one -- mtime is omitted rather than faked when adb gives none.
+        A path that is not present is exists false with no other fields, never a
+        real file of size 0: adb's STAT answers a missing path with an all-zero
+        record, and this does not pass that off as an empty file. STAT does not
+        follow a symlink, so a link is reported as type symlink, not its target.
+        remote_path must be an absolute device path. There is no mode integer,
+        permissions or is_dir field.
+        """
+        return _dump(analysis.device_stat(serial, remote_path))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

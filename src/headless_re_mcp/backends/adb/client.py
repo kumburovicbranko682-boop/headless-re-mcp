@@ -31,6 +31,11 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # strict set keeps a value that reaches the su -c command line from carrying
 # shell metacharacters, quotes, or the colon that separates host from port.
 _BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}$")
+# A device path for the sync (STAT) protocol. Sync sends the path over the adb
+# transport, not through a shell, so the concern is not metacharacters but
+# keeping it a bounded, absolute, control-char-free path -- a relative path
+# would resolve against adb's cwd and read as a different file than intended.
+_STAT_PATH_RE = re.compile(r"^/[^\x00-\x1f]{0,1024}$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
 # Only the package attribute near the top of the manifest is needed. Reading
@@ -346,6 +351,56 @@ def _file_mode_size(info: Any) -> tuple[int, int]:
         mode = int(info[0] or 0)
         size = int(info[1] or 0)
     return mode, size
+
+
+def _file_mtime(info: Any) -> Any:
+    mtime = getattr(info, "mtime", None)
+    if isinstance(info, (tuple, list)) and len(info) >= 3:
+        mtime = info[2]
+    return mtime
+
+
+def _stat_mtime_field(mtime: Any) -> JsonObject:
+    """ISO mtime when adb gave one, omitted otherwise.
+
+    adbutils turns a sync mtime of 0 into ``None``; emitting a fabricated epoch
+    timestamp would read as a real modification time, so leave the field out and
+    let its absence say the device did not report one.
+    """
+    iso = getattr(mtime, "isoformat", None)
+    if callable(iso):
+        return {"mtime": iso()}
+    return {}
+
+
+def _stat_type(mode: int) -> str:
+    """Name the st_mode file type the same way ``ls`` would classify it."""
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISCHR(mode):
+        return "char_device"
+    if stat.S_ISBLK(mode):
+        return "block_device"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    return "unknown"
+
+
+def _check_stat_path(path: str) -> str:
+    value = (path or "").strip()
+    if not _STAT_PATH_RE.match(value):
+        raise AdbError(
+            "invalid_params",
+            "path must be an absolute device path with no control characters",
+            path=path,
+        )
+    return value
 
 
 class AdbBackend:
@@ -713,6 +768,42 @@ class AdbBackend:
             "path": str(out_path),
             "serial": _check_serial(serial),
             "size": size,
+        }
+
+    def stat(self, serial: str, remote_path: str) -> JsonObject:
+        path = _check_stat_path(remote_path)
+        dev = self._device(serial)
+        sync = getattr(dev, "sync", None)
+        if sync is None:
+            raise AdbError("backend_error", "adb sync is unavailable on this device")
+        try:
+            info = _call(sync.stat, path, timeout=_ADB_PROBE_TIMEOUT_S)
+        except AdbError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - adbutils raises broad types
+            raise AdbError("backend_error", f"stat failed: {exc}", path=path) from exc
+        mode, size = _file_mode_size(info)
+        if mode == 0:
+            # adb sync STAT answers a path that is not there with an all-zero
+            # record rather than an error. Reporting that as a real file of
+            # size 0 with no permissions would read as an existing empty file;
+            # say it is absent instead.
+            return {"path": path, "exists": False}
+        perm_bits = stat.S_IMODE(mode)
+        return {
+            "path": path,
+            "exists": True,
+            "type": _stat_type(mode),
+            "size": size,
+            # ls-style string ("-rwxr-xr-x" / "drwxr-xr-x"), as adb's STAT
+            # reports the mode; STAT does not follow a symlink, so a link is
+            # named as a link rather than resolved to its target.
+            "mode_string": stat.filemode(mode),
+            "perm_octal": format(perm_bits, "04o"),
+            "setuid": bool(mode & stat.S_ISUID),
+            "setgid": bool(mode & stat.S_ISGID),
+            "sticky": bool(mode & stat.S_ISVTX),
+            **_stat_mtime_field(_file_mtime(info)),
         }
 
     def pull(self, serial: str, remote_path: str, local_path: Path) -> JsonObject:

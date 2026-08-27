@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（设备文件元数据）
+
+- `device.stat`（只读）通过 adb 的 sync（STAT）协议对单个设备路径取元数据，不经过 shell——与
+  「不开放 `adb shell` 透传」一致。答复带 `path` 与 `exists`；存在时另有 `type`
+  （file/directory/symlink/char_device/block_device/fifo/socket/unknown）、`size`、`mode_string`
+  （ls 风格的 `-rwxr-xr-x`）、`perm_octal`（如 `0755`）、`setuid`/`setgid`/`sticky` 三个布尔，以及
+  设备给出 mtime 时的 `mtime`（ISO 8601）。诚实处理两处易被误读的点：路径不存在时 adb 的 STAT
+  回一条全零记录，这里报 `exists=false` 且不带其它字段，而不是伪装成一个 size 为 0 的空文件；
+  adb 给不出 mtime 时（sync 的 0 时间戳）省略该字段，而不是编造一个纪元时间。STAT 不跟随符号
+  链接，因此链接报 `type=symlink` 而非其目标。`remote_path` 必须是绝对设备路径。可用于在 pull
+  之前核对文件是否存在/大小/权限，或发现全局可写、setuid 等安全相关的文件权限。
 
 ### 依赖
 
