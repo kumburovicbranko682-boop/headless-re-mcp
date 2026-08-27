@@ -612,6 +612,17 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            # A session-level fault -- the runner timing out (which wedges the
+            # session), an already-wedged runner, or a closed session -- is not a
+            # per-body condition: every later call fails too. Swallowed into
+            # ``body_error`` it read as a successful metadata fetch, so an
+            # unattended caller kept hitting a browser it had no way to learn was
+            # dead. Let it propagate with its own code (``timeout`` is retryable),
+            # exactly as web.script_source already does; only a genuine per-body
+            # CDP failure (no such resource, body already evicted) below stays a
+            # soft ``body_error`` with the entry metadata intact.
+            raise
         except Exception as exc:  # noqa: BLE001
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):

@@ -322,6 +322,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   按类型名 `TimeoutError`（跨 Playwright 版本、措辞改动都稳）加报文兜底识别导航超时，改抛 `timeout`（带
   `url`、retryable），真正的加载错误（DNS、连接被拒）仍是 `backend_error`。`open` 首次导航超时照旧整体
   中止并拆掉会话，但现在标成 `timeout`，编排器会重开重试。
+- **`web.network.get` 把「浏览器卡死」吞成一次成功的空 body**。取响应体走 `_runner(handle).call(...)`，
+  而 `_Runner.call` 在浏览器超时（并就此把会话标 wedged）、会话已 wedged、或已 close 时抛的都是
+  `WebError`——这些是会话级故障，之后每一次调用都会同样失败。可这里一个通用 `except Exception` 把它们
+  连同真正的单体错误一起收进 `{**entry, "body_error": ...}` 原样返回：`ok=True`、带齐请求元数据，读起来
+  就像一次「拿到了元数据、只是没 body」的成功。于是无人值守的编排器拿着一个再也不会响应的浏览器反复
+  取 body，永远不知道该 `web.close` 重开。姊妹工具 `web.script.source` 早就是 `except WebError: raise` +
+  只把非 `WebError` 的单体失败兜成 `not_found`；`network.get` 独此一处没对齐。现在它也先 `except WebError:
+  raise` 让会话级故障带自己的 `code` 上抛（`timeout` 可重试），只有真正的单体 CDP 失败（资源不存在、body
+  已被清出缓冲）才继续留作软 `body_error`、连同 `requestId`/`url` 等元数据一起返回。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

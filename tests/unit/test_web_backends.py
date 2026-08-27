@@ -368,6 +368,68 @@ class TestWebNavigationTimeoutIsRetryable:
         assert backend.status("slow") == {"open": False}
 
 
+class TestWebNetworkGetPropagatesSessionFaults:
+    """A wedged browser is a session fault, not a per-body condition.
+
+    ``network_get`` fetches a response body through the runner, whose ``call``
+    raises ``WebError`` when the browser times out (which wedges the session),
+    is already wedged, or is closed -- faults where every later call fails too.
+    Swallowed into ``body_error`` they read as a successful, body-less fetch, so
+    an unattended caller kept hammering a dead browser it had no way to notice.
+    The fault now propagates with its own code, exactly as web.script_source
+    already does; only a genuine per-body CDP failure stays a soft ``body_error``
+    with the entry metadata intact.
+    """
+
+    class _Handle:
+        def __init__(self, cdp: object) -> None:
+            import threading
+
+            self.lock = threading.Lock()
+            self.requests = {"r1": {"requestId": "r1", "url": "https://x"}}
+            self.cdp = cdp
+
+    class _Runner:
+        def __init__(self, work_wrapper: object) -> None:
+            self._wrap = work_wrapper
+
+        def call(self, work: object, timeout: float | None = None) -> object:
+            del timeout
+            return self._wrap(work)  # type: ignore[operator]
+
+    def _backend(self, cdp: object, runner: object) -> WebBackend:
+        handle = self._Handle(cdp)
+        backend = WebBackend()
+        backend._get = lambda session_id: handle  # type: ignore[assignment]
+        backend._runner = lambda h: runner  # type: ignore[assignment]
+        return backend
+
+    def test_a_wedged_runner_timeout_propagates_not_hidden(self, tmp_path: Path) -> None:
+        def _raise_timeout(work: object) -> object:
+            del work
+            raise WebError("timeout", "browser did not respond within 5s")
+
+        backend = self._backend(cdp=object(), runner=self._Runner(_raise_timeout))
+        with pytest.raises(WebError) as info:
+            backend.network_get("s", "r1", tmp_path)
+        assert info.value.code == "timeout"
+        # Nothing was written for a body that was never fetched.
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_per_body_cdp_failure_stays_a_soft_body_error(self, tmp_path: Path) -> None:
+        class _Cdp:
+            def send(self, method: str, params: dict) -> dict:  # type: ignore[type-arg]
+                del method, params
+                raise RuntimeError("No resource with given identifier found")
+
+        backend = self._backend(cdp=_Cdp(), runner=self._Runner(lambda work: work()))
+        payload = backend.network_get("s", "r1", tmp_path)
+        assert "No resource" in str(payload["body_error"])
+        # The request metadata survives so the caller still learns what it was.
+        assert payload["requestId"] == "r1"
+        assert payload["url"] == "https://x"
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
