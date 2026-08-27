@@ -60,6 +60,33 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _close_proxy_servers(loop: asyncio.AbstractEventLoop, master: Any) -> None:
+    """Close mitmproxy's listening servers so their socket fds are freed now.
+
+    mitmproxy 12's embedded shutdown (``Master.run``'s ``finally`` -> ``done()``)
+    fires the ``DoneHook`` but the ``proxyserver`` addon has no ``done`` handler
+    that stops its servers -- the CLI relies on the process exiting to release
+    the ports. In-process that leaves the listening socket open: ``stop()`` would
+    report success while the port stayed bound and the next capture could never
+    rebind it. Stopping each ``ServerInstance`` closes its socket immediately.
+    """
+    if master is None:
+        return
+    proxyserver = None
+    with contextlib.suppress(Exception):
+        proxyserver = master.addons.get("proxyserver")
+    if proxyserver is None:
+        return
+
+    async def _stop() -> None:
+        for server in list(getattr(proxyserver, "servers", []) or []):
+            with contextlib.suppress(Exception):
+                await server.stop()
+
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(_stop())
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -345,11 +372,14 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
-            # Closing the loop outright abandons mitmproxy's still-pending
-            # accept task, which leaves the listening socket open at the OS
-            # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # Two ways the listening socket leaks if we are not careful, and
+            # both make stop() a lie while the port stays bound: mitmproxy 12
+            # never tears down proxyserver on shutdown, and closing the loop
+            # outright abandons its still-pending accept task. So first close the
+            # servers explicitly, then unwind the remaining tasks before closing.
             if loop is not None:
+                with contextlib.suppress(Exception):
+                    _close_proxy_servers(loop, self._master)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
