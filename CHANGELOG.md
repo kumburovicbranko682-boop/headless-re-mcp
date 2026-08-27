@@ -5,6 +5,14 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+浏览器（Playwright/CDP）生命周期 gate 首次在 Linux CI 真实执行。`test_web_lifecycle_gate.py`
+里那条句柄泄漏回归测试原先只认 Windows 专属的 `psutil.num_handles`，在 Linux 上永远
+skip（假绿）；改为在 Linux 直接数 `/proc/self/fd`（无需第三方依赖，psutil 仅作其他平台
+回退），泄漏测试终于能在 Linux 跑真。新增 `linux-browser` job：装 `.[browser,proxy]` +
+`playwright install --with-deps chromium`，跑整份 gate（关闭真正断开浏览器、同 ID 重开、
+跨线程驱动、句柄不随导航线性增长、浏览器与抓包端口一起回收），解析 junitxml，chromium/
+mitmproxy 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -28,14 +29,26 @@ def _playwright_available() -> bool:
     return True
 
 
-def _this_process() -> Any:
-    """psutil if it happens to be installed; it is not a project dependency."""
+def _handle_counter() -> Callable[[], int] | None:
+    """A way to count this process's open OS handles, or None if we cannot.
+
+    The leak this guards against shows up as handles/fds nobody disposes.
+    Windows exposes the count through ``psutil.num_handles``, but psutil is not a
+    project dependency and does not implement that on Linux -- which used to make
+    this test a permanent no-op there. The kernel already lists the descriptors
+    under ``/proc/self/fd``, so on Linux we count those directly and need nothing
+    installed; psutil is only a fallback for platforms without ``/proc``.
+    """
+    proc_fd = Path("/proc/self/fd")
+    if proc_fd.is_dir():
+        return lambda: sum(1 for _ in proc_fd.iterdir())
     try:
         import psutil
     except ImportError:
         return None
     process = psutil.Process()
-    return process if hasattr(process, "num_handles") else None
+    counter = getattr(process, "num_handles", None) or getattr(process, "num_fds", None)
+    return counter if callable(counter) else None
 
 
 def _free_port() -> int:
@@ -154,8 +167,8 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
     """
     if not _playwright_available():
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
-    process = _this_process()
-    if process is None:
+    count_handles = _handle_counter()
+    if count_handles is None:
         pytest.skip("handle counts are not available here (skip != pass)")
 
     backend = WebBackend()
@@ -167,10 +180,10 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
 
         for _ in range(5):
             backend.navigate("loud", _LOUD)
-        settled = process.num_handles()
+        settled = count_handles()
         for _ in range(20):
             backend.navigate("loud", _LOUD)
-        after = process.num_handles()
+        after = count_handles()
 
         captured = backend.console("loud", limit=500)
         assert captured["count"] > 0, "the console must still be captured"

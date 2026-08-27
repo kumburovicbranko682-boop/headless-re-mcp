@@ -152,6 +152,47 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with browser + proxy extras
+        run: |
+          python -m pip install -U pip
+          # proxy too: one lifecycle test reclaims a browser and its capture port
+          # together, so it needs a real mitmproxy alongside chromium.
+          python -m pip install -e ".[test,dev,browser,proxy]"
+
+      - name: Install chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Browser lifecycle gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_web_lifecycle_gate.py \
+            -rs --tb=short --junitxml=browser-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("browser-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # chromium and mitmproxy were both just installed, so any skip here means
+          # the gate could not reach them (chromium failed to launch, or the handle
+          # counter was unavailable) -- the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no browser gate was collected")
+          if skipped:
+              sys.exit(f"browser gate skipped despite installed chromium/mitmproxy: {skipped}")
+          print(f"browser gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
