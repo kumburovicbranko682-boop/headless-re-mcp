@@ -494,6 +494,59 @@ def test_valid_apk_jadx_decompiles_the_dex(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _apktool_available() -> bool:
+    from headless_re_mcp.backends.apktool import ApktoolClient
+
+    settings = Settings.load()
+    return ApktoolClient(settings.apktool, settings.apksigner).available
+
+
+@pytest.mark.integration
+def test_valid_apk_apktool_decodes_and_repacks(tmp_path: Path) -> None:
+    """Live apktool coverage: decode our real DEX to smali, then rebuild.
+
+    apktool is the other half of the Java toolchain that had no CI coverage. It
+    disassembles classes.dex to smali (where jadx recovers Java, apktool keeps
+    the raw bytecode) and rebuilds an APK from an edited tree — the decode/repack
+    loop RE workflows lean on. This drives the real DEX fixture through it:
+    apk.decode must emit a smali tree containing our class (with the exact method
+    and the const-string jadx folds away), and apk.repack must rebuild an APK
+    from it. no_resources skips the hand-built empty resources.arsc; the DEX
+    disassembly is the point. Skips only when apktool is absent (skip != pass).
+    """
+    if not _apktool_available():
+        pytest.skip("apktool not configured — decode/repack gate not run (skip != pass)")
+    apk = _build_apk_with_dex(tmp_path / "withdex.apk")
+    assert classify_target(apk) is TargetKind.APK
+
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=240.0, no_resources=True)
+        assert decoded.ok, decoded.error
+        assert "smali" in decoded.data["smali_dirs"]
+        manifest = decoded.data["manifest"]
+        assert manifest is not None and Path(manifest).is_file()
+
+        smali = (
+            Path(decoded.data["decoded_dir"])
+            / "smali" / "com" / "example" / "gate" / "Sample.smali"
+        )
+        assert smali.is_file()
+        body = smali.read_text(encoding="utf-8")
+        assert ".class public Lcom/example/gate/Sample;" in body
+        assert "helper()V" in body
+        assert _DEX_STRING in body
+
+        repacked = service.apk_repack(session_id, timeout=240.0)
+        assert repacked.ok, repacked.error
+        assert Path(repacked.data["apk"]).is_file()
+        assert repacked.data["signed"] is False
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_malformed_apk_yields_structured_errors_not_incidents(tmp_path: Path) -> None:
     """A malformed APK is bad input, never a server defect.

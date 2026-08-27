@@ -115,6 +115,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `Settings.load()` 经 `which()` 自动发现),新 Gate 把上面那枚真实 DEX 走一遍:`apk.export_sources`
   必须产出该类唯一的 Java 文件、`apk.decompile` 取回带包名/类/方法签名的源码、反编译一个从未编进去的
   类得到结构化 `not_found` 而非崩;产物落在临时 artifact 根内不外泄。仅当 jadx 缺失时 skip。
+- apktool 反汇编/重打包线同样进 CI(钉版 jar + 包装脚本同放一处上 PATH)。新 Gate 把同一枚真实 DEX
+  `apk.decode`(`no_resources` 跳过手工空 `resources.arsc`)成 smali,断言 `smali/com/example/gate/
+  Sample.smali` 里有 `.class ... Sample;`、`helper()V` 与 jadx 会折掉、baksmali 会保留的
+  `const-string "gate-secret-marker"`,再 `apk.repack` 从该树重建出一个(未签名)APK。仅当 apktool 缺失时
+  skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
