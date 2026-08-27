@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,30 @@ class JadxError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_apk_zip(apk: Path) -> None:
+    """Refuse a non-zip APK before launching the JVM.
+
+    apk.decompile / apk.export_sources run on the session's APK target
+    (``require_target(TargetKind.APK)``), and apk.open -- the only step that
+    parses it as a zip through androguard -- is not a prerequisite, so a
+    truncated download, a path pointing at the wrong file, or a build output
+    that slipped past its own check reaches jadx directly. Handed one, jadx
+    still starts a JVM and only then fails; ``_run`` reads the empty tree and
+    reports "jadx produced no sources" as a backend_error, turning a parameter
+    mistake into an opaque failure after paying the startup cost.
+    ``zipfile.is_zipfile`` reads only the archive's tail (it does not
+    decompress, so the check itself has no zip-bomb exposure) and turns that
+    into a precise ``invalid_params`` up front -- the same fail-fast shape as
+    apktool d / apksigner rejecting a non-zip before their JVM.
+    """
+    if not zipfile.is_zipfile(apk):
+        raise JadxError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(apk),
+        )
 
 
 def _note_partial_decompile(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -195,6 +220,7 @@ class JadxClient:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]

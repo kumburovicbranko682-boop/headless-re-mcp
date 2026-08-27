@@ -94,6 +94,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   失败范式。直接调后端的 apk.decode / apk.sign 单测相应改用真实（极小）zip 作输入，并新增直测钉住
   非 zip 输入在开进程前即被拒、有效 zip 仍照常交给工具。
 
+### 修复（apk.decompile / apk.export_sources 先验证输入是有效 zip，再启 JVM）
+
+- jadx 与 apktool 同属吃 APK 的 JVM 工具，却漏了同一道前置校验。`apk.decompile` / `apk.export_sources`
+  跑在会话的 APK 目标（`require_target(TargetKind.APK)`）上，而唯一把它当 zip 解析的 `apk.open` 并非
+  前置步骤——一个被截断的下载、指错的路径，或漏过自身校验的构建产物会直达 jadx。此前 jadx 只检查
+  路径存在（`is_file`）就开 JVM，随后 `_run` 读到空树、把「参数错」报成 `backend_error: jadx produced
+  no sources`——白白付出 JVM 启动开销，还把参数问题包装成晦涩的后端失败。现 `_run` 在开进程前先用
+  `zipfile.is_zipfile` 判定输入确是 zip（只读归档尾部、不解压，故校验本身没有 zip 炸弹暴露面），不是
+  就回精确的 `invalid_params`，与 `apk.decode` / `apk.sign` 在开 JVM 前、`device.install` 在设备传输前
+  同属一道快速失败前置校验。新增直测钉住非 zip 输入在开进程前即被拒、有效 zip 仍照常交给 jadx。
+
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
 - `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
