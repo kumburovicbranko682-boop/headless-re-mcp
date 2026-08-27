@@ -110,6 +110,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `gate-secret-marker`。断言 androguard 的分析真的列出该类、枚举出该方法(点号类名与 smali 描述符
   都能解析到同一个类)、在字符串表里带回该常量,且对未被调用方法的 `xrefs` 给出结构化空结果而非崩。
   仅当 androguard 缺失时 skip。
+- **Java 工具链首次进 CI**:jadx 反编译线此前完全没有 CI 覆盖(要 JRE + jadx CLI),成熟度只靠单元
+  测试。`linux-integration` 作业现装 `default-jre-headless` 与钉版 jadx 发行包(放上 PATH,由
+  `Settings.load()` 经 `which()` 自动发现),新 Gate 把上面那枚真实 DEX 走一遍:`apk.export_sources`
+  必须产出该类唯一的 Java 文件、`apk.decompile` 取回带包名/类/方法签名的源码、反编译一个从未编进去的
+  类得到结构化 `not_found` 而非崩;产物落在临时 artifact 根内不外泄。仅当 jadx 缺失时 skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`

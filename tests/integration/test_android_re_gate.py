@@ -13,10 +13,12 @@ import hashlib
 import struct
 import zipfile
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -440,6 +442,54 @@ def test_valid_apk_androguard_analyzes_the_dex(tmp_path: Path) -> None:
         assert xrefs.data["method_name"] == _DEX_METHOD
         assert xrefs.data["has_more"] is False
         assert isinstance(xrefs.data["callers"], list)
+    finally:
+        service.close_all()
+
+
+def _jadx_available() -> bool:
+    from headless_re_mcp.backends.jadx import JadxClient
+
+    return JadxClient(Settings.load().jadx).available
+
+
+@pytest.mark.integration
+def test_valid_apk_jadx_decompiles_the_dex(tmp_path: Path) -> None:
+    """Live jadx coverage: the Java toolchain decompiles our real DEX in CI.
+
+    jadx (and the Java toolchain generally) had no CI coverage — it needs a JRE
+    and the jadx CLI, which the linux-integration job now installs. This drives
+    the same hand-encoded DEX fixture through the decompiler: apk.export_sources
+    must emit the one Java file for our class, apk.decompile must return its
+    source carrying the package, class and method we encoded, and a class that
+    was never compiled in must come back as a structured not_found rather than a
+    crash. The output lands under a temp artifact root so nothing leaks. Skips
+    only when jadx is genuinely absent (skip != pass).
+    """
+    if not _jadx_available():
+        pytest.skip("jadx not configured — Java decompiler gate not run (skip != pass)")
+    apk = _build_apk_with_dex(tmp_path / "withdex.apk")
+    assert classify_target(apk) is TargetKind.APK
+
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id, timeout=240.0)
+        assert exported.ok, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert "sources/com/example/gate/Sample.java" in exported.data["java_files"]
+
+        decompiled = service.apk_decompile(session_id, "com.example.gate.Sample", timeout=240.0)
+        assert decompiled.ok, decompiled.error
+        source = decompiled.data["source"]
+        assert "package com.example.gate;" in source
+        assert "class Sample" in source
+        assert _DEX_METHOD in source
+
+        missing = service.apk_decompile(session_id, "com.example.gate.DoesNotExist", timeout=240.0)
+        assert missing.ok is False
+        assert missing.error is not None
+        assert missing.error.code == "not_found"
     finally:
         service.close_all()
 
