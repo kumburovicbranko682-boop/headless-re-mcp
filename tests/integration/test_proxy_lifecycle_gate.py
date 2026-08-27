@@ -30,8 +30,14 @@ def _free_port() -> int:
 
 class _OriginHandler(http.server.BaseHTTPRequestHandler):
     BODY = b"hello-proxied-body"
+    # Counts every served GET so the replay gate can prove a re-issued flow
+    # actually reaches the origin a second time.
+    hits = 0
+    hits_lock = threading.Lock()
 
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        with _OriginHandler.hits_lock:
+            _OriginHandler.hits += 1
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(self.BODY)))
@@ -173,6 +179,63 @@ def test_proxy_records_a_flow_that_can_be_read_back(tmp_path: Path) -> None:
         assert exported["entry_count"] >= 1
     finally:
         backend.stop("gate-capture")
+        origin.shutdown()
+        origin.server_close()
+
+
+@pytest.mark.integration
+def test_proxy_replays_a_captured_flow_back_to_the_origin() -> None:
+    """Replay must re-issue a recorded request, not just report success.
+
+    proxy.replay drives mitmproxy's ``replay.client`` command, whose name and
+    flow-copy shape are exactly what a mitmproxy major bump moves -- the v12
+    bump already broke this backend's shutdown path. The method returns
+    ``replayed: True`` as soon as the command is scheduled, so only a counting
+    origin can tell a real re-request from a no-op. Capture one GET, replay it,
+    and assert the origin is hit a second time.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+
+    origin = socketserver.TCPServer(("127.0.0.1", 0), _OriginHandler)
+    origin_port = int(origin.server_address[1])
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("gate-replay", host="127.0.0.1", port=port)
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+        )
+        with opener.open(f"http://127.0.0.1:{origin_port}/thing", timeout=10) as response:
+            assert response.read() == _OriginHandler.BODY
+
+        deadline = time.monotonic() + 5.0
+        listing = backend.flows("gate-replay", limit=10)
+        while listing["count"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.1)
+            listing = backend.flows("gate-replay", limit=10)
+        assert listing["count"] >= 1, "no flow was recorded to replay"
+
+        with _OriginHandler.hits_lock:
+            hits_before = _OriginHandler.hits
+
+        replayed = backend.replay("gate-replay", str(listing["flows"][0]["id"]))
+        assert replayed["replayed"] is True
+
+        # replay.client runs on the proxy loop and returns before the re-request
+        # lands, so poll the origin's own counter rather than assuming it is done.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with _OriginHandler.hits_lock:
+                if _OriginHandler.hits > hits_before:
+                    break
+            time.sleep(0.1)
+        with _OriginHandler.hits_lock:
+            assert _OriginHandler.hits > hits_before, "replay did not reach the origin"
+    finally:
+        backend.stop("gate-replay")
         origin.shutdown()
         origin.server_close()
 
