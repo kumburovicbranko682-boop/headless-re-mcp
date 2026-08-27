@@ -137,7 +137,16 @@ def run_idalib_gate(
 
 
 def _last_json_line(text: str) -> dict[str, Any]:
-    for line in reversed(text.splitlines()):
+    # Split on "\n" alone, not str.splitlines(). The worker writes its verdict
+    # with json.dumps(ensure_ascii=False), which leaves a Unicode line separator
+    # -- U+2028, U+2029 or the NEL U+0085 -- literal inside a string, and the
+    # decompiler preview it embeds is lifted straight from the analyzed binary.
+    # splitlines() treats those code points as breaks and would cut the one JSON
+    # line into fragments that each fail json.loads, so a successful analysis read
+    # back as "worker returned no JSON object". Real newlines inside the payload
+    # are escaped by json.dumps, so the verdict is always a single "\n"-terminated
+    # line here.
+    for line in reversed(text.split("\n")):
         try:
             value = json.loads(line)
         except json.JSONDecodeError:

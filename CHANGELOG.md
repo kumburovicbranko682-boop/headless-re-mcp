@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（IDA gate 裁决被 Unicode 行分隔符切碎,成功分析被读成"没有 JSON"）
+
+- idalib worker 用 `json.dumps(ensure_ascii=False) + "\n"` 打印裁决行,其中还内嵌最多 1000 字的
+  Hex-Rays 反编译 `preview`(`str(cfunc)`)——这段文本直接取自被分析的二进制。客户端
+  `_last_json_line` 过去用 `str.splitlines()` 切 stdout,而 `splitlines()` 会把 U+2028
+  (LINE SEPARATOR)、U+2029(PARAGRAPH SEPARATOR)、NEL U+0085 也当换行:一旦 preview(或异常
+  信息)里带上这些码点,那条本该完整的 JSON 裁决行就被切成多段,每段 `json.loads` 都失败,于是
+  `_last_json_line` 返回 `{"error": "worker returned no JSON object"}`,`ok = returncode==0 and
+  payload.get("ok") and not observed` 里 `payload.get("ok")` 变 None——一次成功的 IDA 分析被
+  误报成失败。现改为只按 worker 真正写出的 `"\n"` 切分(payload 里的真实换行已被 json.dumps 转义
+  成 `\n`,裁决恒为单行;Windows 文本模式带出的尾部 `\r` 被 `json.loads` 当尾随空白容忍)。新增
+  回归:preview 同时含 U+2028/U+2029/U+0085 的裁决能完整读回且 `ok`/`functions` 无损、"最后一个
+  JSON 对象胜出且噪声照旧跳过"、无 JSON 时仍如实报缺。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
