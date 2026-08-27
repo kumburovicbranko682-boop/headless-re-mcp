@@ -132,6 +132,51 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
     assert len(row.replace("\\|", "").strip("| ").split(" | ")) == 3
 
 
+def test_a_wide_knowledge_value_says_how_many_keys_were_dropped() -> None:
+    """The value preview keeps only the first four keys of a dict.
+
+    Without a marker a short ten-key value rendered exactly like a four-key
+    one, and the dropped keys read as never recorded -- the same "partial
+    reads as complete" failure the section-level notes exist to prevent.
+    """
+    knowledge = {
+        "entries": [
+            {
+                "kind": "note",
+                "key": "wide",
+                "value": {f"k{i}": i for i in range(10)},
+                "updated_at": "t",
+            }
+        ]
+    }
+
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| wide"))
+    assert "k0=0, k1=1, k2=2, k3=3" in row
+    assert "(+6 more keys)" in row
+    assert "k4" not in row
+
+
+def test_a_value_that_fits_needs_no_key_drop_marker() -> None:
+    knowledge = {
+        "entries": [
+            {
+                "kind": "note",
+                "key": "narrow",
+                "value": {f"k{i}": i for i in range(4)},
+                "updated_at": "t",
+            }
+        ]
+    }
+
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| narrow"))
+    assert "k0=0, k1=1, k2=2, k3=3" in row
+    assert "more keys" not in row
+
+
 def test_report_includes_audit_when_supplied() -> None:
 
     audit = {
