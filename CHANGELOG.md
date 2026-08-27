@@ -969,6 +969,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
+- 新增回归（`apk.components` 四份列表各自可溢出、完整清单不误报截断、四路各归其位）：
+  activities/services/receivers/providers 各自经 `_cap_names` 独立按 `_MAX_COMPONENT_NAMES`
+  截断，`has_more = a_more or s_more or r_more or p_more` 让任一侧溢出都能标记回包不完整。
+  既有两处 `components` 测试（字段名测试与资源上限测试）都只让 `get_activities()` 溢出，其余
+  三类各一条或为空，于是整套件里 `has_more` 只由 activities 上限置起——`s_more`/`r_more`/`p_more`
+  对 `has_more` 的贡献全然惰性，去掉其中任一个 `or` 都照样过。补齐：逐类（含 services/receivers/
+  providers）单独溢出都必须各自置起 `has_more`；四类全在上限内的完整清单必须回 `has_more=False`
+  （既有测试因总让 activities 溢出而从未观察到 False，硬编码 True 可蒙混）；四次 `_cap_names`
+  读取以互异取值验证各归其字段（receiver 不是 service、provider 不是 activity）。以变异逐一
+  验证（`has_more` 分别丢掉 `s_more`/`r_more`/`p_more`、硬编码 `has_more=True`、services 改读
+  `get_receivers()`）均被新用例捕获，既有测试仍绿。
 - **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
   adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
   的项重新挂回跟踪列表。
