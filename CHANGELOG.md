@@ -290,6 +290,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 修复（失败的 web 网络请求不再与在途请求混为一谈）
+
+- web 会话此前只挂了 `Network.responseReceived`,没挂 `Network.loadingFailed`:一个被 Chromium 中断的请求
+  (DNS 解析失败、被拦的混合内容、取消的 fetch)会永远停在 `status=null`——与一个「还没回来」的在途请求
+  逐字节一致。逆向一个 app 的流量时,「服务器拒了这条」与「这条还没回来」是两码事,而调用者无从区分。
+- 现在挂上 `Network.loadingFailed`:失败的请求条目标记 `failed=true` 与 `error_text`(如
+  `net::ERR_NAME_NOT_RESOLVED`),CDP 报了 `canceled` / `blockedReason` 时再带上 `canceled=true` /
+  `blocked_reason`。`status` 在失败与在途两种情况下都仍是 `null`,靠 `failed` 区分。`error_text` /
+  `blocked_reason` 与既有 url/method 一样先经 `_bounded_metadata` 收进上限,超限置 `metadata_truncated`。
+  这些字段随条目一并透传:`web.network.get` 对失败请求取 body 时 CDP 会抛,回包 `body_error` 之外也带上
+  `failed` / `error_text`,免得把空 body 读成空响应。未知 requestId 的失败事件安全忽略。
+- 新增回归:失败请求与在途请求可区分、`canceled` / `blocked_reason` 各自记录且互不误加、失败元数据受上限约束、
+  未知 id 被忽略、失败字段经 `web.network.get` 透传,以及 `_wire_events` 确实注册了新处理器。
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
