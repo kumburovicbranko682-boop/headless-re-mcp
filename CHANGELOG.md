@@ -894,6 +894,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
   `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
   停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.uninstall` / `launch` / `force_stop` 先连设备、后校验包名**。包名校验只是一次
+  廉价的正则（`_check_package`），`_device` 却要够到 adb server。把校验排在后面，意味着一个
+  写错的包名要白搭一次设备往返，而当 adb server 恰好连不上时，真正的问题（包名非法）还会被
+  设备错误盖掉。改为先判包名：非法包名当场回 `invalid_params`，合法包名才去连设备（与
+  `frida.spawn` 先判包名、`device.install` / `push` 先判本地文件同一处理）。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
