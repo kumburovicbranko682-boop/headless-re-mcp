@@ -342,7 +342,10 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 265:
+# no cover: import-time invariant. In a correct build the three effect sets
+# partition exactly 265 tool names; the raise only fires on a developer error
+# (a duplicate or omission) before the module can be used at all.
+if len(_ALL_TOOL_NAMES) != 265:  # pragma: no cover
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])

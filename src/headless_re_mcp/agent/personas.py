@@ -246,7 +246,10 @@ class PersonaStore:
         if len(encoded) > _MAX_IMPORT_BYTES:
             raise ValueError("persona_too_large")
         persona_id = _slug(title, text)
-        if persona_id in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}:
+        # no cover: _slug always appends "-<8 hex>", so its output contains a
+        # hyphen and can never equal a bare reserved id; this reservation guard
+        # is belt-and-braces against a future _slug that could collide.
+        if persona_id in {DEFAULT_PERSONA_ID, SEAGULL_PERSONA_ID}:  # pragma: no cover
             persona_id = f"custom-{persona_id}"
         with self._lock:
             self._body_path(persona_id).write_text(text + "\n", encoding="utf-8")

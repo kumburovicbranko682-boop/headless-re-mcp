@@ -93,7 +93,11 @@ def note_dump_success(
             output_sha256=sha256,
             details={"path": path, "module_base": module_base},
         )
-    elif updated.phase != UnpackPhase.DUMPED:
+    # no branch: the phase == DUMPED case returned early above, so by here the
+    # phase is never DUMPED; reaching this elif means the if's transition did
+    # not fire, which only happens when the phase cannot advance -- so this
+    # elif is always true and its false arc is unreachable.
+    elif updated.phase != UnpackPhase.DUMPED:  # pragma: no branch
         updated = append_timeline(
             updated,
             event="dump_phase_skipped",
