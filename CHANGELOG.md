@@ -123,6 +123,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
+
+- close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
+  `_frida_auth` 的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会
+  把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
+  分支本就被 `_require_debuggee_pid` 挡住）。
+
 ### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
@@ -381,6 +388,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
+
+### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
+
+- `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,
+  异常冒出 `Java.perform` 后被 Python 的通用 `except` 兜成 `backend_error`;而**加载了但没有自有方法**
+  (方法全继承自父类)的类则正常回空数组。于是「类名写错/没加载」既可能变成一条泛化后端错误、
+  也可能——取决于版本与时序——与「类在、但自有方法为空」的空数组无从分辨。无人值守的 agent 据此
+  会把一个根本没加载的类读成「这个类没有方法」。
+- 现在与兄弟接口 `frida.exports` 的 `found` 一致:脚本侧 `methods` 改为回 `{found, methods}`,
+  `Java.use` 失败即 `found=false`、`methods=[]`;成功则 `found=true`。据此,`found=false`+空列表明确
+  读作「类未加载/类名不解析」,`found=true`+空列表读作「类在,但不声明自有方法」。分页 `has_more` 行为不变。
+- Python 侧解析与 `modules` 同款:优先按 `{found, methods}` 字典解读,同时容忍旧的裸数组形状
+  (裸数组按 `found=true` 处理),脚本与 Python 版本错配时不炸。
+- 新增回归:未加载类回 `found=false`/空列表、已加载有方法类 `found=true` 且满页 `has_more=true`、
+  已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
+  `frida.java.methods` 描述点名 `found`。
 
 ### 修复（监控台回环护栏）
 
@@ -684,6 +707,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `cancel_requested`，超时等待也会去取消那条 asyncio 任务。
 - **超长 objective 先建空 inbox 再拒绝**。空 thread 不会被 trim，重试会把库撑大。
   现在先 `validate_mission`，过了才建 thread。
+- **完成一条较旧的 mission/run 会把它自己删掉再崩**。终态保留裁剪按 `created_at DESC`
+  只留每线程最新 N 条；当同线程里较新的先完成、较旧的后完成时，那条刚完成的旧记录恰是
+  「最旧的终态行」而被裁掉——可 `set_mission_status` / `cancel_mission` / `transition`
+  紧接着 `get_mission` / `get_run` 读回并 `assert ... is not None`,于是操作本身以
+  `AssertionError` 崩溃(对无人值守调用者表现为 `internal_error`),而不是返回它刚写下的
+  状态。裁剪改按 `updated_at DESC`(即完成时间)排序:刚完成的记录必是最新的一条,永远落在
+  保留窗口内,保留条数仍恰为 N。新增三条回归测试(mission 完成 / mission 取消 / run 转终态,
+  均为「旧记录后完成」)以严格递增时钟钉住顺序。
 - **压缩后的请求仍会超过自己报的预算**。8,000 字符上限选出的尾巴，再加上系统提示
   和压缩通知，线上变成 8,115。现在先给这两条留位置再选尾巴。
 - **`cdb -c` 只看第一个 token**。`lm; !process` 和 `k\n.shell` 能穿过白名单。
