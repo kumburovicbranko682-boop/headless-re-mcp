@@ -377,6 +377,13 @@ class TestStatus:
             backend._runner(handle)
         assert info.value.code == "invalid_state"
 
+    def test_a_corrupt_session_handle_reads_as_closed(self) -> None:
+        # Neither the opening sentinel nor a real session: a map entry of the
+        # wrong type must read as closed, not crash the cheap status probe.
+        backend = WebBackend()
+        backend._sessions["s"] = "not a session"  # type: ignore[assignment]
+        assert backend.status("s") == {"open": False}
+
 
 # ----------------------------------------------------------------------------
 # open (fake sync_playwright)
@@ -479,6 +486,44 @@ class TestOpen:
         assert info.value.code == "backend_error"
         assert pw.stopped is True
         # The reservation was released, so a later open can reuse the id.
+        assert "s" not in backend._sessions
+
+    def test_open_with_no_url_skips_navigation_and_omits_status(
+        self, monkeypatch: MP
+    ) -> None:
+        # open with an empty url launches the browser but never navigates, so no
+        # response exists and the summary carries no status.
+        page = _FakePage(url="about:blank")
+        pw = _FakePWObj(page, _FakeCdp(), None)
+        self._patch(monkeypatch, pw)
+        backend = WebBackend()
+        try:
+            summary = backend.open("s", "", timeout=5.0)
+            assert summary["opened"] is True
+            assert "status" not in summary
+            assert page.goto_calls == []
+        finally:
+            backend.close("s")
+
+    def test_launch_failure_reaps_the_discovered_driver_pid(
+        self, monkeypatch: MP
+    ) -> None:
+        # When the driver pid is known, a launch that fails after the node
+        # process started must reap that pid from the caller's thread -- the
+        # bound waits live in the driver that just died.
+        pw = _FakePWObj(_FakePage(), _FakeCdp(), RuntimeError("no chromium"))
+        pw._impl_obj = SimpleNamespace(  # type: ignore[attr-defined]
+            _connection=SimpleNamespace(
+                _transport=SimpleNamespace(_proc=SimpleNamespace(pid=2**30))
+            )
+        )
+        reaped: list[int] = []
+        monkeypatch.setattr(web_client, "_reap_driver_pid", lambda pid: reaped.append(pid))
+        self._patch(monkeypatch, pw)
+        backend = WebBackend()
+        with pytest.raises(WebError):
+            backend.open("s", "https://x/", timeout=5.0)
+        assert reaped == [2**30]
         assert "s" not in backend._sessions
 
 
