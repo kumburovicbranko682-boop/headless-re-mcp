@@ -178,7 +178,20 @@ jobs:
       - name: Install FOSS analysis backends
         run: |
           sudo apt-get update
-          sudo apt-get install -y radare2 upx-ucl wabt
+          sudo apt-get install -y radare2 upx-ucl wabt apktool apksigner
+
+      - name: Create an Android debug keystore for the apk.sign gate
+        # apk.sign defaults to the standard Android debug keystore; keytool ships
+        # with the JDK installed above. Generating it lets the sign gate run for
+        # real instead of skipping, and matches what the Android build tools do.
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey \
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
 
       - name: Install package with Linux-capable extras
         run: |
