@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -578,8 +580,37 @@ class ProxyBackend:
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        # Same guard as web.har_export: the flow summaries are individually
+        # bounded, but the export writes one file per call into the session
+        # artifact area, so a full 2000-flow ring still puts tens of megabytes
+        # on disk -- and the ring/url caps are tunable independently of this
+        # writer, so a future bump would silently exceed the capture budget
+        # every other spill path here enforces. Drop the newest entries until
+        # the file fits, and say when it was clipped.
+        text = json.dumps(har, ensure_ascii=False)
+        truncated = False
+        encoded = text.encode("utf-8")
+        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            drop = max(1, len(entries) // 8)
+            del entries[-drop:]
+            har["log"]["entries"] = entries
+            text = json.dumps(har, ensure_ascii=False)
+            encoded = text.encode("utf-8")
+            truncated = True
+        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=len(encoded),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "truncated": truncated,
+            "size": len(encoded),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

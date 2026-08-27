@@ -80,6 +80,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   合法 uuid 与根内嵌套 id(从不逃根)照常;清理逻辑加同款单组件守卫,uuid 之外的 id 直接跳过。
   回归测试端到端验证越根读取被拒且不泄露文件内容、清理不会删根外文件,并参数化钉住多种穿越形态。
 
+### 修复（proxy HAR 导出无字节上限）
+
+- `proxy.export_har` 把整份 HAR 直接写进会话 artifact 区，唯独没有 `web.har_export` 那道字节
+  护栏。flow 摘要单条虽已受限（url ≤16 KiB、method/host/content-type ≤1 KiB），但一次导出会把
+  最多 `_MAX_FLOWS`(2000) 条摘要落成一个文件——今天约 30+ MiB 尚在捕获预算内，可 ring 容量与
+  url 上限是与该写入器各自独立可调的，任一上调都会让这条唯一没有护栏的落盘路径静默越过其余每条
+  spill 都在守的 `UNREGISTERED_CAPTURE_MAX_BYTES` 上限（正是 `limits.py` 自己点名的「一处上限
+  改了、另一处悄悄不一致」）。现与 `web.har_export` 对齐：超限时按八分之一逐批丢弃最新的 flow 直到
+  文件放得下，回传 `truncated` 与 `size`；连空 HAR 骨架都放不下的极端上限在写盘前 fail-closed 抛
+  `too_large`，不留半截产物。`proxy.export_har` 与 `web.har.export` 的工具契约文档补齐 `size`/
+  `truncated` 字段名（web 后端一直在回这两个字段，文档此前漏列）。补 proxy 满导出/截断/拒绝三条
+  回归测试与两个 HAR 工具的字段命名断言。
+
 ### 修复（损坏的 web token 文件不再卡死启动）
 
 - `web_token.json` 写入不是原子的:进程在写到一半时崩溃会留下截断的 JSON,而加载器此前把它

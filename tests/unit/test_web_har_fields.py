@@ -59,6 +59,12 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "artifact" not in payload
     assert payload["entry_count"] == 1
     assert payload["path"].endswith("c.har")
+    # A full export is reported as unclipped, with the on-disk size, so a
+    # caller can tell it from one that dropped rows to fit the capture cap.
+    assert payload["truncated"] is False
+    assert payload["size"] == (tmp_path / "c.har").stat().st_size
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "truncated" in doc
+    assert "size" in doc

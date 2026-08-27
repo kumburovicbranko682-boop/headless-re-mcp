@@ -7,9 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
+    ProxyError,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
@@ -227,6 +229,77 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "output" not in payload
     assert payload["entry_count"] == 4
     assert payload["path"].endswith("capture.har")
+    # A full export is reported as unclipped, with the on-disk size, the same
+    # signal web.har_export gives, so a caller can tell it from a clipped one.
+    assert payload["truncated"] is False
+    assert payload["size"] == (tmp_path / "capture.har").stat().st_size
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "truncated" in doc
+    assert "size" in doc
+
+
+def _fill_recorder(recorder: _FlowRecorder, count: int) -> None:
+    for index in range(count):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}/" + "u" * 300, host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+
+
+def test_proxy_export_har_drops_newest_flows_to_fit_the_capture_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The summaries are bounded, but the file is not; a full ring is tens of MB.
+
+    Measured with the cap forced low: 40 flows -> the file is written under the
+    cap, truncated is true, entry_count is fewer than 40, size matches the file
+    on disk, and what landed is still valid HAR JSON. Without the guard the
+    export would write the whole ring regardless of the capture budget every
+    other spill path here enforces.
+    """
+    import json
+
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 2000)
+    recorder = _FlowRecorder(capacity=100)
+    _fill_recorder(recorder, 40)
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+    assert payload["truncated"] is True
+    assert 0 < payload["entry_count"] < 40
+    assert payload["size"] <= 2000
+    assert payload["size"] == out.stat().st_size
+    parsed = json.loads(out.read_text(encoding="utf-8"))
+    assert len(parsed["log"]["entries"]) == payload["entry_count"]
+
+
+def test_proxy_export_har_refuses_when_even_no_entries_exceed_the_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A cap smaller than the empty HAR skeleton is refused, not half-written.
+
+    The raise happens before the file is written, so a refused export leaves no
+    partial artifact behind for a caller to read back as a real capture.
+    """
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 10)
+    recorder = _FlowRecorder(capacity=100)
+    _fill_recorder(recorder, 4)
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+    try:
+        backend.export_har("s", out)
+    except ProxyError as exc:
+        assert exc.code == "too_large"
+        assert exc.details["cap"] == 10
+    else:  # pragma: no cover - the call must refuse
+        raise AssertionError("export_har did not refuse an impossible cap")
+    assert not out.exists()
