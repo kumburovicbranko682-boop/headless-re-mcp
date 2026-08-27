@@ -144,7 +144,8 @@ def test_network_get_returns_frames_with_text_and_binary(
     fire["Network.webSocketFrameReceived"](
         {"requestId": "9", "response": {"opcode": 1, "mask": False, "payloadData": '{"tick":1}'}}
     )
-    blob = base64.b64encode(b"\x00\x01\x02\xff").decode("ascii")
+    raw = b"\x00\x01\x02\xff"
+    blob = base64.b64encode(raw).decode("ascii")
     fire["Network.webSocketFrameReceived"](
         {"requestId": "9", "response": {"opcode": 2, "mask": False, "payloadData": blob}}
     )
@@ -157,7 +158,9 @@ def test_network_get_returns_frames_with_text_and_binary(
     msgs = detail["websocket_messages"]
     assert msgs[0] == {"from_client": True, "size": 18, "text": '{"op":"subscribe"}'}
     assert msgs[1] == {"from_client": False, "size": 10, "text": '{"tick":1}'}
-    assert msgs[2] == {"from_client": False, "size": 4, "omitted": "binary"}
+    # A short binary frame is retrievable as base64, not a dead "omitted".
+    assert base64.b64decode(msgs[2]["base64"]) == raw
+    assert msgs[2]["size"] == 4 and "omitted" not in msgs[2]
 
 
 def test_network_get_truncates_a_flood_and_reports_the_true_total(
@@ -217,7 +220,8 @@ def test_har_export_carries_the_socket_frames_as_websocketmessages(
     fire["Network.webSocketFrameReceived"](
         {"requestId": "9", "response": {"opcode": 1, "mask": False, "payloadData": '{"tick":1}'}}
     )
-    blob = base64.b64encode(b"\x00\x01\x02\xff").decode("ascii")
+    raw = b"\x00\x01\x02\xff"
+    blob = base64.b64encode(raw).decode("ascii")
     fire["Network.webSocketFrameReceived"](
         {"requestId": "9", "response": {"opcode": 2, "mask": False, "payloadData": blob}}
     )
@@ -233,8 +237,10 @@ def test_har_export_carries_the_socket_frames_as_websocketmessages(
 
     ws_entry = by_url["ws://x/live"]
     assert ws_entry["response"]["status"] == 101
+    # Chrome's format stores base64 in data for a binary (opcode 2) frame, so
+    # the binary payload survives the HAR round-trip.
     assert ws_entry["_webSocketMessages"] == [
         {"type": "send", "opcode": 1, "data": '{"op":"subscribe"}'},
         {"type": "receive", "opcode": 1, "data": '{"tick":1}'},
-        {"type": "receive", "opcode": 2, "data": ""},
+        {"type": "receive", "opcode": 2, "data": base64.b64encode(raw).decode("ascii")},
     ]

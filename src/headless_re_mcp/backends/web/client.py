@@ -144,9 +144,10 @@ def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObj
     (ping/pong/close, opcode >= 8) are not application messages and are skipped so
     they neither inflate the count nor appear as empty rows. The returned summary
     mirrors the proxy's: ``from_client`` and decoded ``size``, plus ``text`` for a
-    short UTF-8 frame or ``omitted`` (binary / too_large) so a caller never gets a
-    lossy decode. The second tuple element is the decoded byte size for the
-    running total.
+    short UTF-8 frame or ``base64`` (the actual bytes) for a short binary frame so
+    a binary protocol is reverse-engineerable; only an oversized frame reports
+    ``omitted`` ("too_large"). The second tuple element is the decoded byte size
+    for the running total.
     """
     resp = params.get("response") or {}
     opcode = resp.get("opcode")
@@ -168,7 +169,13 @@ def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObj
             raw = b""
         size = len(raw)
         entry["size"] = size
-        entry["omitted"] = "binary"
+        if size > _MAX_WS_MESSAGE_BYTES:
+            entry["omitted"] = "too_large"
+        else:
+            # Keep the bytes: re-encode the decoded payload to canonical base64
+            # so a binary WebSocket protocol (protobuf, msgpack) is retrievable
+            # rather than a dead "omitted".
+            entry["base64"] = base64.b64encode(raw).decode("ascii")
         return entry, size
     return None
 
@@ -176,18 +183,26 @@ def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObj
 def _har_ws_message(frame: JsonObject) -> JsonObject:
     """One stored WS frame as Chrome DevTools' ``_webSocketMessages`` shape.
 
-    type is send/receive from the direction we recorded; opcode is derived from
-    the frame we kept (a frame marked omitted "binary" is opcode 2, everything
-    else is a text frame, opcode 1); data is the retained UTF-8 text, empty when
-    the frame was binary or clipped for size (we never stored its bytes, so there
-    is nothing faithful to write). No ``time`` is emitted because the capture
+    type is send/receive from the direction we recorded. Chrome's own format
+    puts the UTF-8 text of a text frame (opcode 1) in ``data`` and the base64
+    of a binary frame (opcode 2) in ``data``, so a frame we kept as ``base64``
+    maps straight to an opcode-2 entry -- the binary payload rides along
+    faithfully instead of as an empty string. An oversized frame we had to omit
+    has no bytes to write, so ``data`` is empty and its opcode defaults to 1
+    (we never decoded it). No ``time`` is emitted because the capture
     records no per-frame timestamp.
     """
-    return {
-        "type": "send" if frame.get("from_client") else "receive",
-        "opcode": 2 if frame.get("omitted") == "binary" else 1,
-        "data": frame.get("text", ""),
-    }
+    entry: JsonObject = {"type": "send" if frame.get("from_client") else "receive"}
+    if "base64" in frame:
+        entry["opcode"] = 2
+        entry["data"] = frame["base64"]
+    elif frame.get("omitted") == "binary":
+        entry["opcode"] = 2
+        entry["data"] = ""
+    else:
+        entry["opcode"] = 1
+        entry["data"] = frame.get("text", "")
+    return entry
 
 
 def _spill_text(

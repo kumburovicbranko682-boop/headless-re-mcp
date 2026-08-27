@@ -10,9 +10,13 @@ This gate drives a real Chromium at a real page that opens a WebSocket to a
 `websockets` echo origin (which answers "echo:"+msg) and exchanges two messages.
 It asserts the socket now appears in web.network.list as a WebSocket row with
 frame counters, and that web.network.get returns the frames both directions.
-The page then closes the socket, and the gate asserts the row picks up
-ws_closed=true -- a socket the server kicked must not read as still streaming.
-Guarding the guard: the origin transforms each message, so seeing the client's
+A binary frame of non-UTF-8 bytes is exchanged too, and the gate asserts it
+comes back retrievable as base64 (not a dead "omitted") through both
+web.network.get and the HAR -- a binary WebSocket protocol is what an RE
+session most needs to read. The page then closes the socket, and the gate
+asserts the row picks up ws_closed=true -- a socket the server kicked must not
+read as still streaming. Guarding the guard: the origin transforms each
+message, so seeing the client's
 "hello" and the origin's distinct "echo:hello" proves both directions were
 captured, not one side reflected. skip != pass: it skips only when Chromium or
 the websockets server is genuinely unavailable.
@@ -20,6 +24,7 @@ the websockets server is genuinely unavailable.
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import threading
@@ -33,6 +38,8 @@ import pytest
 
 from headless_re_mcp.backends.web import WebBackend
 from headless_re_mcp.core.service import AnalysisService
+
+_BINARY_FRAME = bytes([0, 1, 2, 255, 254, 128, 42])
 
 
 def _free_port() -> int:
@@ -92,7 +99,10 @@ def _ws_echo(port: int) -> Iterator[None]:
 
     def echo(ws: object) -> None:
         for message in ws:  # type: ignore[attr-defined]
-            ws.send("echo:" + message)  # type: ignore[attr-defined]
+            if isinstance(message, (bytes, bytearray)):
+                ws.send(b"echo:" + bytes(message))  # type: ignore[attr-defined]
+            else:
+                ws.send("echo:" + message)  # type: ignore[attr-defined]
 
     server = serve(echo, "127.0.0.1", port)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -106,18 +116,25 @@ def _ws_echo(port: int) -> Iterator[None]:
 
 @contextmanager
 def _page(ws_port: int) -> Iterator[str]:
-    # One round trip is all the gate needs: the client "hello" and the origin's
-    # distinct "echo:hello" already prove both directions were captured. The
-    # origin's accept loop is confirmed live before we navigate (_wait_ws_ready),
-    # so a plain connect is reliable; a second round trip only added a frame that
-    # could lag past the poll deadline and read as a failure.
+    # A deterministic two-step exchange: send "hello" on open; when the text
+    # echo lands, send a binary frame of non-UTF-8 bytes (what a real binary
+    # protocol looks like); when its binary echo lands, close. Each step is
+    # driven by the previous frame's arrival, so nothing races, and the close
+    # (which the gate also asserts) only fires once every frame is captured.
+    binary_js = ",".join(str(b) for b in _BINARY_FRAME)
     body = (
         "<html><head><title>ws-gate</title><script>\n"
         f'var ws = new WebSocket("ws://127.0.0.1:{ws_port}/live");\n'
+        'ws.binaryType = "arraybuffer";\n'
         'ws.onopen = function () { ws.send("hello"); };\n'
-        # Close only after the round trip landed, so the frame capture is done
-        # before the close event the gate also asserts on.
-        "ws.onmessage = function (e) { window.__got = e.data; ws.close(); };\n"
+        "ws.onmessage = function (e) {\n"
+        '  if (typeof e.data === "string") {\n'
+        f"    ws.send(new Uint8Array([{binary_js}]).buffer);\n"
+        "  } else {\n"
+        "    window.__gotbin = true;\n"
+        "    ws.close();\n"
+        "  }\n"
+        "};\n"
         "</script></head><body>ws gate</body></html>"
     ).encode()
 
@@ -232,6 +249,20 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 assert closed_row is not None, "the socket's close was never captured"
                 assert closed_row["ws_closed"] is True
 
+                # By now every frame is captured (close fires only after the
+                # binary echo). The binary frame must be retrievable as base64,
+                # not dropped as "omitted": the client's raw bytes and the
+                # origin's echo of them both survive.
+                final = service.web_network_get(session_id, str(closed_row["requestId"]))
+                assert final.ok, final.error
+                blobs = {
+                    base64.b64decode(m["base64"])
+                    for m in final.data["websocket_messages"]
+                    if "base64" in m
+                }
+                assert _BINARY_FRAME in blobs, blobs
+                assert b"echo:" + _BINARY_FRAME in blobs, blobs
+
                 # The exported HAR must carry the frames, not just a 101 entry:
                 # Chrome DevTools reads them from the _webSocketMessages array.
                 exported = service.web_har_export(session_id)
@@ -248,6 +279,15 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 pairs = {(m["type"], m.get("data")) for m in frames}
                 assert ("send", "hello") in pairs, pairs
                 assert ("receive", "echo:hello") in pairs, pairs
+                # Chrome's format stores a binary frame's payload base64 in
+                # data with opcode 2, so the binary payload survives HAR too.
+                har_blobs = {
+                    base64.b64decode(m["data"])
+                    for m in frames
+                    if m.get("opcode") == 2 and m.get("data")
+                }
+                assert _BINARY_FRAME in har_blobs, har_blobs
+                assert b"echo:" + _BINARY_FRAME in har_blobs, har_blobs
             finally:
                 service.web_close(session_id)
     finally:

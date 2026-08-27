@@ -106,8 +106,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body over the capture cap is refused rather than written to disk. For a
         WebSocket row the answer is instead websocket=true with
         websocket_messages (the retained frames in order, each with from_client
-        and size, plus text for a short UTF-8 frame or omitted binary/too_large
-        otherwise), websocket_message_count (the true total seen), and
+        and size, plus text for a short UTF-8 frame, base64 (the actual bytes)
+        for a short binary frame, or omitted=too_large past the per-frame cap),
+        websocket_message_count (the true total seen), and
         websocket_truncated when fewer frames survived the retain budget than
         that total; there is no body to fetch for a socket. ws_closed=true
         rides along once the socket has closed.
