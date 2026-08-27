@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（stdio 解析回信 shim：坏请求带 id 要有回信而非静默挂起）
+
+- `mcp/stdio_errors.py` 因一桩实测故障而存在：SDK 的 stdio reader 把解析不了的请求原样往里
+  转发，服务端只记一条 "Internal Server Error" 而从不写出 JSON-RPC 响应，于是调用方对着一个
+  永远等不到、又能与自己请求 id 对上的回复干等。shim 用 `json.loads`（比 pydantic 校验器能吃
+  更深的嵌套）把 id 抠出来，回一条带该 id 的 JSON-RPC 错误；对真正无 id 可对的垃圾则保持静默。
+  该模块此前没有任何专属测试：`_error_for_parse_failure` 的非递归分支（第 150 行——最常见的
+  「畸形但带 id」请求，也正是本模块存在的全部理由）、`_request_id` 的各条拒绝分支，以及
+  `_read_bounded_line` 的空读与超限读路径全无覆盖。新增 `tests/unit/test_mcp_stdio_errors.py`
+  钉住可观测契约：良构请求不被回错（原样交给 SDK）、无 id 垃圾保持静默、`method` 类型错的
+  畸形请求回一条带原 id、code 为 `INVALID_REQUEST`、消息为校验错误首行（非空、单行、≤2048）的
+  错误、字符串 id 原样保留、嵌套 260 层的请求仍能抠出 id 并回「request is nested too deeply to
+  parse」；`_request_id` 对非对象/无 id/布尔 id/浮点 id/null/容器 id 一律返回 None，只认字符串
+  与整数（含 0）；`_read_bounded_line` 对超限行既标记 oversized 又把其余字节排干，使下一次
+  readline 正好落到下一条记录，且一条永不换行的巨型行在 EOF 处不空转。19 条用例、`ruff` 通过，
+  纯测试新增、无产品行为变更。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
