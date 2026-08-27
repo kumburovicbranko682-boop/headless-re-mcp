@@ -70,7 +70,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         filled the cap is not read as every component. The totals report how
         many of each kind the manifest declares, so the single has_more (an OR
         across the four lists) does not leave a caller guessing which one was
-        truncated. There is no components field.
+        truncated. exported_activities, exported_services, exported_receivers,
+        and exported_providers name the components other apps can reach: an
+        explicit android:exported wins; without it a component with an
+        intent-filter counts as exported (the pre-targetSdk-31 default) and a
+        provider does not. All four are omitted together when the manifest
+        attributes could not be read, so absence is never read as
+        not-exported. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 

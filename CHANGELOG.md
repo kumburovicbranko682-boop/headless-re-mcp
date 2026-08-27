@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 改进（`apk.components` 只列组件名不说哪些导出，攻击面这一最关键分诊问题没法回答）
+
+- `apk.components` 回四份组件名单（activities/services/receivers/providers），但**不报告 exported 状态**——
+  哪些组件可被其它应用调起，恰是 Android 静态分诊里第一个要回答的攻击面问题（导出的 activity 可被外部
+  拉起、导出的 receiver 收外部广播、导出的 provider 可被外部读写）。逆向者拿着一串名单仍得自己去翻
+  manifest 才知道哪扇门是开的。
+- 现在结果新增 `exported_activities` / `exported_services` / `exported_receivers` / `exported_providers`，
+  按平台规则推断：显式 `android:exported` 优先；缺席时带 intent-filter 的组件按 pre-targetSdk-31 平台默认
+  记为导出（31+ 带 filter 必须显式声明，推断只填平台本就允许缺席的空档），provider 缺席时按现代默认不导出。
+  推断只覆盖上面已列出（封顶后）的名单。manifest 属性读取失败时**四个字段一并缺席**——部分作答会被读成
+  「未导出」，那是攻击面上的假阴性；字段缺席才是「没读到」的诚实表达。既有字段不变。
+- `apk.components` 描述点名四个新字段、推断规则与整体缺席语义。新增回归：显式 true/false、带 filter 的
+  receiver（隐式导出）、无 filter 的 service 与无属性 provider（不导出）各就各位；属性查询抛错 → 四字段
+  全缺席、四份基础名单照常返回。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
