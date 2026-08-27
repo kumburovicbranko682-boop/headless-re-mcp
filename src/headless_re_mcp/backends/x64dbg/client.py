@@ -1222,6 +1222,12 @@ class XdbgClient:
             raise XdbgRpcError(
                 "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
             ) from exc
+        except RecursionError as exc:
+            # Deeply nested JSON within the frame cap exhausts the recursion
+            # limit; keep the same rpc_protocol_error contract as rpc_frame.
+            raise XdbgRpcError(
+                "rpc_protocol_error", "RPC response nests too deeply to parse"
+            ) from exc
         if not isinstance(response, dict):
             raise XdbgRpcError("rpc_protocol_error", "RPC response must be an object")
         if (

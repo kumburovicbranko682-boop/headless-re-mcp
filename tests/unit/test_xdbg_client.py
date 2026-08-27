@@ -220,6 +220,51 @@ def test_a_window_blocks_the_call_only_while_it_is_open(
     assert client.analyzer_windows == ("x64dbg [Modules]",)
 
 
+class NestedBodyTransport:
+    """Answers each request with a fixed raw body, bypassing json.dumps.
+
+    A response of deeply nested ``[[[...]]]`` cannot be produced by encoding a
+    Python object (json.dumps hits the recursion limit first), so the body is
+    handed over verbatim as the length-prefixed frame the client reads back.
+    """
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+        self._reads: deque[bytes] = deque()
+        self.closed = False
+
+    def write_all(self, data: bytes, *, timeout: float) -> None:
+        del data, timeout
+        self._reads.append(len(self._body).to_bytes(4, "little"))
+        self._reads.append(self._body)
+
+    def read_exact(self, size: int, *, timeout: float) -> bytes:
+        del timeout
+        value = self._reads.popleft()
+        assert len(value) == size
+        return value
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_deeply_nested_response_is_a_protocol_error_not_a_recursion_error() -> None:
+    """A ``[[[...]]]`` body under the frame cap exhausts json.loads recursion.
+
+    That RecursionError is not a JSONDecodeError, so without an explicit arm it
+    escaped _request as a raw builtin instead of the rpc_protocol_error the
+    boundary promises for any unparseable response.
+    """
+    depth = 100_000
+    body = (("[" * depth) + ("]" * depth)).encode("utf-8")
+    assert len(body) < client_module._MAX_FRAME_BYTES
+    client = _client(NestedBodyTransport(body))  # type: ignore[arg-type]
+
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client._request("debug.state", {}, timeout=1)
+    assert exc_info.value.code == "rpc_protocol_error"
+
+
 @pytest.mark.parametrize("response_size", [0, client_module._MAX_FRAME_BYTES + 1])
 def test_invalid_response_frame_boundary_is_rejected(response_size: int) -> None:
     client = _client(ScriptedTransport(response_size=response_size))

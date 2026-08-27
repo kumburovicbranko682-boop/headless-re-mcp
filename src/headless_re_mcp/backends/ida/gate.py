@@ -140,7 +140,10 @@ def _last_json_line(text: str) -> dict[str, Any]:
     for line in reversed(text.splitlines()):
         try:
             value = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError: a deeply nested JSON line exhausts the recursion
+            # limit. Skip it like any other non-JSON line instead of letting a
+            # raw builtin escape the gate while scanning worker output.
             continue
         if isinstance(value, dict):
             return value

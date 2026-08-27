@@ -80,6 +80,28 @@ def test_ida_stdout_messages_are_bounded_when_no_request_is_receiving(
     assert client._messages_dropped > 0
 
 
+def test_ida_stdout_reader_survives_a_deeply_nested_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``[[[...]]]`` line blows the recursion limit inside json.loads.
+
+    That RecursionError is not a JSONDecodeError, so without an explicit arm it
+    would escape and kill this reader thread. The reader must instead treat the
+    pathological line like any other non-message line -- log it, keep going --
+    and still deliver the real message that follows.
+    """
+    client = _make_client(tmp_path, monkeypatch)
+
+    nested = ("[" * 100_000) + ("]" * 100_000)
+    stream = io.StringIO(nested + "\n" + json.dumps({"event": "real"}) + "\n")
+    client._read_stdout(stream)
+
+    assert any("[[[" in line for line in client._stdout_log)
+    delivered = client._messages.get_nowait()
+    assert delivered == {"event": "real"}
+
+
 def test_overflow_surfaces_as_worker_output_overflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
