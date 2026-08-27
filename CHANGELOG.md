@@ -60,6 +60,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（wabt 就绪探测只看了一半）
+
+- **doctor 的 `wabt` 探针只找 `wasm2wat`，却把整套 wabt 报成 detected**。wabt 是两个可执行文件：
+  `wasm.wat` 走 `wasm2wat`，`wasm.info` 走 `wasm-objdump`；而 `HEADLESS_RE_WABT` 只是单一路径提示。
+  于是只解析到其一（最常见的是把该变量指向 `wasm2wat` 本体、或某个只装了半套的环境）时，doctor 报
+  “wabt configured/detected”，`capabilities.list` 的 `wasm.wabt` 也随之显示可用，`wasm.info` 却在调用时
+  才回 `capability_unavailable`——doctor 本可提前示警却没有。现在探针与客户端共用同一套解析
+  （`resolve_wabt_tools`），两个二进制都会解析并在 details 里逐个报告：两个都在报 detected；只有其一时
+  仍报 detected 但标 `partial=True`，并在摘要/建议里点名缺失的那个及其影响的 `wasm.*` 工具；两个都没有
+  才报 missing。`WasmClient` 也改用同一解析函数，避免探针与工具对“哪半能用”各说各话。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

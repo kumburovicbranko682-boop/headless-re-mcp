@@ -177,8 +177,7 @@ class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
     def __init__(self, wabt: Path | None = None) -> None:
-        self._wasm2wat = _resolve_wabt_tool(wabt, "wasm2wat")
-        self._objdump = _resolve_wabt_tool(wabt, "wasm-objdump")
+        self._wasm2wat, self._objdump = resolve_wabt_tools(wabt)
 
     @property
     def available(self) -> bool:
@@ -229,3 +228,15 @@ def _resolve_wabt_tool(wabt: Path | None, tool: str) -> Path | None:
             return alt
     found = shutil.which(tool)
     return Path(found) if found else None
+
+
+def resolve_wabt_tools(wabt: Path | None) -> tuple[Path | None, Path | None]:
+    """Resolve ``(wasm2wat, wasm-objdump)`` from a configured hint or PATH.
+
+    wabt ships the two as separate executables, so a single ``HEADLESS_RE_WABT``
+    hint (or a bare PATH install) can carry one without the other. The doctor
+    resolves through here too, so a "wabt detected" answer cannot disagree with
+    which ``wasm.*`` tools actually run: ``wasm.wat`` needs ``wasm2wat`` and
+    ``wasm.info`` needs ``wasm-objdump``.
+    """
+    return _resolve_wabt_tool(wabt, "wasm2wat"), _resolve_wabt_tool(wabt, "wasm-objdump")
