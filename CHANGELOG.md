@@ -116,6 +116,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（APK 原生 ABI 集合无上限）
+
+- **`apk.open` 与 `apk.native_libs` 的 native ABI 集合是本客户端里唯一未设上限的派生集合**。
+  两处都用 `{name.split("/")[1] for name in apk.get_files() ...}` 直接从 APK 中央目录构造，
+  条目名完全受构造者控制——一个刻意生成上百万个不同 `lib/<abi>/` 目录的 APK 会让该集合膨胀到
+  与 androguard 的文件名列表同量级的额外分配。本客户端对其余每个返回集合都设了上限并给
+  `has_more`（`_MAX_STRINGS_COLLECT`/`_MAX_CLASSES_COLLECT`/`_cap_names` 等，即便 androguard
+  已把源数据物化也照样限），唯独这两处漏了。现抽出 `_collect_abis` 统一去重并封顶到
+  `_MAX_ABIS=64`（真实 APK 只有寥寥几个 ABI，64 是绝不触及的余量）：`native_libs` 把 ABI 截断
+  并入 `has_more`，`open` 的 `native_abis` 同样封顶。新增回归测试：5000 个不同 ABI 的病态 APK
+  在两处都截到 64、`has_more` 置位、结果有序去重，而正常的三 ABI 应用原样返回、`has_more` 为假。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
