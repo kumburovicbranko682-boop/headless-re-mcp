@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`device.force_stop` 把 adb 主机错误当成一次干净的强停）
+
+- `device.force_stop` 用 `pidof`/`ps -A` 复核进程是否还在，据此给出三态 `stopped`
+  （true/false/null）。但 adbutils 会把 adb 主机自己的 `adb:`/`error:` 行当 stdout
+  返回而不抛异常，其中 `adb: device 'x' not found` 恰好含「not found」——正是判定
+  「设备无 pidof、改走 ps」的关键字。于是这条主机错误被当成「缺 pidof」而落到 ps
+  回退，ps 对离线设备同样只回一行主机错误，解析出空进程表，`force_stop` 便对一个
+  根本没核过的包报 `stopped=true`。现在 `_pids_for_package` 在读到 `pidof` 与 ps 回退
+  的输出后都用 `_is_host_error_output` 判定：主机错误一律视为「读不到进程列表」返回
+  `None`，让 `force_stop` 保持探针抛错时同样的诚实 null，而非假的强停成功。新增两条
+  直测覆盖 `pidof` 与 ps 两处主机错误路径。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
