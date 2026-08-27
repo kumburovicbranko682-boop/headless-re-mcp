@@ -176,8 +176,14 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
         """Push a local file to a path on the device.
 
-        Answers with local, remote and size. Files over the capture cap are
-        refused rather than copied onto the device.
+        Answers with local, remote, size and verified (true, false, or null
+        when the landing could not be checked). size is the local file's
+        length; verified is true only when the remote file exists afterward
+        with that many bytes, so a push into a missing remote directory --
+        which adb can report as a clean success that lands nothing -- is not
+        read as done. A byte-count mismatch is verified false and carries
+        remote_size. Files over the capture cap are refused rather than copied
+        onto the device.
         """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
