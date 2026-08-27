@@ -31,7 +31,13 @@ def _free_port() -> int:
 class _HelloHandler(http.server.BaseHTTPRequestHandler):
     """A one-route upstream so the proxy has a real flow to record."""
 
+    # Class-level: how many requests actually reached the upstream. The replay
+    # gate resets it and uses it as ground truth that replay touched the
+    # network rather than only re-appending a row to the capture ring.
+    hits = 0
+
     def do_GET(self) -> None:
+        type(self).hits += 1
         body = b"hello-through-proxy"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -200,6 +206,87 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert any(entry["request"]["url"] == target for entry in entries)
         matched = next(entry for entry in entries if entry["request"]["url"] == target)
         assert matched["response"]["status"] == 200
+    finally:
+        backend.close_all()
+        server.shutdown()
+        server_thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_flow_detail_and_replay_reach_the_upstream_again(tmp_path: Path) -> None:
+    """flow.get must return the recorded exchange; replay must re-send it.
+
+    The capture gate proves traffic is recorded; these are the two surfaces
+    built on that recording, and neither had executable coverage. The detail is
+    asserted against ground truth -- the body the upstream actually served --
+    and the replay against the upstream's own hit counter: a replay that only
+    re-appended a ring entry without touching the network would satisfy any
+    flow-count assertion, but cannot increment the server's counter.
+    skip != pass: skips only when mitmproxy is unavailable.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+
+    _HelloHandler.hits = 0
+    server = http.server.HTTPServer(("127.0.0.1", 0), _HelloHandler)
+    upstream_port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("replay", host="127.0.0.1", port=proxy_port)
+    try:
+        target = f"http://127.0.0.1:{upstream_port}/probe"
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+        )
+        with opener.open(target, timeout=10.0) as response:
+            assert response.read() == b"hello-through-proxy"
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if backend.status("replay")["flow_count"] >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("proxy captured no flow for a request routed through it")
+
+        rows = [f for f in backend.flows("replay")["flows"] if f.get("url") == target]
+        assert rows, backend.flows("replay")["flows"]
+        flow_id = rows[0]["id"]
+
+        detail = backend.flow_get("replay", flow_id, tmp_path)
+        assert detail["id"] == flow_id
+        assert detail["request"]["method"] == "GET"
+        assert detail["request"]["url"] == target
+        assert detail["response"]["status"] == 200
+        # The recorded body must be the bytes the upstream served, inline
+        # (19 bytes of UTF-8 is far under the spill threshold).
+        assert detail["response"]["body"] == "hello-through-proxy"
+        assert detail["response"]["size"] == len(b"hello-through-proxy")
+
+        assert _HelloHandler.hits == 1
+        replayed = backend.replay("replay", flow_id)
+        assert replayed == {"replayed": True, "flow_id": flow_id}
+
+        # replay.client is asynchronous: the command returns once scheduled,
+        # the new exchange completes on the proxy loop. Both effects must
+        # materialise -- the upstream serves a second request, and the
+        # recorder captures it as a new flow.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if _HelloHandler.hits >= 2 and backend.status("replay")["flow_count"] >= 2:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail(
+                f"replay did not reach the upstream: hits={_HelloHandler.hits}, "
+                f"flows={backend.status('replay')['flow_count']}"
+            )
+        replay_rows = [f for f in backend.flows("replay")["flows"] if f.get("url") == target]
+        assert len(replay_rows) >= 2
+        assert all(row["status"] == 200 for row in replay_rows)
     finally:
         backend.close_all()
         server.shutdown()
