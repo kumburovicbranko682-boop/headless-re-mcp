@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -123,9 +124,22 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        # apktool can exit 0 yet leave a truncated or empty file (a build that
+        # aborted after creating the output, a full disk). An APK is a zip, so a
+        # zero-byte or non-zip result is a failed rebuild -- reporting it as a
+        # rebuilt apk would send an unusable file into apk.sign/install.
+        size = out_apk.stat().st_size
+        if size == 0 or not zipfile.is_zipfile(out_apk):
+            raise ApktoolError(
+                "backend_error",
+                "apktool build produced an empty or invalid apk",
+                exit_code=code,
+                size=size,
+                stderr=stderr[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }

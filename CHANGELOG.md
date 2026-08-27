@@ -70,6 +70,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
+
+- `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
+  可能退出 0 却留下一个零字节或被截断的文件（构建在创建产物后中止、磁盘写满）。APK 本质是 zip，
+  这类空/非 zip 产物其实是一次失败的重打包，原样报成功会把不可用文件送进 `apk.sign` / 安装，直到
+  签名那步才暴露。现要求产物非空且能通过 `zipfile.is_zipfile` 校验，否则在重打包这步就报
+  `backend_error`（附 `size` 与 stderr 摘录）。
+
 ### 修复（UI 捕获会话 id 先于平台判定校验）
 
 - `ui.screenshot` / `ui.ocr` 过去先判 `os.name != "nt"` 再校验会话 id，于是 Linux 上一个
