@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 变更（JS/WASM 静态实测 Gate：证明真解码，而不只是跑通）
+
+- `test_web_re_gate.py` 的 webcrack / wabt 实测 Gate 此前只断言「有输出」（`bytes > 0`、
+  `"module" in wat`），一个跑了但什么都没解出的工具照样能过——skip != pass 之外还差 pass != 证据。
+  现改为断言真解码：`js.deobfuscate` 必须把夹具里以 `\x48\x33...` 十六进制转义藏着的可读串 `H3adl3ss`
+  还原出来（源文件里根本没有这串明文，出现即证明 webcrack 确实解了转义），且转义形式在输出中消失、输出不与
+  输入逐字节相同；`wasm.wat` 改用手工编码、含一个导出 `gate_add`（返回 `i32.const 42`）的真模块，断言 WAT
+  里点名该导出与该常量（空模块只能证明工具吐了个 `(module)`）。
+- 新增 `wasm.info`（`wasm-objdump -h -x`）实测 Gate：此前整条 `wasm.info` 无任何真机覆盖；现用同一真模块断言
+  段表（Type/Function/Export/Code）与具名导出 `gate_add` 都被解析回来，证明 objdump 真的走了一遍模块而非只打开它。
+  三条 Gate 各自在缺 webcrack / wasm2wat / wasm-objdump 时诚实 skip（skip != pass）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
