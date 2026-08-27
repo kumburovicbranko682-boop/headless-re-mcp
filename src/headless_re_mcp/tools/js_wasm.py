@@ -96,6 +96,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's functions with signatures, wabt-free.
+
+        The capstone of the wabt-free WASM readers: it joins the type, import
+        and function sections into one function-index table, so the indices
+        match those wasm.names, wasm.exports and wasm.imports report. Each row is
+        index (its position in the function index space), kind (import or local),
+        type_index (into the type section) and params / results, the value-type
+        names of its signature (i32, i64, f32, f64, v128, funcref, externref; an
+        exotic or GC type renders as hex). Imported functions come first, per the
+        WASM spec, and carry module and name (the import's module and field);
+        local functions carry name only when the "name" custom section supplies
+        one (imports are named by their import pair, not the name section).
+        imported_count marks the import/local boundary. A missing type section
+        leaves params and results empty (type_index is still reported) rather
+        than erroring, and a stripped module simply yields no local names.
+        Answers with functions, count, total, offset and has_more so a filled
+        page is not read as every function; total is capped at 50000 with
+        scan_capped when more may exist, and truncated is true when a section is
+        malformed or a value type is not understood (functions resolved so far
+        are still returned). A file that is not a WebAssembly module is refused
+        as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,

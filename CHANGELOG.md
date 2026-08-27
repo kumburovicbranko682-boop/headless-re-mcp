@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -589,6 +589,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   只提取 module（子段 0）与 function（子段 1）名表，local/label 名跳过。返回
   `count/total/offset/has_more`，`total` 上限 50000、越限置 `scan_capped`；`truncated` 在某子段声明的
   大小越过段尾或某长度畸形时为 true（已读到的名字照常返回）。非 WebAssembly 文件按 `invalid_params`
+  拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.functions`：node-free WASM 读取器的收官之作，把 type（1）、import（2）、function（3）三段
+  拼成一张按函数索引排列的表，索引与 `wasm.names`/`wasm.exports`/`wasm.imports` 对齐。每行是 `index`
+  （函数索引空间里的位置）、`kind`（import/local）、`type_index`（指向类型段）与 `params`/`results`
+  （签名的值类型名：i32/i64/f32/f64/v128/funcref/externref；GC 等异类型以十六进制呈现）。导入函数
+  按 WASM 规范排在前面并带 `module`/`name`（导入的模块与字段）；本地函数仅当 `name` 段提供时才带
+  `name`（导入的名字取自导入对，不看 `name` 段）。`imported_count` 标出 import/local 边界。缺 type 段
+  时 `params`/`results` 留空（仍报 `type_index`）而非报错，stripped 模块则本地函数无名。返回
+  `functions/count/total/offset/has_more`，`total` 上限 50000、越限置 `scan_capped`；`truncated` 在某段
+  畸形或值类型无法识别时为 true（已解析出的函数照常返回）。非 WebAssembly 文件按 `invalid_params`
   拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，

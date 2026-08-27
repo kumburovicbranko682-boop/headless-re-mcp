@@ -86,6 +86,27 @@ _WASM_NAME_SUBSEC_MODULE = 0
 _WASM_NAME_SUBSEC_FUNCTION = 1
 _MAX_WASM_NAMES_COLLECT = 50000
 _MAX_WASM_NAMES_PAGE = 1000
+# wasm.functions cross-references the type (1), import (2) and function (3)
+# sections into one function-index -> signature table, so the indices line up
+# with wasm.names and wasm.exports. It reads no init expressions, so it needs
+# none of the const-expression handling the data/global sections would.
+_WASM_TYPE_SECTION_ID = 1
+_WASM_FUNCTION_SECTION_ID = 3
+_WASM_FUNCTYPE_FORM = 0x60
+# value-type byte -> name (numeric types, v128, and the two MVP reference
+# types). An unknown byte (e.g. a GC ref-type prefix) renders as hex and the
+# surrounding parse degrades to truncated rather than inventing a signature.
+_WASM_VALTYPES = {
+    0x7F: "i32",
+    0x7E: "i64",
+    0x7D: "f32",
+    0x7C: "f64",
+    0x7B: "v128",
+    0x70: "funcref",
+    0x6F: "externref",
+}
+_MAX_WASM_FUNCTIONS_COLLECT = 50000
+_MAX_WASM_FUNCTIONS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -633,6 +654,227 @@ def parse_wasm_names(path: Path, *, offset: int = 0, limit: int = 100) -> JsonOb
         "total": len(func_rows),
         "offset": start,
         "has_more": start + len(window) < len(func_rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _byte_at(data: bytes, pos: int) -> int:
+    """Read one byte, raising the parser error (not IndexError) past the end."""
+    if pos >= len(data):
+        raise _WasmParseError("unexpected end of buffer")
+    return data[pos]
+
+
+def _valtype_name(byte: int) -> str:
+    """Name a value-type byte, falling back to its hex for unknown/GC types."""
+    return _WASM_VALTYPES.get(byte, f"0x{byte:02x}")
+
+
+def _collect_section_bodies(
+    raw: bytes, ids: frozenset[int]
+) -> tuple[dict[int, bytes], bool]:
+    """Capture the first body of each wanted section id; flag walk truncation."""
+    bodies: dict[int, bytes] = {}
+    truncated = False
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            end = pos + size
+            if end > total:
+                truncated = True
+                break
+            if sec_id in ids and sec_id not in bodies:
+                bodies[sec_id] = raw[pos:end]
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    return bodies, truncated
+
+
+def _parse_type_section(
+    body: bytes,
+) -> tuple[list[tuple[list[str], list[str]]], bool]:
+    """Parse vec(functype) into (params, results) pairs; flag truncation."""
+    sigs: list[tuple[list[str], list[str]]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            form = _byte_at(body, pos)
+            pos += 1
+            if form != _WASM_FUNCTYPE_FORM:
+                # A non-func (GC struct/array/rec) type: the rest cannot be
+                # lined up by index, so stop and report what parsed.
+                raise _WasmParseError("non-function type in type section")
+            nparams, pos = _read_uleb(body, pos)
+            params = []
+            for _ in range(nparams):
+                params.append(_valtype_name(_byte_at(body, pos)))
+                pos += 1
+            nresults, pos = _read_uleb(body, pos)
+            results = []
+            for _ in range(nresults):
+                results.append(_valtype_name(_byte_at(body, pos)))
+                pos += 1
+            sigs.append((params, results))
+    except _WasmParseError:
+        return sigs, True
+    return sigs, False
+
+
+def _parse_function_section(body: bytes) -> tuple[list[int], bool]:
+    """Parse vec(typeidx) for module-defined functions; flag truncation."""
+    typeidxs: list[int] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            tidx, pos = _read_uleb(body, pos)
+            typeidxs.append(tidx)
+    except _WasmParseError:
+        return typeidxs, True
+    return typeidxs, False
+
+
+def _parse_func_imports(body: bytes) -> tuple[list[tuple[str, str, int]], bool]:
+    """Parse the import section, keeping (module, field, typeidx) for func imports."""
+    out: list[tuple[str, str, int]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            module, pos = _read_wasm_name(body, pos)
+            field, pos = _read_wasm_name(body, pos)
+            kind = _byte_at(body, pos)
+            pos += 1
+            if kind == 0:  # func import: the descriptor is a typeidx
+                tidx, pos = _read_uleb(body, pos)
+                out.append((module, field, tidx))
+            else:
+                pos = _skip_import_desc(body, pos, kind)
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def parse_wasm_functions(
+    path: Path, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """List a WebAssembly module's functions with signatures, wabt-free.
+
+    The capstone of the wabt-free WASM readers: it joins the type (1), import
+    (2) and function (3) sections into one function-index table, so the indices
+    match those wasm.names, wasm.exports and wasm.imports report. Each row is
+    index (its position in the function index space), kind (import or local),
+    type_index (into the type section) and params / results, the value-type
+    names of its signature (i32, i64, f32, f64, v128, funcref, externref; an
+    exotic or GC type renders as hex). Imported functions come first, per the
+    WASM spec, and carry module and name (the import's module and field);
+    local functions carry name only when the "name" custom section supplies one
+    (imports are named by their import pair, not the name section). imported_
+    count marks the import/local boundary. A missing type section leaves params
+    and results empty (type_index is still reported) rather than erroring, and a
+    stripped module simply yields no local names. Returns functions, count,
+    total, offset and has_more so a filled page is not read as every function;
+    total is capped at 50000 with scan_capped when more may exist, and truncated
+    is true when a section is malformed or a value type is not understood (the
+    functions resolved so far are still returned). A file that is not a
+    WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    wanted = frozenset(
+        {_WASM_TYPE_SECTION_ID, _WASM_IMPORT_SECTION_ID, _WASM_FUNCTION_SECTION_ID}
+    )
+    bodies, truncated = _collect_section_bodies(raw, wanted)
+    sigs: list[tuple[list[str], list[str]]] = []
+    func_imports: list[tuple[str, str, int]] = []
+    local_typeidxs: list[int] = []
+    if _WASM_TYPE_SECTION_ID in bodies:
+        sigs, sig_trunc = _parse_type_section(bodies[_WASM_TYPE_SECTION_ID])
+        truncated = truncated or sig_trunc
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        truncated = truncated or imp_trunc
+    if _WASM_FUNCTION_SECTION_ID in bodies:
+        local_typeidxs, fn_trunc = _parse_function_section(
+            bodies[_WASM_FUNCTION_SECTION_ID]
+        )
+        truncated = truncated or fn_trunc
+    name_body, name_walk_trunc = _find_custom_section(raw, "name")
+    names: dict[int, str] = {}
+    if name_body is not None:
+        _, name_rows, _, name_trunc = _parse_name_section(name_body)
+        truncated = truncated or name_trunc or name_walk_trunc
+        names = {int(row["index"]): str(row["name"]) for row in name_rows}
+
+    def _signature(tidx: int) -> tuple[list[str], list[str]]:
+        if 0 <= tidx < len(sigs):
+            params, results = sigs[tidx]
+            return list(params), list(results)
+        return [], []
+
+    rows: list[JsonObject] = []
+    scan_more = False
+    imported_count = len(func_imports)
+    idx = 0
+    for module, field, tidx in func_imports:
+        if len(rows) >= _MAX_WASM_FUNCTIONS_COLLECT:
+            scan_more = True
+            break
+        params, results = _signature(tidx)
+        rows.append(
+            {
+                "index": idx,
+                "kind": "import",
+                "module": module,
+                "name": field,
+                "type_index": tidx,
+                "params": params,
+                "results": results,
+            }
+        )
+        idx += 1
+    if not scan_more:
+        for tidx in local_typeidxs:
+            if len(rows) >= _MAX_WASM_FUNCTIONS_COLLECT:
+                scan_more = True
+                break
+            params, results = _signature(tidx)
+            row: JsonObject = {
+                "index": idx,
+                "kind": "local",
+                "type_index": tidx,
+                "params": params,
+                "results": results,
+            }
+            local_name = names.get(idx)
+            if local_name is not None:
+                row["name"] = local_name
+            rows.append(row)
+            idx += 1
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_FUNCTIONS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "functions": window,
+        "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
         "scan_capped": scan_more,
         "truncated": truncated,
     }
