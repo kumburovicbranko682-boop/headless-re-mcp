@@ -93,6 +93,68 @@ def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     assert dumped["created_ms"] > 0
 
 
+def _clock_frozen_at(iso: str) -> type:
+    """A datetime whose ``now`` always returns ``iso`` -- stamps rows with a tie.
+
+    Subclasses the real datetime so arithmetic (``now + timedelta`` for a run's
+    deadline) and ``isoformat`` still work; only ``now`` is pinned.
+    """
+    from datetime import datetime as _dt
+
+    fixed = _dt.fromisoformat(iso)
+
+    class _Frozen(_dt):
+        @classmethod
+        def now(cls, tz: object = None) -> _dt:
+            return fixed
+
+    return _Frozen
+
+
+def test_thread_events_from_same_instant_runs_stay_grouped_not_interleaved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs sharing a created_at must not have their events interleaved.
+
+    seq numbers events per run (PRIMARY KEY(run_id, seq)), so ordering the
+    thread timeline by the run's created_at and seq alone collapses to seq order
+    the moment two runs share a created_at -- which a coarse clock does whenever
+    it stamps both in the same tick -- and returns run A's event 1, run B's
+    event 1, A's 2, B's 2. The run id (the tiebreaker the schema's
+    runs_thread_idx already carries) keeps each run's events contiguous.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    monkeypatch.setattr(store_module, "datetime", _clock_frozen_at("2026-01-01T00:00:00+00:00"))
+    store = AgentStore(tmp_path / "thread-event-ties.db")
+    thread = store.create_thread()
+    run_a = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    run_b = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+
+    # Interleave the appends: a per-seq ordering would interleave the output.
+    for step in range(1, 4):
+        store.append_event(run_a.id, "message.delta", {"n": step})
+        store.append_event(run_b.id, "message.delta", {"n": step})
+
+    listed = store.list_thread_events(thread.id)
+    run_order = [event.run_id for event in listed]
+
+    # Each run's events form one contiguous block: a run id opens at most one
+    # block, never flipping back and forth with the other run's events.
+    block_heads = [
+        run_id
+        for index, run_id in enumerate(run_order)
+        if index == 0 or run_id != run_order[index - 1]
+    ]
+    assert len(block_heads) == len(set(block_heads)), f"runs interleaved: {run_order}"
+    assert set(block_heads) == {run_a.id, run_b.id}
+
+    # And within each run the events stay in seq order.
+    for run_id in (run_a.id, run_b.id):
+        seqs = [event.seq for event in listed if event.run_id == run_id]
+        assert seqs == sorted(seqs)
+
+
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "agent.db")
     first_thread = store.create_thread()

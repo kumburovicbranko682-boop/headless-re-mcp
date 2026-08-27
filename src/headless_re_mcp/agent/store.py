@@ -563,6 +563,17 @@ class AgentStore:
         The web stats strip is session-scoped, not run-scoped. A finished run
         used to vanish from the UI because the client only kept the live SSE
         buffer and then wiped it on thread refresh.
+
+        run_id breaks ties on the run's created_at. seq numbers events per run
+        (PRIMARY KEY(run_id, seq)), so ordering two runs that share a created_at
+        by run_created and seq alone collapsed to seq order and interleaved their
+        events -- run A's event 1, run B's event 1, A's 2, B's 2 -- scrambling the
+        timeline. Two runs on one thread share a created_at whenever a coarse
+        clock stamps them in the same tick, which is why runs_thread_idx is
+        (thread_id, created_at, id): the run id is the tiebreaker the rest of the
+        store already uses, and it keeps each run's events contiguous and in seq
+        order. The window ranks by the same key so a truncated page drops whole
+        runs from the far end rather than a seq-interleaved slice of several.
         """
         bounded = max(1, min(limit, 8000))
         byte_limit = max(1024, int(self.event_page_max_bytes))
@@ -572,10 +583,10 @@ class AgentStore:
                 "  SELECT e.run_id, e.seq, e.type, e.data_json, e.created_at,"
                 "    r.created_at AS run_created,"
                 "    ROW_NUMBER() OVER ("
-                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "      ORDER BY r.created_at DESC, r.id DESC, e.seq DESC"
                 "    ) AS row_number,"
                 "    SUM(length(CAST(e.data_json AS BLOB))) OVER ("
-                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "      ORDER BY r.created_at DESC, r.id DESC, e.seq DESC"
                 "      ROWS UNBOUNDED PRECEDING"
                 "    ) AS bytes_so_far"
                 "  FROM run_events e"
@@ -583,7 +594,7 @@ class AgentStore:
                 "  WHERE r.thread_id=?"
                 ") WHERE row_number<=?"
                 "  AND (bytes_so_far<=? OR row_number=1)"
-                " ORDER BY run_created, seq",
+                " ORDER BY run_created, run_id, seq",
                 (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]

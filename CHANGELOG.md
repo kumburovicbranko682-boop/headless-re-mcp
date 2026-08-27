@@ -49,7 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（device.install/uninstall 把无法核实误报成明确成败）
+### 修复（同一时刻创建的两个 run 让线程事件时间线交错错乱）
+
+- `AgentStore.list_thread_events`（监控台工作台的会话级事件条所依赖）按 `run_created, seq`
+  排序，而 `seq` 是**每个 run 独立**从 1 编号的（`PRIMARY KEY(run_id, seq)`）。一旦同一线程上
+  的两个 run 共享 `created_at`——粗粒度时钟在同一 tick 内给两者盖同一时间戳时就会发生——
+  排序退化成纯按 `seq`，于是两个 run 的事件被交错成「A 的第 1 条、B 的第 1 条、A 的第 2 条、
+  B 的第 2 条……」，时间线彻底错乱。schema 自己的 `runs_thread_idx` 正是
+  `(thread_id, created_at, id)`——早就预期 run 的 `created_at` 会并列并用 `id` 兜底——但这个
+  查询漏了它。现在窗口排序与最终输出都补上 run id 作为第二键（`run_created, run_id, seq`），
+  让每个 run 的事件保持连续、按 seq 有序；分页截断时也整段丢弃最旧的 run，而不是切出几个 run
+  交错的碎片。新增回归测试：冻结时钟让两个 run 落在同一 `created_at`，交错写入事件后断言时间线
+  按 run 分组、组内按 seq 有序（修复前事件严格交错，断言失败）。
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
   三态——null 表示复核跑不起来。但 `_pm_path` 只找 `package:` 行，没做其余 adb 读取（getprop /
