@@ -62,6 +62,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 新增（web.network.get 返回响应头，补齐 CDP 线相对 proxy 线缺失的 header 视图）
+
+- CDP 的 `Network.responseReceived` 事件本就带着整份响应头，但 web 后端此前只从中取 `status` 与
+  `mimeType`，把响应头丢掉了——于是重定向的 `Location`、CSP、`Set-Cookie`、缓存与自定义鉴权头在 CDP 线
+  上无从获取，而 proxy 线的 `flow_get` 一直能给。现 `on_response` 把响应头按三重上限收进每条请求记录：
+  条数封顶 `_MAX_HEADER_ITEMS`(64)、单值封顶 `_MAX_HEADER_VALUE_BYTES`(1 KiB)、单条请求的头部总字节封顶
+  `_MAX_HEADERS_TOTAL_BYTES`(4 KiB)，任一触顶即置 `headers_truncated`——3000 条请求的环形缓冲不会因为
+  记录头部而变成隔夜 OOM（这正是 proxy 环当初加字节上限要防的东西）。`web.network.get` 现在多回
+  `response_headers`（及触顶时的 `headers_truncated`）；`web.network.list` 主动剥掉这两个字段，让一页
+  1000 条摘要保持精简——头部属于逐条的明细视图。未新增工具，工具面计数不变；请求在途、尚无响应时不带
+  `response_headers`。回归直接驱动 `_wire_events` 注册的 `Network.responseReceived` 处理器钉住捕获：
+  重定向 `Location`/`Set-Cookie` 落进记录，`network_get` 带出、`network_list` 剥除，`_bounded_headers`
+  的条数/单值/总字节三重上限各有单测。
+
 ### 修复（apk.sign 自定义 keystore 缺凭据在 apksigner 能力门之前就回 invalid_params）
 
 - `apk.sign` 暴露 `keystore`/`keystore_password`/`key_alias`：服务层把非空 `keystore` 串（过路径安全后）

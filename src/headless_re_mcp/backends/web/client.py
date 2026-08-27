@@ -39,6 +39,19 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Response headers carry the analysis-relevant facts CDP does not fold into
+# status/mimeType: redirect Location, CSP, Set-Cookie, cache and custom auth
+# headers. A server can send arbitrarily many, arbitrarily large, so each
+# captured request keeps a bounded copy -- header count, each value, and the
+# running total are all capped so 3000 retained requests cannot turn header
+# capture into the overnight OOM the ring's count cap was meant to prevent.
+# Only web.network.get returns them; the lean web.network.list omits them.
+_MAX_HEADER_ITEMS = 64
+_MAX_HEADER_VALUE_BYTES = 1024
+_MAX_HEADERS_TOTAL_BYTES = 4 * 1024
+# Kept in each captured request for the network_get detail view, stripped from
+# network_list summary rows so a page of 1000 stays small.
+_LIST_OMIT_FIELDS = frozenset({"response_headers", "headers_truncated"})
 # Cookies are read for analysis (auth/session tokens are the point), but a page
 # can set an arbitrary number of them and a single value can be large, so the
 # list is capped and each value is bounded like every other captured field.
@@ -118,6 +131,40 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_headers(raw: object) -> tuple[JsonObject, bool]:
+    """Copy a CDP header map under three ceilings: count, per-value, and total.
+
+    CDP delivers ``response.headers`` as a flat name->value map (repeated
+    headers are already newline-joined). A hostile or merely chatty server can
+    send many of them or a single enormous value, so the copy stops at
+    ``_MAX_HEADER_ITEMS`` names, clips each value to ``_MAX_HEADER_VALUE_BYTES``,
+    and halts once the running total reaches ``_MAX_HEADERS_TOTAL_BYTES`` --
+    whichever comes first. ``truncated`` is true when anything was dropped or
+    clipped so a caller never reads a partial header set as the whole one.
+    """
+    out: JsonObject = {}
+    if not isinstance(raw, dict):
+        return out, False
+    truncated = False
+    total = 0
+    for key, value in raw.items():
+        if len(out) >= _MAX_HEADER_ITEMS:
+            truncated = True
+            break
+        name, name_cut = _bounded_metadata(key, _MAX_METADATA_BYTES)
+        text, value_cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        total += len(name.encode("utf-8", errors="replace")) + len(
+            text.encode("utf-8", errors="replace")
+        )
+        if total > _MAX_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        out[name] = text
+        if name_cut or value_cut:
+            truncated = True
+    return out, truncated
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -476,11 +523,17 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            headers, headers_truncated = _bounded_headers(resp.get("headers"))
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
+                    # Detail-view only: network_get returns response_headers;
+                    # network_list strips it to keep a page of 1000 summaries lean.
+                    entry["response_headers"] = headers
+                    if headers_truncated:
+                        entry["headers_truncated"] = True
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
@@ -583,7 +636,13 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # Drop the per-request header map from the summary rows: it belongs to
+        # the network_get detail view, and a page of 1000 entries each carrying
+        # up to 4 KiB of headers would be megabytes of list nobody asked for.
+        window = [
+            {k: v for k, v in item.items() if k not in _LIST_OMIT_FIELDS}
+            for item in items[start : start + cap]
+        ]
         return {
             "requests": window,
             "count": len(window),
