@@ -395,8 +395,8 @@ def probe_ida(settings: Settings) -> Probe:
     details.update(
         {
             "probe_exit_code": completed.returncode,
-            "probe_stdout": completed.stdout.strip(),
-            "probe_stderr": completed.stderr.strip(),
+            "probe_stdout": _bounded_text(completed.stdout),
+            "probe_stderr": _bounded_text(completed.stderr),
         }
     )
     if completed.returncode == 0 and completed.stdout.rstrip().endswith("True"):
