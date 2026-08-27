@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（自动换端口的搜索走过 65535 时以未捕获的 OverflowError 崩掉整个 launcher）
+
+- `port_is_free` 只捕 `OSError`，但对超过 65535 的端口 `socket.bind` 抛的是 `OverflowError`
+  ——不是 `OSError`。`choose_bind_port` 的自动换端口回退循环按 `preferred+1, preferred+2, …`
+  逐个试绑且**无上界**，于是一个合法但被占用的 `--port 65535`（默认开启 auto-port）会让
+  搜索第一步就落到 65536，`port_is_free` 当场抛出未捕获的 `OverflowError`，把整个
+  `run_web` 掀翻（`supervise` 下则是子进程非零退出、被当成崩溃回退）。已实测复现：占住
+  65535 后 `choose_bind_port("127.0.0.1", 65535, span=5)` 直接抛 `OverflowError`。现
+  `port_is_free` 同时捕获 `OverflowError`（不可绑定的端口对这个判定就是「不空闲」），并把
+  回退搜索的上界收敛到 `min(preferred+span, 65535)`，越界端口既不再被试绑、也走干净的
+  `exhausted` 判词。新增回归钉住：`port_is_free(65536/70000)` 返回 `False`；占用的
+  `preferred=65535` 搜索只探 65535 本身、报 `exhausted` 且从不询问越界端口；封顶不会漏掉
+  有效区间内（如 65535）真正空闲的端口。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

@@ -30,6 +30,13 @@ def port_is_free(host: str, port: int) -> bool:
         return True
     except OSError:
         return False
+    except OverflowError:
+        # bind() raises OverflowError -- not OSError -- for a port outside
+        # 0..65535, so the auto-port search below (which walks preferred+1,
+        # preferred+2, ...) would otherwise crash the whole launcher the moment
+        # it stepped past 65535 rather than reporting the span exhausted. An
+        # unbindable port is, for this predicate, simply not free.
+        return False
 
 
 def choose_bind_port(
@@ -48,7 +55,12 @@ def choose_bind_port(
         return preferred, "preferred"
     if not auto:
         return preferred, "busy"
-    for port in range(preferred + 1, preferred + max(1, span) + 1):
+    # Stop the fallback walk at the last valid port. A high preferred (e.g. a
+    # busy 65535) would otherwise send the range past 65535, where every bind
+    # is unbindable anyway; capping keeps the walk to real candidates instead
+    # of leaning on port_is_free to swallow the out-of-range binds one by one.
+    last = min(preferred + max(1, span), 65535)
+    for port in range(preferred + 1, last + 1):
         if port_is_free(host, port):
             return port, "fallback"
     return preferred, "exhausted"
