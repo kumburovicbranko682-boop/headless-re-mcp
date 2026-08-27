@@ -6,6 +6,8 @@ This gate stands up a throwaway local HTTP origin (127.0.0.1, ephemeral port) so
 every DevTools surface can be checked against real traffic:
 
 * ``web.open``        -- navigation returns HTTP 200 and the served ``<title>``.
+* ``web.navigate``    -- a second same-origin page swaps the live DOM/title, and
+                         a 404 navigation surfaces its status instead of passing.
 * ``web.dom_snapshot``-- the live DOM carries a body marker, not just the title.
 * ``web.console``     -- an inline ``console.log`` is captured over CDP.
 * ``web.network``     -- the document *and* an external script are recorded with
@@ -57,6 +59,17 @@ _INDEX_HTML = (
     '<script src="/app.js"></script>'
     f"</head><body><div id=gate>{_DOM_MARKER}</div></body></html>"
 )
+
+# A distinct same-origin page for web.navigate, plus a path that 404s so the
+# 4xx-status-surfacing branch of the backend can be exercised for real.
+_PAGE2_TITLE = "gate-page-two"
+_PAGE2_MARKER = "GATE_PAGE2_MARKER_7f3a"
+_PAGE2_HTML = (
+    "<!doctype html><html><head><meta charset=utf-8>"
+    f"<title>{_PAGE2_TITLE}</title></head>"
+    f"<body><p id=two>{_PAGE2_MARKER}</p></body></html>"
+)
+_MISSING_HTML = "<!doctype html><html><body>not found</body></html>"
 
 
 # Canonical minimal add.wasm -- (func (param i32 i32) (result i32) -> a + b),
@@ -129,12 +142,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - required name
         if self.path == "/app.js":
-            body = _APP_JS.encode("utf-8")
-            ctype = "application/javascript; charset=utf-8"
+            status, body, ctype = 200, _APP_JS.encode("utf-8"), "application/javascript"
+        elif self.path == "/page2":
+            status, body, ctype = 200, _PAGE2_HTML.encode("utf-8"), "text/html; charset=utf-8"
+        elif self.path == "/missing":
+            status, body, ctype = 404, _MISSING_HTML.encode("utf-8"), "text/html; charset=utf-8"
         else:
-            body = _INDEX_HTML.encode("utf-8")
-            ctype = "text/html; charset=utf-8"
-        self.send_response(200)
+            status, body, ctype = 200, _INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8"
+        self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -334,6 +349,32 @@ def test_web_dynamic_enumerates_a_live_wasm_module(_service: AnalysisService) ->
         assert every.ok, every.error
         langs = {str(s.get("language", "")).lower() for s in every.data["scripts"]}
         assert "javascript" in langs, langs
+
+
+def test_web_dynamic_navigate_across_pages_and_surfaces_404(_service: AnalysisService) -> None:
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic CDP gate not run (skip != pass)")
+    with _origin() as url:
+        session_id = _open_on(_service, url)  # starts on "/"
+
+        # web.navigate swaps the live page: a new URL, title and 200 status.
+        nav = _service.web_navigate(session_id, url + "page2")
+        assert nav.ok, nav.error
+        assert nav.data.get("status") == 200, nav.data
+        assert _PAGE2_TITLE in nav.data["title"], nav.data
+        assert nav.data["url"].rstrip("/").endswith("/page2"), nav.data
+
+        # ...and the DOM really is the second page, not the first.
+        dom = _service.web_dom_snapshot(session_id)
+        assert dom.ok, dom.error
+        assert _PAGE2_MARKER in dom.data["html"], dom.data["html"][:400]
+        assert _DOM_MARKER not in dom.data["html"], "first page's DOM lingered after navigate"
+
+        # A 4xx main document resolves normally; its status must be surfaced so a
+        # navigation onto an error page cannot report the same success as a hit.
+        missing = _service.web_navigate(session_id, url + "missing")
+        assert missing.ok, missing.error
+        assert missing.data.get("status") == 404, missing.data
 
 
 def test_web_dynamic_screenshot_is_a_real_png(_service: AnalysisService) -> None:
