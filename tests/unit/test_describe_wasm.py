@@ -160,9 +160,10 @@ def test_web_session_over_a_local_wasm_carries_the_facts(tmp_path: Path) -> None
 
 
 def test_web_session_over_a_js_asset_has_no_wasm_facts(tmp_path: Path) -> None:
-    """A non-WASM web asset must not grow a spurious wasm metadata block."""
+    """A JS asset gets its own facts (describe_js), never a spurious wasm block."""
     path = tmp_path / "app.js"
     path.write_bytes(b"export const x = 1;\n")
     session = SessionRegistry().create(str(path))
     assert session.target is TargetKind.WEB
-    assert session.metadata == {}
+    assert "wasm" not in session.metadata
+    assert "js" in session.metadata

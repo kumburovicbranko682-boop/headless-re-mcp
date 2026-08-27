@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import zipfile
 from collections import deque
 from collections.abc import Iterable, Mapping
@@ -104,15 +105,16 @@ class SessionRegistry:
             # such as a downloaded .js/.wasm; only the latter has a binary.
             if not is_http_url(text) and candidate.is_file():
                 path = candidate.resolve()
-                # A local .wasm gets tool-free identity facts; describe_wasm
-                # returns {} for anything else (a .js/.html asset or a bad
-                # module), so this stays a no-op except for real modules.
+                # A local asset gets tool-free identity facts by kind: a .wasm
+                # its section facts, a .js its size/source-map facts.
+                # describe_web_asset returns {} for anything else (a .html page,
+                # a bad module), so this stays a no-op except for real assets.
                 session = Session(
                     target=kind,
                     binary=path,
                     locator=str(path),
                     sha256=file_sha256(path),
-                    metadata=describe_wasm(path),
+                    metadata=describe_web_asset(path),
                 )
             else:
                 session = Session(target=kind, locator=text)
@@ -944,6 +946,77 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "exports": exports,
             "imports": imports,
             "well_formed": well_formed and not truncated,
+            "truncated": truncated,
+        }
+    }
+
+
+_JS_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
+_JS_MAX_BYTES = 16 * 1024 * 1024
+# Tools take the *last* sourceMappingURL directive; it appears as ``//# `` (or
+# the legacy ``//@ ``) for scripts and ``/*# ... */`` for blocks, so key off the
+# ``#``/``@`` and stop the value at the first whitespace (URLs carry none).
+_JS_SOURCEMAP_RE = re.compile(rb"[#@]\s*sourceMappingURL=(\S+)")
+# An external map reference is short; cap it so a pathological line cannot make
+# the identity facts large, and never store an inline (data:) map's payload.
+_JS_SOURCEMAP_MAX = 2048
+
+
+def describe_web_asset(path: Path) -> dict[str, Any]:
+    """Tool-free identity facts for a local web asset, dispatched by kind.
+
+    A ``.wasm`` module gets its section facts; a ``.js``/``.mjs``/``.cjs`` script
+    gets its size and source-map facts. Anything else (a ``.html`` page, a
+    ``.har`` capture) has no tool-free reader yet and returns ``{}``.
+    """
+    suffix = path.suffix.lower()
+    if suffix in _JS_SUFFIXES:
+        return describe_js(path)
+    return describe_wasm(path)
+
+
+def describe_js(path: Path) -> dict[str, Any]:
+    """Cheap, stdlib-only JavaScript identity facts (no webcrack).
+
+    The JS line otherwise has no tool-free floor: every fact comes from webcrack
+    (deobfuscate / unpack), so a script on a machine without it yields nothing.
+    These are the facts a reverser reads first and that need no tool: the size,
+    the line shape (a single 400 KB line is the signature of a minified bundle),
+    and -- most usefully -- whether a ``sourceMappingURL`` points at the original
+    sources, inline or external.
+
+    Fail-closed and bounded: an unreadable file returns ``{}`` and only the first
+    16 MiB is scanned, so session creation never stalls or raises on a script.
+    """
+    if path.suffix.lower() not in _JS_SUFFIXES:
+        return {}
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            data = handle.read(_JS_MAX_BYTES)
+    except OSError:
+        return {}
+    truncated = size > _JS_MAX_BYTES
+    line_count = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    max_line_length = max((len(line) for line in data.split(b"\n")), default=0)
+    source_map: str | None = None
+    source_map_inline = False
+    last = None
+    for match in _JS_SOURCEMAP_RE.finditer(data):
+        last = match
+    if last is not None:
+        url = last.group(1).decode("utf-8", errors="replace")
+        if url.startswith("data:"):
+            source_map_inline = True
+        else:
+            source_map = url[:_JS_SOURCEMAP_MAX]
+    return {
+        "js": {
+            "size": size,
+            "line_count": line_count,
+            "max_line_length": max_line_length,
+            "source_map": source_map,
+            "source_map_inline": source_map_inline,
             "truncated": truncated,
         }
     }

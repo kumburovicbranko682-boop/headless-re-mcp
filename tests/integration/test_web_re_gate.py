@@ -201,3 +201,28 @@ def test_wasm_session_metadata_needs_no_wabt(tmp_path: Path) -> None:
         assert set(wasm["section_counts"]) == {"type", "function", "export", "code"}
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_js_session_metadata_needs_no_webcrack() -> None:
+    """The tool-free JS identity facts flow through session creation.
+
+    Like the wasm metadata gate, this needs no webcrack: create_session reads the
+    script's size, line shape and any source-map directive itself, so a bare
+    machine still gets a first read on the fixture.
+    """
+    if not _JS_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_JS_FIXTURE}")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(_JS_FIXTURE), target="web")
+        assert created.ok, created.error
+        session = created.data["session"]
+        assert session["target"] == "web"
+        js = session["metadata"]["js"]
+        assert js["size"] == _JS_FIXTURE.stat().st_size
+        assert js["line_count"] >= 1
+        assert js["max_line_length"] > 0
+        assert isinstance(js["source_map_inline"], bool)
+    finally:
+        service.close_all()
