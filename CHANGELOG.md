@@ -91,6 +91,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（静态分析产物落盘对 session_id 缺少路径穿越守卫）
+
+- `service_static` 把 patch 记录与超长文本预览落到 `artifacts/<session_id>/...` 时，直接用
+  `session_id` 拼路径，却没有像其它所有落盘服务（web/ui/proxy/apk 及 `_write_die_artifact`）
+  那样先用 `_is_safe_session_segment` 校验它是一个普通名字。若某会话的 id 是 `..`（可经被篡改
+  的会话库通过 `adopt()` 还原），patch 记录会解析到产物根目录之上、预览文本也会写到树外。现两处
+  都补上同一守卫：patch 记录路径非法时抛与 `_write_die_artifact` 一致的 `OSError`（调用方本就把
+  这里的写失败记为 `patch_record_failed`），预览落盘非法时保留可用预览并以 `spill_failed` 说明原因、
+  不再写到产物根之外。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
