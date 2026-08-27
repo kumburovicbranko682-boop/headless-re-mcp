@@ -44,7 +44,9 @@ def _r2_fixture(tmp_path: Path) -> Path:
         "#include <stdio.h>\n"
         "static int secret(int x){ return x * 3 + 1; }\n"
         "int helper(int a){ return secret(a) + a; }\n"
-        'int main(void){ printf("%d\\n", helper(7)); return 0; }\n',
+        # The literal is deliberately >= 4 chars so r2's izj string scan (which
+        # skips shorter runs by default) reports it for the listing gate.
+        'int main(void){ printf("r2 live result = %d\\n", helper(7)); return 0; }\n',
         encoding="utf-8",
     )
     binary = tmp_path / "r2fix.elf"
@@ -125,3 +127,55 @@ def test_m11_r2_live_xrefs_resolve_a_real_call(tmp_path: Path) -> None:
     assert call_edges, f"no CALL edge into helper@{helper_va:#x}: {xrefs['items']}"
     assert isinstance(call_edges[0].get("from_address"), dict)
     assert isinstance(call_edges[0]["from_address"].get("va"), int)
+
+
+@pytest.mark.integration
+def test_m11_r2_live_listing_commands_parse_on_this_r2(tmp_path: Path) -> None:
+    """strings/imports/exports/disasm must still return on the installed r2.
+
+    Unit tests mock r2's JSON, so they cannot catch a command a newer r2 stops
+    emitting a listing for -- exactly how the bare ``axj`` regression hid, where
+    the tool returned nothing on modern r2 yet every mocked unit test passed.
+    Only a live run guards that class of drift. Against the compiled ELF this
+    asserts each listing parses and carries its expected content: the "%d"
+    format string, the printf import, at least one export, and a disassembly at
+    a real function that maps to addresses. POSIX only -- it names the compiled
+    ELF's own symbols and strings, which the committed PE sample does not share.
+    """
+    if os.name == "nt":
+        pytest.skip("listing assertions target the compiled ELF fixture (skip != pass)")
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _r2_fixture(tmp_path)
+
+    strings = client.run(fixture, ["izj"], timeout=60.0)
+    assert strings.get("parsed") is True
+    assert any(
+        "result" in str(item.get("string", "")) for item in strings.get("items", [])
+    ), f"format string missing from izj: {strings.get('items')}"
+
+    imports = client.run(fixture, ["iij"], timeout=60.0)
+    assert imports.get("parsed") is True
+    import_names = {str(item.get("name", "")) for item in imports.get("items", [])}
+    assert any("printf" in name for name in import_names), f"printf not imported: {import_names}"
+
+    exports = client.run(fixture, ["iEj"], timeout=60.0)
+    assert exports.get("parsed") is True
+    assert exports.get("count", 0) >= 1
+
+    funcs = client.run(fixture, ["aa", "aflj"], timeout=60.0)
+    secret_va = next(
+        (
+            entry.get("address", {}).get("va")
+            for entry in funcs.get("items", [])
+            if isinstance(entry.get("address"), dict) and "secret" in str(entry.get("name", ""))
+        ),
+        None,
+    )
+    assert secret_va is not None, f"no secret function among {funcs.get('items')}"
+
+    disasm = client.disasm(fixture, secret_va, count=8, timeout=60.0)
+    assert disasm.get("parsed") is True
+    assert disasm.get("count", 0) >= 1
+    assert any(isinstance(item.get("address"), dict) for item in disasm.get("items", []))
