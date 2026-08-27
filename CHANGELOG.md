@@ -300,6 +300,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   解为负偏移而非补码位型。新增三条直测：短式与长式比较分支各自跨过位移、`ret` 落在
   正确 ip；向后分支解为负偏移；`leave`/`leave.s` 跨过其有符号目标。变异验证：抽掉这批
   行后三条即因错位失配。
+- 最后补齐单字节操作码表里所有「带操作数」的项，使线性扫描不再在任何已知操作码上错位：
+  过去只列了 `call`/`callvirt`/`ldstr`/`newobj`/`ldfld`/`stfld`/`box` 这几条带 4 字节
+  元数据 token 的指令，缺了几乎每个方法都会用到的 `castclass`/`isinst`（转型与 `is`/
+  `as`）、`ldsfld`/`ldsflda`/`stsfld`（静态字段）、`newarr`（`new T[]`）、`ldtoken`
+  （`typeof`）、`unbox`/`unbox.any`、`ldflda`/`ldobj`/`stobj`/`cpobj`/`ldelema`/
+  `ldelem`/`stelem`/`refanyval`/`mkrefany`/`jmp`/`calli`，以及宽数值加载 `ldc.i8`
+  （有符号 int64）、`ldc.r4`/`ldc.r8`。每条都落到未知操作码分支——只前进 1 字节，随后把
+  4（或 8）字节操作数当成后续指令，方法余下部分整体错位而 `partial` 仍为 false。现全部
+  补入：token 一律无符号；`ldc.i8` 并入有符号集（负的 long 字面量不再显示成巨大无符号
+  值，与 `ldc.i4` 同理）；浮点加载保留原始小端位型（本反汇编呈现控制流与 token，不渲染
+  浮点），但按正确宽度前进使其后指令对齐。新增四条直测：token 对象模型指令跨过 4 字节后
+  `ret` 落在正确 ip、高位置位的 token 仍解为无符号、`ldc.i8` 解为有符号且跨过 8 字节、
+  `ldc.r8` 占满 8 字节不错位；每个操作码值都对照 ECMA-335 单字节表核对。变异验证：抽掉
+  这批行后四条即失配。
 
 ### 修复（内存版仓库时间线无界增长）
 
