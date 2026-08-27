@@ -262,7 +262,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with entries (each: binary, ok, session_id, and error when that
         sample failed), plus count, succeeded, failed and max_workers. One
         unreadable sample cannot abort the batch; parallelism is capped because
-        each static backend is a process.
+        each static backend is a process. Blank/whitespace-only paths are
+        dropped before analysis, so submitted (the raw input length) and
+        skipped_blank say when count is smaller than what was passed rather
+        than leaving a dropped entry to read as a path that never ran.
         """
         return _dump(
             analysis.batch_analyze(

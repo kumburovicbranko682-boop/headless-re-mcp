@@ -858,11 +858,13 @@ class ExtAnalysisMixin(UiDriveMixin):
         real analyser process, not a coroutine.
         """
         try:
+            submitted = len(binaries)
             paths = [str(item).strip() for item in binaries if str(item).strip()]
             if not paths:
                 raise ValueError("binaries must contain at least one path")
             if len(paths) > 32:
                 raise ValueError("binaries must contain at most 32 paths")
+            skipped_blank = submitted - len(paths)
             if (
                 isinstance(max_workers, bool)
                 or type(max_workers) is not int
@@ -903,6 +905,15 @@ class ExtAnalysisMixin(UiDriveMixin):
                     "count": len(entries),
                     "succeeded": succeeded,
                     "failed": len(entries) - succeeded,
+                    # binaries can arrive with blank/whitespace-only entries (a
+                    # templated or agent-assembled list). Those are dropped
+                    # before analysis, so count came back smaller than the caller
+                    # submitted with nothing to say why -- a dropped blank read
+                    # the same as a real path that silently never got analysed.
+                    # submitted is the raw input length and skipped_blank names
+                    # the gap, so count == submitted - skipped_blank always holds.
+                    "submitted": submitted,
+                    "skipped_blank": skipped_blank,
                     "max_workers": max_workers,
                 }
             )
