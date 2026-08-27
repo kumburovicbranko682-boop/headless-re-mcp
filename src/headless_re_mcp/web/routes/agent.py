@@ -489,8 +489,19 @@ def register_agent_routes(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid_status") from exc
         items = [item.dump() for item in store.list_missions(status=wanted, limit=limit)]
+        # The list is a newest-first page capped at 500; a busy queue holds
+        # more. Report the true total and whether this page is only part of it,
+        # so an operator is not shown a capped queue that reads as the whole.
+        total = store.count_missions(status=wanted)
         return JSONResponse(
-            {"ok": True, "missions": items, "count": len(items), "scheduler_running": scheduler.running}
+            {
+                "ok": True,
+                "missions": items,
+                "count": len(items),
+                "total": total,
+                "truncated": total > len(items),
+                "scheduler_running": scheduler.running,
+            }
         )
 
     @app.get("/api/agent/missions/{mission_id}")
