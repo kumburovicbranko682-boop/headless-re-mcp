@@ -6,7 +6,9 @@ import time
 from collections.abc import Iterator
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
+import headless_re_mcp.supervisor as supervisor
 from headless_re_mcp.supervisor import probe_ready
 
 
@@ -70,7 +72,47 @@ def test_probe_ready_returns_within_timeout_when_headers_trickle() -> None:
     assert ok is False
     assert detail.startswith("unreachable:")
     assert elapsed < 1.5, f"readiness probe ran {elapsed:.3f}s against a 0.5s timeout"
-    thread.join(timeout=2.0)
+    thread.join(timeout=5.0)
+    # The outer deadline intentionally returned while urlopen was still
+    # receiving. Wait for that deliberately slow probe to unwind and hand back
+    # its slot so it does not read as still-running in the next test.
+    assert not thread.is_alive()
+    assert supervisor._ready_probe_slots.acquire(timeout=1.0)
+    supervisor._ready_probe_slots.release()
+
+
+def test_repeated_probe_timeouts_do_not_leak_more_probe_threads(
+    monkeypatch: Any,
+) -> None:
+    """A permanently stuck socket used to add one daemon per health check.
+
+    Measured across two 20ms probes: both returned on deadline, but two
+    ``ready-probe`` threads remained blocked in the same fake ``urlopen``.
+    """
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(supervisor, "_ready_probe_slots", slots, raising=False)
+    release = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def stuck(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        nonlocal started
+        with started_lock:
+            started += 1
+        release.wait()
+        raise TimeoutError
+
+    monkeypatch.setattr(supervisor.urllib.request, "urlopen", stuck)
+    try:
+        first = probe_ready("http://127.0.0.1:1/readyz", timeout=0.02)
+        second = probe_ready("http://127.0.0.1:1/readyz", timeout=0.02)
+
+        assert first == (False, "unreachable: TimeoutError")
+        assert second == (False, "unreachable: ProbeAlreadyRunning")
+        assert started == 1
+    finally:
+        release.set()
 
 
 def test_probe_ready_still_reports_a_live_child() -> None:
