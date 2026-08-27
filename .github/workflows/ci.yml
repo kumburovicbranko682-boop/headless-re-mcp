@@ -176,7 +176,9 @@ jobs:
       - name: Install portable non-PE backends
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wabt
+          # wabt for the WASM gate; radare2 is the portable static backend the
+          # ELF gate drives (gcc for its fixture ships on the runner already).
+          sudo apt-get install -y --no-install-recommends wabt radare2
           npm install -g webcrack
           python -m pip install -U pip
           python -m pip install -e ".[test,dev,web,android,browser,proxy,pe]"
@@ -188,6 +190,7 @@ jobs:
         run: |
           webcrack --version
           wasm2wat --version
+          r2 -v
           python -c "import mitmproxy, androguard, playwright; print('proxy/apk/browser extras present')"
 
       - name: Non-PE portable integration gates
@@ -200,7 +203,8 @@ jobs:
             tests/integration/test_proxy_lifecycle_gate.py \
             tests/integration/test_web_re_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
-            tests/integration/test_android_re_gate.py
+            tests/integration/test_android_re_gate.py \
+            tests/integration/test_r2_linux_elf_gate.py
 
   webui:
     runs-on: windows-latest

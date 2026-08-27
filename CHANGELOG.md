@@ -52,13 +52,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 ### 新增（Linux 非 PE 可移植后端集成 CI）
 
 - `ci.yml` 新增 `linux-nonpe-integration` job：在免费的 `ubuntu-latest` 上用 pip/npm/apt 装齐
-  mitmproxy、Playwright 自带 Chromium、androguard、webcrack（Node）与 wabt，然后真正跑
+  mitmproxy、Playwright 自带 Chromium、androguard、webcrack（Node）、wabt 与 radare2，然后真正跑
   `test_proxy_lifecycle_gate` / `test_web_re_gate` / `test_web_lifecycle_gate` /
-  `test_android_re_gate`（`-rs` 让每个 skip 都写明原因）。这些 gate 不依赖任何专有后端，正符合
-  每提交质量门「无需专有后端」的定位，于是不再只能在装好工具的机器上手动执行——Web、抓包、Android
-  三条线的「skip ≠ pass」在 CI 里第一次成为可强制的现实。此前 mitmproxy 12 抓包端口在 stop 后仍被
-  占用的回归，正是只有当 gate 对着真实 mitmproxy 跑起来才暴露；这个 lane 就是让此类回归今后能被
-  自动拦下的机制。Windows 真机 gate 仍留在 `windows-integration.yml` 的自建 runner 上。
+  `test_android_re_gate` / `test_r2_linux_elf_gate`（`-rs` 让每个 skip 都写明原因）。这些 gate
+  不依赖任何专有后端，正符合每提交质量门「无需专有后端」的定位，于是不再只能在装好工具的机器上手动
+  执行——Web、抓包、Android、可移植 radare2 四条线的「skip ≠ pass」在 CI 里第一次成为可强制的现实。
+  此前 mitmproxy 12 抓包端口在 stop 后仍被占用的回归，正是只有当 gate 对着真实 mitmproxy 跑起来才
+  暴露；这个 lane 就是让此类回归今后能被自动拦下的机制。Windows 真机 gate 仍留在
+  `windows-integration.yml` 的自建 runner 上。
+- 新增 `tests/integration/test_r2_linux_elf_gate.py`：`test_m11_r2_live_gate` 只开 Windows PE
+  夹具 `headless_fixture.exe`，在 Linux 上只能 skip，于是 radare2 作为**可移植**静态后端在它真正
+  服役的平台上没有任何实测覆盖。新 gate 用 cc/gcc/clang 现编一个带具名函数的小 ELF，走同一条一次性
+  r2 路径（`r2.open` / `r2.run(aa, aflj)` / `r2.disasm`），断言函数分析确实认出源码里的
+  `main` / `helper_compute`（不是只读了 ELF 头）、地址是静态 `va`、反汇编在真实函数地址返回指令；
+  缺 r2 或缺编译器时如实 skip。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
