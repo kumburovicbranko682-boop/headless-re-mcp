@@ -60,6 +60,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（dotnet.deobfuscate / dotnet.reactor.unpack 的 timeout 上限比服务实际放行的高一倍）
+
+- `dotnet.deobfuscate`（de4dot）与 `dotnet.reactor.unpack`（NETReactorSlayer）两条工具的
+  `timeout` 在服务侧都走 `_detection_timeout`，它对超过 `MAX_WORKFLOW_TIMEOUT`（300s）的值
+  直接抛 `timeout must be greater than 0 and at most 300 seconds`。可它们的 schema 此前却
+  声明 `le=600`——于是一个 `timeout=400` 在 MCP 参数校验这关是合法的，进到服务才被拒，报的
+  还是一个调用方从未被告知的上限。这正是外部脱壳 CLI（`unpack.xvlkc`/`vmp`/`scylla`，同走
+  `_detection_timeout`）此前对齐过的那类「schema 承诺 600、服务只放 300」的契约漂移，只是
+  这两条 dotnet 工具漏掉了。现把两处 schema 上限从 `le=600` 收到 `le=300`，与服务实际执行的
+  上限一致；默认值 120 不变，任何 ≤300 的取值行为完全照旧，301–600 本就会被拒，只是现在在
+  schema 边界就如实拒绝、给出正确的上限。新增回归钉住两条工具的 schema `maximum` 等于
+  `MAX_WORKFLOW_TIMEOUT`，并钉住 `_detection_timeout` 恰在 300 放行、越过即拒。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
