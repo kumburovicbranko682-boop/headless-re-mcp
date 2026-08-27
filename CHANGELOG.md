@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（会话线程视图披露只返回了最近窗口,而非把尾部当成整段对话）
+
+- `GET /api/agent/threads/{thread_id}` 把 `messages` 和 `events` 作为裸列表返回:
+  `list_messages` 只取最近 500 条(且受字节预算约束),`list_thread_events` 只取最近 4000 条,
+  而每个线程最多可保留 2000 条消息、每次运行 5000 个事件。于是一个长期运行的任务线程返回的是尾
+  部,最早的若干轮被丢掉却毫无提示——读者(或前端)无法区分「整段短对话」和「长对话的尾巴」,正是
+  报告分节此前修掉的同一种误读。`AgentStore` 新增 `count_messages` / `count_thread_events`
+  两个计数方法(各自一条 `COUNT(*)`,事件按线程的 run 联表统计),线程视图据此新增
+  `messages_total` / `messages_truncated` 与 `events_total` / `events_truncated` 四个字段:
+  `total` 是线程当前保留的真实条数,`truncated` 即 `total > 已返回条数`(既覆盖条数窗口也覆盖
+  字节预算的截断)。`messages` / `events` 列表本身不变,纯增量。新增测试:长线程(620 条)如实报
+  `count==620` 且大于 500 的窗口;短线程 `count==5` 等于窗口;事件计数按线程隔离、不跨线程串
+  数;路由层短线程 `*_truncated` 为 `False` 且 `total==len`,把读窗口字节预算压到下限后写 5 条
+  大消息则如实报 `messages_truncated==True`、`messages_total==5` 且窗口仍保留最新一条。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
