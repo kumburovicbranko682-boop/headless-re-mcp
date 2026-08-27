@@ -469,9 +469,14 @@ def _capture_process(
                 _terminate_process(process)
                 returncode = process.poll()
         stop_monitor.set()
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
-        monitor_thread.join(timeout=1.0)
+        # A single shared budget keeps cleanup bounded: joining each of the
+        # three threads for a full second would let a grandchild that inherited
+        # (and still holds open) a pipe extend the caller's deadline by seconds,
+        # one thread at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        monitor_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().
