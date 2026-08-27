@@ -203,6 +203,27 @@ def _manifest_flag(apk: Any, attribute: str) -> bool | None:
     return None
 
 
+def _manifest_attr(apk: Any, attribute: str, *, limit: int = 512) -> str | None:
+    """Read a string-valued ``<application>`` manifest attribute, or ``None``.
+
+    Unlike :func:`_manifest_flag`, this keeps the declared string rather than
+    coercing to bool -- for attributes like ``networkSecurityConfig`` whose value
+    is a resource reference ("@xml/network_security_config"), not a truth value.
+    Its mere presence is the signal a review wants: a Network Security Config can
+    re-permit cleartext or pin/trust user CAs, so knowing one governs the app (and
+    which resource) qualifies the ``uses_cleartext_traffic`` reading. ``None`` for
+    "not declared", degrading the same way on a missing/raising accessor; bounded
+    to ``limit`` so a hostile value cannot bloat the reply.
+    """
+    try:
+        raw = apk.get_attribute_value("application", attribute)
+    except Exception:  # noqa: BLE001 - manifest access varies by version
+        return None
+    if raw is None:
+        return None
+    return str(raw)[:limit]
+
+
 def _resolve_component_name(package: str, name: str) -> str:
     """Fully-qualify a manifest ``android:name`` the way Android resolves it.
 
@@ -506,6 +527,8 @@ class ApkClient:
             "truncated": encoded_cut or len(xml) > _MAX_MANIFEST_CHARS,
             "debuggable": _manifest_flag(apk, "debuggable"),
             "allow_backup": _manifest_flag(apk, "allowBackup"),
+            "uses_cleartext_traffic": _manifest_flag(apk, "usesCleartextTraffic"),
+            "network_security_config": _manifest_attr(apk, "networkSecurityConfig"),
         }
 
     def permissions(self, path: Path) -> JsonObject:

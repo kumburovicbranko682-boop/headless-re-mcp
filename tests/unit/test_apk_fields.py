@@ -169,11 +169,22 @@ def test_apk_manifest_maps_application_security_flags(
     monkeypatch.setattr(
         ApkClient,
         "_apk",
-        lambda self, path: _FlagApk({"debuggable": "true", "allowBackup": "false"}),
+        lambda self, path: _FlagApk(
+            {
+                "debuggable": "true",
+                "allowBackup": "false",
+                "usesCleartextTraffic": "true",
+                "networkSecurityConfig": "@xml/network_security_config",
+            }
+        ),
     )
     payload = client.manifest(tmp_path / "app.apk")
     assert payload["debuggable"] is True
     assert payload["allow_backup"] is False
+    # Cleartext HTTP explicitly permitted, and a Network Security Config governs
+    # the app: both are first-class fields, the config reported as its reference.
+    assert payload["uses_cleartext_traffic"] is True
+    assert payload["network_security_config"] == "@xml/network_security_config"
 
 
 def test_apk_manifest_undeclared_flags_are_null_not_false(
@@ -190,6 +201,12 @@ def test_apk_manifest_undeclared_flags_are_null_not_false(
     payload = client.manifest(tmp_path / "app.apk")
     assert payload["debuggable"] is None
     assert payload["allow_backup"] is None
+    # An undeclared cleartext flag is null too (not False): unset still defaults
+    # to allowing plaintext HTTP below target API 28, so null keeps "never
+    # pinned" distinct. A manifest with no <application> networkSecurityConfig
+    # reports null rather than an empty string.
+    assert payload["uses_cleartext_traffic"] is None
+    assert payload["network_security_config"] is None
 
 
 class _FakeClass:

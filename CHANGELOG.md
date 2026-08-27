@@ -1270,6 +1270,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不超 262144、`_normalize_cookie` 默认值与 expires 归一化、以及描述点名 http_only/secure/same_site。实机 gate(`test_web_re_gate.py`)让 origin 在首页下发一个
   `HttpOnly` cookie,经真实 chromium 用 `web.cookies` 读回其值与 `http_only=true`——CDP 能拿到 HttpOnly cookie 正是 `document.cookie` 永远做不到的,以此证明走的是 CDP 而非页面脚本捷径。
 
+- **`apk.manifest` 报了 debuggable/allowBackup,却漏了同样属于最靠前一档的明文流量姿态——`usesCleartextTraffic` 与 `networkSecurityConfig`。** 允许明文 HTTP 是
+  Android 安全审查的常见高危项,而 Network Security Config 又能重新放开明文或改动 CA 信任,二者一起才说得清网络传输面。补上两个字段:`uses_cleartext_traffic` 用既有
+  `_manifest_flag` 读成布尔(未声明为 null——不是 False:目标 API 28 以下未声明默认允许明文,谎报 False 会读成从未有过的显式禁止);`network_security_config` 用新增
+  `_manifest_attr` 保留声明的资源引用字符串(如 `@xml/network_security_config`,未声明为 null),其存在本身即信号——说明明文/信任由该配置治理,从而修饰 cleartext 的解读。
+  与既有安全标志共用同一「null≠False」的诚实退化:方法缺失/访问抛错/未解析清单都退化为 null 而非崩掉或伪造。`_manifest_attr` 对取值封 512 字符上限,防敌意值撑大回复。
+  工具描述补齐三项 `<application>` 安全标志加 `network_security_config` 的语义与各自默认值。单测(`test_apk_fields.py`)在既有两条清单标志用例上扩断言:显式 cleartext=true+NSC
+  引用取回、未声明时两者皆 null。实机 gate(`test_m11_android_apk_live_gate.py`)对真实夹具断言两者皆 null——夹具既未声明 usesCleartextTraffic 也无 NSC,证明走的是真实
+  `get_attribute_value`(缺失返回 None)而非 mock。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

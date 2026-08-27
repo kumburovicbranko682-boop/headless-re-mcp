@@ -108,6 +108,12 @@ def test_m11_androguard_apk_surface() -> None:
     # and pinning that None (never False) is what the field promises.
     assert manifest["debuggable"] is None, manifest
     assert manifest["allow_backup"] is None, manifest
+    # Same for the network-posture fields: the fixture declares no
+    # usesCleartextTraffic and ships no Network Security Config, so both read as
+    # None off the real manifest -- proving the get_attribute_value path returns
+    # None for an absent attribute rather than a fabricated False/empty string.
+    assert manifest["uses_cleartext_traffic"] is None, manifest
+    assert manifest["network_security_config"] is None, manifest
 
     components = client.components(_APK)
     assert "com.example.gate.MainActivity" in components["activities"], components
