@@ -74,6 +74,25 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.endpoints")
+    def proxy_endpoints(session_id: str) -> dict[str, Any]:
+        """Roll captured flows into a deduplicated per-host endpoint map.
+
+        Where proxy.flows is one row per request, this is the API surface: the
+        distinct (host, method, path) tuples, how often each was hit, and which
+        response statuses it produced. The query string is stripped (use
+        proxy.queries for parameters), so /v1/user?id=1 and ?id=2 collapse to
+        one endpoint. Answers with endpoints (each carrying host, method, path,
+        count, statuses, truncated, and errors when any flow failed),
+        endpoint_count, host_count, flows_scanned, and has_more. endpoints is
+        sorted by host then path then method and capped at 512; count is total
+        hits, not distinct URLs; statuses lists distinct numeric statuses seen.
+        truncated marks a clipped path or an over-cap status list, and has_more
+        is true when more than 512 distinct endpoints were seen. There is no
+        flows or urls field.
+        """
+        return _dump(analysis.proxy_endpoints(session_id))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).

@@ -46,6 +46,12 @@ _MAX_INLINE_BODY = 200_000
 _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
+# proxy.endpoints rolls the flow ring into a per-host (method, path) map. Bound
+# the endpoint count, the status list kept per endpoint, and the path length so
+# a chatty or hostile capture cannot turn the map into an unbounded response.
+_MAX_ENDPOINTS = 512
+_MAX_ENDPOINT_STATUSES = 16
+_MAX_ENDPOINT_PATH_BYTES = 1024
 _OMITTED_BODY = object()
 
 
@@ -642,6 +648,83 @@ class ProxyBackend:
             "offset": start,
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
+        }
+
+    def endpoints(self, session_id: str) -> JsonObject:
+        """Roll captured flows into a deduplicated per-host endpoint map.
+
+        proxy.flows lists one request per row, so the same endpoint hit a
+        hundred times is a hundred rows; the reverse-engineering deliverable is
+        the API surface -- the distinct (host, method, path) tuples, how often
+        each was hit, and which response statuses (and errors) it produced. The
+        query string is deliberately stripped here (that is what proxy.queries
+        is for) so /v1/user?id=1 and /v1/user?id=2 collapse to one endpoint.
+        Bounded: at most 512 endpoints, a capped status list each, and the path
+        clipped, with per-row truncated flags and has_more so a bounded map is
+        never read as the whole surface.
+        """
+        from urllib.parse import urlsplit
+
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        agg: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
+        hosts: set[str] = set()
+        for entry in items:
+            url = entry.get("url") or ""
+            try:
+                split = urlsplit(url)
+            except Exception:  # noqa: BLE001 - a malformed URL still has a method
+                split = None
+            host = entry.get("host") or (split.hostname if split else "") or ""
+            path = (split.path if split else "") or "/"
+            path, path_cut = _bounded_metadata(path, _MAX_ENDPOINT_PATH_BYTES)
+            method = entry.get("method") or ""
+            status = entry.get("status")
+            errored = bool(entry.get("error"))
+            if host:
+                hosts.add(host)
+            key = (host, method, path)
+            rec = agg.get(key)
+            if rec is None:
+                rec = {
+                    "count": 0,
+                    "statuses": [],
+                    "status_set": set(),
+                    "errors": 0,
+                    "truncated": path_cut,
+                }
+                agg[key] = rec
+            rec["count"] += 1
+            if path_cut:
+                rec["truncated"] = True
+            if errored:
+                rec["errors"] += 1
+            if isinstance(status, int) and status not in rec["status_set"]:
+                if len(rec["statuses"]) < _MAX_ENDPOINT_STATUSES:
+                    rec["status_set"].add(status)
+                    rec["statuses"].append(status)
+                else:
+                    rec["truncated"] = True
+        ordered = sorted(agg.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1]))
+        endpoints: list[JsonObject] = []
+        for (host, method, path), rec in ordered[:_MAX_ENDPOINTS]:
+            endpoint: JsonObject = {
+                "host": host,
+                "method": method,
+                "path": path,
+                "count": rec["count"],
+                "statuses": sorted(rec["statuses"]),
+                "truncated": rec["truncated"],
+            }
+            if rec["errors"]:
+                endpoint["errors"] = rec["errors"]
+            endpoints.append(endpoint)
+        return {
+            "endpoints": endpoints,
+            "endpoint_count": len(agg),
+            "host_count": len(hosts),
+            "flows_scanned": len(items),
+            "has_more": len(agg) > _MAX_ENDPOINTS,
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
