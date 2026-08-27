@@ -149,6 +149,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Frida 探针 detach 失败被吞成成功,泄漏的会话无人知晓）
+
+- `frida.probe`(本地 probe attach)、`modules`、`exports`、`memory.read` 这几个读探针过去在
+  `finally` 里 `contextlib.suppress(Exception)` 地 `session.detach()`:读成功后无论 detach 成不成都回
+  `attached=true` / 模块表 / 导出表 / 内存字节。可 detach 失败意味着**会话仍驻留在目标进程里、其枚举脚本
+  还挂着**——调用方拿着"成功"继续走,却留下一个持续加载脚本的泄漏会话,长程动态分析里越攒越多。
+- 现在把读探针的清理改为:读一旦成功就显式 `session.detach()`,失败则抛 `frida_detach_failed`
+  (带 `pid` 与失败类型),而非把 payload 原样回去掩盖泄漏;`frida.probe` 同理。读取过程中若中途异常
+  (`except BaseException`)仍尽力 detach 后重抛原异常。新增回归覆盖四个探针 detach 成功/失败两路。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
