@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`apk.components` 只列组件名，不标注哪些是导出的（对外攻击面）**。一个 `android:exported="true"`（或属性缺省时按平台
+  隐式规则：activity/service/receiver 含 `<intent-filter>`、provider 目标 SDK < 17）且没有 `android:permission` 保护的
+  组件，可被任意已安装应用直接拉起，是 Android 恶意样本/安全分析的首要信号。新增 `_exported_components` 直接解析清单 XML 树
+  （`get_android_manifest_xml`），据此给出 `exported` 列表（每项 `{type, name, permission}`，无保护时 permission 为 null）
+  与 `exported_count`；这是在原四类名单之外的**新增**字段，不改动既有形状，清单无法解析时退化为空列表而非报错。
 - **`web.console` 普通条目不带来源位置，无法定位日志出处**。抛出的异常早已附带抛出点 `url`/`line`，但 `console.*` 条目
   只有 `type`/`text`，而 CDP 的 `consoleAPICalled` 事件本就带 `stackTrace`——其栈顶帧正是 `console.*` 的调用点。新增
   `_console_call_site` 从栈顶帧还原 `url`/`line`（0 基，与 `Debugger.scriptParsed` 一致）并附到每条 console 记录上，

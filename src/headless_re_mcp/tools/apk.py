@@ -80,7 +80,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        read as every component. There is no components field. Also answers
+        with exported and exported_count: the components other apps can reach
+        (android:exported=true, or the platform's implicit rule when the
+        attribute is absent -- an intent-filter for activity/service/receiver,
+        target SDK < 17 for a provider), each as {type, name, permission} with
+        permission null when nothing guards it. An exported, unguarded
+        component is directly invokable by any installed app.
         """
         return _dump(analysis.apk_components(session_id))
 

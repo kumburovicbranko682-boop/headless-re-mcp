@@ -34,6 +34,10 @@ _MAX_XREFS_COLLECT = 5000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
+# The manifest attribute namespace, and the tags that declare a component whose
+# export state defines the app's cross-app attack surface.
+_ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+_COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
 # Page ceilings mirror the MCP input-schema Field(le=...) bounds. They are
@@ -535,14 +539,83 @@ class ApkClient:
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
         providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        exported, e_more = self._exported_components(apk)
         return {
             "activities": activities,
             "services": services,
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
-            "has_more": a_more or s_more or r_more or p_more,
+            # The components other apps can reach -- the app's external attack
+            # surface -- with the permission that guards each (null when
+            # unguarded). Additive to the name lists above, not a replacement.
+            "exported": exported,
+            "exported_count": len(exported),
+            "has_more": a_more or s_more or r_more or p_more or e_more,
         }
+
+    def _exported_components(self, apk: Any) -> tuple[list[JsonObject], bool]:
+        """Components reachable from other apps -- the app's external attack surface.
+
+        A component is exported when ``android:exported="true"``, or -- when the
+        attribute is absent -- by the platform's implicit rule: an activity,
+        activity-alias, service or receiver with at least one ``<intent-filter>``
+        is exported, and a provider is exported only when the target SDK predates
+        API 17 (where providers still defaulted to exported). An exported
+        component with no ``android:permission`` guard is directly invokable by
+        any installed app, so each entry carries its permission (null when
+        unguarded). Read straight from the manifest tree so the flag is
+        authoritative rather than inferred from a name list, and degrades to an
+        empty list if the manifest cannot be parsed rather than failing the call.
+        """
+        getter = getattr(apk, "get_android_manifest_xml", None)
+        if not callable(getter):
+            return [], False
+        try:
+            root = getter()
+        except Exception:  # noqa: BLE001
+            return [], False
+        if root is None:
+            return [], False
+        try:
+            target = int(apk.get_target_sdk_version() or 0)
+        except (TypeError, ValueError):
+            target = 0
+        out: list[JsonObject] = []
+        has_more = False
+        for element in root.iter():
+            tag = getattr(element, "tag", None)
+            if not isinstance(tag, str) or tag not in _COMPONENT_TAGS:
+                continue
+            exported_attr = element.get(_ANDROID_NS + "exported")
+            if exported_attr is not None:
+                exported = str(exported_attr).strip().lower() == "true"
+            elif tag == "provider":
+                # Providers defaulted to exported only before API 17; unknown
+                # target (0) stays conservative rather than raising a false alarm.
+                exported = 0 < target < 17
+            else:
+                exported = any(
+                    isinstance(getattr(child, "tag", None), str)
+                    and child.tag == "intent-filter"
+                    for child in element
+                )
+            if not exported:
+                continue
+            if len(out) >= _MAX_COMPONENT_NAMES:
+                has_more = True
+                break
+            name = element.get(_ANDROID_NS + "name")
+            permission = element.get(_ANDROID_NS + "permission")
+            out.append(
+                {
+                    "type": tag,
+                    "name": str(name) if name is not None else "",
+                    "permission": None if permission is None else str(permission),
+                }
+            )
+        out.sort(key=lambda c: (str(c["type"]), str(c["name"])))
+        return out, has_more
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
