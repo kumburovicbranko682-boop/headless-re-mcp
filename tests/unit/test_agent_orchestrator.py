@@ -153,6 +153,38 @@ async def test_dangerous_call_requires_bound_single_approval(tmp_path: Path) -> 
     assert observed == ["s"]
 
 
+@pytest.mark.asyncio
+async def test_decide_separates_a_missing_run_from_a_terminal_one(tmp_path: Path) -> None:
+    """approve/reject on a gone run is not-found; on a stopped run it is a conflict.
+
+    Both cases used to raise one ValueError("run is terminal or missing"), which
+    the route turned into 409 either way -- so deciding on a run that never
+    existed looked like a transient conflict, unlike the sibling cancel endpoint
+    that answers a plain 404 for the same id. decide() now raises KeyError for a
+    missing run and keeps ValueError only for a genuinely terminal or cancelled
+    one.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+    )
+    sha = "0" * 64
+
+    with pytest.raises(KeyError):
+        await runner.decide("no-such-run", "no-such-call", sha, approved=True)
+
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    store.request_cancel(run.id)
+    with pytest.raises(ValueError, match="terminal"):
+        await runner.decide(run.id, "no-such-call", sha, approved=True)
+
+
 def _single_spec(
     handler: Any,
     *,

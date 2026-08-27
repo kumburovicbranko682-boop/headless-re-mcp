@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（approve/reject 把"run 不存在"误当成 409 冲突，且信息含糊）
+
+- `AgentOrchestrator.decide()` 过去对"run 不存在"和"run 已终态/已取消"抛同一句
+  `ValueError("run is terminal or missing")`，路由 `_decision` 统一映射成 **409**。于是对一个根本不存在的
+  run 调 approve/reject，会得到 409 且信息在两种情形间含糊其辞——而兄弟端点 `cancel_run` 对同样不存在的
+  run 明确回 **404 `run_not_found`**，两者自相矛盾。现在 `decide()` 对缺失 run 抛 `KeyError`、仅对真正终态/
+  已取消的 run 抛 `ValueError("run is terminal")`；路由按异常携带的 id 区分：缺失 run → 404 `run_not_found`
+  （与 cancel 一致），缺失 tool_call → 404 `tool_call_not_found`，终态/取消 → 409 `run is terminal`。回归
+  测试钉住：orchestrator 层缺失 run 抛 `KeyError`、已取消 run 抛 `ValueError`；HTTP 层三条路径分别得到
+  404 `run_not_found`、404 `tool_call_not_found`、409 `run is terminal`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
