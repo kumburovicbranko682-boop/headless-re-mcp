@@ -60,6 +60,45 @@ if TYPE_CHECKING:
 
 JsonObject = dict[str, Any]
 
+# ui.process_tree is a read-only "which pid/window do I drive" probe. Both the
+# child list and each child's window list are bounded so a Chromium-style tree
+# cannot balloon the reply; the counts and flags below exist so a bounded reply
+# says it is bounded rather than posing as the whole tree.
+_UI_CHILD_ROW_LIMIT = 16
+_UI_CHILD_WINDOW_LIMIT = 16
+
+
+def _ui_child_process_rows(debuggee_pid: int) -> tuple[list[JsonObject], bool]:
+    """Bounded direct-child rows for ui.process_tree, plus a truncation flag.
+
+    Enumerates one past the row cap so an exact-cap tree is distinguishable
+    from a larger one, and tags each child's window list with its true total
+    so a page of a child's windows does not read as the whole set. Kept as a
+    module helper because the surrounding call path is Windows-gated; this is
+    the part whose honesty is worth exercising on any platform.
+    """
+    from headless_re_mcp.core.process_tree import (
+        enumerate_direct_children,
+        process_image_path,
+    )
+
+    probed = enumerate_direct_children(debuggee_pid, max_pids=_UI_CHILD_ROW_LIMIT + 1)
+    children_truncated = len(probed) > _UI_CHILD_ROW_LIMIT
+    rows: list[JsonObject] = []
+    for child in probed[:_UI_CHILD_ROW_LIMIT]:
+        wins = list_windows_for_pids([child])
+        rows.append(
+            {
+                "pid": child,
+                "image": process_image_path(child),
+                "alive": is_pid_alive(child),
+                "top_level_windows": wins[:_UI_CHILD_WINDOW_LIMIT],
+                "top_level_windows_total": len(wins),
+                "top_level_windows_truncated": len(wins) > _UI_CHILD_WINDOW_LIMIT,
+            }
+        )
+    return rows, children_truncated
+
 
 def _unsupported_ui(session_id: str, capability: str) -> Result[JsonObject]:
     return _failure(
@@ -409,30 +448,22 @@ class UiAutomationMixin:
 
         def action(ctx: JsonObject) -> JsonObject:
             from headless_re_mcp.core.process_tree import (
-                enumerate_direct_children,
                 probe_child_window_candidates,
                 process_image_path,
             )
 
             debuggee_pid = int(ctx["debuggee_pid"])
-            children = enumerate_direct_children(debuggee_pid)
-            child_rows = []
-            for child in children:
-                wins = list_windows_for_pids([child])
-                child_rows.append(
-                    {
-                        "pid": child,
-                        "image": process_image_path(child),
-                        "alive": is_pid_alive(child),
-                        "top_level_windows": wins[:16],
-                    }
-                )
+            child_rows, children_truncated = _ui_child_process_rows(debuggee_pid)
             return {
                 "debuggee_pid": debuggee_pid,
                 "debugger_pid": ctx["debugger_pid"],
                 "debuggee_image": process_image_path(debuggee_pid),
                 "debuggee_windows": list_windows_for_pids([debuggee_pid]),
                 "children": child_rows,
+                "children_count": len(child_rows),
+                # True means the debuggee has more direct children than this
+                # page; interact by pid rather than assuming the list is whole.
+                "children_truncated": children_truncated,
                 "child_candidates": probe_child_window_candidates(
                     debuggee_pid, list_windows_fn=None
                 ),
