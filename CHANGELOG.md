@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Frida 清理与探针的失败不再被吞成成功）
+
+- 两处 Frida 清理此前用 `contextlib.suppress(Exception)` 静默吞掉失败,把「没清干净」报成成功:
+  超时/spawn resume 失败后的 `_detach_all` / `_kill_spawned` 拿不到任何失败信号,一个 detach 不掉的
+  会话就那样残留在目标里、脚本还挂着,调用方看到的只是一个「timeout」而以为什么都没泄漏。现在两者各自
+  收集失败并回传,超时清理路径据此报出「会话被留驻」,新增 `_cleanup_detach_error` 组织该错误。
+- `frida` 探针(probe attach)过去在 `finally` 里 `suppress` detach,于是即便 detach 失败也照报
+  `attached=true`——一个探针留下的常驻会话就此被当成「已即刻断开」。现在 detach 失败抛
+  `frida_detach_failed`(带 `pid`),调用方不再在会话泄漏的情况下继续;`modules` 的清理也改为
+  `except BaseException` 只在异常路径兜底,成功路径照常返回。新增回归覆盖 detach/kill 失败被如实报出、
+  探针 detach 失败不再报 attached。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
