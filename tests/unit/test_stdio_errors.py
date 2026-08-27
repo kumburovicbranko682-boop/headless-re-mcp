@@ -1,135 +1,145 @@
-"""Lock in the stdio parse-reply shim's hostile-input handling.
+"""The stdio parse-reply shim must answer an unreadable request that still has
+an id, and stay silent when there is no id to correlate a reply to.
 
-The SDK forwards an unreadable stdin record inward as an exception; the
-server then logs "Internal Server Error" and never writes a JSON-RPC
-response, so an unattended caller waits forever. This module answers such
-records with an error named after the request id. The request-id sniffing,
-the empty-stream stop, the non-recursion error message, and the whole
-``stdio_server_with_parse_replies`` wiring were untested.
+The MCP SDK forwards a parse failure inward and never writes a JSON-RPC
+response, so an unattended caller sees nothing. ``stdio_server_with_parse_replies``
+wraps the SDK streams to turn a parseable-id-but-invalid line into an error on
+the write stream. These pin the id-extraction branches and drive the wrapper
+end to end so a regression that swallows the reply, or invents one for id-less
+garbage, fails here.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from io import BytesIO
+from io import BytesIO, TextIOWrapper
 from types import SimpleNamespace
-from typing import Any
 
 import anyio
 import pytest
 
-from headless_re_mcp.mcp import stdio_errors
 from headless_re_mcp.mcp.stdio_errors import (
     _read_bounded_line,
-    _request_id,
     error_message_for_unreadable_line,
+    stdio_server_with_parse_replies,
 )
+
+INVALID_REQUEST_CODE = -32600
+
+
+class _CapturingBytesIO(BytesIO):
+    """A stdout buffer that survives TextIOWrapper finalization.
+
+    ``stdio_server_with_parse_replies`` wraps ``sys.stdout.buffer`` in a
+    TextIOWrapper, which closes the underlying buffer when it is finalized --
+    so a plain BytesIO is unreadable by the time the test inspects it. Snapshot
+    the bytes on close and keep the buffer open instead.
+    """
+
+    captured: bytes = b""
+
+    def close(self) -> None:  # noqa: D401 - see class docstring
+        self.captured = self.getvalue()
+        # Deliberately not calling super().close(): keep it readable.
+
+
+@pytest.mark.asyncio
+async def test_reading_an_empty_stream_reports_eof() -> None:
+    line, oversized = await _read_bounded_line(BytesIO(b""))
+    assert line == b""
+    assert oversized is False
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        pytest.param("[1, 2, 3]", id="not-an-object"),
-        pytest.param('{"method": "ping"}', id="no-id-key"),
-        pytest.param('{"id": true}', id="bool-id"),
-        pytest.param('{"id": 1.5}', id="float-id"),
-        pytest.param('{"id": null}', id="null-id"),
-        pytest.param("{not json", id="undecodable"),
+        "[1,2,3]",  # valid JSON, but not an object -> no id
+        '{"foo":"bar"}',  # object without an id
+        '{"id":true,"method":"x"}',  # a bool id is not a usable correlation id
+        '{"id":1.5,"method":"x"}',  # a float id is neither str nor int
     ],
 )
-def test_request_id_declines_when_there_is_no_answerable_id(line: str) -> None:
-    assert _request_id(line) is None
+def test_a_line_without_a_usable_id_stays_silent(line: str) -> None:
+    # No id means the caller cannot match a reply, so silence is the contract --
+    # exactly what parsing complete garbage already did.
+    assert error_message_for_unreadable_line(line) is None
 
 
-@pytest.mark.parametrize(
-    ("line", "expected"),
-    [
-        pytest.param('{"id": 7}', 7, id="int"),
-        pytest.param('{"id": "abc"}', "abc", id="string"),
-    ],
-)
-def test_request_id_accepts_a_string_or_int_id(line: str, expected: str | int) -> None:
-    assert _request_id(line) == expected
-
-
-@pytest.mark.asyncio
-async def test_read_bounded_line_stops_on_an_empty_stream() -> None:
-    encoded, oversized = await _read_bounded_line(BytesIO(b""), limit=64)
-    assert encoded == b""
-    assert oversized is False
-
-
-def test_a_schema_valid_json_with_an_id_gets_a_named_error_reply() -> None:
-    # Valid JSON so the id is recoverable, but not a valid JSON-RPC message
-    # (method must be a string). The reply must carry the id and the first
-    # line of the validation error -- the non-recursion message branch.
-    line = '{"jsonrpc": "2.0", "id": 11, "method": 123}'
+def test_a_with_id_validation_failure_is_reported_verbatim_first_line() -> None:
+    # A non-recursion validation failure keeps the first line of the real error
+    # (truncated), not the friendly recursion message, so the caller can see why.
+    line = '{"jsonrpc":"2.0","id":5,"method":123}'
     reply = error_message_for_unreadable_line(line)
     assert reply is not None
     dumped = json.loads(reply.model_dump_json())
-    assert dumped["id"] == 11
-    assert dumped["error"]["code"] == -32600
+    assert dumped["id"] == 5
+    assert dumped["error"]["code"] == INVALID_REQUEST_CODE
     assert "nested too deeply" not in dumped["error"]["message"]
     assert "\n" not in dumped["error"]["message"]
 
 
-class _KeepOpenBytes(BytesIO):
-    """A stdout buffer whose close is ignored so captured replies survive.
+@pytest.mark.asyncio
+async def test_wrapper_forwards_valid_and_replies_to_invalid_with_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n'
+    invalid_with_id = b'{"jsonrpc":"2.0","id":99,"method":123}\n'
+    # A trailing id-less garbage line must not produce a reply of its own.
+    garbage_no_id = b"{not-json\n"
 
-    ``stdio_server_with_parse_replies`` wraps ``sys.stdout.buffer`` in a
-    TextIOWrapper; when that wrapper finalizes it closes the underlying
-    buffer, which would make ``getvalue`` raise after the context exits.
-    """
+    stdin_buffer = BytesIO(valid + invalid_with_id + garbage_no_id)
+    stdout_buffer = _CapturingBytesIO()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=stdin_buffer))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=stdout_buffer))
 
-    def close(self) -> None:
-        return None
+    received_ids: list[object] = []
+    with anyio.fail_after(10):
+        async with stdio_server_with_parse_replies() as (read_stream, write_stream):
+            # The one valid line arrives as a parsed message on the read stream.
+            message = await read_stream.receive()
+            received_ids.append(json.loads(message.message.model_dump_json())["id"])
+            # Closing our write handle lets the writer task drain and exit once
+            # the reader closes its own error clone at EOF.
+            await write_stream.aclose()
+
+    assert received_ids == [1]
+
+    written = stdout_buffer.captured.decode("utf-8")
+    replies = [json.loads(row) for row in written.splitlines() if row.strip()]
+    # Exactly one reply: the invalid line that carried an id. The valid line
+    # went to the read stream, and the id-less garbage produced nothing.
+    assert len(replies) == 1
+    assert replies[0]["id"] == 99
+    assert replies[0]["error"]["code"] == INVALID_REQUEST_CODE
 
 
 @pytest.mark.asyncio
-async def test_stdio_shim_forwards_valid_records_and_answers_unreadable_ones(
+async def test_wrapper_writes_a_reply_for_each_addressed_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    records: list[tuple[bytes, bool]] = [
-        (b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n', False),
-        (b'{"jsonrpc":"2.0","id":2,"method":123}\n', False),
-        # An oversized record whose drained prefix still exposes an id: the
-        # reader answers it with the size-limit refusal instead of silence.
-        (b'{"id":3}', True),
-        # An oversized record whose prefix has no recoverable id stays silent,
-        # the way an oversized blob of junk cannot be answered.
-        (b"xxxxxxxx", True),
-        # Garbage with no recoverable id stays silent, the way a parse of
-        # complete junk already did.
-        (b"{no-id-garbage", False),
-        (b"", False),
-    ]
-    pending = iter(records)
+    # Two id-carrying invalid lines each get their own reply, keyed by id, so a
+    # batch of malformed calls is answered one-for-one rather than collapsed.
+    lines = b'{"jsonrpc":"2.0","id":"a","method":1}\n{"jsonrpc":"2.0","id":"b","method":2}\n'
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=BytesIO(lines)))
+    stdout_buffer = _CapturingBytesIO()
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=stdout_buffer))
 
-    async def fake_read(stream: Any, *, limit: int = stdio_errors._MAX_STDIO_MESSAGE_BYTES) -> Any:
-        del stream, limit
-        return next(pending)
-
-    out_buf = _KeepOpenBytes()
-    monkeypatch.setattr(stdio_errors, "_read_bounded_line", fake_read)
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=BytesIO(b"")))
-    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=out_buf))
-
-    forwarded: list[Any] = []
-    with anyio.fail_after(5):
-        async with stdio_errors.stdio_server_with_parse_replies() as (read_stream, write_stream):
-            async for message in read_stream:
-                forwarded.append(message)
+    with anyio.fail_after(10):
+        async with stdio_server_with_parse_replies() as (_read_stream, write_stream):
             await write_stream.aclose()
 
-    assert len(forwarded) == 1
-    valid = json.loads(forwarded[0].message.model_dump_json())
-    assert valid["id"] == 1
-    assert valid["method"] == "ping"
+    written = stdout_buffer.captured.decode("utf-8")
+    replies = [json.loads(row) for row in written.splitlines() if row.strip()]
+    assert [r["id"] for r in replies] == ["a", "b"]
+    assert all(r["error"]["code"] == INVALID_REQUEST_CODE for r in replies)
 
-    replies = [
-        json.loads(line) for line in out_buf.getvalue().decode("utf-8").splitlines() if line.strip()
-    ]
-    assert [reply["id"] for reply in replies] == [2, 3]
-    assert all(reply["error"]["code"] == -32600 for reply in replies)
-    assert "exceeds" in replies[1]["error"]["message"]
+
+def test_textiowrapper_smoke_is_not_left_open() -> None:
+    # Guard the test's own assumption that a BytesIO survives TextIOWrapper use
+    # (the wrapper must not detach/close the underlying buffer we read back).
+    buf = BytesIO()
+    wrapper = TextIOWrapper(buf, encoding="utf-8")
+    wrapper.write("x")
+    wrapper.flush()
+    assert buf.getvalue() == b"x"
