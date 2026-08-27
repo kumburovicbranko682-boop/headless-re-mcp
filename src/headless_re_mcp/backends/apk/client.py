@@ -25,6 +25,7 @@ _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
+_MAX_FEATURES = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
 # Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
@@ -323,6 +324,32 @@ class ApkClient:
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
+            "has_more": has_more,
+        }
+
+    def features(self, path: Path) -> JsonObject:
+        """List the hardware/software features the manifest declares it uses.
+
+        The <uses-feature> census, the sibling of apk.permissions: where
+        permissions are what the app may touch, features are what device
+        capabilities it declares (android.hardware.camera, .telephony, .nfc,
+        .fingerprint, android.software.webview ...). It is a fast capability
+        profile -- a telephony/SMS feature next to matching permissions says
+        more about intent than either alone -- and, because Play derives device
+        filtering from it, a signal in its own right. Names are the raw feature
+        strings, sorted and capped; has_more marks the cap so a filled list is
+        not read as every feature. Reads the manifest only -- no DEX analysis.
+        There is no items field.
+        """
+        apk = self._apk(path)
+        try:
+            raw = apk.get_features()
+        except Exception:  # noqa: BLE001 - older androguard/odd manifests vary
+            raw = []
+        names, has_more = _cap_names(raw, _MAX_FEATURES)
+        return {
+            "features": names,
+            "count": len(names),
             "has_more": has_more,
         }
 

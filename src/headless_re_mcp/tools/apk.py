@@ -81,6 +81,22 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.features")
+    def apk_features(session_id: str) -> dict[str, Any]:
+        """List the hardware/software features the manifest declares it uses.
+
+        The <uses-feature> census, the sibling of apk.permissions: permissions
+        are what the app may touch, features are what device capabilities it
+        declares (android.hardware.camera, .telephony, .nfc, .fingerprint,
+        android.software.webview ...). A fast capability profile -- a telephony
+        or SMS feature next to matching permissions says more about intent than
+        either alone -- and a Play device-filtering signal in its own right.
+        Answers with features (raw strings, sorted), count, and has_more so a
+        list that filled the cap is not read as every feature. Reads the
+        manifest only. There is no items field.
+        """
+        return _dump(analysis.apk_features(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
