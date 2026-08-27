@@ -80,6 +80,8 @@ elif mode == "xrefs":
 elif mode == "decompile":
     text = ""
     found = False
+    completed = False
+    error = ""
     if address_arg:
         addr = _addr(address_arg)
         fn = fm.getFunctionContaining(addr) if addr is not None else None
@@ -90,7 +92,15 @@ elif mode == "decompile":
             try:
                 results = decomp.decompileFunction(fn, 30, monitor)
                 if results is not None and results.decompileCompleted():
-                    text = results.getDecompiledFunction().getC()
+                    completed = True
+                    df = results.getDecompiledFunction()
+                    if df is not None:
+                        text = df.getC()
+                elif results is not None:
+                    try:
+                        error = results.getErrorMessage() or ""
+                    except Exception:
+                        error = ""
             finally:
                 decomp.dispose()
             payload["function"] = fn.getName()
@@ -98,6 +108,14 @@ elif mode == "decompile":
     # found False means no function contained the address, so decompiled is
     # empty for that reason rather than because the body was empty.
     payload["found"] = found
+    # A found function whose decompiler run did not finish (the 30s per-function
+    # limit, or an internal error) also comes back with decompiled empty. Every
+    # real function has a body, so found True with completed False is a failed
+    # decompile, not an empty result -- say so rather than let the empty string
+    # read as the body.
+    payload["decompile_completed"] = completed
+    if error:
+        payload["decompile_error"] = error[:2000]
     payload["decompiled"] = text[:200000]
     payload["truncated"] = len(text) > 200000
 else:

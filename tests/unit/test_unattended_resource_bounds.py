@@ -3448,6 +3448,9 @@ class TestGhidraExportDisclosesTruncation:
         text = script.read_text(encoding="utf-8")
         assert 'payload["has_more"] = True' in text
         assert 'payload["truncated"] = len(text) > 200000' in text
+        # A found function whose decompiler run did not finish must be
+        # distinguishable from one that decompiled to nothing.
+        assert 'payload["decompile_completed"] = completed' in text
 
 
 class TestAdbShellCallsAreBounded:

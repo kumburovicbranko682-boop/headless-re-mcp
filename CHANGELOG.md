@@ -99,6 +99,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   命中时才写 `function`/`entry`。现由脚本显式写出 `found` 布尔，客户端在解析这份跨解释器 JSON 时
   也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
   空的 `decompiled` 是这个原因而非空函数体。
+- 命中函数但反编译器本身没跑完（`decompileFunction` 的每函数 30s 上限，或内部报错）也返回
+  `decompiled: ""`，同样与空函数体无从区分——而真实函数都有函数体，`found=true` 且空串几乎必然是
+  失败而非空结果。脚本改为写出 `decompile_completed` 布尔（未完成时另附 `decompile_error`），只在
+  `decompileCompleted()` 为真且拿到反编译对象时才取 C 文本;客户端解析这份跨解释器 JSON 时缺字段
+  则按是否有文本补齐（有文本才算跑完）。补测:脚本源码含 `decompile_completed` 标记;客户端在“命中但
+  未跑完”回 `decompile_completed=false` 且透传 `decompile_error`、脚本沉默但有文本时按文本推导为真、
+  脚本已写 `decompile_completed=true` 配空文本时不被推导覆盖。
 
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 

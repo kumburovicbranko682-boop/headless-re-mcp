@@ -209,6 +209,7 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "decompiled" in decompile
     assert "truncated" in decompile
     assert "found" in decompile
+    assert "decompile_completed" in decompile
 
 
 def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
@@ -264,6 +265,64 @@ def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
     assert payload["found"] is True
+
+
+def test_ghidra_decompile_reports_a_found_function_whose_run_did_not_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decompiler timeout leaves found true with empty text; say it failed.
+
+    The per-function decompiler has its own 30s limit. When it trips, the script
+    writes found true, decompiled "", and decompile_completed false. Every real
+    function has a body, so without that flag the empty string reads as the body
+    and an unattended pass records "this function is empty" for a run that in
+    fact never produced anything.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "slow", "entry": "0x401000",'
+        ' "found": true, "decompile_completed": false,'
+        ' "decompile_error": "timeout", "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["decompile_completed"] is False
+    assert payload["decompile_error"] == "timeout"
+    assert payload["decompiled"] == ""
+
+
+def test_ghidra_decompile_derives_completion_from_text_when_the_script_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older script omits decompile_completed; non-empty text means finished."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["decompile_completed"] is True
+
+
+def test_ghidra_decompile_trusts_a_completion_flag_the_script_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed run with genuinely empty text keeps completed true.
+
+    Deriving completion from the text alone would call this a failure; the flag
+    the script wrote wins so a real (rare) empty decompile is not mislabelled.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "stub", "entry": "0x401000",'
+        ' "found": true, "decompile_completed": true,'
+        ' "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["decompile_completed"] is True
 
 
 def test_ghidra_refuses_an_oversized_export_json(
