@@ -47,6 +47,24 @@ class _Page:
         return "Example"
 
 
+class _MultibytePage:
+    """Emulate the in-browser clip faithfully: it counts code units, not bytes."""
+
+    url = "https://example/app"
+
+    def __init__(self, char_count: int) -> None:
+        self._html = "\u6587" * char_count  # CJK: 3 UTF-8 bytes per char
+
+    def evaluate(self, script: str, cap: int) -> dict[str, Any]:
+        del script
+        text = self._html
+        over = len(text) > cap
+        return {"html": text[:cap] if over else text, "truncated": over}
+
+    def title(self) -> str:
+        return "Example"
+
+
 def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
     monkeypatch: Any,
 ) -> None:
@@ -71,3 +89,26 @@ def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
     doc = _tool_docstring("web.dom.snapshot")
     assert "html" in doc
     assert "truncated" in doc
+
+
+def test_web_dom_snapshot_caps_inline_html_by_bytes_not_characters(
+    monkeypatch: Any,
+) -> None:
+    """A multibyte page under the code-unit clip still blew the byte budget.
+
+    _MAX_INLINE_BODY is a byte budget everywhere else in this backend
+    (_spill_text encodes to UTF-8 and caps on len(payload)). dom_snapshot
+    applied it as a character count, so 100000 CJK chars -- 300000 bytes, well
+    over the 200000-byte cap, but only half the 200000 code-unit clip -- were
+    inlined whole and flagged truncated=False. The response html must be capped
+    on its real UTF-8 size and marked truncated when the cap bites, like every
+    sibling reader.
+    """
+    backend = WebBackend()
+    page = _MultibytePage(100_000)
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=page))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.dom_snapshot("s")
+    assert len(payload["html"].encode("utf-8")) <= _MAX_INLINE_BODY
+    assert len(payload["html"]) < 100_000
+    assert payload["truncated"] is True

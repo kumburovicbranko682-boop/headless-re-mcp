@@ -761,11 +761,21 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
+            # _MAX_INLINE_BODY is a byte budget everywhere else in this backend
+            # (_spill_text encodes and caps on len(payload); the proxy backend
+            # matches). The in-browser clip above counts UTF-16 code units, so a
+            # page of multibyte text (CJK is 3 bytes/char, emoji 4) under the
+            # code-unit cap still encodes to several times the budget and would
+            # be inlined whole -- a ~600 KiB html field for a 200k-char page.
+            # Cap on the real UTF-8 size like every sibling reader, dropping a
+            # partial trailing sequence the same way _spill_text does.
+            payload = text.encode("utf-8", errors="replace")
+            html_truncated = bool(clipped.get("truncated")) or len(payload) > _MAX_INLINE_BODY
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "html": payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore"),
+                "truncated": html_truncated,
             }
 
         return self._runner(handle).call(work)

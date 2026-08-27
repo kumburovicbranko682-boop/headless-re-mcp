@@ -60,6 +60,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
+### 修复（`web.dom.snapshot` 内联上限按字符算而非字节）
+
+- `_MAX_INLINE_BODY`（200000）在 web 后端别处都是**字节**预算：`_spill_text` 先
+  `encode("utf-8")` 再按 `len(payload)` 卡上限，proxy 后端的内联体判定同样按字节。唯独
+  `web.dom.snapshot` 把它当**字符数**用——浏览器内的裁剪按 UTF-16 码元 `slice(0, cap)`，Python 侧
+  又 `text[:_MAX_INLINE_BODY]` / `len(text) > _MAX_INLINE_BODY` 都按字符算。于是一张多字节页面
+  （CJK 每字符 3 字节、emoji 4 字节）只要字符数没过码元裁剪线，就会被整段内联：20 万字符的页面
+  内联出约 600 KiB 的 `html`，还标着 `truncated=False`，是别处同名常量所定预算的三四倍——正是长时无人
+  值守要卡住的响应膨胀。现在与其余读取器一致，按真实 UTF-8 字节卡上限、并像 `_spill_text` 那样丢掉
+  边界处的半个多字节序列，字节超限即置 `truncated`。回归测试用 10 万个 CJK 字符（30 万字节、码元数
+  只到裁剪线一半）钉住：`html` 的 UTF-8 长度 ≤ 上限且 `truncated=True`（见 `test_web_dom_fields.py`）。
+
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、
