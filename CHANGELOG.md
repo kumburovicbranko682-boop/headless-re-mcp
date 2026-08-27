@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（config.json 里打错的键被静默忽略，doctor 只说工具"未配置"）
+
+- `Settings.load` 按固定字段名从 config.json 取值，文件里其余的键一概无声忽略。于是
+  `"ghidra_hom"` 这类笔误等于什么都没配：操作者明明写了路径、没有任何报错，doctor 的对应探针却报
+  `missing`，看起来像工具真的没装——配置被吞的事实无处可见。现在 `Settings.load` 把未识别的键
+  （已知键集直接从 dataclass 字段名派生，新增设置不需要另行维护清单）排序后存入
+  `settings.unknown_config_keys`，doctor 新增 advisory 探针 `config_keys`：全部识别时 `ready`，
+  有未识别键时 `detected` 并在 summary 点名（前 5 个 + 余数）、details 给全量、remediation 提示
+  查笔误；探针不在 required 集内，不影响整体就绪判定。回归测试钉住：带笔误键的文件加载后
+  `unknown_config_keys` 有序列出且已识别键正常生效；干净/缺失文件为空元组；探针在有未识别键时
+  `detected` 并点名、干净时 `ready`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
