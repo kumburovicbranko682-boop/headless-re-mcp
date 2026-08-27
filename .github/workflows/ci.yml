@@ -152,6 +152,52 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apk-sign:
+    # apksigner + keytool are JRE tools; with the Android build-tools apksigner
+    # and a JDK they run on a hosted runner with no emulator or device. Every
+    # other apk.sign test drives a fake _run, so the real env: password hand-off,
+    # the post-sign verify call and the signed envelope are never exercised. This
+    # job downloads the build-tools apksigner and runs the sign->verify gate for
+    # real. skip != pass: it only skips if apksigner, keytool, or pyaxml is absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install package and AXML fixture deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+          # The signable fixture emits binary AXML via pyaxml (which pulls lxml).
+          python -m pip install pyaxml
+
+      - name: Install apksigner (Android build-tools)
+        run: |
+          BUILD_TOOLS=build-tools_r34-linux
+          curl -fsSL -o /tmp/bt.zip \
+            "https://dl.google.com/android/repository/${BUILD_TOOLS}.zip"
+          unzip -oq /tmp/bt.zip -d "$HOME/android-build-tools"
+          APKSIGNER="$HOME/android-build-tools/android-14/apksigner"
+          "$APKSIGNER" --version
+          echo "HEADLESS_RE_APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+
+      - name: apk sign gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_apk_sign_live_gate.py -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

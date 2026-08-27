@@ -24,6 +24,40 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`apk.sign` 把公开的调试密钥库口令也一并抹掉，反而毁了报错可读性）
+
+- **`ApktoolClient.sign` 会把 keystore 口令从 apksigner 的 stderr 里 `replace(password, "***")`
+  抹掉**，签名失败与验签失败两条路径都抹——用意是「调用方的密钥口令绝不能进错误通道」，本身没错。
+  可当用的是内置的 **Android 调试密钥库**时，那口令就是公开常量 `android`：官方文档里写着、每个
+  SDK 都带、还**逐字出现在 apksigner 的正常输出里**（包名 `com.android.apksig`、SDK 路径、
+  `android:` 属性名）。把它抹掉护不了任何东西，却把诊断打成一团——一条 min-sdk 失败回来变成
+  `com.***.apksig...`，恰好糊掉分析师要看的类名。现改成只抹**调用方自带的**口令：内置调试库的公开
+  口令原样保留；任何自定义 keystore 的口令——哪怕正好等于字典词 `android`——照抹不误，因为口令一旦
+  由调用方给出，保密就压倒可读性。抽出 `_scrub_secret`、用一个很窄的 `password_is_public`（内置调试库
+  且口令等于内置常量）开关控制。真机用 apksigner 0.9 核对：调试库的 min-sdk 失败现在保留
+  `com.android.apksig` 而非 `com.***.apksig`。新增两条单测把两侧都钉死。
+
+### 测试（新增 apksigner 签名 live gate：真签 → 真验；skip != pass）
+
+- **apksigner（Android 重签名线）此前只有「假 `_run`」的单测，从没有任何测试真正启动过 apksigner**
+  ——于是 `ApktoolClient.sign` 的 `env:` 口令传递（口令走子进程环境变量而非 argv）、签完自带的 verify
+  调用、以及签名成功的信封，整条真实链路从未被端到端验证过。新增
+  `tests/integration/test_apk_sign_live_gate.py`：用 pyaxml 造一枚**真实、apksigner 肯签**的最小 APK
+  （`fixtures/android/build_signable_apk.py`——apksigner 签名前要从**二进制** AXML 里读 `minSdkVersion`，
+  占位 manifest 会以 `Failed to determine APK's minimum supported platform version` 被拒，故用 pyaxml
+  产一份带 `minSdkVersion` 的真 AXML；apksigner 只签 zip、不需要 `classes.dex`，所以「一份 manifest 即
+  一枚 APK」），再用 keytool 现场生成密钥库、驱动**真实** apksigner：
+  - **自定义密钥库**：签出的信封 `signed==True`、`debug_keystore==False`、`keystore` 指向该库，并在
+    客户端内建 verify 之外**独立**再验一遍 rc==0。
+  - **默认调试密钥库**：把模块里的 `_DEBUG_KEYSTORE` 常量指到临时库（带标准调试 alias/口令，绝不碰
+    `~/.android`），以 `keystore=None`（分析师拿到的默认）签，断言信封 `debug_keystore==True` 且产物真能验。
+  - **口令错**：给错 store 口令，断言得到结构化 `backend_error`（不崩），且错误详情里**不含**该口令。
+  本机用 build-tools 的 apksigner 0.9 + Temurin JRE 实跑通过（3 passed），缺 apksigner/keytool/pyaxml
+  时带明确原因干净跳过（3 skipped）。
+- 新增 CI 作业 `linux-apk-sign`（Ubuntu，3.11/3.12，装 Temurin 21 + 下载 Android build-tools r34 的
+  apksigner + 装 pyaxml）真跑这条 gate——skip != pass：`HEADLESS_RE_APKSIGNER`/PATH 上有 apksigner 就
+  真跑，缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
