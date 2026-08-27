@@ -13,13 +13,17 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import TimedOut, bound_timeout, run_bounded
 
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# apk.decompile / apk.export_sources cap timeout at 1800s in their schema. The
+# agent path skips that check, so the ceiling is re-applied here to keep an
+# unclamped deadline from leaving a jadx JVM running after the caller gave up.
+_MAX_TIMEOUT_S = 1800.0
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -160,6 +164,7 @@ class JadxClient:
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
+        timeout = bound_timeout(timeout, ceiling=_MAX_TIMEOUT_S)
         try:
             completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
         except TimedOut as exc:

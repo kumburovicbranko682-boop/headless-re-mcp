@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（agent 路径绕过 timeout 上限致子进程泄漏）
+
+- `apk.decode/decompile/repack/sign/export_sources`(jadx、apktool/apksigner)与
+  `js.unpack_bundle` 等(webcrack/node)在 schema 里用 `Field(le=1800/1200)` 限制
+  `timeout`,但该边界只在 MCP 传输的入参校验里生效;agent 传输直接调用处理器,不跑
+  pydantic 边界校验,于是 agent 可传入 `timeout=1e9`/`inf` 之类。这类工具的客户端过去
+  把 `timeout` 原样交给 `run_bounded`,而 orchestrator 的 `_invoke_tool_bounded` 在
+  `abandon_on_cancel=True` 下超时/取消只取消 asyncio 任务、放弃工作线程,并不向
+  `run_bounded` 传取消事件——被启动的 JVM/node 因此按那个天文数字的 deadline 继续跑,
+  在调用方早已拿到 `tool_timeout` 之后仍占着一个核心并锁住样本(正是 `bounded_run`
+  存在的目的所要防止的泄漏)。现在 jadx/apktool/jsre 客户端在进入 `run_bounded` 前经新增的
+  `bound_timeout(timeout, ceiling=...)` 把 deadline 钳回各自 schema 上限(与 frida 早已
+  用 `_bound_timeout` 钳到 `MAX_WORKFLOW_TIMEOUT` 的做法一致);`inf`/`nan` 收敛到上限,
+  非正值仍留给 `run_bounded` 按即时超时处理。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

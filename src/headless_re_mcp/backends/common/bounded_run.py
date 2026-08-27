@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
+from math import isfinite
 from threading import Event, Thread
 from time import monotonic
 from typing import Any
@@ -30,6 +31,26 @@ from headless_re_mcp.process_group import assign_to_process_group
 
 # Per stream. Callers slice to a few KB; this is the peak we will hold.
 DEFAULT_MAX_OUTPUT = 8 * 1024 * 1024
+
+
+def bound_timeout(timeout: float, *, ceiling: float) -> float:
+    """Cap a caller's deadline to the ceiling the tool advertises.
+
+    The MCP transport rejects a ``timeout`` outside a tool's schema bound
+    before the handler runs; the agent transport invokes the same handler
+    directly and applies no such bound, so a deadline of a billion seconds
+    reaches ``run_bounded`` intact. That is the leak this module exists to stop:
+    the orchestrator abandons the worker thread at its own ceiling, but the JVM
+    (or node) the tool launched keeps a core busy and a lock on the sample until
+    the deadline it was actually handed. Subprocess backends clamp here so a
+    deadline that skipped schema validation still cannot outlast the ceiling.
+    ``inf``/``nan`` collapse to the ceiling; a non-positive value is left for
+    ``run_bounded`` to reject as an immediate timeout, exactly as before.
+    """
+    value = float(timeout)
+    if not isfinite(value):
+        return ceiling
+    return min(value, ceiling)
 
 
 class TimedOut(RuntimeError):

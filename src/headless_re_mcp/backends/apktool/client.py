@@ -13,13 +13,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import TimedOut, bound_timeout, run_bounded
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# apk.decode / apk.repack / apk.sign cap timeout at 1800s in their schema. The
+# agent path skips that check, so the ceiling is re-applied here to keep an
+# unclamped deadline from leaving an apktool/apksigner JVM running after the
+# caller gave up.
+_MAX_TIMEOUT_S = 1800.0
 
 
 class ApktoolError(RuntimeError):
@@ -32,6 +37,7 @@ class ApktoolError(RuntimeError):
 
 def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    timeout = bound_timeout(timeout, ceiling=_MAX_TIMEOUT_S)
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
     except TimedOut as exc:

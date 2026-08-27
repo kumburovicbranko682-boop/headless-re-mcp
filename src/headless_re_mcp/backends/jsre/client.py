@@ -13,13 +13,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import TimedOut, bound_timeout, run_bounded
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# The js/wasm tools cap timeout at 1200s (unpack_bundle) or 600s in their
+# schema; the agent path skips that check, so the widest ceiling is re-applied
+# here to keep an unclamped deadline from leaving a node child running after the
+# caller gave up.
+_MAX_TIMEOUT_S = 1200.0
 # Output is already sliced. The child still has to load the file, and an
 # unattended pass that pointed js.deobfuscate at a captured bundle started
 # node on whatever sat on disk -- measured 2,097,152 bytes still reached
@@ -80,6 +85,7 @@ def _require_existing_file(path: Path, *, missing: str) -> Path:
 
 def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    timeout = bound_timeout(timeout, ceiling=_MAX_TIMEOUT_S)
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
     except TimedOut as exc:
