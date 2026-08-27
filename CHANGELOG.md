@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`apk.permissions` 从不暴露应用自定义声明的权限**。此前只返回 uses-permission（used/requested）两个视图，应用用
+  `<permission>` 自己定义的权限完全看不到，而其 protectionLevel 正是权限边界：一个 normal/dangerous 级别的自定义权限
+  若守着某个 exported 组件，就是提权面。现在借 androguard 的 `get_declared_permissions_details()`（设防调用，缺失该
+  访问器或形状异常即退回空列表）新增 `declared_permissions`，每项为 `{name, protection_level}`，与 requested 列表分开、
+  受同一 256 上限约束。
 - **`apk.certificates` 只报 v1 签名，且证书信息太少**。`v1_signed` 由 META-INF 签名文件是否存在推得，于是仅用
   v2/v3（APK Signature Scheme）签名的现代应用被读成“未签名”，而只有 v1 签名（v2/v3 皆无）这一 Janus 篡改风险信号也
   无从看出。现在借 androguard 的 `is_signed_v1/v2/v3`（各自设防，缺失或抛错即记为 False）补出 `v2_signed`、

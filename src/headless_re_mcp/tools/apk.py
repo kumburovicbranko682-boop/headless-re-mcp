@@ -45,11 +45,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.permissions")
     def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions.
+        """List used, requested, and app-declared permissions.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions and requested_permissions (both uses-permission
+        views), declared_permissions -- the app's own <permission> definitions
+        as {name, protection_level}, where a normal/dangerous level guarding an
+        exported component is a privilege-escalation surface -- count, and
+        has_more so a list that filled the cap is not read as every permission.
+        There is no declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 

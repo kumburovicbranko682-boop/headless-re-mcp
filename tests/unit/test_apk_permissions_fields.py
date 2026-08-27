@@ -54,7 +54,44 @@ def test_apk_permissions_names_permissions_not_declared() -> None:
     assert len(payload["permissions"]) == 256
     assert payload["has_more"] is True
     assert payload["requested_permissions"] == ["R"]
+    # A parser without the declared-permissions accessor degrades cleanly.
+    assert payload["declared_permissions"] == []
     doc = _tool_docstring("apk.permissions")
     assert "Answers with permissions" in doc
     assert "requested_permissions" in doc
     assert "has_more" in doc
+
+
+class _CustomPermApk:
+    def get_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET"]
+
+    def get_requested_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET"]
+
+    def get_declared_permissions_details(self) -> dict[str, dict[str, str]]:
+        return {
+            "com.app.C2D_MESSAGE": {"protectionLevel": "signature", "label": "l"},
+            "com.app.WEAK": {"protectionLevel": "normal"},
+        }
+
+
+def test_apk_permissions_surfaces_app_declared_permissions_with_levels() -> None:
+    """The app's own <permission> definitions and their protection level are a
+    privilege boundary; a normal level guarding IPC is a finding.
+
+    Measured: two declared permissions returned as {name, protection_level},
+    sorted by name, distinct from the uses-permission lists.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _CustomPermApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+    assert payload["declared_permissions"] == [
+        {"name": "com.app.C2D_MESSAGE", "protection_level": "signature"},
+        {"name": "com.app.WEAK", "protection_level": "normal"},
+    ]
+    # Declared permissions are separate from the requested/used view.
+    assert payload["requested_permissions"] == ["android.permission.INTERNET"]
+    doc = _tool_docstring("apk.permissions")
+    assert "declared_permissions" in doc
+    assert "protection_level" in doc

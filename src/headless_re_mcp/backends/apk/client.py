@@ -391,12 +391,47 @@ class ApkClient:
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested, requested_more = declared, declared_more
+        custom, custom_more = self._declared_permissions(apk)
         return {
             "permissions": declared,
             "requested_permissions": requested,
+            # The custom permissions the app itself defines, with their
+            # protection level. A normal/dangerous level on a permission that
+            # guards an exported component is a privilege-escalation surface, so
+            # it belongs beside the requested list, not folded into it.
+            "declared_permissions": custom,
             "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "has_more": declared_more or requested_more or custom_more,
         }
+
+    def _declared_permissions(self, apk: Any) -> tuple[list[JsonObject], bool]:
+        """The app's own ``<permission>`` declarations with protection levels.
+
+        androguard exposes these separately from uses-permission; older builds
+        lack the accessor, and the detail dict's shape varies, so read both
+        defensively and degrade to an empty list rather than break the answer.
+        """
+        getter = getattr(apk, "get_declared_permissions_details", None)
+        if not callable(getter):
+            return [], False
+        try:
+            details = getter() or {}
+        except Exception:  # noqa: BLE001
+            return [], False
+        if not isinstance(details, dict):
+            return [], False
+        out: list[JsonObject] = []
+        has_more = False
+        for name in sorted(details):
+            if len(out) >= _MAX_PERMISSIONS:
+                has_more = True
+                break
+            detail = details.get(name)
+            level = ""
+            if isinstance(detail, dict):
+                level = str(detail.get("protectionLevel", "") or "")
+            out.append({"name": str(name), "protection_level": level})
+        return out, has_more
 
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
