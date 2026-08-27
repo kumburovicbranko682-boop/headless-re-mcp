@@ -120,6 +120,20 @@ def test_m11_elf_session_drives_ghidra_tools_end_to_end(tmp_path: Path) -> None:
     check_entry = entry_for["crackme_check"]
     mangle_entry = entry_for["mangle"]
 
+    # Address enrichment (parity with the r2 backend): the ELF load base is
+    # named once at the top level, and each function entry gains the structured
+    # companion with module and an rva relative to that base.
+    assert funcs.data.get("module"), funcs.data
+    image_base = funcs.data.get("image_base")
+    assert isinstance(image_base, int), funcs.data
+    assert funcs.data.get("architecture") == "x64", funcs.data
+    check_item = next(i for i in items if str(i.get("name")) == "crackme_check")
+    entry_obj = check_item.get("entry_address")
+    assert isinstance(entry_obj, dict), check_item
+    assert entry_obj.get("va") == int(check_entry, 16), (entry_obj, check_entry)
+    assert entry_obj.get("module") == funcs.data["module"], entry_obj
+    assert entry_obj.get("rva") == int(check_entry, 16) - image_base, (entry_obj, image_base)
+
     # decompile(crackme_check): recovered C carries the function's behaviour --
     # it names itself, calls the helper, and prints the marker literal inline.
     outer = service.ghidra_decompile(sid, check_entry, timeout=_TIMEOUT_S)
@@ -153,6 +167,14 @@ def test_m11_elf_session_drives_ghidra_tools_end_to_end(tmp_path: Path) -> None:
     assert all(str(x.get("to")) == mangle_entry for x in xitems), xitems
     call_edges = [x for x in xitems if "CALL" in str(x.get("type"))]
     assert call_edges, [str(x.get("type")) for x in xitems]
+    # Both endpoints of a call edge carry the same from_address/to_address
+    # objects r2 emits, so the two engines' ELF xrefs join on rva coordinates.
+    edge = call_edges[0]
+    for string_field, object_field in (("from", "from_address"), ("to", "to_address")):
+        endpoint = edge.get(object_field)
+        assert isinstance(endpoint, dict), edge
+        assert endpoint.get("va") == int(str(edge.get(string_field)), 16), edge
+        assert isinstance(endpoint.get("rva"), int), edge
     check_size = body_for["crackme_check"]
     assert check_size > 0, body_for
     assert any(
