@@ -277,7 +277,11 @@ def hydrate_persisted_sessions(
 def session_from_store_row(row: Mapping[str, Any]) -> Session | None:
     """Build a dormant Session from a sessions.db row, or skip a bad row."""
     session_id = str(row.get("id") or "").strip()
-    if not session_id or Path(session_id).name != session_id:
+    # Path("..").name == "..", so the bare name check would restore a session
+    # whose id is a dot segment; that id then flows into every
+    # artifact_root/<cat>/<id> builder and climbs one level out of its subtree.
+    # Reject the dot segments here, the way the timeline store already does.
+    if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
         return None
     stored_state = str(row.get("state") or "").strip().lower()
     try:

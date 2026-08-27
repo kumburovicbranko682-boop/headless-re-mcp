@@ -435,7 +435,13 @@ class DynamicInspectMixin:
             )
         output_path: Path | None = None
         try:
-            if not session_id or Path(session_id).name != session_id:
+            from headless_re_mcp.core.service import _is_safe_session_segment
+
+            # Path("..").name == "..", so the old name check let a lone ".."
+            # through and dump/.. resolved onto the artifact root. There is no
+            # registry.get before this write, so the segment check is the only
+            # guard on the path -- reject the dot segments explicitly.
+            if not _is_safe_session_segment(session_id):
                 raise ValueError("invalid session id for artifact path")
             directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
             directory.mkdir(parents=True, exist_ok=True)
@@ -589,7 +595,13 @@ class DynamicInspectMixin:
             params: JsonObject = {"base": base}
             header_path: Path | None = None
             if save_artifact:
-                if not session_id or Path(session_id).name != session_id:
+                from headless_re_mcp.core.service import _is_safe_session_segment
+
+                # Path("..").name == "..", so the old name check passed a lone
+                # ".." and dump/.. resolved onto the artifact root. This write
+                # has no registry.get in front of it, so the segment check is
+                # the only guard -- reject the dot segments explicitly.
+                if not _is_safe_session_segment(session_id):
                     raise ValueError("invalid session id for artifact path")
                 directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
                 directory.mkdir(parents=True, exist_ok=True)

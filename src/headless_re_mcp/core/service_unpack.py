@@ -2120,7 +2120,11 @@ class UnpackMixin:
             )
         return state
     def _unpack_session_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        # Path("..").name == "..", so the old name check let a lone ".."
+        # through and unpack/../session climbed out of the session subtree.
+        if not _is_safe_session_segment(session_id):
             raise ValueError("invalid session id for unpack artifact path")
         return (
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"
