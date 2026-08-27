@@ -62,6 +62,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（frida.server.ensure 的 port/remote_path 校验移到 adbutils 能力门之前）
+
+- `AdbBackend.ensure_frida_server` 把 `port` 与 `remote_path` 都拼进 `su -c '…'` 命令行，二者本是
+  请求自身的属性，却在 `_device`（解析 serial、需要 adbutils）之后才校验：于是没装 adbutils 的机器上
+  一个越界 port 得到 `capability_unavailable` 而非 `invalid_params`——同一个坏输入在不同机器给不同
+  结论；而非整数 port 会在 `int(port)` 拼接处抛 `ValueError`，经服务层兜底成 `internal_error` 事件，
+  把一个畸形请求记成服务器缺陷。`int(port)` 早已让拼接免于注入，但只堵住了 port 的**类型**，其**范围**
+  一直漏过去——一个 70000 之类的值会原样进到 shell。现把 `port`（整数、`1..65535`）与 `remote_path`
+  校验一并前移到 `_device` 之前，越界/非整数 port 与畸形 remote_path 都在碰设备、碰能力门之前回
+  `invalid_params`，与 `proxy.start` 的 port、Ghidra 的 max_heap、frida.memory.read 的 address 同属
+  "输入先于门" 的一致处理。回归直连后端用探针 `_device` 钉住：坏 port/remote_path 都在能力门之前定论
+  且从不触达设备，合法请求照常抵达设备。
+
 ### 新增（web.storage：读取页面的 localStorage / sessionStorage）
 
 - 新增只读工具 `web.storage`：列出当前页面 origin 的 `localStorage` 或 `sessionStorage`

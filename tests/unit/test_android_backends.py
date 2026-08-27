@@ -86,6 +86,65 @@ class TestAdbArgumentValidation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestFridaServerEnsurePortContract:
+    """ensure_frida_server judges its port and remote_path before the gate.
+
+    Both are interpolated into an ``su -c`` command line, so they are properties
+    of the request and must be settled the same way on every host -- before the
+    adbutils capability gate and before the serial is resolved. The reservation
+    ``int(port)`` made the splice injection-proof, but a bad port used to reach
+    either ValueError (an internal_error incident) or the shell unchecked; the
+    range check now answers ``invalid_params`` the way proxy.start's port does.
+    """
+
+    def _tripwire_backend(self) -> tuple[AdbBackend, list[str]]:
+        backend = AdbBackend()
+        reached: list[str] = []
+
+        def _device(serial: str) -> Any:
+            reached.append(serial)
+            raise AssertionError("the capability gate must not be reached")
+
+        backend._device = _device  # type: ignore[method-assign]
+        return backend, reached
+
+    @pytest.mark.parametrize("port", [0, -1, 65536, 70000])
+    def test_an_out_of_range_port_is_invalid_params_before_the_gate(self, port: int) -> None:
+        backend, reached = self._tripwire_backend()
+        with pytest.raises(AdbError) as info:
+            backend.ensure_frida_server("emulator-5554", port=port)
+        assert info.value.code == "invalid_params"
+        assert reached == []
+
+    @pytest.mark.parametrize("port", ["27042", 27042.0, None])
+    def test_a_non_int_port_is_invalid_params_not_internal_error(self, port: Any) -> None:
+        backend, reached = self._tripwire_backend()
+        with pytest.raises(AdbError) as info:
+            backend.ensure_frida_server("emulator-5554", port=port)
+        assert info.value.code == "invalid_params"
+        assert reached == []
+
+    def test_a_bad_remote_path_is_invalid_params_before_the_gate(self) -> None:
+        backend, reached = self._tripwire_backend()
+        with pytest.raises(AdbError) as info:
+            backend.ensure_frida_server(
+                "emulator-5554", remote_path="/data/local/tmp/frida; rm -rf /"
+            )
+        assert info.value.code == "invalid_params"
+        assert reached == []
+
+    def test_a_valid_request_passes_validation_and_reaches_the_device(self) -> None:
+        class _Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                return "root 99 /data/local/tmp/frida-server"
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        result = backend.ensure_frida_server("emulator-5554", port=27042)
+        assert result == {"running": True, "pushed": False, "port": 27042}
+
+
 class TestFridaTargetAuthorization:
     """The target boundary holds whether or not the frida module is installed.
 

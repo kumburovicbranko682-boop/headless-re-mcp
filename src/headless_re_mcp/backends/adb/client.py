@@ -693,9 +693,22 @@ class AdbBackend:
         nothing. Requires root (su) on the device; failures surface as
         structured errors rather than exceptions.
         """
-        dev = self._device(serial)
+        # Validate the request before the adbutils gate and before the serial is
+        # resolved. Both the port and remote_path are interpolated into the
+        # `su -c` command line below, so they are properties of the request that
+        # must be judged the same way on every host. With the checks after
+        # `_device`, a machine without adbutils answered capability_unavailable
+        # for an out-of-range port -- a different verdict for the same bad input
+        # -- and a non-int port raised ValueError from the `int(port)` splice,
+        # surfacing as an internal_error incident rather than the invalid_params
+        # that proxy.start's port already returns. `int(port)` also made the
+        # splice injection-proof, but only the port's *type* was ever in doubt;
+        # its range slipped through and a bogus value silently reached the shell.
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise AdbError("invalid_params", "port must be 1..65535", port=port)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
+        dev = self._device(serial)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
