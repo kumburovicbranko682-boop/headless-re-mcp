@@ -168,6 +168,9 @@ jobs:
       R2_VERSION: "6.2.0"
       JADX_VERSION: "1.5.6"
       APKTOOL_VERSION: "3.0.3"
+      GHIDRA_VERSION: "12.1.3"
+      GHIDRA_RELEASE: "Ghidra_12.1.3_build"
+      GHIDRA_ASSET: "ghidra_12.1.3_PUBLIC_20260817.zip"
     steps:
       - uses: actions/checkout@v7
 
@@ -222,6 +225,13 @@ jobs:
           printf '#!/bin/sh\nexec java -jar /tmp/apktoolbin/apktool.jar "$@"\n' > /tmp/apktoolbin/apktool
           chmod +x /tmp/apktoolbin/apktool
           echo "/tmp/apktoolbin" >> "$GITHUB_PATH"
+
+      - name: Install Ghidra for the headless analysis gate
+        run: |
+          curl -fsSL -o /tmp/ghidra.zip \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_RELEASE}/${GHIDRA_ASSET}"
+          unzip -oq /tmp/ghidra.zip -d /tmp/ghidra
+          echo "HEADLESS_RE_GHIDRA_HOME=/tmp/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
 
       - name: Linux integration gates
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
