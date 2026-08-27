@@ -88,7 +88,8 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_devices() -> dict[str, Any]:
         """Enumerate Frida devices (local, USB, remote).
 
-        Answers with devices (id, name, type) and count. There is no items
+        Answers with devices (id, name, type), count, total and has_more so a
+        page that filled the cap is not read as every device. There is no items
         field.
         """
         return _dump(analysis.frida_devices())

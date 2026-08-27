@@ -162,9 +162,37 @@ def test_frida_devices_puts_the_list_in_devices_not_items() -> None:
     assert len(payload["devices"]) == 2
     assert payload["devices"][0]["id"] == "local"
     assert payload["devices"][0]["type"] == "local"
+    assert payload["total"] == 2
+    assert payload["has_more"] is False
     doc = _tool_docstring("frida.devices")
     assert "Answers with devices" in doc
     assert "count" in doc
+    assert "has_more" in doc
+
+
+def test_frida_devices_caps_and_says_when_the_list_stopped(monkeypatch: Any) -> None:
+    """A crowded host used to answer count only, so a page read as every device.
+
+    Measured against FridaClient.enumerate_devices: 5 devices with the cap at
+    2 -> count 2, total 5, has_more True. Without total/has_more an agent that
+    read only the listing treated the page as every device Frida could see.
+    """
+    import headless_re_mcp.backends.frida.client as frida_client
+
+    monkeypatch.setattr(frida_client, "_MAX_DEVICES", 2)
+
+    class _ManyFrida:
+        def enumerate_devices(self) -> list[_Dev]:
+            return [_Dev(f"d{index}", f"Dev{index}", "remote") for index in range(5)]
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _ManyFrida()
+    payload = client.enumerate_devices()
+    assert payload["count"] == 2
+    assert len(payload["devices"]) == 2
+    assert payload["total"] == 5
+    assert payload["has_more"] is True
 
 class _App:
     def __init__(self, index: int) -> None:
