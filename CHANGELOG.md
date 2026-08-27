@@ -666,6 +666,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`parse_r2_json` 会把带括号的 opcode 当成 JSON 起点**。`rfind("[")` 切到
   `mov eax, dword [rbp+0x10]` 里，整表解析失败后只留下最后一个对象。现在从第一个
   `[`/`{` 做 `raw_decode`。
+- 新增回归（r2 `pdj` 分页上限的 accept 边界与计数形状无测试守住）。`_require_allowed_command`
+  是 r2 命令闸门（r2 能写内存、seek、开文件、`!` 起 shell，故只放行固定白名单），分页反汇编只在
+  `pdj N @ addr` 且 N 为无前导零的正整数、且不超过 512 时放行（`int(pdj.group(1)) <= 512`）。512 并非
+  随意：`disasm` 把自己的 `count` 也夹到 `1 <= count <= 512` 再拼 `pdj {count} @ {addr}`，两个上限必须
+  是**同一个** 512，否则合法的 `disasm(count=512)` 会拼出被自身闸门拒掉的命令。既有白名单测试只钉了两条边
+  的**拒收**侧（`pdj 513 @ 0` 拒、注入/复合命令不启动）和一个内点 accept（`pdj 32`），从不钉 accept 边界或计数
+  形状——于是把 `<= 512` 收紧成 `< 512` 全绿却悄悄丢掉最大页、还让 `disasm(count=512)` 被自身闸门拒掉；把
+  计数正则 `[1-9][0-9]*` 放松成 `[0-9]+` 则 `pdj 0`/`pdj 01` 开始漏过。新增回归：直呼 `_require_allowed_command`
+  钉住 1/2/511/512 放行、513/1000/99999 拒收、`pdj 0`/`01`/`00`/`0512` 拒收，并用假 `run_bounded` 驱动
+  `disasm(count=512)` 证明其拼出的命令过闸并启动、`count=513` 在开进程前即 `invalid_params`；两处变异（收紧
+  上限、放松正则）各由相应新测试捕获，既有白名单测试在收紧上限下仍全绿（坐实其未覆盖该边界）。
 - **`doctor` 把源码树和 MSVC 当成必选项**。二进制包部署没有它们也会报 NOT READY。
   必选探针只剩 `python` / `ida_idalib` / `x64dbg_headless_binaries`。
 - **resume/step 在事件环溢出时会报成功**。`wait_for_state` 把 `dropped > 0` 当成
