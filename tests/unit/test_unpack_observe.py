@@ -53,6 +53,66 @@ def test_stub_rva_ranges_from_upx_sections() -> None:
     assert ranges == [(0x3000, 0x1000)]
 
 
+def test_real_executable_upx0_is_not_a_stub_range() -> None:
+    """UPX0 stays out of the stub ranges even when it carries MEM_EXECUTE.
+
+    UPX0 is the region the stub decompresses the original code into -- the OEP
+    lands there -- while the stub itself lives in UPX1. The check above only
+    passed because its fixture omitted ``characteristics``, leaving UPX0
+    non-executable. A real UPX0 is RWX (``0xE0000000``, MEM_EXECUTE set) and a
+    4-char non-dotted unknown name, so the generic short-executable heuristic
+    used to catch it and mark the OEP's own region as stub. That suppressed the
+    ``left_stub_region`` signal (rip in UPX0 read as "still in the stub") and
+    penalised the true OEP candidate for the most common packer.
+    """
+    mem_execute = 0x20000000
+    read_write = 0xC0000000
+    sections = [
+        {
+            "name": "UPX0",
+            "virtual_address": 0x1000,
+            "virtual_size": 0x2000,
+            "characteristics": read_write | mem_execute,
+        },
+        {
+            "name": "UPX1",
+            "virtual_address": 0x3000,
+            "virtual_size": 0x1000,
+            "characteristics": read_write | mem_execute,
+        },
+        {
+            "name": ".rsrc",
+            "virtual_address": 0x4000,
+            "virtual_size": 0x500,
+            "characteristics": 0x40000040,
+        },
+    ]
+    ranges = stub_rva_ranges_from_sections(sections)
+    assert ranges == [(0x3000, 0x1000)]
+
+    # rip at the unpacked OEP inside UPX0 must read as having left the stub.
+    observations = collect_oep_observations(
+        module_base=MODULE_BASE,
+        module_size=0x5000,
+        rip=MODULE_BASE + 0x1500,
+        regions=[],
+        stub_rva_ranges=ranges,
+    )
+    assert "left_stub_region" in {item["kind"] for item in observations}
+
+    # The exclusion is narrow: a genuine short executable protector section with
+    # an unknown name is still classified as a stub range.
+    protector = [
+        {
+            "name": "GsF",
+            "virtual_address": 0x2000,
+            "virtual_size": 0x400,
+            "characteristics": 0x60000020,
+        }
+    ]
+    assert stub_rva_ranges_from_sections(protector) == [(0x2000, 0x400)]
+
+
 def test_rip_in_main_module_code_and_left_stub() -> None:
     regions = [
         _region(MODULE_BASE, MODULE_SIZE, _PAGE_EXECUTE_READ, protect_name="execute_read")

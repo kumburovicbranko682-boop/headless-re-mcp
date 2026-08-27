@@ -49,6 +49,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（UPX0 被误当作 stub 段，压掉了最常见壳的「离开 stub」信号）
+
+- `stub_rva_ranges_from_sections` 从 PE 段名推导 stub 的 RVA 区间，供 `collect_oep_observations`
+  判定「rip 是否已离开壳 stub」（`left_stub_region`）以及 `score_oep_candidates` 给 OEP 候选打分。
+  UPX 把段命名为 UPX0、UPX1……：**stub 与压缩数据在 UPX1+，UPX0 是 stub 把原始代码解压进去的目的段
+  ——OEP 就落在 UPX0**。`_STUB_SECTION_NAME` 正因如此只匹配 `upx[1-9]`、有意跳过 UPX0；但下方那条
+  「短名 + 可执行 + 非点开头 + 未知名」的 `weird_exec` 泛化启发式又把 UPX0 收了回去：真实 UPX0 带
+  `MEM_EXECUTE`（RWX，`characteristics` 形如 `0xE0000000`）、名字恰是 4 字符非点开头的未知名，全部命中。
+  于是 UPX0 被并入 stub 区间，rip 落在 UPX0（真正的解壳后代码）时 `_in_stub_ranges` 判真、
+  `left_stub_region` **不再触发**，`score_oep_candidates` 还会把这条真 OEP 候选按「仍在 stub」降权——
+  最常见的壳反而被压掉了最强的一条信号。既有单测 `test_stub_rva_ranges_from_upx_sections` 之所以没抓到，
+  是因为它的 UPX0 夹具省了 `characteristics`，`executable` 为假、`weird_exec` 便不成立。
+  现新增 `_UPX_FAMILY_SECTION`（`^\.?upx\d+$`）：凡属 UPX 家族且本身不是 stub 的段（即 UPX0）一律视为
+  解壳目的段，绝不计入 stub 区间；其余段（含真正的短名可执行保护壳段、`.vmp0` 之类点名 stub、无
+  `characteristics` 的 UPX1 具名 stub）行为不变。新增回归 `test_real_executable_upx0_is_not_a_stub_range`
+  用带 `MEM_EXECUTE` 的真实 UPX0/UPX1 断言只有 UPX1 入区间、rip 在 UPX0 时 `left_stub_region` 触发，并断言
+  一条短名可执行保护壳段仍被识别为 stub；去掉修复后该回归因 UPX0 混入而失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
