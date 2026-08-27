@@ -331,6 +331,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   只把非 `WebError` 的单体失败兜成 `not_found`；`network.get` 独此一处没对齐。现在它也先 `except WebError:
   raise` 让会话级故障带自己的 `code` 上抛（`timeout` 可重试），只有真正的单体 CDP 失败（资源不存在、body
   已被清出缓冲）才继续留作软 `body_error`、连同 `requestId`/`url` 等元数据一起返回。
+- **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
+  设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
+  实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
+  按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩
+  一个隔离单测在单独喂它。真正的坑是数值巧合：目录实际被裁到 `UNREGISTERED_CAPTURE_MAX_ENTRIES`，而集成
+  测试却拿 `_MAX_DEVICE_ARTIFACTS` 当预期值断言——两者今天都等于 32 才碰巧过。谁要真去调 `_MAX_DEVICE_ARTIFACTS`
+  改设备保留，改完是个静默的空操作、生产行为纹丝不动，测试还照样绿。现在删掉死函数与死常量，把「设备目录
+  为何要自己兜底」的说明移到实际裁剪点，并让集成测试直接对 `UNREGISTERED_CAPTURE_MAX_ENTRIES`（真正生效的
+  上限）断言；那条只喂死函数的隔离单测一并删除，免得它继续假装设备保留被覆盖到了。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时
