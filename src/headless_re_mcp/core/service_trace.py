@@ -693,6 +693,11 @@ class TraceMixin:
         why -- the debuggee exited, or the debugger errored mid-trace). Fewer
         hits than max_hits with all three false cannot happen, so a short trace
         always says which of the latter two ended it.
+
+        A pause whose registers could not be read cannot be confirmed to be at
+        the target, so its hit carries verified=false and a null
+        instruction_pointer, and unverified_hits counts them: those entries are
+        not clean confirmed calls even though they sit in hits.
         """
         try:
             if (expression is None) == (address is None):
@@ -739,6 +744,7 @@ class TraceMixin:
             hits: list[JsonObject] = []
             stopped_elsewhere = False
             resume_error: JsonObject | None = None
+            unverified_hits = 0
             try:
                 for sequence in range(int(max_hits)):
                     resumed = self.dynamic_resume(
@@ -773,6 +779,18 @@ class TraceMixin:
                     if pointer is not None and pointer != target_address:
                         stopped_elsewhere = True
                         break
+                    # A null pointer means the registers could not be read (or
+                    # carried no rip/eip/pc), so the check just above -- the one
+                    # that ends the trace on someone else's break -- was skipped
+                    # for this pause: it might not be at the target at all.
+                    # Recording it as an ordinary hit padded hit_count with an
+                    # entry whose instruction_pointer is null and whose arguments
+                    # (read from the same unreadable state) are empty, as if it
+                    # were a confirmed call. Flag it so an unverifiable pause is
+                    # not counted as a clean hit.
+                    verified = pointer is not None
+                    if not verified:
+                        unverified_hits += 1
                     if decodes_registers:
                         arguments = _register_arguments(registers, int(argument_count))
                     else:
@@ -789,6 +807,7 @@ class TraceMixin:
                         {
                             "sequence": sequence,
                             "instruction_pointer": pointer,
+                            "verified": verified,
                             "arguments": arguments,
                         }
                     )
@@ -819,6 +838,11 @@ class TraceMixin:
                     # as a complete count of the hits.
                     "resume_failed": resume_error is not None,
                     "resume_error": resume_error,
+                    # How many recorded hits could not be confirmed at the
+                    # target because their registers were unreadable (each such
+                    # hit carries verified=false and a null instruction_pointer).
+                    # 0 for a trace whose every hit was read and matched.
+                    "unverified_hits": unverified_hits,
                 },
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
