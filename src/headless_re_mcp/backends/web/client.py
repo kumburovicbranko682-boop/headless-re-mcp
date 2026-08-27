@@ -94,6 +94,25 @@ def _looks_like_missing_browser(exc: BaseException) -> bool:
     return "executable doesn't exist" in text or "playwright install" in text
 
 
+def _looks_like_nav_timeout(exc: BaseException) -> bool:
+    """Whether a goto failure is really a navigation timeout, not a load error.
+
+    ``page.goto`` raises Playwright's own ``TimeoutError`` when the page does not
+    reach the wait state within its deadline -- a transient, retry-worthy stall,
+    the same class the runner's wall-clock deadline already reports as
+    ``timeout``. Left in the generic ``except`` it became a non-retryable
+    ``backend_error``, so an unattended caller honouring ``retryable`` gave up on
+    a slow page that a second navigation might well have loaded. Match the type
+    by name (robust across Playwright versions and message wording) with the
+    message shape as a fallback, so a real load error (DNS, connection refused)
+    still reads as ``backend_error``.
+    """
+    if type(exc).__name__ == "TimeoutError":
+        return True
+    text = str(exc).casefold()
+    return "timeout" in text and "exceeded" in text
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -391,6 +410,12 @@ class WebBackend:
                         "playwright is installed but its browser is not; "
                         "run 'playwright install chromium'",
                     ) from exc
+                if url and _looks_like_nav_timeout(exc):
+                    raise WebError(
+                        "timeout",
+                        f"navigation to {url} did not complete within {timeout:g}s",
+                        url=url,
+                    ) from exc
                 raise WebError("backend_error", f"failed to open browser: {exc}", url=url) from exc
             return handle, summary
 
@@ -512,6 +537,12 @@ class WebBackend:
             try:
                 handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
             except Exception as exc:  # noqa: BLE001
+                if _looks_like_nav_timeout(exc):
+                    raise WebError(
+                        "timeout",
+                        f"navigation to {url} did not complete within {timeout:g}s",
+                        url=url,
+                    ) from exc
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],

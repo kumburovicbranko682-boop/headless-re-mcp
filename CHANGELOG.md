@@ -314,6 +314,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   防止畸形 DEX 把某个方法的调用点堆成无界列表）的列表并在触顶时置 `scan_capped`，`_page_bounds` 夹 `offset`
   （负值归零，不再尾切）与 `limit`（`le=1000`），回 `count`/`total`/`offset`/`has_more`/`scan_capped`。热点方法
   的调用点从此可逐页翻完。
+- **`web.open`/`web.navigate` 把导航超时报成不可重试的 `backend_error`**。`page.goto` 到点未达等待状态时抛
+  Playwright 自己的 `TimeoutError`，可 `open`/`navigate` 的 goto 都裹在一个通用 `except Exception` 里，一律
+  转成 `backend_error`——而慢页面是最常见的瞬时状况。`_Runner` 的墙钟兜底早已把超时报成 `timeout`
+  （retryable），adb/apk/jsre/jadx/apktool/frida/proxy 各后端的超时也都是 `timeout`；唯独 goto 这条把一个再
+  导航一次很可能就成功的停顿标成不可重试，无人值守、按 `retryable` 决定重试的编排器于是干脆放弃。现在
+  按类型名 `TimeoutError`（跨 Playwright 版本、措辞改动都稳）加报文兜底识别导航超时，改抛 `timeout`（带
+  `url`、retryable），真正的加载错误（DNS、连接被拒）仍是 `backend_error`。`open` 首次导航超时照旧整体
+  中止并拆掉会话，但现在标成 `timeout`，编排器会重开重试。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

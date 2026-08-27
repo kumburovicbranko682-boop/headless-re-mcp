@@ -285,6 +285,89 @@ class TestWebMissingBrowserDegrades:
         assert backend.status("browserless") == {"open": False}
 
 
+class TestWebNavigationTimeoutIsRetryable:
+    """A slow page is a transient stall, not a backend fault.
+
+    ``page.goto`` raises Playwright's TimeoutError when the wait state is not
+    reached in time. Left in the generic except it became a non-retryable
+    ``backend_error``; an unattended run honouring ``retryable`` then abandoned a
+    page a second navigation might have loaded. It now maps to ``timeout`` like
+    the runner's own wall-clock deadline and every other non-PE backend.
+    """
+
+    def test_the_classifier_recognises_a_playwright_timeout(self) -> None:
+        from headless_re_mcp.backends.web.client import _looks_like_nav_timeout
+
+        # Playwright raises its own type named TimeoutError; match it by name so
+        # a message reworded across versions still counts.
+        pw_timeout = type("TimeoutError", (Exception,), {})
+        assert _looks_like_nav_timeout(pw_timeout("anything")) is True
+        # Message shape is the fallback for a differently-typed wrapper.
+        assert _looks_like_nav_timeout(RuntimeError("page.goto: Timeout 30000ms exceeded")) is True
+        # A real load error stays a backend fault, not a retryable timeout.
+        assert _looks_like_nav_timeout(RuntimeError("net::ERR_CONNECTION_REFUSED")) is False
+
+    def test_open_maps_a_navigation_timeout_to_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import playwright.sync_api as pw_api
+
+        pw_timeout = type("TimeoutError", (Exception,), {})
+
+        class _FakeCdp:
+            def send(self, *args: object, **kwargs: object) -> dict:  # type: ignore[type-arg]
+                return {}
+
+            def on(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        class _FakePage:
+            def goto(self, url: str, **kwargs: object) -> object:
+                del url, kwargs
+                raise pw_timeout("Timeout 5000ms exceeded")
+
+        class _FakeContext:
+            def new_page(self) -> _FakePage:
+                return _FakePage()
+
+            def new_cdp_session(self, page: object) -> _FakeCdp:
+                del page
+                return _FakeCdp()
+
+        class _FakeBrowser:
+            def new_context(self, **kwargs: object) -> _FakeContext:
+                del kwargs
+                return _FakeContext()
+
+        class _FakePw:
+            class _Chromium:
+                def launch(self, *, headless: bool) -> _FakeBrowser:
+                    del headless
+                    return _FakeBrowser()
+
+            @property
+            def chromium(self) -> object:
+                return self._Chromium()
+
+            def stop(self) -> None:
+                return None
+
+        class _FakeFactory:
+            def start(self) -> _FakePw:
+                return _FakePw()
+
+        monkeypatch.setattr(pw_api, "sync_playwright", lambda: _FakeFactory())
+
+        backend = WebBackend()
+        backend._available = True
+        with pytest.raises(WebError) as info:
+            backend.open("slow", "https://slow.example/", headless=True, timeout=5.0)
+        assert info.value.code == "timeout"
+        assert info.value.details.get("url") == "https://slow.example/"
+        # The aborted open leaves no reservation to wedge the next call.
+        assert backend.status("slow") == {"open": False}
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
