@@ -27,7 +27,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
         native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        version, sdk or abis field. A zip with no readable package name is a
+        backend error, not an opened package.
         """
         return _dump(analysis.apk_open(session_id))
 
@@ -153,7 +154,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile one class to Java via jadx (requires jadx + JRE).
 
         Answers with class_name, path and source, plus truncated when the
-        Java was cut at the buffer. There is no java, code or text field.
+        Java was cut at the buffer. There is no java, code or text field. If
+        jadx exited non-zero on the whole-APK pass but still wrote this class,
+        the reply carries exit_code, tool_failed and stderr so a partial
+        decompile is not read as complete.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
@@ -180,7 +184,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with apk, size, signed (false until apk.sign), and note.
         There is no output, path or repacked field. A successful rebuild is
-        still unsigned.
+        still unsigned. An empty or non-zip output (apktool can exit 0 yet
+        leave a truncated file) is reported as backend_error, not as a rebuilt
+        apk, so an unusable file never reaches apk.sign.
         """
         return _dump(analysis.apk_repack(session_id, decoded_dir=decoded_dir, timeout=timeout))
 
@@ -220,8 +226,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
         plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field. A failed decompile is an error, not the
-        leftover sources of an earlier run.
+        no files or sources field. If jadx exited non-zero but still wrote a
+        tree, the reply carries exit_code, tool_failed and stderr so a tree
+        that is missing classes is not read as a complete decompile. A failed
+        decompile is an error, not the leftover sources of an earlier run.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
