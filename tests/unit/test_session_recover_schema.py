@@ -10,9 +10,10 @@ def test_session_recover_schema_matches_recover_backend_names() -> None:
     """The catalog accepted any backends list.
 
     Measured: input schema backends items have no pattern. _recover_backend_kinds
-    only accepts ida, static, x64dbg and dynamic. A caller that sends a long
-    list of unknown names still occupies a worker until that check runs, and
-    overnight recovery retries the same unknown names as if they never arrived.
+    accepts ida, static, x64dbg, dynamic, web and proxy. A caller that sends a
+    long list of unknown names still occupies a worker until that check runs,
+    and overnight recovery retries the same unknown names as if they never
+    arrived.
     """
     handler = next(
         binding.handler
@@ -23,4 +24,4 @@ def test_session_recover_schema_matches_recover_backend_names() -> None:
     items = next(
         item for item in props["backends"]["anyOf"] if item.get("type") == "array"
     )["items"]
-    assert items["pattern"] == "^(ida|static|x64dbg|dynamic)$"
+    assert items["pattern"] == "^(ida|static|x64dbg|dynamic|web|proxy)$"
