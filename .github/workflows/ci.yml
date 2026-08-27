@@ -290,6 +290,7 @@ jobs:
             tests/integration/test_android_re_gate.py \
             tests/integration/test_android_tools_gate.py \
             tests/integration/test_android_dex_gate.py \
+            tests/integration/test_android_jadx_apk_gate.py \
             tests/integration/test_android_sign_gate.py \
             tests/integration/test_agent_browser_smoke.py \
             -q -rs --tb=short --timeout=300
