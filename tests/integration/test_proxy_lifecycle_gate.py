@@ -8,8 +8,13 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import http.server
 import socket
+import socketserver
+import threading
 import time
+import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +26,22 @@ def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+class _OriginHandler(http.server.BaseHTTPRequestHandler):
+    BODY = b"hello-proxied-body"
+
+    def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(self.BODY)))
+        self.end_headers()
+        self.wfile.write(self.BODY)
+
+    def log_message(self, *_: object) -> None:
+        # The default handler writes every hit to stderr, which turns a passing
+        # gate into a wall of noise; the assertions below are the record.
+        return
 
 
 def _mitmproxy_available() -> bool:
@@ -99,6 +120,61 @@ def test_two_sessions_cannot_silently_share_one_port() -> None:
         assert backend.status("second") == {"running": False}
     finally:
         backend.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_records_a_flow_that_can_be_read_back(tmp_path: Path) -> None:
+    """Traffic through the proxy must land in the ring and be retrievable.
+
+    The other gates prove the port lifecycle but never send a request, so the
+    recorder addon and the flow read API had no live coverage -- exactly the
+    surface a mitmproxy major bump (the flow object's request/response shape)
+    would break silently. This drives one real HTTP request through the proxy
+    and reads the same flow back, body included.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy capture Gate not run (skip != pass)")
+
+    origin = socketserver.TCPServer(("127.0.0.1", 0), _OriginHandler)
+    origin_port = int(origin.server_address[1])
+    origin_thread = threading.Thread(target=origin.serve_forever, daemon=True)
+    origin_thread.start()
+
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("gate-capture", host="127.0.0.1", port=port)
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+        )
+        with opener.open(f"http://127.0.0.1:{origin_port}/thing", timeout=10) as response:
+            assert response.read() == _OriginHandler.BODY
+
+        # The addon records on the response event, which the proxy dispatches on
+        # its own loop thread; wait for it rather than assuming it is immediate.
+        deadline = time.monotonic() + 5.0
+        listing = backend.flows("gate-capture", limit=10)
+        while listing["count"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.1)
+            listing = backend.flows("gate-capture", limit=10)
+        assert listing["count"] >= 1, "no flow was recorded for a proxied request"
+
+        summary = listing["flows"][0]
+        assert summary["method"] == "GET"
+        assert summary["url"].endswith("/thing")
+        assert summary["status"] == 200
+
+        detail = backend.flow_get("gate-capture", str(summary["id"]), tmp_path)
+        assert detail["request"]["method"] == "GET"
+        assert detail["response"]["status"] == 200
+        assert detail["response"]["body"] == _OriginHandler.BODY.decode()
+
+        exported = backend.export_har("gate-capture", tmp_path / "capture.har")
+        assert exported["entry_count"] >= 1
+    finally:
+        backend.stop("gate-capture")
+        origin.shutdown()
+        origin.server_close()
 
 
 @pytest.mark.integration
