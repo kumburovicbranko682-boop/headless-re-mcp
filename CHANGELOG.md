@@ -943,6 +943,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `has_more`。
 - **`web.console` 默认只回最后 200 行，不说前面还有**。缓冲区本身有界，这一页再切一刀
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
+- **`web.network.get` 把浏览器线程卡死也当成「这条请求没有 body」**。所有读操作都走会话
+  的 runner 线程；线程卡死（驱动永不应答）或会话已关时，`_Runner.call` 抛 `WebError`
+  （`timeout` / `invalid_state`）。此前 `network_get` 把**任何**异常都折进
+  `{**entry, "body_error": ...}` 并回 ok 信封，于是一个什么都取不到的会话看起来只是
+  「这条请求恰好没有 body」，无人值守的 agent 便接着取下一条，而不去 `web.close`。
+  `web.script.source` 早已在此重抛 `WebError`；`network_get` 现在与它一致，真正的取
+  body 失败（重定向/204 无 body、已被浏览器淘汰的 body）仍是软 `body_error`。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
   切一刀。脚本补上 `has_more` / `truncated`。
 - **`analyzeHeadless` 退出非零却留下空 `{}` 时被当成空成功**。脚本失败后遗留的空导出会让
