@@ -136,6 +136,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Read the browser's whole cookie jar for the session.
+
+        Unlike the per-request Cookie headers in web.network.list, this returns
+        the live jar via CDP, so it includes HttpOnly cookies that page JS
+        (document.cookie) can never read -- which is where session and auth
+        tokens usually live. Answers with cookies (each name, value, domain,
+        path, expires, size, httpOnly, secure, session, sameSite, priority),
+        count, total, offset and has_more so a page that filled the limit is not
+        read as the whole jar. sameSite and priority are null when the browser
+        did not set them, not absent.
+        """
+        return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

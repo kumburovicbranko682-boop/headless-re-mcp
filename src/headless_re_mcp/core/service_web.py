@@ -236,6 +236,11 @@ class WebAnalysisMixin:
     def web_dom_snapshot(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "dom_snapshot", session_id)
 
+    def web_cookies(
+        self, session_id: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "cookies", session_id, offset=offset, limit=limit)
+
     def web_screenshot(self, session_id: str, full_page: bool = False) -> Result[JsonObject]:
         try:
             out = self._web_artifact_dir(session_id) / f"screenshot-{uuid4().hex}.png"

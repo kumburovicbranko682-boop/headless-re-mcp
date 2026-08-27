@@ -40,6 +40,23 @@ _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
+# A cookie jar is small (browsers cap ~180 cookies/domain, ~4 KB each), but a
+# hostile or instrumented page can still pile them up, so the read is paged
+# like the other capture readers rather than returned whole.
+_MAX_COOKIES = 1000
+_COOKIE_FIELDS = (
+    "name",
+    "value",
+    "domain",
+    "path",
+    "expires",
+    "size",
+    "httpOnly",
+    "secure",
+    "session",
+    "sameSite",
+    "priority",
+)
 _MAX_METADATA_BYTES = 1024
 # HAR enrichment: headers captured per request are metadata for the export, not
 # a mirror of the wire, so bound how many and how long each is kept resident.
@@ -1280,6 +1297,39 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                resp = handle.cdp.send("Network.getAllCookies")
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cannot read cookies: {exc}") from exc
+            raw = resp.get("cookies") if isinstance(resp, dict) else None
+            return raw if isinstance(raw, list) else []
+
+        # Network.getAllCookies returns the whole browser-context jar, including
+        # HttpOnly cookies that page JS (document.cookie) can never see -- the
+        # reason this exists beside the per-request Cookie headers in
+        # network.list. Normalise to a stable field set so a missing sameSite or
+        # priority is a null, not an absent key a caller has to guard.
+        entries = self._runner(handle).call(work)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_COOKIES))
+        window = entries[start : start + cap]
+        cookies = [
+            {field: cookie.get(field) for field in _COOKIE_FIELDS}
+            for cookie in window
+            if isinstance(cookie, dict)
+        ]
+        return {
+            "cookies": cookies,
+            "count": len(cookies),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)

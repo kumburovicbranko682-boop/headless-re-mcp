@@ -60,6 +60,11 @@ _SITE_JS = (
 )
 _SITE_COOKIE_NAME = "netgate"
 _SITE_COOKIE_VALUE = "chip-9449"
+# An HttpOnly cookie the document sets alongside the readable one: page JS
+# (document.cookie) can never see it, so it is what proves web.cookies reads the
+# real CDP jar rather than what a script could scrape.
+_SITE_HTTPONLY_NAME = "netgate_secure"
+_SITE_HTTPONLY_VALUE = "sealed-9449"
 _REDIR_PATH = "/redir"
 _REDIR_TARGET = "/redir-target"
 
@@ -96,6 +101,13 @@ class _GateHandler(BaseHTTPRequestHandler):
         # Cookie/Set-Cookie headers from CDP's ExtraInfo events.
         if not is_js:
             self.send_header("Set-Cookie", f"{_SITE_COOKIE_NAME}={_SITE_COOKIE_VALUE}; Path=/")
+            # A second, HttpOnly cookie: the browser stores it in the jar but
+            # never exposes it to document.cookie, so web.cookies (CDP jar) must
+            # still return it.
+            self.send_header(
+                "Set-Cookie",
+                f"{_SITE_HTTPONLY_NAME}={_SITE_HTTPONLY_VALUE}; Path=/; HttpOnly",
+            )
         self.end_headers()
         self.wfile.write(body)
 
@@ -586,6 +598,52 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                 assert redir_hop["response"]["redirectURL"].endswith(_REDIR_TARGET), redir_hop[
                     "response"
                 ]["redirectURL"]
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cookies_read_the_jar_including_httponly() -> None:
+    """web.cookies must return the live jar, HttpOnly cookies included.
+
+    The loopback document sets two cookies: a readable one and an HttpOnly one
+    page JS can never see. web.cookies reads the CDP jar, so both must come
+    back -- the HttpOnly cookie is the proof this is the real jar and not a
+    document.cookie scrape. Each row must also carry the httpOnly flag so an
+    agent can tell a session/auth cookie from a page-readable one. skip != pass
+    when playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                jar = _poll(
+                    lambda: service.web_cookies(session_id),
+                    lambda r: r.ok
+                    and {c["name"] for c in r.data["cookies"]}
+                    >= {_SITE_COOKIE_NAME, _SITE_HTTPONLY_NAME},
+                )
+                assert jar.ok, jar.error
+                by_name = {c["name"]: c for c in jar.data["cookies"]}
+                # The readable cookie and its value.
+                assert by_name[_SITE_COOKIE_NAME]["value"] == _SITE_COOKIE_VALUE
+                assert by_name[_SITE_COOKIE_NAME]["httpOnly"] is False
+                # The HttpOnly cookie only the CDP jar can see, correctly flagged.
+                assert by_name[_SITE_HTTPONLY_NAME]["value"] == _SITE_HTTPONLY_VALUE
+                assert by_name[_SITE_HTTPONLY_NAME]["httpOnly"] is True
             finally:
                 service.web_close(session_id)
         finally:
