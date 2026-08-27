@@ -114,6 +114,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   与 `apk.repack` 已经校验自己的产物是有效 zip、以及 wasm 工具在启 wabt 前先查 `\0asm` 魔数属同一快速
   失败范式。直接调后端的 apk.decode / apk.sign 单测相应改用真实（极小）zip 作输入，并新增直测钉住
   非 zip 输入在开进程前即被拒、有效 zip 仍照常交给工具。
+- **`apk.decompile` / `apk.export_sources`（jadx）漏了同一道校验**。它们和 apktool 同为「先启 JVM 的
+  APK 工具」，却只检查输入路径存在就把它交给 jadx；输入一旦不是 zip，jadx 照样拉起 JVM，失败后
+  `_run` 只能报成 `backend_error`「jadx produced no sources」——正是 apk.decode / apk.sign 那道校验要
+  消除的晦涩失败，换个工具再犯一次。apk.* 会话的目标恒为已校验的 zip（`describe_apk` 在建会话时以
+  `ZipFile` 打开并要求 `AndroidManifest.xml`），故这道校验永不会误拒真实输入，只兜住会话打开后文件被
+  截断/替换（TOCTOU）这类陈旧或损坏文件。现 jadx 在开进程前同样用 `zipfile.is_zipfile` 判定，不是就
+  回 `invalid_params`，与 apktool 对齐；`decompile` 经由 `export_sources` 共用这一个校验点。既有
+  jadx 部分反编译单测改用真实（极小）zip 作输入，并新增直测钉住非 zip 在开进程前即被拒、有效 zip 仍
+  照常交给 jadx。
 
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
