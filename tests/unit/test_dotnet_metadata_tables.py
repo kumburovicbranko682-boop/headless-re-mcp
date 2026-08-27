@@ -4,8 +4,11 @@ Every prior fixture wrote ``valid = 0`` -- a BSJB root with no tables -- so the
 ECMA-335 table walkers (`_table_row_size`, `_table_start`, the row iterators,
 and clr_inspect's Module/Assembly name extraction) were never exercised
 against actual rows. This fixture emits a byte-accurate metadata stream with
-Module, TypeDef, Field, MethodDef (tiny IL body) and Assembly tables plus a
-#Strings heap, so the walkers are tested end to end from a file on disk.
+Module, TypeDef, Field, MethodDef (tiny IL body), Assembly, AssemblyRef and
+ManifestResource tables plus a #Strings heap, so the walkers are tested end to
+end from a file on disk. AssemblyRef sitting between Assembly and
+ManifestResource matters: a mis-sized AssemblyRef row shifts the resource
+table's computed offset, so the resource assertions arbitrate the row sizing.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from headless_re_mcp.dotnet.metadata_enum import (
     disassemble_method_il,
     enumerate_metadata,
     list_memberref_xrefs,
+    table_row_size,
 )
 
 _METHOD_BODY_RVA = 0x1180
@@ -32,7 +36,18 @@ _METHOD_BODY_FILE = 0x380
 def _build_strings_heap() -> tuple[bytes, dict[str, int]]:
     heap = bytearray(b"\0")
     indexes: dict[str, int] = {}
-    for name in ("MyModule.exe", "Program", "MyApp", "Main", "counter", "ToString", "MyAssembly"):
+    names = (
+        "MyModule.exe",
+        "Program",
+        "MyApp",
+        "Main",
+        "counter",
+        "ToString",
+        "MyAssembly",
+        "mscorlib",
+        "app.resources",
+    )
+    for name in names:
         indexes[name] = len(heap)
         heap.extend(name.encode("ascii") + b"\0")
     return bytes(heap), indexes
@@ -43,12 +58,19 @@ def _build_tables_stream(idx: dict[str, int], *, typedef_declared: int = 1) -> b
     # reserved(4), major, minor, heap_sizes (all 2-byte heap indexes), reserved
     tables += struct.pack("<IBBBB", 0, 2, 0, 0x00, 1)
     valid = (
-        (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x20)
+        (1 << 0x00)
+        | (1 << 0x02)
+        | (1 << 0x04)
+        | (1 << 0x06)
+        | (1 << 0x0A)
+        | (1 << 0x20)
+        | (1 << 0x23)
+        | (1 << 0x28)
     )
     tables += struct.pack("<QQ", valid, 0)
     # Row counts in ascending table order; TypeDef's declared count is overridable
     # so a crafted file can claim far more rows than the stream actually holds.
-    tables += struct.pack("<IIIIII", 1, typedef_declared, 1, 1, 1, 1)
+    tables += struct.pack("<IIIIIIII", 1, typedef_declared, 1, 1, 1, 1, 1, 1)
     # Module: Generation, Name, Mvid, EncId, EncBaseId
     tables += struct.pack("<HHHHH", 0, idx["MyModule.exe"], 1, 0, 0)
     # TypeDef: Flags, Name, Namespace, Extends, FieldList, MethodList
@@ -61,6 +83,12 @@ def _build_tables_stream(idx: dict[str, int], *, typedef_declared: int = 1) -> b
     tables += struct.pack("<HHH", (1 << 3) | 0, idx["ToString"], 0)
     # Assembly: HashAlgId, Major, Minor, Build, Revision, Flags, PublicKey, Name, Culture
     tables += struct.pack("<IHHHHIHHH", 0x8004, 1, 2, 3, 4, 0, 0, idx["MyAssembly"], 0)
+    # AssemblyRef: Major, Minor, Build, Revision, Flags, PublicKeyOrToken, Name,
+    # Culture, HashValue -- unlike Assembly it has no HashAlgId but does carry a
+    # trailing HashValue blob, so this row is 20 bytes with 2-byte heap indexes.
+    tables += struct.pack("<HHHHIHHHH", 4, 0, 0, 0, 0, 0, idx["mscorlib"], 0, 0)
+    # ManifestResource: Offset, Flags, Name, Implementation (0 = this file)
+    tables += struct.pack("<IIHH", 0x40, 1, idx["app.resources"], 0)
     return bytes(tables)
 
 
@@ -256,6 +284,53 @@ def test_disassemble_il_marks_incomplete_decodes_partial() -> None:
     insns, partial = _disassemble_il(bytes([0x00, 0x00, 0x00]), max_insns=2)
     assert len(insns) == 2
     assert partial is True
+
+
+def test_resource_enumeration_past_an_assemblyref_row(tmp_path: Path) -> None:
+    """ManifestResource is located by summing the sizes of every earlier table.
+
+    AssemblyRef used to be sized with Assembly's formula (a phantom leading
+    HashAlgId and no trailing HashValue blob), which is 2 bytes too large
+    whenever blob indexes are 2 bytes -- the common case. That pushed the
+    computed resource-table offset past the real row, so the name, offset and
+    flags below all came back as garbage for any assembly that references
+    another one. These assertions arbitrate the AssemblyRef row layout.
+    """
+    binary = tmp_path / "tables.exe"
+    _write_clr_with_tables(binary)
+    page = enumerate_metadata(binary, "resources", limit=10)
+    assert page.total == 1
+    row = page.items[0]
+    assert row["token"] == 0x28000001
+    assert row["name"] == "app.resources"
+    assert row["offset"] == 0x40
+    assert row["flags"] == 1
+
+
+def test_row_sizes_the_small_fixture_cannot_arbitrate() -> None:
+    """ECMA-335 II.22 layouts whose wrong variants only diverge at scale.
+
+    A mis-sized row shifts the file offset of every later table, but with tiny
+    row counts and 2-byte heap indexes the wrong formulas happened to produce
+    the right numbers, so no end-to-end fixture can catch these:
+
+    - MethodSemantics.Method is a plain MethodDef index, not a MethodDefOrRef
+      coded index; the two differ once MethodDef or MemberRef crosses 2^15 rows.
+    - File.HashValue is a blob index, not an Implementation coded index; the
+      two differ once the blob heap needs 4-byte indexes.
+    """
+    # 40k MemberRef rows force MethodDefOrRef to 4 bytes, but Method stays a
+    # 2-byte simple MethodDef index: Semantics(2) + Method(2) + HasSemantics(2).
+    rows = {0x06: 100, 0x0A: 40_000, 0x14: 1, 0x17: 1, 0x18: 1}
+    size = table_row_size(rows, 0x18, string_index_size=2, blob_index_size=2, guid_index_size=2)
+    assert size == 2 + 2 + 2
+
+    # 4-byte blob indexes with tiny tables: an Implementation coded index would
+    # still be 2 bytes, but HashValue must follow the blob heap to 4.
+    size = table_row_size(
+        {0x26: 1}, 0x26, string_index_size=2, blob_index_size=4, guid_index_size=2
+    )
+    assert size == 4 + 2 + 4
 
 
 def test_memberref_xrefs_from_real_tables(tmp_path: Path) -> None:

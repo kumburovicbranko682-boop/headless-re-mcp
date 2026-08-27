@@ -497,10 +497,11 @@ def table_row_size(
         0x15: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x17),
         0x16: _simple_index_size(rc, 0x17),  # PropertyPtr
         0x17: 2 + s + b,  # Property
-        0x18: 2 + method_def_or_ref + has_semantics,  # MethodSemantics
-        0x19: (
-            _simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref
-        ),
+        # MethodSemantics.Method is a plain MethodDef index (II.22.28), not a
+        # MethodDefOrRef coded index: the two differ once MethodDef or MemberRef
+        # crosses 2^15 rows, and a wrong size here shifts every later table.
+        0x18: 2 + _simple_index_size(rc, 0x06) + has_semantics,
+        0x19: (_simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref),
         0x1A: s,  # ModuleRef
         0x1B: b,  # TypeSpec
         0x1C: 2 + member_forwarded + s + _simple_index_size(rc, 0x1A),
@@ -508,10 +509,17 @@ def table_row_size(
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
+        # AssemblyRef (II.22.5) is not Assembly: no leading HashAlgId(4), but a
+        # trailing HashValue blob. The old copy of Assembly's formula oversized
+        # every row by 2 whenever the blob index is 2 bytes (the common case),
+        # which shifted File/ExportedType/ManifestResource and broke resource
+        # enumeration for nearly any assembly that references another one.
+        0x23: 2 + 2 + 2 + 2 + 4 + b + s + s + b,
         0x24: 4 + _simple_index_size(rc, 0x23),  # AssemblyRefProcessor
         0x25: 12 + _simple_index_size(rc, 0x23),  # AssemblyRefOS
-        0x26: 4 + s + implementation,  # File
+        # File.HashValue is a blob index (II.22.19), not an Implementation
+        # coded index; they only happen to match while both are 2 bytes.
+        0x26: 4 + s + b,
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
         0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass

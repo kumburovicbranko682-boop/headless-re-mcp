@@ -62,6 +62,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   并新增一份带真实 Module/TypeDef/Field/MethodDef/Assembly 表与 #Strings 堆的合成夹具，
   首次覆盖此前只在空表（`valid=0`）上跑过的表游走器。
 
+### 修复（三张元数据表的 ECMA-335 行宽算错，资源枚举整体错位）
+
+- `metadata_enum.table_row_size` 里有三处行宽偏离 ECMA-335 II.22 的真实布局。表定位靠
+  “累加此前每张表的 行宽×行数”，任何一张算错都会让其后所有表的文件偏移整体平移，读出的
+  就是错位的垃圾字节而非报错：
+  - **AssemblyRef（0x23）**照抄了 Assembly 的公式——多了一个并不存在的前导
+    `HashAlgId(4)`、又漏掉了行尾的 `HashValue` blob 索引。blob 索引为 2 字节时（小/中型
+    程序集的常态）每行多算 2 字节，于是 File/ExportedType/ManifestResource 全部错位：
+    几乎任何引用了其它程序集的输入，`dotnet.enum(kind="resources")` 读到的资源名、偏移、
+    标志全是垃圾。现按 II.22.5 改为 `4×版本(2) + Flags(4) + PublicKeyOrToken(blob) +
+    Name + Culture + HashValue(blob)`。
+  - **MethodSemantics（0x18）**的 `Method` 列用了 MethodDefOrRef 编码索引，但 II.22.28
+    规定它是指向 MethodDef 的普通索引——MethodDef 或 MemberRef 行数越过 2^15 后两者
+    宽度分道扬镳，大型程序集的 Assembly 名与资源枚举随之错位。
+  - **File（0x26）**的 `HashValue` 列用了 Implementation 编码索引，但 II.22.19 规定它是
+    blob 索引；blob 堆升到 4 字节索引后两者不再相等。
+  合成夹具在 Assembly 与 ManifestResource 之间插入一行 AssemblyRef，端到端断言资源的
+  名称/偏移/标志逐字节正确（旧公式下该测试读到错位数据即失败）；小夹具无法逼出的
+  0x18/0x26 分歧则由 `table_row_size` 的直接单元断言把守。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
