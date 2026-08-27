@@ -209,7 +209,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        # bytes like wat/deobfuscate: with truncated alone, a dump cut at the
+        # inline cap cannot be told apart from a genuinely short one.
+        return _bounded_output(stdout, "objdump", include_bytes=True)
 
 
 def _discover_webcrack() -> Path | None:

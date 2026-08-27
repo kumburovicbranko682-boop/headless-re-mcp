@@ -57,6 +57,37 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_wasm_info_names_bytes_so_a_cut_dump_is_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """objdump named the dump and truncated but never the length.
+
+    Measured: a dump longer than the inline cap comes back truncated True with
+    no bytes, so a cut cannot be told apart from a genuinely short module. wat
+    and js.deobfuscate already answer with bytes; info was the odd one out.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "S" * 40
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).info(module)
+
+    assert "size" not in payload
+    assert payload["bytes"] == 40
+    assert payload["truncated"] is True
+    assert len(str(payload["objdump"]).encode("utf-8")) <= 10
+    assert "bytes" in _tool_docstring("wasm.info")
+
+
 def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named wat and never named the length field.
 
@@ -176,6 +207,7 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+    assert "bytes" in _tool_docstring("wasm.info")
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")

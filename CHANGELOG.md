@@ -60,6 +60,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（wasm.info 截断长度）
+
+- `wasm.info` 现在像 `wasm.wat` / `js.deobfuscate` 一样回传 `bytes`(objdump 文本的完整
+  字节数)。此前它只给 `objdump` 与 `truncated`,一旦在 inline 上限处被截断,调用方无从
+  区分“被砍了”与“本来就短”;`bytes` 给出完整长度,截断因此可量化。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
