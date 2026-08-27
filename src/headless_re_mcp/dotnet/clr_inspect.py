@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.detection.pe import PeFormatError, scan_pe
+from headless_re_mcp.dotnet.tables import TableSizingError, table_start_offset
 
 JsonObject = dict[str, Any]
 
@@ -331,6 +332,8 @@ def _parse_tables_and_names(
         return None, None, None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
     valid = int.from_bytes(tables[8:16], "little")
     cursor = 24
     row_counts: dict[int, int] = {}
@@ -364,44 +367,40 @@ def _parse_tables_and_names(
             end = len(strings)
         return strings[index:end].decode("utf-8", errors="replace")
 
-    module_name: str | None = None
-    assembly_name: str | None = None
     if not strings:
         return None, None, stats
-    for bit in range(64):
-        rows = row_counts.get(bit)
-        if not rows:
-            continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
-            module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
+
+    def name_of(table: int, name_field_offset: int) -> str | None:
+        """Read the Name-column string of ``table`` at its true stream offset.
+
+        ``table_start_offset`` walks every lower-numbered table by its ECMA row
+        width, so the Assembly table (0x20) is located even though TypeRef and
+        TypeDef sit before it. The old code advanced only past Module and then
+        stopped at the first other table, so ``assembly_name`` was None for
+        every real assembly (they all have a TypeRef/TypeDef before Assembly).
+        """
+        if not row_counts.get(table):
+            return None
+        try:
+            start = table_start_offset(
+                row_counts,
+                table,
+                table_data_offset=cursor,
+                string_index_size=string_index_size,
+                blob_index_size=blob_index_size,
+                guid_index_size=guid_index_size,
             )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
-            name_idx, _ = read_string_index(tables, name_at)
-            assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
+        except TableSizingError:
+            return None
+        at = start + name_field_offset
+        if at + string_index_size > len(tables):
+            return None
+        name_idx, _ = read_string_index(tables, at)
+        return string_at(name_idx)
+
+    # Module row: Generation(2) then Name(string).
+    module_name = name_of(0x00, 2)
+    # Assembly row: HashAlgId(4) + Major/Minor/Build/Rev(2*4) + Flags(4) +
+    # PublicKey(blob) then Name(string).
+    assembly_name = name_of(0x20, 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size)
     return module_name, assembly_name, stats
