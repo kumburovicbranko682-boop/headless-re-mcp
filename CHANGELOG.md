@@ -483,6 +483,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（Playwright runner 线程无上限）
+
+- 每个 `WebSession` 用一条守护 runner 线程串行化对 Playwright 驱动的调用。一次卡死的
+  Playwright 调用会把 runner 线程永久阻塞在驱动里、无从中断——该线程会活到进程退出，而
+  `close()`/`open()` 循环里每建一个会话就再起一条，卡死会话越积越多，线程数无界增长。现用
+  `BoundedSemaphore(_MAX_RUNNER_THREADS=16)` 给存活 runner 线程封顶：新会话在建线程前先抢槽，
+  抢不到即以 `resource_exhausted` 拒绝而非继续堆线程；线程正常退出或建线程失败都会归还槽，
+  卡死会话则一直占着自己的槽（正确反映其线程仍未死）。新增回归测试覆盖占满 16 槽后拒绝、
+  正常关闭归还槽、以及建线程失败路径不泄漏槽。
+
 ### 修复（adb forward 端口越界未在边界拦截）
 
 - `device.forward` 的 local/remote 端点校验用 `tcp:\d{1,5}` 匹配，会放过 `tcp:70000` 这类五位数
