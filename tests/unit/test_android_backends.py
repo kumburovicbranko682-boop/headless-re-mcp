@@ -353,10 +353,12 @@ class TestDevicePullSaysWhenNothingLanded:
 
 
 class TestFridaTargetAuthorization:
+    # These assert the authorization boundary, which is decided before frida is
+    # ever used, so they run whether or not the frida module is installed --
+    # the CI unit lanes have no frida, and an authorization contract that only
+    # skipped there would be untested exactly where it matters.
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.java_enumerate(
                 "usb", 4242, allowed_pids=[1, 2, 3], mode="classes", limit=1
@@ -366,8 +368,6 @@ class TestFridaTargetAuthorization:
 
     def test_device_hook_refuses_unauthorized_pid(self) -> None:
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 99, "noop", allowed_pids=[7])
         assert info.value.code == "permission_denied"
@@ -375,10 +375,24 @@ class TestFridaTargetAuthorization:
     def test_local_single_pid_rule_is_unchanged(self) -> None:
         """The pre-existing PE contract must survive the device generalisation."""
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.modules(4242, allowed_pid=4243, limit=1)
+        assert info.value.code == "permission_denied"
+
+    def test_unauthorized_pid_is_refused_even_with_no_frida_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whether a caller may touch a pid must not depend on frida's presence.
+
+        With the module forced absent, an unauthorized device call must still
+        report permission_denied -- never capability_unavailable, which would
+        leak whether the tool is installed to a caller not allowed to ask.
+        """
+        client = FridaClient()
+        monkeypatch.setattr(client, "_available", False)
+        monkeypatch.setattr(client, "_frida", None)
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate("usb", 4242, allowed_pids=[1], mode="classes", limit=1)
         assert info.value.code == "permission_denied"
 
     def test_unknown_hook_template_is_rejected_with_allowed_list(self) -> None:

@@ -791,8 +791,12 @@ class FridaClient:
             raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+        # Authorization is decided before tool availability, mirroring the local
+        # path's _require: whether a caller may touch a pid must not depend on
+        # whether frida happens to be installed, and an unauthorized caller is
+        # told "permission_denied" rather than having the capability's presence
+        # or absence leaked to them. Only an authorized caller learns frida is
+        # missing.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         allowed = set(int(value) for value in allowed_pids)
@@ -803,3 +807,5 @@ class FridaClient:
                 pid=pid,
                 allowed_pids=sorted(allowed),
             )
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
