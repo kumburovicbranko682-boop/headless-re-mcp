@@ -27,14 +27,19 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
 
     @tools.tool(name="device.list")
-    def device_list() -> dict[str, Any]:
+    def device_list(
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=64)] = 64,
+    ) -> dict[str, Any]:
         """List ADB devices and emulators visible to the local adb server.
 
-        Answers with devices (serial and state), count, and has_more. Offline
-        and unauthorized serials are included; a missing device is not the
-        same as an offline one.
+        Answers with devices (serial and state), count, total, offset, and
+        has_more so a filled page is not read as every device. Devices are
+        sorted by serial and paged with offset/limit; has_more only means a
+        larger offset still has rows. Offline and unauthorized serials are
+        included; a missing device is not the same as an offline one.
         """
-        return _dump(analysis.device_list())
+        return _dump(analysis.device_list(offset=offset, limit=limit))
 
     @tools.tool(name="device.connect")
     def device_connect(
