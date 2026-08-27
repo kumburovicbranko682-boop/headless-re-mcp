@@ -8,6 +8,8 @@ from headless_re_mcp.backends.jsre.client import (
 from headless_re_mcp.backends.jsre.wasm_summary import (
     extract_wasm_names,
     extract_wasm_names_bytes,
+    extract_wasm_sections,
+    extract_wasm_sections_bytes,
     extract_wasm_strings,
     extract_wasm_strings_bytes,
     summarize_wasm,
@@ -24,4 +26,6 @@ __all__ = [
     "extract_wasm_strings_bytes",
     "extract_wasm_names",
     "extract_wasm_names_bytes",
+    "extract_wasm_sections",
+    "extract_wasm_sections_bytes",
 ]

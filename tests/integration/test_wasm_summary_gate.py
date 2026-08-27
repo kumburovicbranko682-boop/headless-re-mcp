@@ -185,6 +185,87 @@ def test_wasm_strings_drives_the_service_end_to_end(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_wasm_sections_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.sections must lay out the section table through the real service.
+
+    Reuse the import/export/memory module and drive AnalysisService.wasm_sections
+    end to end: the success envelope must name the standard sections in order,
+    each offset must point inside the file and the offsets must strictly
+    increase, and a non-module must come back as an invalid_params envelope.
+    """
+    module_bytes = _module_with_surface()
+    module = tmp_path / "surface.wasm"
+    module.write_bytes(module_bytes)
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_sections(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        names = [s["name"] for s in data["sections"]]
+        assert names == ["type", "import", "function", "memory", "export"]
+        prev = 7  # past the 8-byte header
+        for section in data["sections"]:
+            assert section["offset"] > prev
+            assert section["offset"] + section["size"] <= len(module_bytes)
+            prev = section["offset"]
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"PK\x03\x04 this is a zip, not wasm")
+        failed = service.wasm_sections(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_sections_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the section layout against a module a real toolchain produced."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "mod.wat"
+    wat.write_text(
+        "(module\n"
+        '  (import "env" "log" (func $log (param i32)))\n'
+        '  (memory (export "mem") 1)\n'
+        '  (func (export "run") (param i32) (result i32) local.get 0)\n'
+        '  (data (i32.const 0) "hi"))\n',
+        encoding="utf-8",
+    )
+    module = tmp_path / "mod.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    file_len = module.stat().st_size
+    service = AnalysisService()
+    try:
+        result = service.wasm_sections(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        names = {s["name"] for s in data["sections"]}
+        # A module with an import, a defined func with a body, a memory and a
+        # data segment must show these standard sections in the layout.
+        for want in ("type", "import", "function", "memory", "export", "code", "data"):
+            assert want in names, f"{want} section missing from {sorted(names)}"
+        for section in data["sections"]:
+            assert 8 <= section["offset"] <= file_len
+            assert section["offset"] + section["size"] <= file_len
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_names_drives_the_service_end_to_end(tmp_path: Path) -> None:
     """wasm.names must recover the name-section symbol table through the service.
 

@@ -280,6 +280,18 @@ class WasmClient:
 
         return extract_wasm_names(path, contains=contains)
 
+    def sections(self, path: Path) -> JsonObject:
+        """The module's section table: id, name, size and file offset (pure Python).
+
+        Needs no wabt tool: the section framing is read directly, so the layout
+        -- where the code/data sections start and how big each section is, plus
+        every custom section's name and payload size -- is available even when
+        wasm2wat/wasm-objdump are not configured.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import extract_wasm_sections
+
+        return extract_wasm_sections(path)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

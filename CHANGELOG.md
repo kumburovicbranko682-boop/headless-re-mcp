@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **280（160 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **281（161 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -508,6 +508,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖模块名/函数名解码、stripped 模块（`has_name_section` false）、非 `name`
   的 custom section 不误解、无关子段按长度跳过、`contains` 过滤、4096 截断、坏 magic 的拒绝。该工具计入读效果，工具面因此
   278→279。
+- **WASM 线数得清 section 里有什么，却没有 section 表本身——不知道各段从哪儿起、多大**。`wasm.summary` 统计各 section 的
+  内容（多少类型、多少函数…），但没有工具回报 section 表本身：每个 section 在文件里从哪个偏移开始、多大，以及每个 custom
+  section 的名字和负载大小。要定位 code/data 段去 carve，或识破一个塞了载荷的超大 custom section，此前只能靠外部工具或人肉
+  读字节。新增只读的 `wasm.sections`，作为 `r2.sections` 在 WASM 上的对应物：**纯 Python** 直接读 section 分帧（wabt 缺席也能
+  出结果）。回 `version` 与 `sections`，每条带 `id`（数字 section id）、`name`（custom/type/import/function/table/memory/global/
+  export/start/element/code/data/data_count/tag，新提案的未知 id 记为 `section <n>`）、`size`（body 字节数）与 `offset`（body 在
+  文件里的字节偏移，好让调用方 seek/carve）；custom section 另带 `custom_name` 与 `payload_size`（名字之后的字节数），免得一个
+  塞了载荷的 custom section 被当成体量正常的标准段。另回 `count` 与 `total`；模块 section 数超过 4096（恶意堆一堆小 custom
+  section）时标 `sections_truncated`/`sections_total`/`sections_limit`。输入超 16 MiB 按 `too_large`、非模块按 `invalid_params`
+  拒绝，谎报的 section 长度读不出模块之外。至此 `wasm.summary`/`wasm.strings`/`wasm.names`/`wasm.sections` 组成完整静态套件：
+  导出面、字符串面、内部命名面、段布局面。活体门手工搭一个带 import/export/memory 的模块，走完整 `AnalysisService.wasm_sections`
+  信封断言各标准段按序出现、每个 `offset` 落在文件内且严格递增、非模块回 `invalid_params`（纯 Python，总会跑）；另一条在装了
+  wat2wasm 时把带 import/func/memory/data 的 WAT 现编成真模块，交叉校验 type/import/function/memory/export/code/data 各段都在
+  布局里且偏移+大小不越界（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖 id/name/size/offset 布局（含手算偏移）、custom
+  段的 `custom_name`/`payload_size`、未知 id 记名、4096 截断、坏 magic 与谎报长度的拒绝。该工具计入读效果，工具面因此 280→281。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

@@ -168,4 +168,28 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_names(path, contains=contains))
 
+    @tools.tool(name="wasm.sections")
+    def wasm_sections(path: str) -> dict[str, Any]:
+        """The section table of a .wasm module: id, name, size and file offset.
+
+        wasm.summary counts what is inside the sections; this is the map of the
+        sections themselves -- the WASM parallel of a native section table
+        (r2.sections). Parsed directly in pure Python (no wabt needed, so it
+        answers even when wasm2wat/wasm-objdump are absent). Answers with
+        version and sections, each carrying id (the numeric section id), name
+        (custom/type/import/function/table/memory/global/export/start/element/
+        code/data/data_count/tag, or "section <n>" for an id from a newer
+        proposal), size (the body length in bytes) and offset (the body's byte
+        offset in the file, so a caller can carve or seek). A custom section
+        also carries custom_name and payload_size (the bytes after the name),
+        so a fat custom section hiding a payload is not mistaken for a fat
+        standard section. Also count and total; sections_truncated with
+        sections_total/sections_limit mark a module with more than 4096 sections
+        (a hostile fan-out of tiny custom sections). An input over 16 MiB is
+        refused as too_large and a non-module as invalid_params. This is where
+        you find the code/data section offsets and spot an oversized custom
+        section, completing the wasm.summary/strings/names/sections static set.
+        """
+        return _dump(analysis.wasm_sections(path))
+
     return tools.bindings

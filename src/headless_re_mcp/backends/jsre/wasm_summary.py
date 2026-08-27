@@ -29,6 +29,25 @@ _WASM_MAGIC = b"\x00asm"
 # name. Anything else means the module is malformed or from a newer proposal we
 # do not claim to understand, so it is reported verbatim as "kind <n>".
 _EXTERNAL_KIND = {0: "func", 1: "table", 2: "memory", 3: "global"}
+# The standard WebAssembly section ids. An id outside this map is reported as
+# "section <n>" rather than guessed at, so a module using a newer proposal's
+# section is still laid out rather than rejected.
+_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+    13: "tag",
+}
 # Imports and exports are listed, so they are capped and the cut is announced,
 # exactly like the r2 item lists. Everything else is only counted.
 _MAX_ITEMS = 4096
@@ -478,3 +497,84 @@ def extract_wasm_names(path: Path, *, contains: str | None = None) -> JsonObject
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return extract_wasm_names_bytes(data, contains=contains)
+
+
+def extract_wasm_sections_bytes(data: bytes) -> JsonObject:
+    """Lay out a module's section table: id, name, size and file offset.
+
+    wasm.summary counts what is inside the sections; this is the map of the
+    sections themselves -- where each one starts in the file and how big it is,
+    the WASM parallel of a native section table. It reads the section framing
+    directly in pure Python (no wabt) and is where you spot an oversized custom
+    section hiding a payload, or find the byte offset of the data/code section
+    to carve. Each section body is sliced to its own bounds, so a bad length
+    cannot read past the module.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    version = int.from_bytes(data[4:8], "little")
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    collected: list[JsonObject] = []
+    total = 0
+    for section_id, body_offset, section_len, body in _walk_sections(cursor):
+        total += 1
+        if len(collected) >= _MAX_ITEMS:
+            continue
+        entry: JsonObject = {
+            "id": section_id,
+            "name": _SECTION_NAMES.get(section_id, f"section {section_id}"),
+            "size": section_len,
+            "offset": body_offset,
+        }
+        if section_id == 0 and not body.eof:
+            # A custom section's body is a name followed by an opaque payload;
+            # surface the name and how many bytes the payload itself is, so a
+            # fat "custom" entry is not mistaken for a fat standard section.
+            try:
+                entry["custom_name"] = body.name()
+                entry["payload_size"] = section_len - body.pos
+            except JsReError:
+                pass
+        collected.append(entry)
+
+    result: JsonObject = {
+        "version": version,
+        "sections": collected,
+        "count": len(collected),
+        "total": total,
+    }
+    if total > len(collected):
+        result["sections_truncated"] = True
+        result["sections_total"] = total
+        result["sections_limit"] = _MAX_ITEMS
+    return result
+
+
+def _walk_sections(cursor: _Cursor) -> list[tuple[int, int, int, _Cursor]]:
+    """Yield (section_id, body_file_offset, body_len, body_cursor) for each section.
+
+    Reading the id byte and the LEB length advances the cursor to the body, so
+    ``cursor.pos`` at that point is the body's absolute file offset. ``take``
+    slices the body to its declared length, keeping every downstream read inside
+    the section even when the length is a lie.
+    """
+    out: list[tuple[int, int, int, _Cursor]] = []
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body_offset = cursor.pos
+        body = _Cursor(cursor.take(section_len))
+        out.append((section_id, body_offset, section_len, body))
+    return out
+
+
+def extract_wasm_sections(path: Path) -> JsonObject:
+    """Lay out the section table of the module at ``path`` (shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return extract_wasm_sections_bytes(data)
