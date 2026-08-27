@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from headless_re_mcp.backends.web.client import WebBackend
+from headless_re_mcp.backends.web.client import WebBackend, _script_in_injected_world
 from headless_re_mcp.tools.web import build_web_tools
 
 
@@ -88,3 +88,24 @@ def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) ->
     assert "has_more" in doc
     assert "dropped" in doc
     assert "metadata_truncated" in doc
+
+
+def test_injected_world_filter_keeps_page_scripts_and_drops_playwright_ones() -> None:
+    """web.scripts must list the target's code, not the driver's instrumentation.
+
+    Debugger.scriptParsed fires for every execution context, and Playwright
+    parses its bindings / utilityScript / page.title() probes in an injected
+    isolated world. CDP marks the page's own scripts with isDefault True and the
+    injected ones with isDefault False, so only the non-default worlds are
+    dropped. When auxData is missing or malformed the world is unknown and the
+    script is kept, so a real page script is never hidden by a stricter guess.
+    """
+    # The page's own main-world scripts are kept.
+    assert _script_in_injected_world({"isDefault": True, "type": "default"}) is False
+    # Playwright's injected isolated-world scripts are dropped.
+    assert _script_in_injected_world({"isDefault": False, "type": "isolated"}) is True
+    # World unknown -> keep (never hide a real script on a guess).
+    assert _script_in_injected_world(None) is False
+    assert _script_in_injected_world({}) is False
+    assert _script_in_injected_world({"type": "isolated"}) is False
+    assert _script_in_injected_world("not-a-dict") is False
