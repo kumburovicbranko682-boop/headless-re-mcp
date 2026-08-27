@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy.export_har 无界写盘）
+
+- `proxy.export_har` 过去把整份捕获环里的 flow 摘要一股脑 `json.dumps` 写盘，没有任何大小上
+  限。环最多留 `_MAX_FLOWS` 条，每条摘要的 URL 又可达 16 KB，无人值守抓包因此能往制品目录写
+  下几十 MB——正是本模块的字节上限（保留 body 的 `_MAX_RETAINED_BYTES`）要挡住的失守方向。现
+  在与姊妹工具 `web.har.export` 对齐：先按 `UNREGISTERED_CAPTURE_MAX_BYTES` 上限从尾部（最新的
+  flow）逐步丢弃直到装得下，置 `truncated`、回报落盘 `size`；若连裁剪后的空壳都超限则以
+  `too_large` 拒绝且不留下任何半成品文件。`tests/unit/test_proxy_fields.py` 钉住截断路径、落盘
+  尺寸与失败即拒的契约。
+
 ### 修复（切换线程丢失进行中的 run）
 
 - 停在批准上的 run 服务端是持久的，但监控台只会重连自己手里已有 id 的 run（`history.state`
