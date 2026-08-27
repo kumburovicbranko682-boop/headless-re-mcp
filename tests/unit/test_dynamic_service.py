@@ -2422,6 +2422,33 @@ def test_batch_analyze_validates_inputs(tmp_path: Path) -> None:
     assert not service.batch_analyze(["sample.exe"], max_workers=99).ok
 
 
+def test_batch_analyze_discloses_dropped_blank_paths(tmp_path: Path) -> None:
+    """A count smaller than the submitted list must say a blank was dropped.
+
+    binaries is dropped of blank/whitespace-only entries before analysis, so a
+    caller (or agent) that assembled the list from a template saw count come
+    back smaller with nothing to say a blank was skipped -- indistinguishable
+    from a real path that silently never ran.
+    """
+    only = tmp_path / "one.exe"
+    _write_minimal_pe(only)
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+
+    result = service.batch_analyze(
+        [str(only), "", "   "],
+        max_workers=1,
+        open_static=False,
+    )
+
+    assert result.ok and result.data is not None
+    data = result.data
+    assert data["submitted"] == 3
+    assert data["skipped_blank"] == 2
+    assert data["count"] == 1
+    assert data["count"] == data["submitted"] - data["skipped_blank"]
+    assert [entry["binary"] for entry in data["entries"]] == [str(only)]
+
+
 def test_analyze_function_dynamic_rejects_out_of_range_timeout(tmp_path: Path) -> None:
     service, session_id, _ = _rebased_service(tmp_path, 0x140000000)
 
