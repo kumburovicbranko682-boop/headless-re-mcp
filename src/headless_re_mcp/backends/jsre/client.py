@@ -174,6 +174,13 @@ _WASM_OPS_ONE_LEB = frozenset(
 _MAX_WASM_CALLS_COLLECT = 50000
 _MAX_WASM_CALLS_PAGE = 1000
 _MAX_WASM_CALLEES = 100
+# wasm.callers is the reverse of wasm.calls: given a target function index it
+# walks every body (via _walk_body) and reports the functions that directly
+# call it -- the "xrefs to this function" view. A body the walker cannot fully
+# decode is counted in undecoded_bodies, since its calls to the target may be
+# undercounted.
+_MAX_WASM_CALLERS_COLLECT = 50000
+_MAX_WASM_CALLERS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1960,6 +1967,104 @@ def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonOb
         "functions": window,
         "has_code_section": has_code_section,
         "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def parse_wasm_callers(
+    path: Path, *, function: int, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """Find every function that directly calls a given function (xrefs), wabt-free.
+
+    The reverse of wasm.calls: name a target function index and this walks every
+    code-section body in pure Python -- no wabt needed -- and reports the
+    functions whose bodies contain a direct call / return_call to it, the "xrefs
+    to this function" a disassembler shows. It answers the first question of a
+    triage -- who reaches this suspicious import or routine (resolve the target
+    and the callers against wasm.functions for names) -- server-side, so a large
+    module's whole call graph need not be paged through to filter it client-side.
+    Each row is index (the caller's module-wide function index) and call_sites
+    (how many call instructions in it target the function, so a helper invoked
+    three times reads as 3) with decoded (false when that caller's body used an
+    opcode outside the walker's table, meaning its count may be low). Indirect
+    calls are invisible here by nature -- a call_indirect names no callee -- so
+    wasm.elements enumerates a table's possible targets instead. Returns target
+    (echoed back), has_code_section (false when the module has no code section --
+    then callers is empty and total 0, not an error), imported_count,
+    undecoded_bodies (functions the walker could not fully decode, whose calls to
+    the target may be missed) and callers with count, total, offset and has_more
+    so a filled page is not read as every caller; total is capped at 50000 with
+    scan_capped when more may exist, and truncated is true when the code section
+    itself is malformed (callers found so far are still returned). A file that is
+    not a WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    target = int(function)
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_CODE_SECTION_ID})
+    )
+    imported_count = 0
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        imported_count = len(func_imports)
+        truncated = truncated or imp_trunc
+    has_code_section = _WASM_CODE_SECTION_ID in bodies
+    rows: list[JsonObject] = []
+    scan_more = False
+    undecoded = 0
+    if has_code_section:
+        body = bodies[_WASM_CODE_SECTION_ID]
+        try:
+            count, pos = _read_uleb(body, 0)
+            for i in range(count):
+                size, pos = _read_uleb(body, pos)
+                if pos + size > len(body):
+                    raise _WasmParseError("function body runs past the section")
+                callees, _direct, _indirect, decoded = _walk_body(
+                    body[pos : pos + size]
+                )
+                pos += size
+                if not decoded:
+                    undecoded += 1
+                hits = sum(1 for callee in callees if callee == target)
+                if hits:
+                    if len(rows) >= _MAX_WASM_CALLERS_COLLECT:
+                        scan_more = True
+                        break
+                    rows.append(
+                        {
+                            "index": imported_count + i,
+                            "call_sites": hits,
+                            "decoded": decoded,
+                        }
+                    )
+        except _WasmParseError:
+            truncated = True
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_CALLERS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "target": target,
+        "callers": window,
+        "has_code_section": has_code_section,
+        "imported_count": imported_count,
+        "undecoded_bodies": undecoded,
         "count": len(window),
         "total": len(rows),
         "offset": start,

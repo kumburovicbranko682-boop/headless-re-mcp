@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -667,6 +667,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `imported_count` 与 `functions`（含 `count/total/offset/has_more`）；`total` 上限 50000、越限置
   `scan_capped`；`truncated` 在 code 段本身畸形时为 true（已读到的行照常返回）。非 WebAssembly 文件
   按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.callers`：`wasm.calls` 的逆向——给定目标函数索引，列出所有直接调用它的函数（反汇编器里的
+  “xrefs to this function”），纯 Python、**不需要 wabt**。回答排查的第一个问题：谁能到达这个可疑
+  导入或例程（`target` 与各 caller 索引可与 `wasm.functions` 联查名字）。走查每个函数体、在服务端完成
+  过滤，无需把整张调用图翻页到客户端再筛。每行是 `index`（caller 的模块级函数索引）与 `call_sites`
+  （该函数体内命中目标的 call 指令条数，调 3 次即计 3），并带 `decoded`——caller 函数体用到走查表外
+  操作码时为 false，其计数可能偏低。间接调用天然不可见（`call_indirect` 不指名被调者），其候选目标由
+  `wasm.elements` 枚举。返回 `target`（回显）、`has_code_section`（模块无 code 段时为 false，此时
+  `callers` 空、`total` 0，而非报错）、`imported_count`、`undecoded_bodies`（无法完整走查的函数体数，
+  其对目标的调用可能漏计）与 `callers`（含 `count/total/offset/has_more`）；`total` 上限 50000、越限置
+  `scan_capped`；`truncated` 在 code 段本身畸形时为 true（已读到的 caller 照常返回）。非 WebAssembly
+  文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

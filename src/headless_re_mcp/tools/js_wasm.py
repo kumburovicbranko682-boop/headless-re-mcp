@@ -69,6 +69,45 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.callers")
+    def wasm_callers(
+        path: str,
+        function: Annotated[int, Field(ge=0)],
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find every function that directly calls a function (xrefs), wabt-free.
+
+        The reverse of wasm.calls: name a target function index and this walks
+        every code-section body in pure Python -- no wabt needed -- and reports
+        the functions whose bodies contain a direct call / return_call to it,
+        the "xrefs to this function" a disassembler shows. It answers the first
+        question of a triage -- who reaches this suspicious import or routine
+        (resolve the target and the callers against wasm.functions for names) --
+        server-side, so a large module's whole call graph need not be paged
+        through to filter it client-side. Each row is index (the caller's
+        module-wide function index) and call_sites (how many call instructions
+        in it target the function, so a helper invoked three times reads as 3)
+        with decoded (false when that caller's body used an opcode outside the
+        walker's table, meaning its count may be low). Indirect calls are
+        invisible here by nature -- a call_indirect names no callee -- so
+        wasm.elements enumerates a table's possible targets instead. Returns
+        target (echoed back), has_code_section (false when the module has no
+        code section -- then callers is empty and total 0, not an error),
+        imported_count, undecoded_bodies (functions the walker could not fully
+        decode, whose calls to the target may be missed) and callers with count,
+        total, offset and has_more so a filled page is not read as every caller;
+        total is capped at 50000 with scan_capped when more may exist, and
+        truncated is true when the code section itself is malformed (callers
+        found so far are still returned). A file that is not a WebAssembly module
+        is refused as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(
+            analysis.wasm_callers(
+                path, function=function, offset=offset, limit=limit
+            )
+        )
+
     @tools.tool(name="wasm.calls")
     def wasm_calls(
         path: str,
