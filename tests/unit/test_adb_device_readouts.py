@@ -199,3 +199,53 @@ def test_force_stop_is_honest_when_the_process_list_is_unreadable() -> None:
     assert payload["stopped"] is None
     assert "remaining_pids" not in payload
     assert "note" in payload
+
+
+def test_force_stop_is_null_when_pidof_returns_a_host_error() -> None:
+    """An "adb: ... not found" host line is not a confirmed stop.
+
+    adbutils can return the adb host's own error as stdout without raising, and
+    the "adb: device 'x' not found" form contains "not found" -- the same token
+    the missing-pidof branch keys on. Read as "pidof is missing", it ran the ps
+    fallback, which for the same offline device came back with its own host-error
+    line, parsed to an empty process table, and reported stopped true for a
+    package the backend never actually checked. It must stay null, the honest
+    answer when the process list cannot be read.
+    """
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "adb: device 'emulator-5554' not found",
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
+    assert "note" in payload
+    # A host error must not be mistaken for a missing pidof and trigger ps -A.
+    sent = [
+        tuple(call) if isinstance(call, list) else tuple(str(call).split())
+        for call in dev.calls
+    ]
+    assert not any(tokens[:2] == ("ps", "-A") for tokens in sent)
+
+
+def test_force_stop_is_null_when_the_ps_fallback_returns_a_host_error() -> None:
+    """A device that truly lacks pidof but goes offline for ps stays null.
+
+    The genuine "/system/bin/sh: pidof: not found" message still routes to the
+    ps fallback, but if ps -A then answers with a host-error line rather than a
+    process table, an empty parse would read as a clean stop. force-stop
+    returning is not proof the package died, so the tri-state must stay null.
+    """
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "/system/bin/sh: pidof: not found",
+            ("ps", "-A"): "error: device offline",
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
+    assert "note" in payload

@@ -314,6 +314,17 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     except AdbError:
         return None
     text = str(raw).strip()
+    # adbutils can hand back the adb host's own "adb:" / "error:" line as stdout
+    # rather than raising, the way an offline device answers pm path / getprop.
+    # The "adb: device 'x' not found" form is doubly dangerous here: it contains
+    # "not found", the very token the missing-pidof branch keys on, so it routed
+    # to the ps fallback, which for the same offline device answered with its own
+    # host-error line, parsed to an empty process table, and made force_stop
+    # report stopped=true for a package it never checked. A host error is "could
+    # not read the process list", not a confirmed stop: return None so force_stop
+    # keeps the honest null it already emits when the pidof probe raises.
+    if _is_host_error_output(text):
+        return None
     if not text:
         return []
     lower = text.lower()
@@ -321,6 +332,11 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
         try:
             ps = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
         except AdbError:
+            return None
+        # Same guard for a device that genuinely lacks pidof but then goes
+        # offline for ps -A: a lone host-error line must not read as an empty
+        # process table and collapse the tri-state to a false clean stop.
+        if _is_host_error_output(str(ps)):
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
