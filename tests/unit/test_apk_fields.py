@@ -187,6 +187,42 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     assert "Answers with classes" in doc
     assert "has_more" in doc
 
+def test_apk_classes_excludes_framework_classes_the_dex_only_references(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """apk.classes lists the app's own classes, not every class it references.
+
+    androguard's analysis graph carries a node for every class the DEX touches,
+    including the framework and library classes it only calls into --
+    ``android.*``, ``java.*`` -- marked external. Listing those would bury the
+    app's handful of real classes under hundreds of framework names and inflate
+    total and the pagination math, so an agent enumerating "the classes in this
+    app" would page through the Android SDK. Only ``is_external() == False``
+    classes are kept, and total counts just those.
+    """
+    classes = [
+        _FakeClass("Lcom/example/App;"),
+        _FakeClass("Landroid/app/Activity;", external=True),
+        _FakeClass("Lcom/example/Util;"),
+        _FakeClass("Ljava/lang/Object;", external=True),
+        _FakeClass("Lcom/example/Main;"),
+    ]
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeClassParsed(classes)
+    )
+    payload = client.classes(tmp_path / "app.apk", offset=0, limit=100)
+    assert payload["classes"] == [
+        "Lcom/example/App;",
+        "Lcom/example/Main;",
+        "Lcom/example/Util;",
+    ]
+    assert payload["total"] == 3
+    assert payload["count"] == 3
+    # Not one framework class the DEX merely references leaks into the listing.
+    assert not any(name.startswith(("Landroid/", "Ljava/")) for name in payload["classes"])
+
+
 class _FakeApkMethod:
     def __init__(self, index: int) -> None:
         self.name = f"m{index}"
