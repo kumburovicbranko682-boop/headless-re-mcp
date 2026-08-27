@@ -5,12 +5,16 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.dotnet.metadata_enum import (
     CAPABILITY,
+    _coded_index_size,
     _disassemble_il,
     _MetaCtx,
+    _simple_index_size,
     _table_row_size,
     enumerate_metadata,
 )
@@ -55,6 +59,54 @@ def _write_minimal_clr(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)
     path.write_bytes(image)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [(0, 2), (65535, 2), (65536, 4), (100000, 4)],
+)
+def test_simple_index_widens_to_four_bytes_at_two_to_the_sixteen(rows: int, expected: int) -> None:
+    """A simple table index is 2 bytes until the table needs a 17th bit.
+
+    Every row offset in the #~ stream is a sum of table-row sizes, and a row
+    size is a sum of index widths. Get this boundary wrong by one and every
+    table after the first is read at the wrong offset, so the whole enumeration
+    silently returns garbage rather than failing.
+    """
+    assert _simple_index_size({0x02: rows}, 0x02) == expected
+
+
+@pytest.mark.parametrize(
+    ("tables", "tag_bits", "rows", "expected"),
+    [
+        # TypeDefOrRef: 2 tag bits, so the row number keeps 14 bits -> 2**14.
+        ((0x02, 0x01, 0x1B), 2, 16383, 2),
+        ((0x02, 0x01, 0x1B), 2, 16384, 4),
+        # HasCustomAttribute-style: 5 tag bits -> 11-bit row number -> 2**11.
+        ((0x06, 0x0A), 5, 2047, 2),
+        ((0x06, 0x0A), 5, 2048, 4),
+    ],
+)
+def test_coded_index_width_follows_the_tag_bit_budget(
+    tables: tuple[int, ...], tag_bits: int, rows: int, expected: int
+) -> None:
+    """A coded index steals tag_bits from its 16, so it widens sooner.
+
+    The more tables a coded index can point into, the more tag bits it spends,
+    and the fewer rows fit before it has to grow to 4 bytes. The threshold is
+    2**(16 - tag_bits), not 2**16.
+    """
+    assert _coded_index_size({tables[0]: rows}, tables, tag_bits) == expected
+
+
+def test_coded_index_width_is_driven_by_the_largest_referenced_table() -> None:
+    """One big table in the union forces the width for all of them.
+
+    The index has to address the largest table it can point into, so a small
+    MethodDef next to a huge MemberRef is still a 4-byte index -- reading it as
+    2 would misalign every following column in the row.
+    """
+    assert _coded_index_size({0x06: 1, 0x0A: 5000}, (0x06, 0x0A), 5) == 4
 
 
 def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
