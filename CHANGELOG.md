@@ -435,6 +435,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
   `frida.java.methods` 描述点名 `found`。
 
+### 修复（`frida.java.classes/methods` 的 `class_name` / `name_filter` 无长度上界）
+
+- 全库每个跨后端边界的字符串都在后端就地设界——ADB 序列号与包名、Web 选择器、Frida 的
+  `module_name`——唯独 `java_enumerate` 把 `class_name` 与 `name_filter` 原样送过 Frida RPC 到
+  设备,既不做类型检查、也不设长度上限,而工具层只对 `limit` 设了界。这两个值是作为 RPC **数据**
+  参数交给固定脚本的(从不拼进脚本),所以这是资源/编组护栏而非注入护栏:重点是调用方不能每次调用都把
+  一个兆字节级字符串编组到设备上。Java 名合法地带 `$`(内部类)/`[`(数组)/`.`(包),严格正则会误杀
+  合法目标,故按长度设界(512 字节)才是诚实的做法;`class_name` 另需非空,`name_filter` 可空(即"不过滤")。
+  含 NUL 的值一律拒绝,免得在编组途中被截断。校验挪到解析设备之前:坏 `mode`、超长或含 NUL 的
+  输入在任何 attach 发生**之前**当场以 `invalid_params` 拒绝(与 `install`/`push` 先判本地事实同一
+  次序),越权 pid 仍先于输入校验被 `permission_denied` 拦下。
+- 新增 `tests/unit/test_frida_java_input_bounds.py` 钉住:`class_name` 必填且设界、`name_filter`
+  可选且设界、含 NUL 拒绝、`class_name` 会被 strip、界内值原样抵达脚本、未知 `mode` 与超长输入都
+  在触碰设备之前失败(以 `resolved`/`attached` 均为空断言快失败)、以及授权边界仍先于输入校验生效。
+
 ### 修复（WASM 输入校验）
 
 - `wasm.wat` / `wasm.info` 现在在派生 `wasm2wat` / `wasm-objdump` 之前先核对四字节

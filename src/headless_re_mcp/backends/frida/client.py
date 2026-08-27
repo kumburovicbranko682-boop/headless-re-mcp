@@ -198,6 +198,53 @@ class FridaError(RuntimeError):
         self.details = details
 
 
+# class_name and name_filter cross the Frida RPC to the device as call
+# arguments to the fixed _JAVA_SCRIPT -- they are marshalled as data, never
+# interpolated into the script -- so this bound is about resources and
+# marshalling, not injection. A fully-qualified Java name with generics and
+# inner classes stays far under it; the cap keeps a caller from shipping a
+# megabyte string across the RPC on every enumerate, the same discipline the
+# serial, package, module and selector inputs already follow. A NUL can
+# truncate a value mid-marshal, so it is refused outright rather than silently
+# cut. Unlike package/serial there is no strict pattern: a Java name legitimately
+# carries '$' (inner classes), '[' (arrays) and '.' (packages), so bounding the
+# length is the honest guard and a regex would reject valid targets.
+_MAX_JAVA_NAME_BYTES = 512
+
+
+def _reject_unbounded_java_text(text: str, *, field: str) -> None:
+    if "\x00" in text:
+        raise FridaError("invalid_params", f"{field} must not contain a NUL byte", field=field)
+    if len(text.encode("utf-8", "surrogatepass")) > _MAX_JAVA_NAME_BYTES:
+        raise FridaError(
+            "invalid_params",
+            f"{field} exceeds {_MAX_JAVA_NAME_BYTES} bytes",
+            field=field,
+            limit=_MAX_JAVA_NAME_BYTES,
+        )
+
+
+def _bounded_class_name(value: Any) -> str:
+    """A required, length-bounded Java class name for frida.java.methods."""
+    if not isinstance(value, str):
+        raise FridaError("invalid_params", "class_name must be a string")
+    name = value.strip()
+    if not name:
+        raise FridaError("invalid_params", "class_name is required")
+    _reject_unbounded_java_text(name, field="class_name")
+    return name
+
+
+def _bounded_name_filter(value: Any) -> str:
+    """An optional, length-bounded substring filter for frida.java.classes."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise FridaError("invalid_params", "name_filter must be a string")
+    _reject_unbounded_java_text(value, field="name_filter")
+    return value
+
+
 def _is_timeout(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     return "timeout" in name or "timed out" in str(exc).lower()
@@ -723,6 +770,14 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
+        # Validate the mode and bound the caller's strings before resolving the
+        # device: these are cheap local facts, so a bad mode or an over-long
+        # class_name / name_filter fails fast rather than after an attach --
+        # the same "check what is local first" ordering install and push use.
+        if mode not in ("classes", "methods"):
+            raise FridaError("invalid_params", "mode must be classes or methods", mode=mode)
+        filter_text = _bounded_name_filter(name_filter) if mode == "classes" else ""
+        class_target = _bounded_class_name(class_name) if mode == "methods" else ""
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
         deadline = _bound_timeout(timeout)
@@ -741,33 +796,29 @@ class FridaClient:
                 script.load()
                 if mode == "classes":
                     values, has_more = _page(
-                        script.exports_sync.classes(name_filter or "", capped + 1), capped
+                        script.exports_sync.classes(filter_text, capped + 1), capped
                     )
                     return {"classes": values, "count": len(values), "has_more": has_more}
-                if mode == "methods":
-                    if not class_name:
-                        raise FridaError("invalid_params", "class_name is required")
-                    raw = script.exports_sync.methods(class_name, capped + 1)
-                    # found distinguishes "class is not loaded on the target"
-                    # (found false, methods empty) from "loaded, but declares no
-                    # methods of its own" (found true, methods empty) -- an empty
-                    # list alone read as the latter and hid a bad class name. The
-                    # bare-array branch tolerates the older script shape, exactly
-                    # as ``modules`` does.
-                    if isinstance(raw, dict):
-                        found = bool(raw.get("found"))
-                        values, has_more = _page(list(raw.get("methods") or []), capped)
-                    else:
-                        found = True
-                        values, has_more = _page(list(raw or []), capped)
-                    return {
-                        "class_name": class_name,
-                        "found": found,
-                        "methods": values,
-                        "count": len(values),
-                        "has_more": has_more,
-                    }
-                raise FridaError("invalid_params", "mode must be classes or methods")
+                raw = script.exports_sync.methods(class_target, capped + 1)
+                # found distinguishes "class is not loaded on the target"
+                # (found false, methods empty) from "loaded, but declares no
+                # methods of its own" (found true, methods empty) -- an empty
+                # list alone read as the latter and hid a bad class name. The
+                # bare-array branch tolerates the older script shape, exactly
+                # as ``modules`` does.
+                if isinstance(raw, dict):
+                    found = bool(raw.get("found"))
+                    values, has_more = _page(list(raw.get("methods") or []), capped)
+                else:
+                    found = True
+                    values, has_more = _page(list(raw or []), capped)
+                return {
+                    "class_name": class_target,
+                    "found": found,
+                    "methods": values,
+                    "count": len(values),
+                    "has_more": has_more,
+                }
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()
