@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # Install the optional *portable* reverse-engineering backends on Linux x86_64:
-# radare2 (cross-platform disassembler), wabt (wasm2wat / wasm-objdump), and
-# webcrack (JavaScript deobfuscation). These are the non-PE backends the Web and
-# radare2 tracks depend on; without them the matching integration gates skip,
-# and skip != pass. Each tool is discovered on PATH by the backend, so this only
-# needs to put them there.
+#   radare2   cross-platform disassembler (r2 track)
+#   wabt      wasm2wat / wasm-objdump      (Web WASM track)
+#   webcrack  JavaScript deobfuscation     (Web JS track)
+#   apktool   APK decode/rebuild           (Android repackaging track)
+#   apksigner APK signing                  (Android repackaging track)
+#   jadx      DEX -> Java decompiler        (Android decompilation track)
+# These are the non-PE backends the Web, radare2 and Android tracks depend on;
+# without them the matching integration gates skip, and skip != pass. Each tool
+# is discovered on PATH by the backend, so this only needs to put them there.
 #
 # Idempotent: anything already on PATH is left alone. Best-effort per tool: a
 # single failure prints a hint and moves on rather than aborting the rest, so a
-# machine that can install two of the three still gets them.
+# machine that can install some of them still gets those.
 set -uo pipefail
+
+JADX_VERSION="${JADX_VERSION:-1.5.0}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "install-linux-backends.sh supports Linux only" >&2
@@ -109,13 +115,72 @@ install_webcrack() {
   fi
 }
 
-echo "Installing portable RE backends (radare2, wabt, webcrack)…"
+install_apktool() {
+  if command -v apktool >/dev/null 2>&1 && command -v apksigner >/dev/null 2>&1; then
+    echo "apktool/apksigner: already present"
+    return 0
+  fi
+  echo "apktool + apksigner: installing via apt…"
+  # Both are JVM tools; apt pulls in a JRE if one is missing.
+  if apt_install apktool && apt_install apksigner; then
+    echo "apktool: $(apktool --version 2>/dev/null | head -1)"
+  else
+    echo "  ! apktool/apksigner install failed; see https://apktool.org" >&2
+    return 1
+  fi
+}
+
+install_jadx() {
+  if command -v jadx >/dev/null 2>&1; then
+    echo "jadx: already present ($(command -v jadx))"
+    return 0
+  fi
+  # jadx is not in the Debian archive, so fetch the pinned release zip. It needs
+  # a JRE at runtime; apt above usually already provides one.
+  local url zip dest bindir
+  url="https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+  zip="$(mktemp -d)/jadx.zip"
+  echo "jadx: downloading v${JADX_VERSION}…"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${zip}" "${url}" || { echo "  ! jadx download failed" >&2; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "${zip}" "${url}" || { echo "  ! jadx download failed" >&2; return 1; }
+  else
+    echo "  ! neither curl nor wget found; cannot fetch jadx" >&2
+    return 1
+  fi
+  # Install under /opt when we can write there, else the user's data dir; wire a
+  # tiny wrapper onto PATH so the launcher still resolves its own lib/ dir.
+  if as_root test -w /opt 2>/dev/null || [[ "$(id -u)" -eq 0 ]]; then
+    dest=/opt/jadx
+    bindir=/usr/local/bin
+    as_root rm -rf "${dest}" && as_root mkdir -p "${dest}"
+    as_root unzip -q "${zip}" -d "${dest}" || { echo "  ! jadx unzip failed" >&2; return 1; }
+    as_root chmod +x "${dest}/bin/jadx"
+    printf '#!/bin/sh\nexec %s/bin/jadx "$@"\n' "${dest}" | as_root tee "${bindir}/jadx" >/dev/null
+    as_root chmod +x "${bindir}/jadx"
+  else
+    dest="${HOME}/.local/share/jadx"
+    bindir="${HOME}/.local/bin"
+    rm -rf "${dest}" && mkdir -p "${dest}" "${bindir}"
+    unzip -q "${zip}" -d "${dest}" || { echo "  ! jadx unzip failed" >&2; return 1; }
+    chmod +x "${dest}/bin/jadx"
+    printf '#!/bin/sh\nexec %s/bin/jadx "$@"\n' "${dest}" > "${bindir}/jadx"
+    chmod +x "${bindir}/jadx"
+    echo "  (installed to ${bindir}; ensure it is on PATH)"
+  fi
+  echo "jadx: $(jadx --version 2>/dev/null | head -1 || echo "installed to ${dest}")"
+}
+
+echo "Installing non-PE RE backends…"
 install_radare2 || failures=$((failures + 1))
 install_wabt || failures=$((failures + 1))
 install_webcrack || failures=$((failures + 1))
+install_apktool || failures=$((failures + 1))
+install_jadx || failures=$((failures + 1))
 
 if [[ "${failures}" -gt 0 ]]; then
   echo "Done with ${failures} backend(s) not installed; the rest are ready." >&2
   exit 1
 fi
-echo "All portable backends installed."
+echo "All non-PE backends installed."

@@ -84,7 +84,7 @@ python3 -m headless_re_mcp serve-web
 
 `HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围。Playwright 浏览器仍需按上游方式另装，例如 `python3 -m playwright install chromium`。
 
-可移植原生后端（radare2、wabt 的 `wasm2wat`、webcrack）默认需自备。在 Debian/Ubuntu 上可用 `HEADLESS_RE_INSTALL_BACKENDS=1 ./scripts/install-linux.sh` 一并装好，或单独运行 `./scripts/install-linux-backends.sh`：脚本对已在 PATH 上的工具幂等跳过，用 apt 装 radare2/wabt、用 `npm -g` 装 webcrack（webcrack 需 Node 22/24）。装上后 Web 的 `js.*`/`wasm.*` 与 radare2 相关 Gate 才会真正执行，而不是如实跳过（skip ≠ pass）。
+可移植原生后端（radare2、wabt 的 `wasm2wat`、webcrack，以及 Android 写侧的 apktool/apksigner/jadx）默认需自备。在 Debian/Ubuntu 上可用 `HEADLESS_RE_INSTALL_BACKENDS=1 ./scripts/install-linux.sh` 一并装好，或单独运行 `./scripts/install-linux-backends.sh`：脚本对已在 PATH 上的工具幂等跳过，用 apt 装 radare2/wabt/apktool/apksigner、用 `npm -g` 装 webcrack（需 Node 22/24）、从 GitHub release 拉 jadx（可用 `JADX_VERSION` 指定版本）。装上后 Web 的 `js.*`/`wasm.*`、radare2、以及 Android 的重打包/反编译相关 Gate 才会真正执行，而不是如实跳过（skip ≠ pass）。
 
 ### Windows：从源码
 
@@ -390,7 +390,9 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 Android 静态分析（androguard 进程内）现有一个不依赖设备/SDK 的真机 Gate：仓库里提交了一个用真实 Java 编出、已签名的 `fixtures/android/sample.apk`（构建脚本见同目录 `build.sh`），`tests/integration/test_android_static_deep_gate.py` 用它跑通 `apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs` 全套——包含 DEX 类/方法/字符串与方法间交叉引用，只要装了 `android` extra（androguard）即执行。radare2 的 live Gate 也已可移植到非 Windows：缺 PE 夹具时会就地用 `cc` 编一个原生 ELF 来跑。
 
-抓包（mitmproxy）除了起停/端口释放的生命周期 Gate，现在还有一个端到端的抓包 Gate（`tests/integration/test_proxy_capture_gate.py`）：起一个本地 HTTP 源、把请求经代理转发过去，断言 `proxy.flows` 记到了这条流、`proxy.flow.get` 能取到请求/响应体、`proxy.export_har` 导出的 HAR 里带着它——纯 HTTP、免 CA、免外网。Web 静态侧则修了一个真实缺陷：`js.unpack_bundle` 在 webcrack 2.x 下必然报 “output directory already exists”（客户端预建了输出目录），加上 `-f` 后恢复可用，并新增了 `js.unpack_bundle` 与 `wasm.info`（wasm-objdump）的 live Gate。
+Android 写侧（重打包与反编译）也各有一个基于同一个 `sample.apk` 的真机 Gate：`test_android_repack_gate.py` 用 apktool 把 APK 拆成 smali、重新打包、再用 apksigner 以临时 keystore 签名，最后由 androguard 重新打开验证包身份不变；`test_android_decompile_gate.py` 用 jadx 把整个 APK 反编译回 Java，断言四个类都在、并且指定类的源码里保留了编译进去的标记字符串。这两条依赖 apktool/apksigner/jadx（PATH 探针，缺则如实跳过）。
+
+抓包（mitmproxy）除了起停/端口释放的生命周期 Gate，现在还有一个端到端的抓包 Gate（`tests/integration/test_proxy_capture_gate.py`）：起一个本地 HTTP 源、把请求经代理转发过去，断言 `proxy.flows` 记到了这条流、`proxy.flow.get` 能取到请求/响应体、`proxy.export_har` 导出的 HAR 里带着它，并进一步用 `proxy.replay` 重放该流、确认请求被再次发出并二次捕获——纯 HTTP、免 CA、免外网。Web 静态侧则修了一个真实缺陷：`js.unpack_bundle` 在 webcrack 2.x 下必然报 “output directory already exists”（客户端预建了输出目录），加上 `-f` 后恢复可用，并新增了 `js.unpack_bundle` 与 `wasm.info`（wasm-objdump）的 live Gate。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
