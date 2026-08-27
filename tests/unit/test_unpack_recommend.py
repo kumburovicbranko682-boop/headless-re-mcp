@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from headless_re_mcp.unpack.recommend import recommend_unpack_route
 
 
@@ -81,3 +83,10 @@ def test_recommend_pe_vm_like_and_force_route() -> None:
     forced = recommend_unpack_route([], force_route="bounded_dynamic")
     assert forced.route == "bounded_dynamic"
     assert "force_route" in forced.rationale
+
+
+def test_force_route_rejects_a_route_outside_the_allowed_set() -> None:
+    # A caller override is only honoured for known routes; an unknown one is a
+    # request error, not a silent pass-through that later routing must second-guess.
+    with pytest.raises(ValueError, match="force_route must be one of"):
+        recommend_unpack_route([], force_route="magic")
