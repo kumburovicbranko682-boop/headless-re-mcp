@@ -43,13 +43,29 @@ def _clear_caches() -> Any:
         ApkClient._full_cache.clear()
 
 
+def _fake_androguard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``import androguard`` succeed even where the extra is not installed.
+
+    The CI quality job installs only ``.[test,dev,web]``; androguard lives in
+    the ``android`` extra. __init__ flips ``_available`` on a successful
+    top-level import, and a submodule injected into sys.modules does not create
+    that parent, so the real ``_apk``/``_parsed`` gate would raise
+    ``capability_unavailable`` there. Seeding sys.modules bypasses the import
+    finder entirely, so these cache tests behave the same with or without the
+    real package present.
+    """
+    monkeypatch.setitem(sys.modules, "androguard", types.ModuleType("androguard"))
+
+
 def _inject_apk_class(monkeypatch: pytest.MonkeyPatch, apk_class: Any) -> None:
+    _fake_androguard(monkeypatch)
     module = types.ModuleType("androguard.core.apk")
     module.APK = apk_class  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "androguard.core.apk", module)
 
 
 def _inject_analyze(monkeypatch: pytest.MonkeyPatch, func: Any) -> None:
+    _fake_androguard(monkeypatch)
     module = types.ModuleType("androguard.misc")
     module.AnalyzeAPK = func  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "androguard.misc", module)
@@ -72,8 +88,11 @@ def test_missing_androguard_degrades_to_unavailable(monkeypatch: pytest.MonkeyPa
     assert client.available is False
 
 
-def test_available_reports_true_with_androguard_present() -> None:
-    # androguard is installed in this environment, so a plain client is available.
+def test_available_reports_true_when_androguard_imports(monkeypatch: pytest.MonkeyPatch) -> None:
+    # androguard is an optional extra the CI quality job does not install, so
+    # pin availability to a fake top-level module rather than the real one:
+    # __init__ flips _available on a successful ``import androguard``.
+    monkeypatch.setitem(sys.modules, "androguard", types.ModuleType("androguard"))
     assert ApkClient().available is True
 
 
