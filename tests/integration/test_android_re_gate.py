@@ -1,10 +1,13 @@
 """Android RE gate: session classification, APK metadata, and safe degradation.
 
-Runs without a device or extra tools by building a synthetic (harmless) APK in
-a temp dir. Parts that need a real device / jadx / adbutils are asserted only
-for a structured envelope, never a crash, so the gate is meaningful on a bare
-machine while still exercising the Android surface end to end (skip != pass for
-the live-device parts, which have their own explicit skips).
+Runs without a device or extra tools by building APKs in a temp dir. A
+deliberately invalid archive proves classification, stdlib metadata, and safe
+degradation on a bare machine; a second, genuinely androguard-parseable APK
+(real binary manifest, built by ``_apk_fixture``) exercises the androguard
+success path -- package, version, permissions, and every component type --
+skipping only where the ``android`` extra is absent. Parts that need a real
+device / jadx / adbutils are asserted only for a structured envelope, never a
+crash (skip != pass for the live-device parts, which have their own skips).
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from _apk_fixture import EXPECTED, build_valid_apk
 
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
@@ -64,6 +68,57 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         # Frida device enumeration returns an envelope (frida may be present).
         devices = service.frida_devices()
         assert isinstance(devices.ok, bool)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_static_reads_a_real_manifest(tmp_path: Path) -> None:
+    """Exercise the androguard success path against a real binary manifest.
+
+    The synthetic-APK test above only proves the adapter degrades on garbage.
+    This one hands androguard a valid AXML manifest and asserts it reads the
+    package, version, permissions, and every component type back out -- the path
+    that silently breaks when androguard renames an accessor between releases.
+    Skips (skip != pass) where the ``android`` extra is not installed.
+    """
+    pytest.importorskip("androguard")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.apk_open(session_id)
+        assert opened.ok, opened.error
+        assert opened.data["package"] == EXPECTED["package"]
+        assert str(opened.data["version_name"]) == EXPECTED["version_name"]
+        assert str(opened.data["version_code"]) == EXPECTED["version_code"]
+        assert opened.data["main_activity"] == EXPECTED["main_activity"]
+        assert opened.data["permission_count"] == len(EXPECTED["permissions"])
+        assert set(opened.data["native_abis"]) == EXPECTED["native_abis"]
+
+        permissions = service.apk_permissions(session_id)
+        assert permissions.ok, permissions.error
+        assert set(permissions.data["permissions"]) == EXPECTED["permissions"]
+
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert set(components.data["activities"]) == EXPECTED["activities"]
+        assert set(components.data["services"]) == EXPECTED["services"]
+        assert set(components.data["receivers"]) == EXPECTED["receivers"]
+        assert set(components.data["providers"]) == EXPECTED["providers"]
+        assert components.data["main_activity"] == EXPECTED["main_activity"]
+
+        native = service.apk_native_libs(session_id)
+        assert native.ok, native.error
+        assert set(native.data["abis"]) == EXPECTED["native_abis"]
+
+        manifest = service.apk_manifest(session_id)
+        assert manifest.ok, manifest.error
+        assert EXPECTED["package"] in manifest.data["manifest_xml"]
     finally:
         service.close_all()
 
