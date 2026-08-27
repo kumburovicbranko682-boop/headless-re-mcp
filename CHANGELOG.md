@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（App Bundle / 分包被当成 APK 打开时，报错点名容器格式而非谎称"没有 manifest"）
+
+- **`.aab` / `.apks` / `.xapk` 都在 APK 后缀名单里、都能当 zip 打开，但没有一个是可直接分析的单个
+  APK**：App Bundle 的清单是 protobuf、藏在 `base/manifest/` 且旁边有 `BundleConfig.pb`；split /
+  XAPK 分包集则是一个"里面装着若干 `.apk`"的 zip。两者都没有*根目录*的 `AndroidManifest.xml`，
+  于是 `describe_apk`（会话创建时跑，stdlib-only、不依赖 androguard）过去一律报
+  `archive has no AndroidManifest.xml`。这话技术上没错，却会把分析师支去找一个并不缺失、只是深了
+  一层的文件——尤其 AAB 明明*有*清单。现新增 `_bundle_container_hint`：探到 App Bundle 就报
+  "looks like an Android App Bundle (.aab), not a single APK; extract the base APK and open that
+  instead"，探到分包集就报 "a multi-APK package (.apks / .xapk split set)…"，其余（既非 APK 也非
+  bundle 的杂 zip）仍走原来的通用信息。真机核对过 aab/apks/xapk 三种夹具各命中对应提示、杂 zip 命中
+  通用信息。新增单测 `test_describe_apk_names_an_app_bundle_instead_of_missing_manifest` /
+  `test_describe_apk_names_a_split_apk_set_instead_of_missing_manifest`，并把原
+  `test_describe_apk_rejects_archive_without_manifest` 收紧成断言通用信息，钉住这条边界。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

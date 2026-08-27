@@ -358,11 +358,48 @@ class TestApkClassification:
         assert info["signed_v1"] is True
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
+        # A zip that is neither an APK nor a bundle keeps the generic message:
+        # the manifest genuinely is not anywhere, so there is nothing to name.
         plain = tmp_path / "archive.zip"
         with zipfile.ZipFile(plain, "w") as archive:
             archive.writestr("readme.txt", "hello")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="has no AndroidManifest.xml"):
             describe_apk(plain)
+
+    def test_describe_apk_names_an_app_bundle_instead_of_missing_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """An .aab has a manifest, just as protobuf under base/manifest/.
+
+        Reporting "archive has no AndroidManifest.xml" for a bundle is true but
+        misleading -- the manifest is there, one level in -- so an analyst hunts
+        for a file that is not missing. The error must name the container and say
+        what to open instead.
+        """
+        aab = tmp_path / "app.aab"
+        with zipfile.ZipFile(aab, "w") as archive:
+            archive.writestr("base/manifest/AndroidManifest.xml", b"proto-manifest")
+            archive.writestr("BundleConfig.pb", b"config")
+            archive.writestr("base/dex/classes.dex", b"dex\n035\x00")
+        with pytest.raises(ValueError, match="Android App Bundle"):
+            describe_apk(aab)
+
+    def test_describe_apk_names_a_split_apk_set_instead_of_missing_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """A .apks / .xapk is a zip of APKs, so its manifest is inside a child.
+
+        Same misleading generic error as the bundle case; the message must point
+        the analyst at the base APK rather than at a manifest that is nested one
+        archive deeper.
+        """
+        apks = tmp_path / "app.apks"
+        with zipfile.ZipFile(apks, "w") as archive:
+            archive.writestr("base.apk", b"PK\x03\x04")
+            archive.writestr("splits/split_config.arm64_v8a.apk", b"PK\x03\x04")
+            archive.writestr("toc.pb", b"toc")
+        with pytest.raises(ValueError, match="multi-APK package"):
+            describe_apk(apks)
 
 
 class TestApktoolBoundaries:

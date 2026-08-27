@@ -406,6 +406,28 @@ def _is_android_package(path: Path) -> bool:
         return False
 
 
+def _bundle_container_hint(names: list[str]) -> str | None:
+    """Name the container format when a package has no *root* manifest.
+
+    ``.aab`` / ``.apks`` / ``.xapk`` are all listed as APK suffixes and all open
+    as zips, but none is a single analyzable APK: an App Bundle keeps its
+    manifest as protobuf under ``base/manifest/`` beside ``BundleConfig.pb``, and
+    a split / XAPK set is a zip whose entries are themselves ``.apk`` files. Both
+    lack a root ``AndroidManifest.xml``, so the generic "archive has no
+    AndroidManifest.xml" is technically true yet misleading -- the manifest is
+    there, just one level in -- and sends an analyst hunting for a file that is
+    not missing. Naming the container tells them what to do instead.
+    """
+    if any(
+        name == "BundleConfig.pb" or name.endswith("/manifest/AndroidManifest.xml")
+        for name in names
+    ):
+        return "an Android App Bundle (.aab)"
+    if any(name.lower().endswith(".apk") for name in names):
+        return "a multi-APK package (.apks / .xapk split set)"
+    return None
+
+
 def describe_apk(path: Path) -> dict[str, Any]:
     """Read cheap identity facts from the package without a decompiler.
 
@@ -420,6 +442,12 @@ def describe_apk(path: Path) -> dict[str, Any]:
     except (OSError, zipfile.BadZipFile) as exc:
         raise ValueError(f"not a readable Android package: {path}") from exc
     if _APK_MANIFEST not in names:
+        hint = _bundle_container_hint(names)
+        if hint is not None:
+            raise ValueError(
+                f"{path} looks like {hint}, not a single APK; "
+                "extract the base APK and open that instead"
+            )
         raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
     abis = sorted(
         {
