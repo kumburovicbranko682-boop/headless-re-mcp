@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（HAR 导出：单条畸形 URL 不再拖垮整份导出）
+
+- `backends/common/har.py` 的 `har_entry` 会用 `urlsplit` 把请求 URL 解析进 HAR 的 `queryString`，而
+  `urlsplit` 对某些真实可见的 URL 会抛 `ValueError`——最典型的是未闭合的 IPv6 字面量（`http://[::1`）。
+  CDP（`web.har.export`）与 mitmproxy（`proxy.export_har`）两路抓包都会原样存下目标实际用过的 URL，因此
+  一个抓到畸形 URL 的页面就能把它塞进 flow ring。`_query_string` 用 `try/except (ValueError, TypeError)`
+  兜住并返回空 `queryString`；若哪天有人以「`urlsplit` 不会抛」为由清掉这层兜底，`har_entry` 会抛、
+  `serialize_har` 会在那一条 flow 上崩，导致整份抓包丢失而非只丢一个字段。既有 `test_har_export_spec.py`
+  只喂良构 URL，这条失败路径此前无人覆盖。新增 `tests/unit/test_har_malformed_url_guard.py`：先断言
+  `urlsplit("http://[::1")` 确实抛 `Invalid IPv6 URL`（点明前提），再验证 `_query_string` 吞掉它返回 `[]`、
+  单条畸形 URL 的 `har_entry` 不抛且仍是 spec-valid（URL 原样保留、`queryString` 为空），以及把畸形项与良构项
+  混在一起 `serialize_har` 时三条 flow 全部存活、良构邻居的 query 仍照常解析。已负控验证（去掉兜底后三条断言
+  分别以 `Invalid IPv6 URL` 失败），还原后恢复通过；纯测试新增、无产品行为变更，`ruff` 与 `mypy` 均通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
