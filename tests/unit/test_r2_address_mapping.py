@@ -367,13 +367,46 @@ def test_r2_6x_aflj_addr_key_is_aliased_to_offset(tmp_path: Path) -> None:
 def test_r2_symbol_payloads_do_not_gain_an_offset_alias(tmp_path: Path) -> None:
     """The offset alias is aflj-only; symbol tools promise no integer address."""
     binary = _minimal_pe(tmp_path, x64=True)
-    raw = json.dumps([{"name": "Sleep", "plt": 0x140003000, "lib": "KERNEL32.dll"}])
+    raw = json.dumps([{"name": "Sleep", "plt": 0x140003000, "libname": "KERNEL32.dll"}])
     payload = enrich_r2_payload(
         {"raw": raw, "commands": ["iij"]},
         binary=binary,
         architecture=Architecture.X64,
     )
     assert "offset" not in payload["items"][0]
+
+
+def test_r2_6x_iij_libname_is_aliased_to_lib(tmp_path: Path) -> None:
+    """r2 6.x names the resolving library ``libname``; r2.imports promises ``lib``.
+
+    The tool exists to say which DLL each import comes from. On a current r2 the
+    raw key is ``libname``, so the documented ``lib`` field was absent and the
+    library association silently disappeared. enrich must alias it back, and only
+    for imports -- a stray ``libname`` on another payload stays untouched.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"name": "CloseHandle", "plt": 0x140003000, "libname": "KERNEL32.dll"},
+            {"name": "already", "plt": 0x140003008, "lib": "OLD.dll", "libname": "NEW.dll"},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["iij"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    assert payload["items"][0]["lib"] == "KERNEL32.dll"
+    # A row that already carries lib keeps it -- alias only fills the gap.
+    assert payload["items"][1]["lib"] == "OLD.dll"
+
+    # Not an imports payload: the alias must not fire.
+    other = enrich_r2_payload(
+        {"raw": json.dumps([{"name": "x", "libname": "Z.dll"}]), "commands": ["izj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    assert "lib" not in other["items"][0]
 
 
 def test_r2_disasm_counts_ill_typed_bytes_as_invalid(

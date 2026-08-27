@@ -60,6 +60,11 @@ def test_r2_service_functions_disasm_xrefs_end_to_end() -> None:
         for item in items:
             _assert_mapped(item.get("address"))
 
+        # The documented integer function-start field must survive r2's key
+        # drift (5.x ``offset`` vs 6.x ``addr``); the mapping aliases it back.
+        for item in items:
+            assert isinstance(item.get("offset"), int), item
+
         entry = int(items[0]["offset"])
         dis = service.r2_disasm(session_id, entry, count=8, timeout=60.0)
         assert dis.ok and dis.data is not None, dis.error
@@ -77,6 +82,40 @@ def test_r2_service_functions_disasm_xrefs_end_to_end() -> None:
         assert xref.ok and xref.data is not None, xref.error
         assert xref.data.get("parsed") is True
         assert isinstance(xref.data.get("items"), list)
+        # Every xref row names its direction and carries mapped edges, whichever
+        # r2 command family (5.x axj dump / 6.x axtj+axfj) produced it.
+        for row in xref.data["items"]:
+            assert row.get("direction") in {"to", "from"}, row
+            assert isinstance(row.get("from"), int) and isinstance(row.get("to"), int), row
+            _assert_mapped(row.get("from_address"))
+            _assert_mapped(row.get("to_address"))
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_r2_service_imports_name_the_resolving_library() -> None:
+    """r2.imports must say which library each import resolves to.
+
+    That association is the tool's whole purpose, and r2 6.x moved it from the
+    documented ``lib`` key to ``libname``; the mapping aliases it back. The
+    committed fixture links KERNEL32 imports, so at least one row must carry a
+    non-empty ``lib`` string.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _gate_fixture()
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(fixture))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    try:
+        imports = service.r2_imports(session_id, timeout=60.0)
+        assert imports.ok and imports.data is not None, imports.error
+        rows = imports.data.get("items") or []
+        assert rows, "fixture imports at least one API"
+        libs = [row.get("lib") for row in rows if isinstance(row.get("lib"), str) and row["lib"]]
+        assert libs, "no import named its resolving library"
     finally:
         service.close_session(session_id)
 

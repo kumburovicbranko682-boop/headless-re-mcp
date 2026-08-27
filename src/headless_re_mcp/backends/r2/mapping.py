@@ -198,6 +198,10 @@ def enrich_r2_payload(
     # the documented field survives the version bump. Scoped to aflj so the
     # symbol tools (which promise "no integer address field") are untouched.
     is_functions = any(str(command).strip() == "aflj" for command in commands)
+    # Same drift on iij: r2 6.x names the resolving library ``libname`` where
+    # the r2.imports contract (and 5.x) said ``lib``. Naming the DLL each import
+    # comes from is the whole point of the tool, so alias it back, iij-scoped.
+    is_imports = any(str(command).strip() == "iij" for command in commands)
     parsed = parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
@@ -238,6 +242,8 @@ def enrich_r2_payload(
                 item["address"] = mapped
             if is_functions and "offset" not in item and va is not None:
                 item["offset"] = va
+            if is_imports and "lib" not in item and item.get("libname"):
+                item["lib"] = item["libname"]
             # Named xref endpoints, gated on the row being xref-shaped: it names
             # an origin under ``from``. Only then does ``addr`` mean "referenced
             # target" (r2 5.x) rather than, say, a function-start key -- so a
