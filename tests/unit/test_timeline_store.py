@@ -141,6 +141,62 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+@pytest.mark.parametrize(
+    "separator",
+    ["\u2028", "\u2029", "\u0085"],
+    ids=["line-separator", "paragraph-separator", "next-line"],
+)
+def test_an_entry_with_a_raw_unicode_line_boundary_is_not_split_apart(
+    tmp_path: Path, separator: str
+) -> None:
+    """Entries are written with ensure_ascii=False, so a captured string can
+    carry a raw U+2028 / U+2029 / U+0085.
+
+    The reader counts entries and slices the page by b"\\n", but used to decode
+    the window with str.splitlines(), which also breaks on those three. One JSON
+    line then split into fragments that fail to parse, so the whole entry
+    vanished from the listing -- an action the timeline never shows is
+    indistinguishable from one that never happened -- and count no longer
+    matched total.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="a", message="first")
+    store.append_session_timeline(path, event="b", message=f"from{separator}sample")
+    store.append_session_timeline(path, event="c", message="third")
+
+    listed = store.list_session_timeline(path)
+
+    assert [item["event"] for item in listed["events"]] == ["a", "b", "c"]
+    assert listed["count"] == listed["total"] == 3
+    middle = next(item for item in listed["events"] if item["event"] == "b")
+    assert middle["message"] == f"from{separator}sample"
+
+
+def test_a_windowed_page_reports_has_more_when_an_entry_carries_a_line_boundary(
+    tmp_path: Path,
+) -> None:
+    """has_more is derived from the b"\\n"-counted window, so a splitlines()
+    over-count broke it too.
+
+    A page of two over three entries, where the middle one holds a raw U+2028,
+    used to inflate the decoded line count and make has_more read False -- a
+    pager that trusts it stops and strands entry c forever. Paging by the
+    entry-based offset must still reach it.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="a", message="first")
+    store.append_session_timeline(path, event="b", message="mal\u2028icious")
+    store.append_session_timeline(path, event="c", message="third")
+
+    first = store.list_session_timeline(path, offset=0, limit=2)
+    assert [item["event"] for item in first["events"]] == ["a", "b"]
+    assert first["has_more"] is True
+
+    second = store.list_session_timeline(path, offset=2, limit=2)
+    assert [item["event"] for item in second["events"]] == ["c"]
+    assert second["has_more"] is False
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
