@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（用假设备钉住 frida 设备路径的授权门与故障分类，不依赖真实 frida）
+
+- 安卓动态分析方法(`java_enumerate`/`hook_template_device`)共用授权门 `_authorize` 与一段\
+  attach→load→RPC→finally detach 的 work() 主体。其成功路径与 `permission_denied` 边界已被覆盖\
+  (`test_android_backends`、`test_frida_java_input_bounds`),但退化分支过去只有装了真实 frida 才跑得到——\
+  本机没装时那些真实客户端用例只能 skip。新增 `test_frida_device_path_faults.py`,注入假设备/会话/脚本\
+  (沿用 `client._available = True; client._frida = ...` 接缝)确定性地钉住无人值守 agent 真正会撞上的分支:\
+  frida 缺失时授权门先报 `capability_unavailable`;非正/非整数 pid 在解析任何设备前即以 `invalid_params`\
+  拒绝(0/负数/浮点/字符串,授权集只对良构 pid 才查);attach 失败与枚举 RPC 崩溃各自映射成带 pid 的\
+  `backend_error`(并在 finally 里 detach,失败调用不把 agent 留驻目标进程),且脚本 `load` 崩溃映射成\
+  另一条 `backend_error`("hook template failed");旧脚本回传的裸数组 methods 形状被当作 `found=True`\
+  分页容忍(与 `modules` 同法);hook 模板白名单对未知名以 `invalid_params` 拒绝并披露允许集;以及\
+  "超时仍归超时"——frida 同步抛出的超时形异常被映射成 `timeout` 而非泛化的 `backend_error`。\
+  (纯测试补充,无行为变更;仅本机 skip 的退化分支现由假设备确定性覆盖。)
+
 ### 测试（用假 frida 模块钉住设备解析路径与其错误分类，不依赖真实 frida）
 
 - `FridaClient` 服务安卓线的设备操作——`enumerate_devices`、`_resolve_device`(local/usb/纯序列号/\
