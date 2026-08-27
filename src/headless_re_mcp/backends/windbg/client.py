@@ -6,9 +6,23 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
+# cdb runs through the shared run_bounded, which trusts its caller to bound the
+# deadline (a NaN makes ``remaining <= 0`` never fire, so the run never times
+# out; a huge value runs that long). The tool schemas cap dump ops at 300s and
+# live-process ops at 120s, but the agent transport invokes handlers straight
+# from model arguments with no schema check -- the same gap clamp_cli_timeout
+# closes for jadx/r2/apktool. Clamp here so windbg agrees on the bound
+# regardless of transport.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_LIVE_TIMEOUT_S = 120.0
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
 # cdb -c treats these as command composition, so a head token of `lm` must
 # not smuggle `lm; !process` or `k\n.shell` past the allow-list. `&` is the
@@ -227,6 +241,10 @@ class WindbgClient:
         allowed_pid: int,
         timeout: float,
     ) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_LIVE_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         cdb = self._require_cdb()
         if type(pid) is not int or pid <= 0:
             raise WindbgError("invalid_params", "pid must be a positive integer")
@@ -276,6 +294,10 @@ class WindbgClient:
         }
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         cdb = self._require_cdb()
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))

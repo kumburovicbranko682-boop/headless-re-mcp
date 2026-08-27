@@ -1,13 +1,13 @@
 """Caller timeouts are bounded at the CLI-adapter boundary.
 
-The apk (jadx/apktool), web (webcrack/wabt), and radare2 CLI adapters take a
-``timeout`` from the tool arguments and hand it to ``run_bounded``. The MCP
-schema declares ``0 < timeout <= max``, but the agent transport invokes handlers
-straight from model arguments with no schema enforcement, the same gap
+The apk (jadx/apktool), web (webcrack/wabt), radare2, and windbg CLI adapters
+take a ``timeout`` from the tool arguments and hand it to ``run_bounded``. The
+MCP schema declares ``0 < timeout <= max``, but the agent transport invokes
+handlers straight from model arguments with no schema enforcement, the same gap
 ``frida._bound_timeout`` already guards. A non-positive value would otherwise
-make ``run_bounded`` launch a JVM/node/r2 only to kill it at once and report a
-misleading timeout, and a huge one would let a tool that hangs on hostile input
-hold a worker for as long as the caller named.
+make ``run_bounded`` launch a JVM/node/r2/cdb only to kill it at once and report
+a misleading timeout, and a huge one would let a tool that hangs on hostile
+input hold a worker for as long as the caller named.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from headless_re_mcp.backends.common.bounded_run import InvalidTimeout, clamp_cl
 from headless_re_mcp.backends.jadx import client as jadx_mod
 from headless_re_mcp.backends.jsre import client as jsre_mod
 from headless_re_mcp.backends.r2 import client as r2_mod
+from headless_re_mcp.backends.windbg import client as windbg_mod
 
 
 class _Recorder:
@@ -139,3 +140,57 @@ class TestR2RunBoundsTheTimeout:
         client = r2_mod.R2Client(executable=fake_r2)
         client.run(binary, ["i"], timeout=10**9)
         assert recorder.timeouts == [r2_mod._MAX_TIMEOUT_S]
+
+
+class TestWindbgRunBoundsTheTimeout:
+    """cdb runs through the same run_bounded, but was missed by earlier passes.
+
+    windbg's dump ops (``open_dump``/``threads``/``modules``/``disasm``) declare
+    ``0 < timeout <= 300`` and its live-process ops (``attach``/``live_*``)
+    declare ``<= 120``; both fed the caller's value straight into run_bounded.
+    A NaN from the agent transport is the worst case here -- run_bounded's
+    ``remaining <= 0`` never fires for NaN, so cdb (which for the live path is
+    attached to a running debuggee) would never hit its deadline.
+    """
+
+    def test_a_non_positive_timeout_is_refused_before_the_capability_check(self) -> None:
+        # Guard first, so an unconfigured cdb still names the bad parameter
+        # rather than capability_unavailable -- matching the jadx/r2 contract.
+        client = windbg_mod.WindbgClient(None)
+        with pytest.raises(windbg_mod.WindbgError) as info:
+            client._run_dump(Path("crash.dmp"), ["lm"], timeout=-1.0)
+        assert info.value.code == "invalid_params"
+
+    def test_a_nan_timeout_is_refused_before_the_capability_check(self) -> None:
+        # NaN slips past ``value <= 0`` but clamp_cli_timeout catches it; without
+        # the guard it would reach run_bounded and defeat the deadline entirely.
+        client = windbg_mod.WindbgClient(None)
+        with pytest.raises(windbg_mod.WindbgError) as info:
+            client._run_process(4242, ["lm"], allowed_pid=4242, timeout=math.nan)
+        assert info.value.code == "invalid_params"
+
+    def test_a_huge_dump_timeout_is_capped_to_the_schema_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = _Recorder()
+        monkeypatch.setattr(windbg_mod, "run_bounded", recorder)
+        monkeypatch.setattr(windbg_mod, "_is_launchable_cdb", lambda _path: True)
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        dump = tmp_path / "crash.dmp"
+        dump.write_bytes(b"dump")
+        windbg_mod.WindbgClient(cdb).modules(dump, timeout=10**9)
+        assert recorder.timeouts == [windbg_mod._MAX_DUMP_TIMEOUT_S]
+
+    def test_a_huge_live_timeout_is_capped_to_the_lower_live_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = _Recorder()
+        monkeypatch.setattr(windbg_mod, "run_bounded", recorder)
+        monkeypatch.setattr(windbg_mod, "_is_launchable_cdb", lambda _path: True)
+        cdb = tmp_path / "cdb.exe"
+        cdb.write_bytes(b"MZ")
+        windbg_mod.WindbgClient(cdb)._run_process(
+            4242, ["lm"], allowed_pid=4242, timeout=10**9
+        )
+        assert recorder.timeouts == [windbg_mod._MAX_LIVE_TIMEOUT_S]
