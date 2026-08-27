@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends import har as har_builder
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -795,22 +796,28 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
-                for e in handle.requests.values()
-            ]
+            entries = []
+            for e in handle.requests.values():
+                # CDP capture recorded only method/url/status/mimeType, so the
+                # entry is structurally-complete-but-sparse: valid HAR that a
+                # viewer can open, with empty headers/cookies and -1 for the
+                # sizes/timings that were never observed. resourceType is kept as
+                # a HAR-legal ``_``-prefixed custom field.
+                ent = har_builder.entry(
+                    started=None,
+                    time_ms=0.0,
+                    request=har_builder.request_entry(
+                        method=e.get("method"), url=e.get("url")
+                    ),
+                    response=har_builder.response_entry(
+                        status=e.get("status") or 0, mime=e.get("mimeType") or ""
+                    ),
+                )
+                ent["_resourceType"] = e.get("resourceType")
+                entries.append(ent)
         import json
 
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        har = har_builder.document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(har, ensure_ascii=False)
         truncated = False

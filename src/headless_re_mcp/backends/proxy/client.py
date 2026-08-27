@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends import har
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -201,6 +203,98 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _http_version(part: Any) -> str:
+    version = getattr(part, "http_version", None)
+    return str(version) if version else "HTTP/1.1"
+
+
+def _header_value(part: Any, name: str) -> str:
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        value = headers.get(name, "")
+    except (AttributeError, TypeError):
+        return ""
+    return str(value or "")
+
+
+def _har_body(part: Any) -> bytes:
+    """The exchange body for HAR: mitmproxy's decoded ``content`` when available.
+
+    ``content`` is the decompressed body a HAR consumer expects; ``raw_content``
+    is the fallback for stubs that only set that. Accessing ``.content`` can
+    raise on a malformed encoding, so it is guarded -- a body we cannot decode
+    simply becomes an empty preview rather than failing the whole export.
+    """
+    if part is None:
+        return b""
+    for attr in ("content", "raw_content"):
+        try:
+            value = getattr(part, attr, None)
+        except Exception:  # noqa: BLE001 - mitmproxy .content decodes and may raise
+            value = None
+        if value:
+            if isinstance(value, bytes):
+                return value
+            try:
+                return bytes(value)
+            except (TypeError, ValueError):
+                continue
+    return b""
+
+
+def _flow_to_har_entry(summary: JsonObject, flow: Any) -> JsonObject:
+    """Build one HAR entry from a recorded summary plus its raw flow (if kept).
+
+    The summary always has method/url/status/content_type; the raw flow, when it
+    survived body omission and eviction, adds headers, the request/response
+    bodies and the real timestamps. When it did not, the entry is still valid --
+    just sparse -- so a HAR export never fails because some flows aged out.
+    """
+    url = str(summary.get("url") or "")
+    method = str(summary.get("method") or "")
+    status = summary.get("status")
+    content_type = str(summary.get("content_type") or "")
+    req = getattr(flow, "request", None) if flow is not None else None
+    resp = getattr(flow, "response", None) if flow is not None else None
+
+    req_start = getattr(req, "timestamp_start", None)
+    req_end = getattr(req, "timestamp_end", None)
+    resp_start = getattr(resp, "timestamp_start", None)
+    resp_end = getattr(resp, "timestamp_end", None)
+    send = har.duration_ms(req_start, req_end)
+    wait = har.duration_ms(req_end if req_end is not None else req_start, resp_start)
+    receive = har.duration_ms(resp_start, resp_end)
+
+    request = har.request_entry(
+        method=method,
+        url=url,
+        http_version=_http_version(req),
+        headers=getattr(req, "headers", None),
+        body=_har_body(req),
+        mime=_header_value(req, "content-type"),
+        body_size=_content_len(req) if req is not None else -1,
+    )
+    response = har.response_entry(
+        status=status if status is not None else 0,
+        status_text=str(getattr(resp, "reason", "") or ""),
+        http_version=_http_version(resp),
+        headers=getattr(resp, "headers", None),
+        body=_har_body(resp),
+        mime=content_type,
+        redirect_url=_header_value(resp, "location"),
+        body_size=_content_len(resp) if resp is not None else -1,
+    )
+    return har.entry(
+        started=req_start,
+        time_ms=har.total_time(send, wait, receive),
+        request=request,
+        response=response,
+        timings_obj=har.timings(send, wait, receive),
+    )
 
 
 class _FlowRecorder:
@@ -645,21 +739,17 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
-        entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
-            for f in inst.recorder.snapshot()
-        ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        entries: list[JsonObject] = []
+        for summary in inst.recorder.snapshot():
+            flow_id = str(summary.get("id"))
+            raw = inst.recorder.raw(flow_id)
+            # A flow whose body was omitted/evicted keeps its summary but not the
+            # rich object; emit a structurally-valid entry from the summary alone.
+            flow = raw if (raw is not None and raw is not _OMITTED_BODY) else None
+            entries.append(_flow_to_har_entry(summary, flow))
+        doc = har.document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
+        out_path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         return {"path": str(out_path), "entry_count": len(entries)}
 
     def ca_cert_path(self) -> Path | None:

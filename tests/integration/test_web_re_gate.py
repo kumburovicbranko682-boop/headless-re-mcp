@@ -8,9 +8,11 @@ when Chrome / webcrack / wabt are present.
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 import time
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -300,11 +302,44 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                 assert shot.data["size"] > 0, shot.data
                 assert Path(shot.data["path"]).is_file(), shot.data
 
-                # HAR: the capture exports with at least the two requests in it.
+                # HAR: the capture exports with at least the two requests in it,
+                # and the file is valid HAR 1.2 a viewer can open -- not the old
+                # method/url-only stub that failed every HAR parser.
                 har = service.web_har_export(session_id)
                 assert har.ok, har.error
                 assert har.data["entry_count"] >= 1, har.data
-                assert Path(har.data["path"]).is_file(), har.data
+                har_path = Path(har.data["path"])
+                assert har_path.is_file(), har.data
+                doc = json.loads(har_path.read_text(encoding="utf-8"))
+                log = doc["log"]
+                assert log["version"] == "1.2", log
+                assert log["creator"]["version"], "creator.version is required by HAR"
+                sample = log["entries"][0]
+                assert set(sample) >= {
+                    "startedDateTime",
+                    "time",
+                    "request",
+                    "response",
+                    "cache",
+                    "timings",
+                }, sample
+                # startedDateTime must be an ISO 8601 instant with a timezone.
+                assert datetime.fromisoformat(sample["startedDateTime"]).tzinfo is not None
+                assert set(sample["request"]) >= {
+                    "method",
+                    "url",
+                    "httpVersion",
+                    "cookies",
+                    "headers",
+                    "queryString",
+                }, sample["request"]
+                assert set(sample["response"]) >= {
+                    "status",
+                    "statusText",
+                    "content",
+                    "cookies",
+                    "headers",
+                }, sample["response"]
             finally:
                 service.web_close(session_id)
         finally:

@@ -9,11 +9,13 @@ reported as a running capture.
 from __future__ import annotations
 
 import contextlib
+import json
 import socket
 import threading
 import time
 import urllib.request
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -170,6 +172,102 @@ def test_proxy_records_traffic_forwarded_through_it(tmp_path: Path) -> None:
             har = backend.export_har("capture", har_path)
             assert har["entry_count"] >= 1, har
             assert har_path.is_file()
+    finally:
+        backend.close_all()
+
+
+_REQUIRED_ENTRY = {"startedDateTime", "time", "request", "response", "cache", "timings"}
+_REQUIRED_REQUEST = {
+    "method",
+    "url",
+    "httpVersion",
+    "cookies",
+    "headers",
+    "queryString",
+    "headersSize",
+    "bodySize",
+}
+_REQUIRED_RESPONSE = {
+    "status",
+    "statusText",
+    "httpVersion",
+    "cookies",
+    "headers",
+    "content",
+    "redirectURL",
+    "headersSize",
+    "bodySize",
+}
+
+
+@pytest.mark.integration
+def test_proxy_har_export_is_spec_compliant_har_1_2(tmp_path: Path) -> None:
+    """The exported HAR must be valid HAR 1.2 a real consumer can open.
+
+    The capture gate only checks entry_count and that a file exists; it never
+    proved the file is loadable HAR. The old export emitted just method/url and
+    status/mimeType, so Chrome's Import HAR, haralyzer and har-validator would
+    all reject it. Route a GET with a query string through the proxy, export,
+    then parse the file and assert the whole log shape: a versioned creator, and
+    an entry for the request whose startedDateTime is ISO 8601, whose request
+    carries the parsed queryString and real headers, and whose response carries
+    headers, a status, and the origin's body as content.text -- the fields that
+    make the artifact useful, not merely present. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy HAR Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("har", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            target = f"{origin}/hello?q=1&x=2"
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            with opener.open(target, timeout=15.0) as response:
+                assert _ORIGIN_MARKER in response.read().decode("utf-8", "replace")
+
+            _poll(
+                lambda: backend.flows("har", limit=100),
+                lambda r: any("/hello" in str(f.get("url", "")) for f in r["flows"]),
+            )
+            har_path = tmp_path / "capture.har"
+            result = backend.export_har("har", har_path)
+            assert result["entry_count"] >= 1, result
+
+            doc = json.loads(har_path.read_text(encoding="utf-8"))
+            log = doc["log"]
+            assert log["version"] == "1.2", log
+            assert log["creator"]["name"] == "headless-re-mcp"
+            assert log["creator"]["version"], "creator.version is required by HAR"
+
+            hello = next(
+                (e for e in log["entries"] if "/hello" in e["request"]["url"]), None
+            )
+            assert hello is not None, [e["request"]["url"] for e in log["entries"]]
+            assert set(hello) >= _REQUIRED_ENTRY, hello
+            assert set(hello["request"]) >= _REQUIRED_REQUEST, hello["request"]
+            assert set(hello["response"]) >= _REQUIRED_RESPONSE, hello["response"]
+            assert set(hello["timings"]) >= {"send", "wait", "receive"}, hello["timings"]
+
+            # startedDateTime is a real ISO 8601 instant with a timezone.
+            started = datetime.fromisoformat(hello["startedDateTime"])
+            assert started.tzinfo is not None, hello["startedDateTime"]
+
+            assert hello["request"]["method"] == "GET"
+            # The query string was parsed out of the URL, not dropped.
+            qs = {p["name"]: p["value"] for p in hello["request"]["queryString"]}
+            assert qs.get("q") == "1" and qs.get("x") == "2", hello["request"]["queryString"]
+            # A real forwarded request carries request headers (Host at least).
+            assert hello["request"]["headers"], hello["request"]
+            names = {h["name"].lower() for h in hello["request"]["headers"]}
+            assert "host" in names, names
+
+            resp = hello["response"]
+            assert resp["status"] == 200, resp
+            assert resp["headers"], resp
+            assert _ORIGIN_MARKER in resp["content"].get("text", ""), resp["content"]
+            assert resp["content"]["size"] > 0, resp["content"]
     finally:
         backend.close_all()
 

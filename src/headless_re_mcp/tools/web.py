@@ -175,10 +175,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.har.export")
     def web_har_export(session_id: str) -> dict[str, Any]:
-        """Export captured network activity to a HAR artifact.
+        """Export captured network activity to a spec-compliant HAR 1.2 artifact.
 
         Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        was registered. There is no har, entries or artifact field. The file is
+        valid HAR 1.2 a viewer can open; entries reflect what CDP captured
+        (method, url, status, mimeType), so headers and bodies are empty and
+        sizes/timings are -1 (not observed) rather than invented.
         """
         return _dump(analysis.web_har_export(session_id))
 
