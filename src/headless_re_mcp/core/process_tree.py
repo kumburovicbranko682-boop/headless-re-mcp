@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -179,14 +180,19 @@ def collect_descendants(parent_pid: int) -> list[int]:
     return found
 
 
-def collect_process_group(pgid: int) -> list[int]:
-    """POSIX: live PIDs whose process group is ``pgid`` (bounded). [] on Windows.
+def collect_process_group(pgid: int, *, live_only: bool = False) -> list[int]:
+    """POSIX: PIDs whose process group is ``pgid`` (bounded). [] on Windows.
 
     A tool started with ``start_new_session`` leads its own group, so its
     descendants carry that group id even after the kernel reparents an orphan to
     init. Enumerating by the recorded group finds those survivors when the
     parent/child walk no longer can, and it never trusts a reaped leader's pid:
     a member is matched on its own ``pgrp`` field, not on who its parent is.
+
+    ``live_only`` drops members already in the zombie/dead state ('Z'/'X'). A
+    SIGKILL'd member lingers as a zombie until something reaps it, and in a
+    container without a reaping init that never happens -- so a caller waiting
+    for the group to empty after a kill must not count a corpse as a survivor.
     """
     if os.name == "nt" or not isinstance(pgid, int) or pgid <= 0:
         return []
@@ -208,17 +214,21 @@ def collect_process_group(pgid: int) -> list[int]:
         close = stat.rfind(")")
         if close < 0:
             continue
-        # After "pid (comm)" the fields are state, ppid, pgrp, ... so pgrp is
-        # index 2 -- the same parse _scan_proc_ppid uses for ppid at index 1.
+        # After "pid (comm)" the fields are state, ppid, pgrp, ... so state is
+        # index 0 and pgrp is index 2 -- the same parse _scan_proc_ppid uses for
+        # ppid at index 1.
         fields = stat[close + 2 :].split()
         try:
             member_pgrp = int(fields[2])
         except (IndexError, ValueError):
             continue
-        if member_pgrp == pgid:
-            members.append(pid)
-            if len(members) >= _MAX_KILL_DESCENDANTS:
-                break
+        if member_pgrp != pgid:
+            continue
+        if live_only and fields[0] in {"Z", "X", "x"}:
+            continue
+        members.append(pid)
+        if len(members) >= _MAX_KILL_DESCENDANTS:
+            break
     members.sort()
     return members
 
@@ -237,6 +247,57 @@ def terminate_process_group(pgid: int) -> list[int]:
             _kill_pid(pid)
             killed.append(pid)
     return killed
+
+
+def reap_orphaned_process_group(
+    process: Any,
+    group_id: int,
+    *,
+    readers_blocked: bool = False,
+    confirm_s: float = 1.0,
+) -> bool:
+    """Kill anything a cleanly-exited CLI helper orphaned. True when it acted.
+
+    A configured tool path may be a wrapper that backgrounds a worker, so the
+    runner can exit 0 with a child still running. Once the runner exits the ppid
+    walk from its pid finds nothing, but on POSIX the orphan keeps the session
+    group the runner led -- recorded as ``group_id`` from ``start_new_session``
+    -- so enumerate that group and terminate survivors. On Windows the toolhelp
+    descendant walk still sees them. ``readers_blocked`` forces the sweep when a
+    reader thread is still stuck on a survivor's inherited pipe even though the
+    scan came up empty.
+
+    On POSIX it waits (bounded by ``confirm_s``) until no *live* member remains,
+    so a caller that probes the child right after this returns does not race a
+    member still transitioning to zombie under the SIGKILL. Never raises: this
+    is cleanup on a success path.
+    """
+    pid = getattr(process, "pid", None)
+    if os.name == "nt":
+        leftover = readers_blocked or bool(
+            isinstance(pid, int) and pid > 0 and collect_descendants(int(pid))
+        )
+        if not leftover:
+            return False
+        with suppress(Exception):
+            terminate_process_tree(process, wait_s=1.0)
+        return True
+
+    leftover = readers_blocked or bool(
+        group_id and collect_process_group(group_id, live_only=True)
+    )
+    if not leftover:
+        return False
+    with suppress(Exception):
+        terminate_process_group(group_id)
+    deadline = monotonic() + max(0.0, confirm_s)
+    while group_id and collect_process_group(group_id, live_only=True):
+        if monotonic() >= deadline:
+            break
+        with suppress(Exception):
+            terminate_process_group(group_id)
+        sleep(0.02)
+    return True
 
 
 def _kill_own_process_group(pid: int) -> list[int]:

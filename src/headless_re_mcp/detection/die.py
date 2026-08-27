@@ -285,6 +285,11 @@ def _capture_process(
             details={"executable": argv[0], "os_error": str(exc)},
         ) from exc
 
+    # start_new_session (POSIX) makes the runner its own group leader, so the
+    # session group id is the runner's pid. Used to reap a child a wrapper
+    # backgrounded and then orphaned, which the parent/child walk cannot see.
+    group_id = int(pid) if os.name != "nt" and pid else 0
+
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
     if stdout_pipe is None or stderr_pipe is None:
@@ -346,7 +351,8 @@ def _capture_process(
             except subprocess.TimeoutExpired:
                 continue
     finally:
-        if timed_out or limited or cancelled:
+        clean_exit = not (timed_out or limited or cancelled)
+        if not clean_exit:
             _terminate_process(process)
         else:
             # The process has exited, but wait once more for a concrete code.
@@ -360,6 +366,18 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        if clean_exit:
+            # diec is operator-supplied and may be a wrapper that backgrounds a
+            # worker; reap anything it orphaned before reporting success.
+            from headless_re_mcp.core.process_tree import reap_orphaned_process_group
+
+            if reap_orphaned_process_group(
+                process,
+                group_id,
+                readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
+            ):
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
