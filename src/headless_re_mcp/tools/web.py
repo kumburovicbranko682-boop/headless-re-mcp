@@ -169,6 +169,22 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the page origin's localStorage and sessionStorage.
+
+        Answers with origin, then for each store a list (local, session) of
+        {key, value} plus local_count/local_total/local_has_more and the same
+        session_* fields, so a store capped at 1000 keys is not read as complete.
+        local_available/session_available is false with local_error/session_error
+        when the origin forbids storage (about:blank, sandboxed frame), distinct
+        from a reachable store that is empty. value is the full string up to 8192
+        bytes, with value_truncated on any entry cut. Like web.dom.snapshot this
+        runs a fixed read-only script; there is still no caller-supplied evaluate,
+        and no items or entries field.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

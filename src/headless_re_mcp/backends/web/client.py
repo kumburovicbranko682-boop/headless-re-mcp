@@ -41,6 +41,12 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Web Storage is per-origin and realistically holds a handful of keys; 1000 per
+# store covers any real page while keeping the returned array bounded, and the
+# value cap matches web.cookies so a token comes back in full but a page that
+# stuffs a megabyte into one key cannot be pulled across the driver bridge.
+_MAX_STORAGE_ENTRIES = 1000
+_MAX_STORAGE_VALUE = 8192
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +90,83 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+# A fixed, read-only reader for both Web Storage areas -- the same "run one
+# canned script" shape web.dom.snapshot uses, so no caller-supplied JS reaches
+# the page. Each store is read behind its own try/catch because an opaque origin
+# (about:blank, a sandboxed frame) throws SecurityError on the localStorage
+# getter itself; ok distinguishes that from a reachable-but-empty store. Entries
+# are taken by index up to maxEntries and each value sliced to maxValueChars in
+# the page, so a store with a huge key or a huge value never materializes whole.
+_STORAGE_SCRIPT = """(caps) => {
+  const dump = (get) => {
+    try {
+      const store = get();
+      const total = store.length;
+      const take = total < caps.maxEntries ? total : caps.maxEntries;
+      const entries = [];
+      for (let i = 0; i < take; i++) {
+        const k = store.key(i);
+        let v = store.getItem(k);
+        v = (v == null) ? "" : String(v);
+        let cut = false;
+        if (v.length > caps.maxValueChars) { v = v.slice(0, caps.maxValueChars); cut = true; }
+        entries.push([String(k), v, cut]);
+      }
+      return { ok: true, total: total, entries: entries };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  };
+  return {
+    origin: (() => { try { return String(location.origin); } catch (e) { return ""; } })(),
+    local: dump(() => window.localStorage),
+    session: dump(() => window.sessionStorage),
+  };
+}"""
+
+
+def _storage_store(name: str, blob: object) -> JsonObject:
+    """Normalize one store's raw dump into prefixed, byte-bounded fields.
+
+    A store the page could not reach (ok false, or a non-dict) yields an empty,
+    unavailable result carrying the page's error so an opaque origin is not
+    mistaken for an empty one. Otherwise each value is byte-bounded a second time
+    in Python -- the in-page slice is by character, which for multibyte text can
+    still exceed the byte cap -- and value_truncated reflects either cut. total
+    is the store's real length, so has_more is honest when the entry cap bit.
+    """
+    if not isinstance(blob, dict) or not blob.get("ok"):
+        error = ""
+        if isinstance(blob, dict):
+            error, _ = _bounded_metadata(blob.get("error", ""), _MAX_METADATA_BYTES)
+        return {
+            name: [],
+            f"{name}_count": 0,
+            f"{name}_total": 0,
+            f"{name}_has_more": False,
+            f"{name}_available": False,
+            f"{name}_error": error or "storage unavailable for this origin",
+        }
+    total = int(blob.get("total") or 0)
+    entries: list[JsonObject] = []
+    for row in blob.get("entries") or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        value, cut = _bounded_metadata(row[1], _MAX_STORAGE_VALUE)
+        entry: JsonObject = {"key": str(row[0]), "value": value}
+        if cut or (len(row) > 2 and bool(row[2])):
+            entry["value_truncated"] = True
+        entries.append(entry)
+    entries.sort(key=lambda e: e["key"])
+    return {
+        name: entries,
+        f"{name}_count": len(entries),
+        f"{name}_total": total,
+        f"{name}_has_more": total > len(entries),
+        f"{name}_available": True,
+    }
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -781,6 +864,44 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def storage(self, session_id: str) -> JsonObject:
+        """Read the page origin's localStorage and sessionStorage.
+
+        Web apps stash JWTs, refresh tokens, feature flags and config in Web
+        Storage, and nothing else in the surface exposed it. Like dom_snapshot
+        this runs a fixed read-only script -- there is still no caller-supplied
+        evaluate -- against the top frame, whose origin is reported in origin.
+        The two stores are independent namespaces so each carries its own total
+        and has_more; values come back up to 8192 bytes (value_truncated marks a
+        longer one) and entries are sorted by key so output is stable. An origin
+        that forbids storage (about:blank, a sandboxed frame) reports
+        local_available/session_available false with the reason, distinct from a
+        reachable store that is simply empty.
+        """
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    _STORAGE_SCRIPT,
+                    {
+                        "maxEntries": _MAX_STORAGE_ENTRIES,
+                        "maxValueChars": _MAX_STORAGE_VALUE,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                raise WebError("backend_error", f"cannot read web storage: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "web storage read returned no data")
+            return raw
+
+        raw = self._runner(handle).call(work)
+        origin, _ = _bounded_metadata(raw.get("origin", ""), _MAX_URL_BYTES)
+        result: JsonObject = {"origin": origin}
+        for name in ("local", "session"):
+            result.update(_storage_store(name, raw.get(name)))
+        return result
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -42,6 +42,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
+
+### 新增（`web.storage` 读取 localStorage / sessionStorage）
+
+- 新增 `web.storage`：读出页面顶层 origin 的 localStorage 与 sessionStorage。Web 应用把 JWT、
+  刷新令牌、feature flag 与配置常年塞在 Web Storage 里，而整套 `web.*` 面此前无从触及——
+  `web.network.*` 只看请求、`web.dom.snapshot` 只看 DOM，存储读不到。与 `web.dom.snapshot`
+  一样跑一段固定只读脚本（仍**不提供任意 JS 求值**，与浏览器侧不给 `dynamic.command` 一致），
+  作用于顶层帧，其 origin 回在 `origin`。两个存储区是各自独立的命名空间，故各带自己的
+  `local_total`/`local_has_more`（及 `session_*`）：每个存储区最多回 1000 个键，值最多 8192 字节
+  （超出的条目标 `value_truncated`），条目按键排序，输出稳定。取值与遍历都在页内按 maxEntries /
+  maxValueChars 先行截断，单个巨键或巨值不会整份跨 driver 桥拉回。origin 禁止存储（about:blank、
+  沙箱帧）时 `local_available`/`session_available` 为 false 并带 `local_error`/`session_error`，
+  与“可达但为空”明确区分。只读，工具面 265→**266（149 只读 / 117 写）**。
 
 ### 变更（监控台检查器）
 
