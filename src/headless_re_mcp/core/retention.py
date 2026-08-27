@@ -176,12 +176,22 @@ class UsageCache:
             if claim:
                 self._refreshing = True
         if claim:
-            Thread(
-                target=self._refresh,
-                args=(root,),
-                name="artifact-usage",
-                daemon=True,
-            ).start()
+            try:
+                Thread(
+                    target=self._refresh,
+                    args=(root,),
+                    name="artifact-usage",
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                # The OS refused a new thread (thread exhaustion). get() is a
+                # non-blocking read on the readiness/metrics path and must never
+                # raise; leaving the claim set would wedge the cache at this
+                # value forever, since a stale cache is only ever refreshed by a
+                # claim. Release it (without touching _at) so the next probe
+                # retries once threads free up, and fall through to the value.
+                with self._lock:
+                    self._refreshing = False
         if value is not None:
             return value
         # Never measured. Zero with truncated set is what this already means

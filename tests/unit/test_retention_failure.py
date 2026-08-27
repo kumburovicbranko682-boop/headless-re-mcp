@@ -69,3 +69,60 @@ def test_a_failed_usage_walk_is_reported_and_throttled(
     measured = cache.get(tmp_path)
     assert measured.files == 1 and measured.bytes == 23
     assert alerts[-1] == "artifact_usage_measurement_recovered"
+
+
+def test_a_refused_refresh_thread_does_not_throw_or_wedge_the_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OS thread exhaustion must neither raise out of get() nor stop refreshing.
+
+    get() sets ``_refreshing`` under the lock and then starts the daemon thread
+    outside it. When ``Thread.start()`` raises (the OS refused a new thread) the
+    original code let that RuntimeError escape a method the readiness/metrics
+    path treats as a safe non-blocking read, and left ``_refreshing`` stuck True
+    forever -- a stale cache can only be refreshed by a fresh claim, so the walk
+    never ran again even after threads freed up.
+    """
+    from headless_re_mcp.core import retention as module
+
+    walk_calls: list[float] = []
+
+    def walk(root: Path, *, file_limit: int = 0) -> module.DiskUsage:
+        walk_calls.append(time.monotonic())
+        return module.DiskUsage(bytes=42, files=2, truncated=False)
+
+    monkeypatch.setattr(module, "measure_usage", walk)
+
+    refuse = True
+
+    class Refusing:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._target = kwargs.get("target")
+            self._args = kwargs.get("args", ())
+
+        def start(self) -> None:
+            if refuse:
+                raise RuntimeError("can't start new thread")
+            # Run synchronously so the test does not depend on scheduling.
+            assert callable(self._target)
+            self._target(*self._args)  # type: ignore[misc]
+
+    monkeypatch.setattr(module, "Thread", Refusing)
+    cache = module.UsageCache(ttl_s=0.05)
+
+    # The refused start must be swallowed: get() returns the cold-start floor
+    # rather than propagating RuntimeError, and the claim is released.
+    floor = cache.get(tmp_path)
+    assert floor.truncated is True and floor.bytes == 0
+    assert walk_calls == []
+    with cache._lock:
+        assert cache._refreshing is False
+
+    # Once threads are available again the very next probe must be able to
+    # claim and refresh -- proving the cache was not permanently wedged.
+    refuse = False
+    cache.get(tmp_path)
+    assert len(walk_calls) == 1
+    measured = cache.get(tmp_path)
+    assert measured.files == 2 and measured.bytes == 42

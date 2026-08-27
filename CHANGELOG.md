@@ -112,6 +112,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（磁盘用量缓存遇线程创建失败会抛出并从此永不再刷新）
+
+- `UsageCache.get()`（就绪探针与 `/metrics` 读取磁盘用量的非阻塞入口）先在锁内把 `_refreshing`
+  置 True 占位，再在锁外 `Thread(...).start()` 起后台测量线程。当 `start()` 抛
+  `RuntimeError`（操作系统拒绝新线程，即线程耗尽）时有两处后果：其一，异常直接从这个「本该只读、
+  绝不阻塞」的方法里逃逸给调用方，恰在系统线程紧张、就绪探针最需要一个答案的时刻把
+  `get()` 打断；其二，`_refreshing` 就此卡在 True——陈旧缓存只能靠一次新的占位（`claim`）触发刷新，
+  而占位永远要求 `not self._refreshing`，于是即便线程压力过去，测量也再不会重跑，缓存永久钉死在
+  上一次的值（或冷启动的零地板）。`_refresh` 自身失败时会重置 `_refreshing` 并打时间戳以按节奏重试、
+  保持自愈，唯独 `start()` 失败这条路没有对称处理。现给线程启动包上 `except RuntimeError`：失败时在
+  锁内把 `_refreshing` 复位（不动 `_at`，让下一次探针在线程可用后立即重试），`get()` 照常返回缓存值
+  或诚实的零地板，绝不抛出。
+- 新增一条回归测试：让 `Thread.start()` 抛 `RuntimeError`，断言 `get()` 不抛、返回冷启动地板、
+  占位已释放；随后放开线程，断言下一次探针能重新占位并完成测量（证明缓存没有被永久钉死）。修复前
+  该用例在第一次 `get()` 处就以 `RuntimeError` 逃逸失败。相关 200 条测试、ruff、mypy 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
