@@ -106,6 +106,26 @@ def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
     return result
 
 
+def _note_nonzero_exit(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
+    """Say when the tool exited non-zero but still produced output.
+
+    These CLIs are kept on the "return what we got" path on purpose -- webcrack
+    exits non-zero on a partial deobfuscation while still emitting usable code,
+    and wasm-objdump can print sections before it trips on a later one. But a
+    clean pass and a bail-out that happened to print something were otherwise
+    indistinguishable: the reply carried no exit status, so an unattended agent
+    read a truncated-because-the-tool-died result as the finished article.
+    ``tool_failed`` is distinct from ``truncated`` (which is only ever "we cut
+    the text at the inline cap"): it means the child itself signalled failure,
+    so the output may be incomplete for a reason we cannot see.
+    """
+    if code != 0:
+        result["exit_code"] = code
+        result["tool_failed"] = True
+        result["stderr"] = stderr[:_MAX_STDERR]
+    return result
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -130,7 +150,9 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _note_nonzero_exit(
+            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
+        )
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -161,7 +183,7 @@ class JsClient:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), _MAX_LISTED_FILES))
         window = files[start : start + cap]
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "file_count": file_count,
             "files": window,
@@ -171,6 +193,7 @@ class JsClient:
             "has_more": start + len(window) < file_count,
             "listing_truncated": listed_more,
         }
+        return _note_nonzero_exit(result, code=code, stderr=stderr)
 
 
 class WasmClient:
@@ -197,7 +220,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _note_nonzero_exit(
+            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
+        )
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -209,7 +234,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _note_nonzero_exit(
+            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
+        )
 
 
 def _discover_webcrack() -> Path | None:
