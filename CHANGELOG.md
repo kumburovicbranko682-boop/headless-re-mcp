@@ -428,6 +428,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   敏感），`has_more` 仍走「多取一条」探针。至此 frida 四个枚举器（modules / exports / java.classes / java.methods）
   全部支持按名字收敛，Java 侧 `frida.java.classes(name_filter)` → 精确类名 → `frida.java.methods(class, name_filter)`
   → 目标方法这条链与 native 侧对称打通。既有无过滤行为不变（`name_filter` 默认空）。
+- **静态侧同一个可达性死角**：`apk.classes` / `apk.methods` / `apk.strings` 先收集到 `_MAX_*_COLLECT`
+  上限（10000 类 / 单类 2000 方法 / 5000 去重字符串）再排序、再分页——一旦命中收集上限（`scan_capped`），
+  收集到的只是 `get_classes()`/`get_strings()` 吐出的**任意前缀**，排在收集边界之后的目标（比如捆了一堆 SDK
+  的大 App 里某个 `com.target.Crypto`、或某条埋在第 5000 条之后的 URL/密钥片段）任何 offset 都翻不到——文档里
+  那句「has_more 只表示还有已收集的行」正是这个坑。三者各加 `name_filter`：在**收集阶段、上限之前**按子串过滤
+  （大小写敏感，与 frida 系列同一范式），于是非匹配项不占收集预算，目标即便排在原来的收集边界之后也能被扫进来、
+  连同 `total`/`scan_capped` 一并如实反映过滤后的视图。既有无过滤行为不变（`name_filter` 默认空）。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

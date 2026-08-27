@@ -127,10 +127,12 @@ class ApkAnalysisMixin:
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
 
-    def apk_classes(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+    def apk_classes(
+        self, session_id: str, offset: int = 0, limit: int = 100, name_filter: str = ""
+    ) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
-            data = ApkClient().classes(binary, offset=offset, limit=limit)
+            data = ApkClient().classes(binary, offset=offset, limit=limit, name_filter=name_filter)
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
@@ -138,21 +140,30 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_methods(
-        self, session_id: str, class_name: str, offset: int = 0, limit: int = 100
+        self,
+        session_id: str,
+        class_name: str,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
     ) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
-            data = ApkClient().methods(binary, class_name, offset=offset, limit=limit)
+            data = ApkClient().methods(
+                binary, class_name, offset=offset, limit=limit, name_filter=name_filter
+            )
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def apk_strings(self, session_id: str, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
+    def apk_strings(
+        self, session_id: str, offset: int = 0, limit: int = 200, name_filter: str = ""
+    ) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
-            data = ApkClient().strings(binary, offset=offset, limit=limit)
+            data = ApkClient().strings(binary, offset=offset, limit=limit, name_filter=name_filter)
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

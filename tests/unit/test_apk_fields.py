@@ -184,6 +184,33 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     doc = _tool_docstring("apk.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_apk_classes_name_filter_reaches_a_class_past_the_collect_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A specific class in a >10000-class app must be findable regardless of
+    scan order; without filtering during the scan it is stranded past the cap.
+
+    Measured: cap lowered to 3, target class after 3 noise classes -> unfiltered
+    it is not collected (scan_capped True), filtered on 'Crypto' it is the only
+    row and scan_capped is False.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_CLASSES_COLLECT", 3)
+    classes = [_FakeClass(f"Lnoise/N{index};") for index in range(3)]
+    classes.append(_FakeClass("Lcom/target/Crypto;"))
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeClassParsed(classes))
+    client = ApkClient()
+    unfiltered = client.classes(tmp_path / "app.apk", offset=0, limit=100)
+    assert "Lcom/target/Crypto;" not in unfiltered["classes"]
+    assert unfiltered["scan_capped"] is True
+    filtered = client.classes(tmp_path / "app.apk", offset=0, limit=100, name_filter="Crypto")
+    assert filtered["classes"] == ["Lcom/target/Crypto;"]
+    assert filtered["total"] == 1
+    assert filtered["scan_capped"] is False
 
 class _FakeApkMethod:
     def __init__(self, index: int) -> None:
@@ -232,6 +259,33 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     doc = _tool_docstring("apk.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_apk_methods_name_filter_reaches_a_method_past_the_collect_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A target method on a class that declares more than the cap must be
+    reachable by name; without filtering during the scan it is stranded.
+
+    Measured: cap lowered to 3, 25 declared methods m0..m24 -> unfiltered stops
+    at 3 (scan_capped True) and m24 is absent, filtered on 'm24' it is the only
+    row and scan_capped is False.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_METHODS_COLLECT", 3)
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(25))
+    client = ApkClient()
+    unfiltered = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=0, limit=100)
+    assert unfiltered["scan_capped"] is True
+    assert all(row["name"] != "m24" for row in unfiltered["methods"])
+    filtered = client.methods(
+        tmp_path / "app.apk", "com.example.Foo", offset=0, limit=100, name_filter="m24"
+    )
+    assert [row["name"] for row in filtered["methods"]] == ["m24"]
+    assert filtered["total"] == 1
+    assert filtered["scan_capped"] is False
 
 def test_apk_decompile_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any

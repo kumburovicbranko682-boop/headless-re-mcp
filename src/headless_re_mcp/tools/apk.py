@@ -85,6 +85,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List internal (non-external) DEX classes with pagination.
 
@@ -92,9 +93,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         that filled the limit is not read as the whole collected list.
         total is the number collected, capped at 10000; scan_capped is true
         when the real class count may be higher. has_more only means a
-        larger offset still has collected rows.
+        larger offset still has collected rows. name_filter keeps only
+        classes whose name contains that substring (case-sensitive), applied
+        during the scan before the cap, so a target class in a >10000-class
+        app is findable rather than stranded past the collect boundary.
         """
-        return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_classes(session_id, offset=offset, limit=limit, name_filter=name_filter)
+        )
 
     @tools.tool(name="apk.methods")
     def apk_methods(
@@ -102,6 +108,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List methods of a class (dotted or Lsmali/form; paginated).
 
@@ -110,9 +117,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         read as the whole collected class. total is the number collected,
         capped at 2000; scan_capped is true when more methods may exist.
         has_more only means a larger offset still has collected rows.
+        name_filter keeps only methods whose name contains that substring
+        (case-sensitive), applied during the scan before the cap.
         """
         return _dump(
-            analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
+            analysis.apk_methods(
+                session_id, class_name, offset=offset, limit=limit, name_filter=name_filter
+            )
         )
 
     @tools.tool(name="apk.strings")
@@ -120,6 +131,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
 
@@ -128,8 +140,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         is the number collected, capped at 5000; scan_capped is true when
         more unique strings may exist. has_more only means a larger offset
         still has collected rows. There is no items or constants field.
+        name_filter keeps only strings containing that substring
+        (case-sensitive), applied during the scan before the cap, so a
+        URL/domain/key fragment in a >5000-string app is findable rather
+        than stranded past the collect boundary.
         """
-        return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_strings(session_id, offset=offset, limit=limit, name_filter=name_filter)
+        )
 
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(

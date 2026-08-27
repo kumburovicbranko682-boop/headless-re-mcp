@@ -410,12 +410,22 @@ class ApkClient:
             "has_more": has_more,
         }
 
-    def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def classes(
+        self, path: Path, *, offset: int = 0, limit: int = 100, name_filter: str = ""
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
         names: list[str] = []
         scan_more = False
         for klass in parsed.analysis.get_classes():
             if klass.is_external():
+                continue
+            # Filter during the scan, before the collect cap: without it the
+            # collected set is an arbitrary prefix of get_classes() and offset
+            # paging can never reach a class past the cap (has_more only pages
+            # within what was collected). A substring filter makes a specific
+            # class in a >10k-class app findable regardless of scan order.
+            if needle and needle not in klass.name:
                 continue
             if len(names) >= _MAX_CLASSES_COLLECT:
                 scan_more = True
@@ -440,11 +450,13 @@ class ApkClient:
         *,
         offset: int = 0,
         limit: int = 100,
+        name_filter: str = "",
     ) -> JsonObject:
         parsed = self._parsed(path)
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
         found = [
             klass
             for klass in parsed.analysis.get_classes()
@@ -456,6 +468,11 @@ class ApkClient:
         scan_more = False
         for klass in found:
             for method in klass.get_methods():
+                # Filter before the collect cap, like classes/strings, so a
+                # target method on a class that declares more than the cap is
+                # reachable by name rather than stranded past it.
+                if needle and needle not in method.name:
+                    continue
                 if len(methods) >= _MAX_METHODS_COLLECT:
                     scan_more = True
                     break
@@ -480,15 +497,25 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+    def strings(
+        self, path: Path, *, offset: int = 0, limit: int = 200, name_filter: str = ""
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
+            value = str(item.get_value())[:_MAX_STRING_LEN]
+            # Filter during the scan, before the collect cap: searching for a
+            # URL/domain/key fragment across a >5000-string app is the common
+            # case, and without narrowing the scan the fragment may sit past the
+            # collected prefix, unreachable by any offset.
+            if needle and needle not in value:
+                continue
             if len(seen) >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            seen.add(value)
         values = sorted(seen)
         start, capped = _page_bounds(offset, limit, cap=_MAX_STRINGS_PAGE)
         window = values[start : start + capped]

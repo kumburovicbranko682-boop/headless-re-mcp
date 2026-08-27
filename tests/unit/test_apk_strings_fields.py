@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
@@ -65,3 +66,27 @@ def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
     doc = _tool_docstring("apk.strings")
     assert "Answers with strings" in doc
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_apk_strings_name_filter_reaches_a_string_past_the_collect_cap(
+    monkeypatch: Any,
+) -> None:
+    """Searching a >5000-string app for a fragment must reach it regardless of
+    scan order; without filtering during the scan it is stranded past the cap.
+
+    Measured: cap lowered to 3, target 's24' sits after 25 strings -> unfiltered
+    it is not collected (scan_capped True), filtered on 's24' it is the only row.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_STRINGS_COLLECT", 3)
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed()  # type: ignore[method-assign]
+    unfiltered = client.strings(Path("dummy.apk"), offset=0, limit=2000)
+    assert "s24" not in unfiltered["strings"]
+    assert unfiltered["scan_capped"] is True
+    filtered = client.strings(Path("dummy.apk"), offset=0, limit=2000, name_filter="s24")
+    assert filtered["strings"] == ["s24"]
+    assert filtered["total"] == 1
+    assert filtered["scan_capped"] is False
