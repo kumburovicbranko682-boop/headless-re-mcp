@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -165,7 +166,7 @@ class ApkClient:
                 self._full_cache.popitem(last=False)
         return parsed
 
-    def _read_manifest(self, path: Path, build: Any) -> JsonObject:
+    def _read_manifest(self, path: Path, build: Callable[[Any], JsonObject]) -> JsonObject:
         """Run a manifest-level accessor block, mapping androguard faults cleanly.
 
         ``APK(path)`` logs and swallows a broken AndroidManifest.xml rather than
