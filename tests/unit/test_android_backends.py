@@ -268,6 +268,23 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+def test_frida_enum_script_uses_a_supported_read_api() -> None:
+    """frida 17 removed Memory.readByteArray; the enum script must not call it.
+
+    frida.read runs inside frida's JS runtime, so there is no fake-able unit path
+    for it -- the live gate is the real check, but that only runs where frida is
+    installed. Measured on 17.17.0: Memory.readByteArray is undefined and every
+    read raised "TypeError: not a function". This static guard fails fast on the
+    exact regression (reintroducing that call) even on a machine without frida.
+    """
+    from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
+
+    # The call form, so the rationale comment naming the removed API does not
+    # trip the guard; the modern API reads through a pointer.
+    assert "Memory.readByteArray(" not in _ENUM_SCRIPT
+    assert ".readByteArray(" in _ENUM_SCRIPT
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
