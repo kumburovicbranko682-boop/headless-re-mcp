@@ -37,6 +37,23 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _page_bounds(offset: Any, limit: Any, cap: int) -> tuple[int, int]:
+    """Clamp a caller's offset/limit into a coherent window.
+
+    The MCP schema already pins offset>=0 and limit within a range, but the
+    backend is the contract: called directly (service layer, tests, future
+    internal callers) a negative offset slices ``names[-1:...]`` from the end
+    and reports ``has_more`` against a negative index, and a non-positive limit
+    yields an empty or reversed page. Every sibling paginator (web.cookies,
+    jsre.unpack_bundle, frida.applications) clamps its own window; this brings
+    the androguard listings in line. ``cap`` is the collection ceiling, so the
+    page can never exceed what was actually gathered.
+    """
+    start = max(0, int(offset))
+    size = max(1, min(int(limit), cap))
+    return start, size
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -303,13 +320,14 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, _MAX_CLASSES_COLLECT)
+        window = names[start : start + cap]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -348,14 +366,15 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, _MAX_METHODS_COLLECT)
+        window = methods[start : start + cap]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -369,13 +388,14 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, _MAX_STRINGS_COLLECT)
+        window = values[start : start + cap]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 

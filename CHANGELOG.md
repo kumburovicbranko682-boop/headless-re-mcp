@@ -72,6 +72,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   单值封顶 8 KiB（截断的条目带 `value_truncated`），并带 `total/offset/has_more` 分页——
   与 `web.network.list` 等兄弟工具同一套有界输出模型。工具面 265 → 266（读 148 → 149）。
 
+### 修复（apk.classes/methods/strings 的分页在后端自钳，负 offset 不再切到列表尾部）
+
+- androguard 列表工具的分页此前只由 MCP 模式（`offset>=0`、`limit` 限幅）把关，后端方法却拿原始
+  `offset`/`limit` 直接切片 `names[offset:offset+limit]`。服务层原样透传，于是直连后端（服务层、测试、
+  将来内部调用方）传一个负 offset 时，`names[-1:...]` 会从列表尾部切一片、`has_more` 还拿负下标去比，
+  返回一个 offset 为负、`has_more` 为真却只有尾部一条的错乱信封；非正 limit 则给出空页或反向页。
+  每个兄弟分页器（web.cookies、jsre.unpack_bundle、frida.applications）都在后端自钳自己的窗口，唯独
+  这三个 androguard 列表没跟上。新增 `_page_bounds` 把 offset 钳到 `>=0`、limit 钳到 `1..采集上限`，
+  三处统一改用它并回显钳后的 offset；`apk.xrefs` 本就已 `max(1, int(limit))`，不动。回归直连后端用
+  假 analysis 钉住：负 offset 归零、非正 limit 归一、越界页为空且 `has_more=False`、整表不被误报为部分。
+
 ### 修复（proxy.start 的 port 校验移到能力门之前，缺 mitmproxy 时也回 invalid_params）
 
 - `ProxyBackend.start` 先做 `_check_available()` 再校验 `port`，于是没装 mitmproxy 的机器上一个越界
