@@ -810,6 +810,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tests/unit/test_apk_open_fields.py` 不装 androguard 也能钉住这条降级；
   `tests/integration/test_android_re_gate.py` 在装了 androguard 时真实断言 `apk.open` 对合成 APK
   返回 ok、native ABI 正确、`version_name` 为 None（修复前是 ok=False / `internal_error`）。
+- **`apk.classes/methods/strings/xrefs` 首次拿到真实 DEX 的端到端覆盖**。这四个 DEX 分析工具此前
+  只有用假对象打桩的单元测试,集成 gate 里的合成 APK 又只带占位 `classes.dex`——androguard 的
+  完整分析在那儿只走到干净失败分支,从没真正解析过一个 DEX。运行机上没有 Android SDK(无 d8/dx),
+  故 gate 现在按 DEX 格式手工汇编出一个最小但合法的 `classes.dex`（一个 `LCrackme;` 类、一个
+  `public static secret()V` 方法、方法体 `const-string v0, "s3cr3t"; return-void`,含正确的
+  adler32/SHA1、map_list 与 4 字节对齐）,装了 androguard 时真实断言:类名、方法的
+  descriptor(`()V`)与 access、smali 与点分两种类名都能解析、字符串字面量 `s3cr3t` 在结果里、
+  无人调用的方法回结构化空 `callers`（而非 not_found）、不存在的类回 `not_found`。这正是假对象钉不住、
+  一旦 androguard 改了 `get_classes`/`get_methods`/`get_strings`/`get_xref_from` 就会露馅的那部分。
 
 ### 变更（Android 后端清理）
 
