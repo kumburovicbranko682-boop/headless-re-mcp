@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。其中可移植的子集（androguard/mitmproxy/Playwright/webcrack/wabt，全部可从公开源安装）由 CI 的 `linux-portable-gates` 车道在每次提交时装好工具真跑，并在跑 Gate 前先断言工具确实在——装漏了会直接红，而不是绿着跳过；仍然只在真机上执行的，是 adb/jadx/apktool 这类需要设备或额外安装的 Gate。
+**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。其中可移植的子集（androguard/mitmproxy/Playwright/webcrack/wabt/radare2/UPX，全部可从公开源安装，PE 夹具用 mingw 交叉编译）由 CI 的 `linux-portable-gates` 车道在每次提交时装好工具真跑，并在跑 Gate 前先断言工具确实在——装漏了会直接红，而不是绿着跳过；同一车道还强制"缺 IDA 的机器上 IDA Gate 必须如实 skip 而不是报错"。仍然只在真机上执行的，是 adb/jadx/apktool 这类需要设备或额外安装的 Gate。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：

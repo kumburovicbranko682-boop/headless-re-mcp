@@ -179,8 +179,24 @@ jobs:
           python -m pip install -U "typing-extensions>=4.15"
           python -m playwright install --with-deps chromium
           sudo apt-get update
-          sudo apt-get install -y wabt
+          sudo apt-get install -y wabt radare2 upx-ucl mingw-w64 cmake
           npm install -g webcrack
+
+      - name: Build native PE fixtures (mingw cross-compile)
+        # The r2 gate maps addresses against the canonical PE fixture that is
+        # normally built on Windows; mingw cross-builds the same CMake targets
+        # so the gate runs here too. Building the fixture also arms the
+        # conftest's HEADLESS_RE_IDA_GATE_BINARY bridge, which is exactly the
+        # fixtures-present/IDA-absent shape where the idalib gate once raised
+        # instead of skipping.
+        run: |
+          cmake -B build-fixtures -S fixtures/native \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-fixtures
+          mkdir -p artifacts/fixtures-x64
+          cp build-fixtures/headless_fixture.exe artifacts/fixtures-x64/
 
       - name: Backends really are present
         # A missing backend makes its gate skip, and a lane whose provisioning
@@ -189,6 +205,7 @@ jobs:
         run: |
           python - <<'PY'
           import shutil
+          from pathlib import Path
 
           import adbutils  # noqa: F401
           import androguard  # noqa: F401
@@ -196,16 +213,19 @@ jobs:
           import mitmproxy  # noqa: F401
           from playwright.sync_api import sync_playwright
 
-          for tool in ("webcrack", "wasm2wat", "wasm-objdump"):
+          for tool in ("webcrack", "wasm2wat", "wasm-objdump", "r2", "upx"):
               assert shutil.which(tool), f"{tool} is not on PATH"
+          assert Path("artifacts/fixtures-x64/headless_fixture.exe").is_file()
           with sync_playwright() as playwright:
               playwright.chromium.launch(headless=True).close()
           print("portable backends present")
           PY
 
       - name: Portable integration gates
-        # -rs prints every skip reason; the only expected skip on Linux is the
-        # Windows-only handle-count check in the web lifecycle gate.
+        # -rs prints every skip reason; the expected skips on Linux are the
+        # Windows-only handle-count check in the web lifecycle gate and the
+        # IDA-backed gates, which must degrade to a skip -- never an error --
+        # on a machine that has the fixtures but not IDA.
         run: >-
           python -m pytest
           tests/integration/test_android_re_gate.py
@@ -213,6 +233,19 @@ jobs:
           tests/integration/test_web_lifecycle_gate.py
           tests/integration/test_web_re_gate.py
           tests/integration/test_agent_browser_smoke.py
+          tests/integration/test_m11_r2_live_gate.py
+          tests/integration/test_idalib_gate.py
+          tests/integration/test_m8_static_batch1_gate.py
+          tests/integration/test_m8_static_write_gate.py
+          -q -rs --tb=short --timeout=180
+
+      - name: Real-UPX unpack fixtures
+        # These unit tests skip in the unit lanes because no UPX is installed
+        # there; this lane has the real CLI, so the committed packed fixtures
+        # are unpacked for real.
+        run: >-
+          HEADLESS_RE_UPX="$(command -v upx)"
+          python -m pytest tests/unit/test_upx_fixtures.py
           -q -rs --tb=short --timeout=180
 
   webui:
