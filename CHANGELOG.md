@@ -178,7 +178,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
-  循环。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放。
+  循环。但仅取消 task 在 mitmproxy 12 上还不够：`proxyserver` addon 在 `done()` 里并不停
+  自己的 server（CLI 靠进程退出释放端口），它持有的 `ServerInstance` 监听 socket 也不挂在
+  任何可取消的 task 上，于是 `stop()` 报成功而端口仍被占、下一次抓包永远绑不上。收尾现在先
+  逐个 `await ServerInstance.stop()` 显式关掉监听 socket，再走上面的任务取消与循环关闭。
+  `tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放；
+  `tests/unit/test_proxy_server_teardown.py` 不依赖装上 mitmproxy 也能钉住这条收尾。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
