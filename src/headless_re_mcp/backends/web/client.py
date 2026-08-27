@@ -552,6 +552,10 @@ class WebBackend:
         )
         result = dict(entry)
         result["body"] = inline
+        # Full payload length, like web.script.source: with body_truncated
+        # alone a cut body cannot be told apart from a short one. This is the
+        # body as delivered, so base64_encoded says how to read it.
+        result["bytes"] = len(body.encode("utf-8", errors="replace"))
         result["body_truncated"] = cut
         if spill is not None:
             result["body_path"] = str(spill)

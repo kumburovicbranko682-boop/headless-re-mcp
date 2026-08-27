@@ -60,7 +60,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
-### 修复（监控台回环护栏）
+### 修复（web.network.get 正文长度）
+
+- `web.network.get` 现在像 `web.script.source` 一样回传 `bytes`(正文的完整字节数)。
+  此前只有 `body` / `body_truncated` / `body_path`:一旦在 inline 上限处被截断,调用方
+  无从区分“被砍了”与“本来就短”。`bytes` 给出按投递形态计的完整长度(配合 `base64_encoded`
+  说明如何解读),截断因此可量化。
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,

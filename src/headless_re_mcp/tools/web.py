@@ -81,10 +81,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large bodies spill to an artifact).
 
-        Answers with body, base64_encoded, plus body_truncated and body_path
-        when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        Answers with body, bytes and base64_encoded, plus body_truncated and
+        body_path when the text was cut at the buffer. bytes is the full
+        payload length (as delivered, so a cut body is not read as a short
+        one); the cut flag is body_truncated, not truncated. A body over the
+        capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
