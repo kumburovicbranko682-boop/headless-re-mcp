@@ -59,6 +59,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 测试（cdb/WinDbg 客户端补齐输入守卫与错误映射）
+
+- `backends/windbg/client.py` 把模型给的地址、长度和 PID 直接交给 cdb 执行；命令白名单和
+  截断标注已有测试，但拒绝分支、错误映射与 cdb 发现的跨平台分支此前未覆盖（80%）。新增
+  `tests/unit/test_windbg_input_guards.py`（stub 掉 `run_bounded`，跨平台可跑）钉住：
+  `disasm`/`live_disasm` 的长度必须是 1..256 的整数、整数地址不得为负、字符串地址不得含
+  `; | &` 分隔符，合法整数地址被渲染成十六进制并折进白名单的 `u <addr> L<n>` 形式、合法
+  符号地址原样透传；PID 非正数在任何启动前即被拒、attach 到非会话调试目标报
+  `permission_denied` 且都不触发启动；活体探针无法启动 / 非零退出且无输出报 `backend_error`、
+  非零退出但仍有输出则如实返回；缺 dump 文件报 `not_found`、内核 dump 需显式放行、无 cdb
+  报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
+  调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
+  glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
