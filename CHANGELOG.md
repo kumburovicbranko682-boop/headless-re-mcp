@@ -123,6 +123,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
+
+- close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
+  `_frida_auth` 的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会
+  把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
+  分支本就被 `_require_debuggee_pid` 挡住）。
+
 ### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
@@ -183,6 +190,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
+
+- `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
+  长分支(`br`/`brfalse`/`brtrue`)与 `ldc.i4` 常量却按无符号解码。按 ECMA-335 这些都是
+  有符号 int32,于是一次向后跳转 `-10` 打成 `4294967286`、`ldc.i4 -1` 打成 `4294967295`——
+  agent 读来判断循环走向的正是这个补码位型而非真实偏移。现把有符号操作数集中到
+  `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
+  无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
+
+### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
+
+- **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
+  frida 17 删掉了 `Memory.read*` 这批全局自由函数，于是这句在现代 runtime 上抛
+  `TypeError: not a function`，`frida.memory.read` 在整条动态分析线上直接坏掉——真机复现：
+  frida 17.17 attach 本地进程，`attach` / `modules` / `exports` 都正常，唯独 `memory.read`
+  报错。改用 NativePointer 方法 `ptr(address).readByteArray(size)`（frida 12 起就有，覆盖
+  `android` extra 声明的 `>=16.5` 全区间）。真机验证：修复后读模块基址前 4 字节返回 ELF 魔数
+  `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
+  以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
@@ -239,6 +266,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
+
+### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
+
+- `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,
+  异常冒出 `Java.perform` 后被 Python 的通用 `except` 兜成 `backend_error`;而**加载了但没有自有方法**
+  (方法全继承自父类)的类则正常回空数组。于是「类名写错/没加载」既可能变成一条泛化后端错误、
+  也可能——取决于版本与时序——与「类在、但自有方法为空」的空数组无从分辨。无人值守的 agent 据此
+  会把一个根本没加载的类读成「这个类没有方法」。
+- 现在与兄弟接口 `frida.exports` 的 `found` 一致:脚本侧 `methods` 改为回 `{found, methods}`,
+  `Java.use` 失败即 `found=false`、`methods=[]`;成功则 `found=true`。据此,`found=false`+空列表明确
+  读作「类未加载/类名不解析」,`found=true`+空列表读作「类在,但不声明自有方法」。分页 `has_more` 行为不变。
+- Python 侧解析与 `modules` 同款:优先按 `{found, methods}` 字典解读,同时容忍旧的裸数组形状
+  (裸数组按 `found=true` 处理),脚本与 Python 版本错配时不炸。
+- 新增回归:未加载类回 `found=false`/空列表、已加载有方法类 `found=true` 且满页 `has_more=true`、
+  已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
+  `frida.java.methods` 描述点名 `found`。
 
 ### 修复（监控台回环护栏）
 
@@ -494,6 +537,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`doctor` 的 radare2 探针只看 PATH，无视配置的 `HEADLESS_RE_R2`**。它用的是只查
+  `shutil.which` 的 `probe_command`，而 `r2.*` 工具跑的是 `R2Client(settings.r2)`，直接用
+  配置路径。于是操作者把 `HEADLESS_RE_R2` 指到不在 PATH 上的 r2 时，doctor 报 radare2
+  缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
+  改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
+  webcrack / wabt 一致：先认配置路径，再回落 PATH。
+- **Ghidra headless 会把操作者的 `JAVA_TOOL_OPTIONS` 直接覆盖掉**。`_run_headless`
+  过去 `env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"`，把操作者为代理、编码或 JDK 17+
+  Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。
+  现在把 `-Xmx` 前置拼进已有值：堆上限作为默认仍生效，而操作者显式的 `-Xmx`（JVM 取最后一个）
+  仍然胜出，其余选项一并保留。未设置该变量时结果与之前完全相同（`-Xmx2G`）。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
@@ -531,6 +585,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `cancel_requested`，超时等待也会去取消那条 asyncio 任务。
 - **超长 objective 先建空 inbox 再拒绝**。空 thread 不会被 trim，重试会把库撑大。
   现在先 `validate_mission`，过了才建 thread。
+- **完成一条较旧的 mission/run 会把它自己删掉再崩**。终态保留裁剪按 `created_at DESC`
+  只留每线程最新 N 条；当同线程里较新的先完成、较旧的后完成时，那条刚完成的旧记录恰是
+  「最旧的终态行」而被裁掉——可 `set_mission_status` / `cancel_mission` / `transition`
+  紧接着 `get_mission` / `get_run` 读回并 `assert ... is not None`,于是操作本身以
+  `AssertionError` 崩溃(对无人值守调用者表现为 `internal_error`),而不是返回它刚写下的
+  状态。裁剪改按 `updated_at DESC`(即完成时间)排序:刚完成的记录必是最新的一条,永远落在
+  保留窗口内,保留条数仍恰为 N。新增三条回归测试(mission 完成 / mission 取消 / run 转终态,
+  均为「旧记录后完成」)以严格递增时钟钉住顺序。
 - **压缩后的请求仍会超过自己报的预算**。8,000 字符上限选出的尾巴，再加上系统提示
   和压缩通知，线上变成 8,115。现在先给这两条留位置再选尾巴。
 - **`cdb -c` 只看第一个 token**。`lm; !process` 和 `k\n.shell` 能穿过白名单。
