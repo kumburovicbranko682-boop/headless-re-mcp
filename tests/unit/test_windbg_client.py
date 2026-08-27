@@ -93,6 +93,74 @@ def test_a_dump_analysis_that_fits_is_not_labelled_truncated(
     assert payload["modules"] == "ok"
 
 
+def _clamp_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[WindbgClient, Path, dict[str, float]]:
+    import subprocess
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    captured: dict[str, float] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"ok", stderr=b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", fake_run)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+    return WindbgClient(cdb), dump, captured
+
+
+def test_an_agent_supplied_dump_deadline_is_clamped_to_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent transport skips the dump tools' le=300 bound; unclamped, a hung
+    cdb would hold the dump file for as long as the caller named."""
+    client, dump, captured = _clamp_fixture(tmp_path, monkeypatch)
+
+    client.modules(dump, timeout=10**9)
+    assert captured["timeout"] == windbg_module._MAX_DUMP_TIMEOUT_S == 300.0
+
+    client.threads(dump, timeout=float("inf"))
+    assert captured["timeout"] == 300.0
+
+    client.modules(dump, timeout=60.0)
+    assert captured["timeout"] == 60.0
+
+
+def test_an_agent_supplied_live_deadline_is_clamped_to_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live tools declare le=120 and cdb stays non-invasively attached to the
+    debuggee for the whole deadline, so the ceiling is tighter than for dumps."""
+    client, _dump, captured = _clamp_fixture(tmp_path, monkeypatch)
+
+    client.live_modules(41, allowed_pid=41, timeout=10**9)
+    assert captured["timeout"] == windbg_module._MAX_LIVE_TIMEOUT_S == 120.0
+
+    client.live_threads(41, allowed_pid=41, timeout=30.0)
+    assert captured["timeout"] == 30.0
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan")])
+def test_a_non_positive_or_nan_deadline_is_rejected_before_cdb_is_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    client, dump, captured = _clamp_fixture(tmp_path, monkeypatch)
+
+    with pytest.raises(WindbgError) as dump_err:
+        client.modules(dump, timeout=bad)
+    assert dump_err.value.code == "invalid_params"
+
+    with pytest.raises(WindbgError) as live_err:
+        client.live_modules(41, allowed_pid=41, timeout=bad)
+    assert live_err.value.code == "invalid_params"
+
+    assert not captured, "a bad deadline must be rejected before cdb is launched"
+
+
 def test_discovery_never_returns_a_store_package(monkeypatch: pytest.MonkeyPatch) -> None:
     store = r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.0_x64__abc\amd64\cdb.exe"
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
