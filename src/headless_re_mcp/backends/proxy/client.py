@@ -354,10 +354,58 @@ class _ProxyInstance:
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
 
+    def _release_servers(
+        self, master: Any, loop: asyncio.AbstractEventLoop, timeout: float = 8.0
+    ) -> None:
+        """Free the listening socket before the loop is torn down.
+
+        On mitmproxy 11+ the proxy servers are owned by the ``proxyserver``
+        addon (mitmproxy_rs under the hood), not by a bare asyncio server whose
+        transport ``_shutdown_loop`` would cancel. Closing the loop therefore no
+        longer releases the port -- ``master.shutdown()`` returns, the thread
+        exits, and the socket stays bound, so the next ``start()`` on that port
+        fails. Ask the addon to stop its servers (``servers.update([])``) on the
+        master's own loop and wait for it, so ``stop()`` actually frees the port.
+        Older mitmproxy that lacks this shape simply no-ops here.
+        """
+        if self._thread is None or not self._thread.is_alive():
+            return
+        proxyserver = None
+        with contextlib.suppress(Exception):
+            proxyserver = master.addons.get("proxyserver")
+        servers = getattr(proxyserver, "servers", None) if proxyserver is not None else None
+        update = getattr(servers, "update", None)
+        if update is None:
+            return
+        done: concurrent.futures.Future[bool] = concurrent.futures.Future()
+
+        def _schedule() -> None:
+            async def _run() -> None:
+                try:
+                    await update([])
+                except Exception as exc:  # noqa: BLE001 - report to the caller
+                    if not done.done():
+                        done.set_exception(exc)
+                    return
+                if not done.done():
+                    done.set_result(True)
+
+            with contextlib.suppress(Exception):
+                asyncio.ensure_future(_run())
+
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(_schedule)
+            with contextlib.suppress(Exception):
+                done.result(timeout=timeout)
+
     def stop(self) -> None:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            # Free the listening socket first: on mitmproxy 11+ closing the loop
+            # does not, so shutdown() alone would leave the port bound and the
+            # next start() on that port unable to rebind it.
+            self._release_servers(master, loop)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
