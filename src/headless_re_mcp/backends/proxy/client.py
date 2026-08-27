@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -31,6 +34,17 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or under this stays inline as text; anything larger, or anything
+# that is not valid UTF-8, spills to a file so the caller never receives a
+# lossy decode masquerading as the real bytes.
+_MAX_INLINE_BODY = 200_000
+# flow.get returns headers inline. The body is already spilled/capped, but the
+# header map was dumped whole, so a chatty or hostile server (thousands of
+# headers, a multi-kilobyte Set-Cookie) could return an unbounded blob into the
+# tool response. Bound it in count, per-value and total size like the rest.
+_MAX_FLOW_HEADERS = 100
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
 
 
@@ -176,6 +190,91 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _raw_body(part: Any) -> bytes:
+    """The raw bytes of a request/response, or empty when there is no body.
+
+    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
+    failure there is not a reason to fail the whole fetch, so it reads as an
+    empty body the same way a bodyless message does.
+    """
+    if part is None:
+        return b""
+    try:
+        content = part.raw_content
+    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
+        return b""
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    return b""
+
+
+def _emit_body(raw: bytes, artifact_dir: Path) -> JsonObject:
+    """Describe one message body without ever handing back a lossy decode.
+
+    Text within the inline cap comes back as ``body``; a larger body, or one
+    that is not valid UTF-8, spills to a ``.bin`` artifact and comes back as
+    ``body_path`` with ``spill_reason`` so a caller can tell "too big to inline"
+    from "not text" and never mistakes replacement characters for real bytes.
+    """
+    out: JsonObject = {"size": len(raw)}
+    if not raw:
+        out["body"] = ""
+        return out
+    too_large = len(raw) > _MAX_INLINE_BODY
+    if not too_large:
+        try:
+            out["body"] = raw.decode("utf-8")
+            return out
+        except UnicodeDecodeError:
+            pass
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dest = artifact_dir / f"flow-{uuid4().hex}.bin"
+    dest.write_bytes(raw)
+    out["body_path"] = str(dest)
+    out["spill_reason"] = "too_large" if too_large else "binary"
+    return out
+
+
+def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
+    """Header map for flow.get, bounded in count, per-value and total size.
+
+    mitmproxy keeps whole headers on the retained flow, so a hostile or chatty
+    server could otherwise put megabytes of them inline in the tool response.
+    Duplicate names collapse to the last value, matching the previous
+    ``dict(headers)``; the returned flag says when anything was dropped so a
+    reader does not mistake a bounded map for the whole header set.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return {}, False
+    try:
+        try:
+            items = list(headers.items(multi=True))
+        except TypeError:
+            items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        return {}, True
+    out: dict[str, str] = {}
+    truncated = False
+    total = 0
+    for key, value in items:
+        name = str(key)
+        if name not in out and len(out) >= _MAX_FLOW_HEADERS:
+            truncated = True
+            break
+        text, cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        truncated = truncated or cut
+        entry_bytes = len(name.encode("utf-8", errors="replace")) + len(
+            text.encode("utf-8", errors="replace")
+        )
+        if total + entry_bytes > _MAX_FLOW_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        total += entry_bytes
+        out[name] = text
+    return out, truncated
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -218,6 +317,11 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        # The decoded response body length is known here, before the flow may be
+        # dropped from the retain ring, so the summary keeps it even for a flow
+        # whose body was not retained -- and the HAR export can report a real
+        # content size instead of the -1 "unknown" sentinel.
+        response_size = _content_len(resp)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -247,6 +351,7 @@ class _FlowRecorder:
                 "host": host,
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
+                "response_size": response_size,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -493,32 +598,25 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+        method, method_cut = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
+        url, url_cut = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
+        req_headers, req_headers_cut = _bounded_headers(req)
+        resp_headers, resp_headers_cut = _bounded_headers(resp) if resp else ({}, False)
+        request: JsonObject = {"method": method, "url": url, "headers": req_headers}
+        if method_cut or url_cut or req_headers_cut:
+            request["metadata_truncated"] = True
+        # The request body is what an agent reverse-engineering an API most
+        # wants to see -- what was actually POSTed -- and used to be dropped
+        # entirely, leaving only the response.
+        request.update(_emit_body(_raw_body(req), artifact_dir))
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": resp_headers,
         }
-        if len(body) > 200_000:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
-        return result
+        if resp_headers_cut:
+            response["metadata_truncated"] = True
+        response.update(_emit_body(_raw_body(resp), artifact_dir))
+        return {"id": flow_id, "request": request, "response": response}
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
@@ -562,24 +660,35 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
-        import json
-
         entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
+            har_entry(
+                method=f.get("method"),
+                url=f.get("url"),
+                status=f.get("status"),
+                mime_type=f.get("content_type") or "",
+                response_body_size=f.get("response_size"),
+            )
             for f in inst.recorder.snapshot()
         ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
+        # URLs alone can be 16 KiB each, so an unbounded write would drop a
+        # multi-megabyte artifact the retention walker never budgeted for.
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=serialized.size,
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        out_path.write_text(serialized.text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

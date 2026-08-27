@@ -65,6 +65,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   CI 跑不了」只在无 ptrace / 无 frida-server 的沙箱成立：那时 gate 明确 skip（skip≠pass），能
   attach 时就真跑——这正是当初只靠静态断言没能在运行期直接照出 frida 17 破坏的那条路径。
 
+### 修复（apk 列表分页越界）
+
+- **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
+  schema**。这三个工具的 schema 已声明 `offset >= 0` 与有界 `limit`(见
+  `test_apk_offset_schema.py`),但只有 MCP 传输会跑那层 pydantic 校验;Agent 与 OpenAI 桥接
+  经 `CommandCatalog.invoke` 直接 `spec.handler(**arguments)` 调用,越界页会原样抵达后端。
+  实测越界前:十个类时 `classes(offset=-1, limit=10)` 变成 `names[-1:9]`——一个**空页却仍报
+  `has_more=True`**;`limit=-5` 变成 `names[0:-5]`,十个类被当成五个读。现新增 `_clamp_page`
+  把 `offset` 钳到 `>=0`、`limit` 钳到 `1..schema 上限`,与 web / proxy / jsre 列表后端既有做法
+  一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
+  漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
+
+### 修复（签名口令上进程表）
+
+- `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
+  argv 对本机所有进程可见（Linux `/proc/<pid>/cmdline`、Windows 进程列表），签名 JVM 跑多久
+  就暴露多久——SECURITY.md 把签名口令进入任何可观测通道列为漏洞。现改走 apksigner 原生的
+  `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
+  纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
+  环境里。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
@@ -75,6 +96,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
+
+### 修复（`proxy.flow.get` 头部无界回传）
+
+- `proxy.flow.get` 一直把响应体按 200000 字节内联/溢写严格设界,却用 `dict(req.headers)` /
+  `dict(resp.headers)` 把头部整包倒进返回——而 mitmproxy 在保留的 flow 上留着完整头部,一个
+  多话或恶意的服务端(成千上万个头、几 KB 的 `Set-Cookie`)因此能把一坨无界数据塞进工具返回,
+  与本后端其余处处设界的作风相悖。现新增 `_bounded_headers`,按条数(100)、单值(4 KiB)与总量
+  (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
+  `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
+  并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.network.get` 取不到响应体时仍保持形状）
+
+- `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
+  对某个请求没有响应体时(重定向,或响应体已被其缓存淘汰,`Network.getResponseBody` 抛
+  「No resource with given identifier found」),失败分支只回 `{**entry, body_error}`——恰恰在
+  这条路径上把承诺的三个字段全丢了,读 `result["body"]` 的调用方直接缺键。现失败分支补齐
+  `body=""`、`base64_encoded=false`、`body_truncated=false` 与 `body_error`(说明原因),成功
+  与失败两条路径形状一致;空体不落盘。文档串补上 `body_error`,并新增该失败路径的回归测试。
 
 ### 修复（监控台回环护栏）
 
@@ -106,6 +145,33 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   fail-closed:解析后若逃出 `sessions` 根即抛 `ValueError`(经信封映射为 `invalid_request`),
   合法 uuid 与根内嵌套 id(从不逃根)照常;清理逻辑加同款单组件守卫,uuid 之外的 id 直接跳过。
   回归测试端到端验证越根读取被拒且不泄露文件内容、清理不会删根外文件,并参数化钉住多种穿越形态。
+
+### 修复（`proxy.flow.get` 返回请求体，二进制体不再糊成文本）
+
+- `proxy.flow.get` 此前只回响应体、丢掉请求体：逆向一个 API 最想看的恰是「实际 POST 了什么」，
+  而调用者拿不到。现在请求与响应对称返回各自的 `size` 与体：文本(≤200000 字节、可按 UTF-8 严格
+  解码)走 `body`，其余走 `body_path`。
+- 小体此前用 `decode("utf-8", errors="replace")` 强解：一张 200KB 以内的 PNG、一段 protobuf 会被
+  替换字符糊成看似文本的乱码 `body` 交回，agent 无从分辨真伪。现在严格解码，失败即判定二进制并
+  落盘成 `.bin` 制品、回 `body_path` 并附 `spill_reason`（`too_large` 或 `binary`），与既有的
+  >200KB 溢出路径同款，绝不再把乱码当文本。请求侧同样处理。
+- 溢出的请求/响应体各自登记为制品（`proxy_flow_request_body` / `proxy_flow_response_body`），
+  `artifact_id` 挂在所属的 `request`/`response` 下而非顶层，两者的 id 不会互相覆盖，落盘体也像其它
+  capture 一样可被保留清理回收、可经 `artifacts.describe`/`artifacts.read` 重新读回。
+- 补齐后端与 service 两层回归：请求体文本、请求体二进制落盘、响应体二进制落盘（校验字节完全一致、
+  请求与响应溢出落在不同文件），以及 service 层把溢出体登记为制品且 id 挂在对应侧。
+
+### 修复（`web.network.get` 的二进制响应体不再以 base64 文本落盘）
+
+- CDP `Network.getResponseBody` 对二进制体(图片、字体、wasm 等)返回 `base64Encoded=true`、
+  `body` 为 base64 字符串。此前代码把这段 base64 **文本**直接喂给面向文本的溢出逻辑：大体积二进制
+  于是把 base64 文本写进 `.bin` 制品——打开 `body_path` 拿到的并不是调用者以为的原始字节；且容量上限
+  按比真实字节大约 33% 的 base64 长度来判定,一个解码后本可放下的体可能被误判 `too_large`。
+- 现在二进制体先解码一次:容量上限按真实字节数判定,原始字节写入 `body_path`(`.bin` 名副其实)。
+  二进制体不再内联、也不再把 base64 当文本写盘——`body` 为空、`body_truncated` 为 `false`、
+  `body_bytes` 是解码后大小、`base64_encoded` 标记源为二进制。文本体(`base64Encoded=false`)行为不变。
+- 标记为 base64 却无法解码的体不再被当作字节静默落盘,而是回 `body_error`。
+- 新增回归:二进制体解码后字节与落盘文件逐字节一致、返回字段齐备,以及非法 base64 走 `body_error`。
 
 ### 修复（损坏的 web token 文件不再卡死启动）
 
@@ -143,8 +209,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（apk 包名读取会整体解压 manifest）
+
+- `device.install` 回读 APK 包名做校验时,`_apk_package_name` 用
+  `archive.read("AndroidManifest.xml")[:65536]`——`read()` 会把整条 manifest 条目解压进内存后才切片。
+  一份压缩炸弹式的 AndroidManifest.xml(盘上几 KiB、解压后数 GiB)因此会在切片前吃满内存。现改为
+  `archive.open(name).read(_MAX_MANIFEST_BYTES)` 流式读取,只解压所需的前 64 KiB;对正常 manifest
+  结果完全一致。新增回归测试用 tracemalloc 证明:面对解压后 32 MiB 的 manifest,峰值内存 <8 MiB
+  (旧写法实测约 77 MiB),包名仍被正确解析;并覆盖前缀边界与缺失 manifest 的情形。
+
 ### 修复（托管质量门）
 
+- 单测挂起不再吞掉全部日志：Windows quality job 曾在单测步骤挂满 30 分钟作业上限，
+  runner 被强杀后连已完成步骤的日志都没有上传，挂在哪个测试无从查起。现在两个单测
+  步骤各带步骤级超时（Windows 25 分钟 / Linux 20 分钟；步骤失败但日志保留、覆盖率
+  照常上传），Linux 步骤补齐 `--timeout=120` 逐测试上限，并在 pytest 配置里加
+  `faulthandler_timeout = 300` + `faulthandler_exit_on_timeout`：pytest-timeout 的
+  thread 模式需要 GIL，卡死在 C 调用里的测试它拦不住，而 faulthandler 的 C 层看门狗
+  会先转储所有线程栈、点名卡住的测试再退出。`faulthandler_exit_on_timeout` 是
+  pytest 9.0 才有的选项，test extra 的 pytest 下限随之从 8.3 抬到 9.0——在 8.x 上
+  它只是一条 unknown-option 警告，退出兜底会静默失效。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
@@ -183,6 +267,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
   含 `proxy.ca.install_android`。
+
+### 修复（HAR 导出规范与边界）
+
+- `web.har.export` 与 `proxy.export_har` 过去各自手搓一份 `{"request":{method,url},
+  "response":{status,content:{mimeType}}}` 结构，缺了 HAR 1.2 规定每条 entry 必带的
+  `startedDateTime`、`time`、若干 request/response 成员、`cache` 与 `timings`，所以标准
+  消费端（Chrome DevTools「导入 HAR」、Firefox、har-validator）一律拒绝加载——抓下来的
+  东西只有本项目自己读得懂。现在两者统一走新的 `backends/common/har.py`：产出可被上述工具
+  直接打开的合规 HAR 1.2（未采集的头/体/分段耗时按规范以空数组、`-1`、未知 timings 占位，
+  entry 上以 `comment` 如实说明），并带 `creator.version`。
+- `proxy.export_har` 此前**完全没有大小上限**：flow 环最多 2000 条、单条 URL 可达 16 KiB，
+  一夜无人值守的抓包会把一份多兆字节的产物直接写进会话目录，而 retention 从未为它预留额度。
+  现与 `web.har.export` 一样按采集上限 `UNREGISTERED_CAPTURE_MAX_BYTES` 逐步丢弃**最旧** entry
+  直到落在阈值内，超限即 `truncated=true`；连空 HAR 都放不下时按 `too_large` 拒绝。两个工具
+  的返回都新增 `truncated`（并保留 `size`），文档串同步说明。
+- HAR 超限截断方向改为丢最旧、保最新。此前 `serialize_har` 从**最新**一端丢弃，与两个采集环
+  的淘汰方向（满了淘汰最旧、保留最新）相反：一旦 HAR 超出字节上限，留下的反而是最老的 flow，
+  而分析者在某个操作后打开 HAR 想看的正是最近的请求。现从最旧一端丢弃，保留放得下的最新
+  条目，与采集环一致；`entry_count`/`truncated`/`size` 语义不变。
+- HAR entry 从占位向真数据补齐：`request.queryString` 现由 URL 直接解析（`parse_qsl`
+  保留重复键与空值，上限 256 个参数防单条膨胀），HAR 查看器的「Query String Parameters」
+  面板因此不再空白，也不必依赖消费端自己再切一遍 URL。`proxy` 侧还在 `response()` 落表时
+  记下解码后的响应体字节数（此时 flow 尚未因保留额度被丢体，故 body 被省略的 flow 也留得住
+  这个数），导出时填进 HAR 的 `content.size` 与 `response.bodySize`，取代 `-1`；该数值同时
+  作为 `response_size` 出现在 `proxy.flows` 每行（无响应体记 0）。`web` 侧采集阶段拿不到响应体
+  长度，仍如实以 `-1` 占位。
 
 ### 新增（工作方向）
 
