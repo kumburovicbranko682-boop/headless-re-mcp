@@ -1206,7 +1206,10 @@ def probe_ghidra(settings: Settings) -> Probe:
             {},
             "Set HEADLESS_RE_GHIDRA_HOME to a Ghidra install with support/analyzeHeadless.",
         )
-    from headless_re_mcp.backends.ghidra.client import _find_analyze_headless
+    from headless_re_mcp.backends.ghidra.client import (
+        _find_analyze_headless,
+        _pyghidra_required,
+    )
 
     analyze = _find_analyze_headless(home)
     if analyze is None or not analyze.is_file():
@@ -1225,6 +1228,18 @@ def probe_ghidra(settings: Settings) -> Probe:
             "analyzeHeadless is present but java is not on PATH",
             {"home": str(home), "analyze_headless": str(analyze)},
             "Install a JRE and put java on PATH before treating Ghidra as ready.",
+        )
+    # Ghidra >= 11.3 dropped Jython and runs .py export scripts through PyGhidra.
+    # analyzeHeadless being present is then not enough: without the pyghidra
+    # Python package the export tools fail at run time, so report DETECTED rather
+    # than claim READY on an install that cannot actually run the scripts.
+    if _pyghidra_required(home) and importlib.util.find_spec("pyghidra") is None:
+        return Probe(
+            "ghidra",
+            ProbeStatus.DETECTED,
+            "Ghidra needs PyGhidra but the pyghidra Python package is not installed",
+            {"home": str(home), "analyze_headless": str(analyze), "java": java},
+            "Install PyGhidra (pip install pyghidra) matching this Ghidra to run headless scripts.",
         )
     return Probe(
         "ghidra",

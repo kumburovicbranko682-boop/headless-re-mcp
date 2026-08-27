@@ -19,6 +19,7 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
+    probe_ghidra,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
@@ -547,3 +548,68 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+def _ghidra_home(tmp_path: Path, *, pyghidra: bool) -> Path:
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    (home / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    if pyghidra:
+        (home / "Ghidra" / "Features" / "PyGhidra").mkdir(parents=True)
+    else:
+        (home / "Ghidra" / "Features" / "Jython").mkdir(parents=True)
+    return home
+
+
+def test_probe_ghidra_missing_when_home_unset(tmp_path: Path) -> None:
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=None)
+    probe = probe_ghidra(settings)
+    assert probe.status == ProbeStatus.MISSING
+
+
+def test_probe_ghidra_ready_for_a_jython_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+    settings = replace(
+        _settings(None, tmp_path / "artifacts"),
+        ghidra_home=_ghidra_home(tmp_path, pyghidra=False),
+    )
+    probe = probe_ghidra(settings)
+    assert probe.status == ProbeStatus.READY
+
+
+def test_probe_ghidra_detected_when_pyghidra_package_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A modern (PyGhidra) install with analyzeHeadless present but no pyghidra
+    package cannot run the export scripts, so the doctor must not claim READY."""
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda name: None if name == "pyghidra" else object(),
+    )
+    settings = replace(
+        _settings(None, tmp_path / "artifacts"),
+        ghidra_home=_ghidra_home(tmp_path, pyghidra=True),
+    )
+    probe = probe_ghidra(settings)
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is not None
+    assert "pyghidra" in probe.remediation.lower()
+
+
+def test_probe_ghidra_ready_when_pyghidra_package_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr(
+        doctor_module.importlib.util, "find_spec", lambda name: object()
+    )
+    settings = replace(
+        _settings(None, tmp_path / "artifacts"),
+        ghidra_home=_ghidra_home(tmp_path, pyghidra=True),
+    )
+    probe = probe_ghidra(settings)
+    assert probe.status == ProbeStatus.READY
