@@ -1,0 +1,88 @@
+# Linux non-PE integration gates — GitHub-hosted, no proprietary backends.
+#
+# ci.yml already runs the unit suite on Linux, and windows-integration.yml runs
+# the full integration gates on a self-hosted Windows box. Neither exercises the
+# non-PE reverse-engineering backends against their real tools on Linux: the web
+# JS/WASM path (webcrack + wabt), the Chrome DevTools Protocol browser, the
+# mitmproxy capture lifecycle, and the Android static surface. A Linux-only
+# regression there — a POSIX launcher path, a socket teardown, an encoding — can
+# therefore land unseen. This job installs those portable tools and runs exactly
+# the gates that produce real Linux coverage.
+#
+# Verified locally on ubuntu-24.04 / CPython 3.12 with these same steps:
+# 14 passed, 1 skipped. The single skip is the Windows-only OS-handle leak check
+# in test_web_lifecycle_gate.py, which honestly skips on POSIX (skip != pass).
+#
+# Manual + weekly rather than per-commit: each run downloads a Chromium build and
+# resolves a Node toolchain, which is too heavy for every push, but a schedule
+# keeps the coverage honest between manual runs. The runner is GitHub-hosted, so
+# a schedule here does not queue forever the way the self-hosted windows one would.
+name: linux-integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 05:17 UTC. Off the hour to dodge the top-of-hour cron stampede.
+    - cron: "17 5 * * 1"
+
+jobs:
+  nonpe-gates:
+    # Pinned, not ubuntu-latest: the apt wabt build and the shared libraries the
+    # Chromium download links against shift when the image alias rolls, and a
+    # gate should run against the image its steps were validated on.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # webcrack floats fast (it dropped Node < 22 and reshaped its CLI); pin the
+      # exact version the gate was validated against so an upstream release cannot
+      # silently change the JS-deobfuscation contract mid-schedule.
+      WEBCRACK_VERSION: "2.16.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          # webcrack needs Node 22 or 24; 22 is the LTS the gate was verified on.
+          node-version: "22"
+
+      - name: Install wabt (wasm2wat / wasm-objdump)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wabt
+
+      - name: Install webcrack
+        run: npm install -g "webcrack@${WEBCRACK_VERSION}"
+
+      - name: Install package with the non-PE extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser,proxy,android]"
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: Tool sanity — a missing tool must fail here, not skip a gate
+        # If webcrack/wabt/mitmproxy were silently absent, the gates would skip
+        # and the job would read green on zero real coverage. Assert the backends
+        # resolve up front so a broken install fails loudly instead.
+        run: |
+          wasm2wat --version
+          webcrack --version
+          python -c "from headless_re_mcp.backends.jsre import JsClient, WasmClient; assert JsClient().available, 'webcrack not found'; assert WasmClient().available, 'wabt not found'; print('jsre backends available')"
+          python -c "from headless_re_mcp.backends.proxy import ProxyBackend; ProxyBackend()._check_available(); print('mitmproxy available')"
+
+      - name: Non-PE integration gates
+        # Only the gates that genuinely run on Linux. The r2 and frida live gates
+        # key off a Windows PE fixture built by windows-integration.yml, so on a
+        # Linux runner they would only ever skip; they stay in that job. -rs prints
+        # each skip reason so a skip never quietly reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=180 \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_android_re_gate.py

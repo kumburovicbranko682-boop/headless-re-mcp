@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（Linux 非 PE 集成 gate CI）
+
+- 新增 `.github/workflows/linux-integration.yml`：在 GitHub 托管的 `ubuntu-24.04` 上装齐可移植的非
+  PE 后端工具（wabt 的 `wasm2wat`/`wasm-objdump`、固定版本 webcrack、mitmproxy、androguard、
+  Playwright Chromium），实跑 Web(JS/WASM/CDP)、Web 生命周期、mitmproxy 抓包生命周期与 Android
+  静态四条现场 gate。此前 `ci.yml` 只在 Linux 跑单测，真实后端 gate 仅在自建 Windows runner 上跑，
+  非 PE 后端在 Linux 对真实工具的行为（如 POSIX 启动器路径、套接字回收、编码）无任何持续覆盖。
+- 手动 `workflow_dispatch` + 每周定时，避免每次提交都下载 Chromium/Node；`ubuntu-24.04` 与
+  webcrack 版本均按本地验证过的取值钉死，避免上游滚动悄悄改掉 gate 所验证的契约。装完先做工具
+  自检（缺工具直接失败，而非让 gate 静默 skip），`pytest -rs` 打印每条 skip 原因，保持
+  skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：14 通过、1 跳过（仅 Windows 才有的 OS
+  句柄泄漏检查，POSIX 下诚实 skip）。r2 与 frida 的现场 gate 依赖 Windows PE 夹具，在 Linux 只会
+  skip，故仍留在 Windows job。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
