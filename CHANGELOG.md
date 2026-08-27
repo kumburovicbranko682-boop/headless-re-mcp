@@ -61,6 +61,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
+
+- die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
+  detached helper（`terminate_leftover_process_tree`：ppid 遍历 + 会话组扫描,按各自
+  `pgrp` 逐个击杀,避免组长 pid 复用误伤）。该行为随「Reap helpers after successful CLI
+  launches」引入,但在与 `_capture_process` 读者自闭管道范式收敛的合并中被覆盖丢失,
+  只有 de4dot 保留了等效逻辑;本次按现行 process_tree API 重建并接回三处。
+- `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
+  `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
+  `unsupported_on_platform`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
