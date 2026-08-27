@@ -86,6 +86,48 @@ def _coerce_header(value: object) -> str:
     return "" if value is None else str(value)
 
 
+def _normalize_cookie(raw: JsonObject) -> JsonObject:
+    """A JSON-safe, size-bounded cookie record from a CDP ``Network.Cookie``.
+
+    The security-relevant part of a cookie for a web/auth review is its flags, not
+    its value: ``http_only`` false on a session cookie means script-reachable (an
+    XSS can exfiltrate it), ``secure`` false means it rides plaintext HTTP, and
+    ``same_site`` "None"/unset is the CSRF surface. The value is still returned --
+    auth analysis often needs the token itself -- but capped like a header value
+    and flagged when cut so one oversized cookie cannot bloat the reply.
+    Name/domain/path are bounded too; ``expires`` is kept only when numeric (CDP
+    uses -1 for a session cookie), and ``same_site`` is empty when the site did
+    not set the attribute.
+    """
+    name, name_cut = _bounded_metadata(raw.get("name"), _MAX_METADATA_BYTES)
+    value, value_cut = _bounded_metadata(raw.get("value"), _MAX_HEADER_VALUE_BYTES)
+    domain, _domain_cut = _bounded_metadata(raw.get("domain"), _MAX_METADATA_BYTES)
+    path, _path_cut = _bounded_metadata(raw.get("path"), _MAX_METADATA_BYTES)
+    same_site, _same_site_cut = _bounded_metadata(raw.get("sameSite"), _MAX_METADATA_BYTES)
+    expires = raw.get("expires")
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        expires = None
+    elif expires < 0:
+        # CDP uses -1 for a session cookie (no persistent expiry); report that as
+        # null rather than a bogus pre-epoch timestamp -- the session flag carries
+        # the same fact, and a negative "expires" would read as long expired.
+        expires = None
+    cookie: JsonObject = {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": path,
+        "secure": bool(raw.get("secure")),
+        "http_only": bool(raw.get("httpOnly")),
+        "session": bool(raw.get("session")),
+        "same_site": same_site,
+        "expires": expires,
+    }
+    if name_cut or value_cut:
+        cookie["value_truncated"] = True
+    return cookie
+
+
 def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
     """Coerce a CDP header map to a JSON-safe, size-bounded ``str -> str`` dict.
 
@@ -736,6 +778,38 @@ class WebBackend:
             except Exception as exc:  # noqa: BLE001 - post data may be discarded
                 result["request_body_error"] = str(exc)
         return result
+
+    def cookies(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+        # Network.getAllCookies returns every cookie the browser holds for the
+        # session -- not only the current document's -- so a redirect chain or a
+        # third-party auth hop that set a cookie is visible, which document.cookie
+        # (httpOnly-blind, current-origin-only) could never show.
+        try:
+            resp = self._runner(handle).call(
+                lambda: handle.cdp.send("Network.getAllCookies")
+            )
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - CDP transport may drop
+            raise WebError("backend_error", f"could not read cookies: {exc}") from exc
+        raw_list = resp.get("cookies") if isinstance(resp, dict) else None
+        items: list[JsonObject] = []
+        if isinstance(raw_list, list):
+            for entry in raw_list:
+                if isinstance(entry, dict):
+                    items.append(_normalize_cookie(entry))
+        total = len(items)
+        # Bound the set by JSON-encoded size like the other list surfaces: a
+        # session can hold many cookies each with a multi-KiB value, so a raw
+        # dump could overrun the result budget and be discarded whole.
+        window = fit_json_list(items, reserve=_LIST_FIELD_RESERVE)[0]
+        return {
+            "cookies": window,
+            "count": len(window),
+            "total": total,
+            "has_more": len(window) < total,
+        }
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)

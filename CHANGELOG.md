@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1259,6 +1259,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   单测(`test_apk_permission_levels.py`)覆盖:基础级别抽取、`dangerous` 子集、解析不到的权限缺席而非误报 normal、`custom_permissions` 独立列出、老字段不变、
   DB 缺失退化空、以及辅助函数按名字集限定+token 归一化。实机 gate(`test_m11_android_apk_live_gate.py`)用真实 androguard AOSP DB 断言 INTERNET 解析为 `normal`、
   不在 dangerous、且夹具无自定义权限——证明级别来自真实权限库而非 mock。
+
+- **Web 域缺 cookie 读取能力,而 cookie 的安全标志(HttpOnly/Secure/SameSite)是 Web 会话/鉴权逆向最核心的一类事实。** 之前 web.* 有网络、控制台、脚本、
+  DOM、HAR,却没有任何看 cookie 的工具:分析者无法回答「会话 cookie 是否 HttpOnly(能否被页面脚本/XSS 读取)、是否 Secure(会不会走明文 HTTP)、SameSite 是否为
+  None(CSRF 面)」。新增只读工具 `web.cookies`:经 CDP `Network.getAllCookies` 读取浏览器会话持有的全部 cookie(含 `document.cookie` 看不到的 HttpOnly 项),每条
+  归一化为 JSON 安全标量——`name`/`value`/`domain`/`path`、布尔 `secure`/`http_only`/`session`/字符串 `same_site`(站点未设则为空),以及 `expires`(会话 cookie 的
+  -1 归一化为 null 而非伪造的史前时间戳)。`value` 按 4KiB 上限封顶、超出置 `value_truncated`;整份集合按 JSON 编码体积 `fit_json_list` 裁剪,`total`/`has_more` 让被裁
+  的一页不被当成全部。工具计入只读面(266,149 只读 / 117 写);catalog 计数不变式、README 三处工具算术、`test_tool_catalog_agent`/`test_workspace_profiles`/
+  `test_mcp_server` 的工具集与计数断言同步更新。单测(`test_web_cookies_fields.py`)用假 CDP 覆盖:安全标志、value 封顶+flag、空/畸形回复退化、大量大 cookie 按预算裁剪且
+  不超 262144、`_normalize_cookie` 默认值与 expires 归一化、以及描述点名 http_only/secure/same_site。实机 gate(`test_web_re_gate.py`)让 origin 在首页下发一个
+  `HttpOnly` cookie,经真实 chromium 用 `web.cookies` 读回其值与 `http_only=true`——CDP 能拿到 HttpOnly cookie 正是 `document.cookie` 永远做不到的,以此证明走的是 CDP 而非页面脚本捷径。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

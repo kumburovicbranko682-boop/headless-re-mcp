@@ -70,8 +70,13 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
     _APP = b"/* NETWORK_GATE_MARKER */ globalThis.__loaded = true;"
 
     def do_GET(self) -> None:  # noqa: N802 - http.server API name
+        cookie: str | None = None
         if self.path in ("/", "/index.html"):
             body, ctype = self._INDEX, "text/html; charset=utf-8"
+            # An HttpOnly cookie on the index: document.cookie cannot see it, but
+            # CDP's Network.getAllCookies can -- exactly what web.cookies exists to
+            # expose. Path/SameSite give the flag fields something real to read.
+            cookie = "gate_sid=abc123; Path=/; HttpOnly; SameSite=Lax"
         elif self.path == "/app.js":
             body, ctype = self._APP, "application/javascript"
         else:
@@ -80,6 +85,8 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -203,6 +210,25 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             # The sub-resource is a GET, so has_post_data is False and no
             # request_body is fetched -- pins the flag that gates that fetch.
             assert got.data["has_post_data"] is False, got.data
+
+            # web.cookies reads the browser's cookie store over CDP. The index
+            # set an HttpOnly cookie, so a working read returns it with the value
+            # and the http_only flag -- and getAllCookies surfacing an HttpOnly
+            # cookie is the thing document.cookie could never do, so this proves
+            # the CDP path rather than a page-script shortcut.
+            def _gate_cookie() -> dict[str, Any] | None:
+                res = service.web_cookies(session_id)
+                assert res.ok, res.error
+                for cookie in res.data["cookies"]:
+                    if cookie.get("name") == "gate_sid":
+                        return cookie
+                return None
+
+            cookie = _wait_for_value(_gate_cookie)
+            assert cookie is not None, service.web_cookies(session_id).data
+            assert cookie["value"] == "abc123", cookie
+            assert cookie["http_only"] is True, cookie
+            assert cookie["domain"], cookie
         finally:
             service.web_close(session_id)
     finally:

@@ -118,6 +118,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(session_id: str) -> dict[str, Any]:
+        """List the browser session's cookies with their security flags.
+
+        Answers with cookies, count, total, and has_more so a set bounded by
+        size is not read as every cookie. Each cookie carries name, value,
+        domain, path, expires (null for a session cookie), and the flags that
+        matter to an auth review: secure, http_only, session, and same_site
+        (empty when the site set no SameSite). http_only false means a session
+        cookie is reachable from page script; secure false means it can ride
+        plaintext HTTP; same_site None/empty is the CSRF surface. Values are
+        capped and value_truncated is set when a name or value was cut. Reads
+        every cookie the browser holds for the session via CDP, including
+        httpOnly ones document.cookie cannot see. There is no cookie or jar
+        field.
+        """
+        return _dump(analysis.web_cookies(session_id))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,
