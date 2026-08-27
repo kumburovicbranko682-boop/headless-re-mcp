@@ -94,6 +94,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_type(session_id, selector, text, timeout=timeout))
 
+    @tools.tool(name="web.wait")
+    def web_wait(
+        session_id: str,
+        selector: str,
+        state: str = "visible",
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 5.0,
+    ) -> dict[str, Any]:
+        """Wait for a CSS selector to reach a DOM state before reading on.
+
+        Answers with waited, selector and state. There is no ok or found field.
+        state is one of visible, hidden, attached, detached (default visible); an
+        unknown state, or an empty/over-long selector, is invalid_params. This is
+        the synchronization primitive for multi-step flows: after a click that
+        navigates or updates asynchronously, wait for the expected element rather
+        than racing dom.snapshot or network.get. A state that does not arrive
+        within timeout is refused with backend_error.
+        """
+        return _dump(analysis.web_wait(session_id, selector, state=state, timeout=timeout))
+
     @tools.tool(name="web.close")
     def web_close(session_id: str) -> dict[str, Any]:
         """Close the session's browser and free its resources.

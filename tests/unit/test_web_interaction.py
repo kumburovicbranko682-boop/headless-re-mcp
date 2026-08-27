@@ -33,6 +33,7 @@ from headless_re_mcp.backends.web.client import (
     _MAX_NAV_TIMEOUT_S,
     _MAX_SELECTOR_BYTES,
     _MAX_TYPE_TEXT_BYTES,
+    _WAIT_STATES,
     _require_selector,
     _require_type_text,
     _Runner,
@@ -47,6 +48,7 @@ class _FakeActionPage:
         self.url = "https://app/"
         self.clicks: list[tuple[str, float]] = []
         self.fills: list[tuple[str, str, float]] = []
+        self.waits: list[tuple[str, str, float]] = []
         self._fail = fail
 
     def click(self, selector: str, timeout: float = 0.0) -> None:
@@ -59,6 +61,13 @@ class _FakeActionPage:
         if self._fail:
             raise RuntimeError("Element is not an <input>, <textarea> or [contenteditable]")
         self.fills.append((selector, value, timeout))
+
+    def wait_for_selector(
+        self, selector: str, state: str = "visible", timeout: float = 0.0
+    ) -> None:
+        if self._fail:
+            raise RuntimeError(f"Timeout waiting for {selector!r} to be {state}")
+        self.waits.append((selector, state, timeout))
 
     def title(self) -> str:
         return "Example"
@@ -237,6 +246,97 @@ class TestTypeIsBoundedAndDoesNotEchoText:
             runner.shutdown()
 
 
+class TestWaitIsBoundedSynchronization:
+    def test_an_unknown_state_is_refused_before_the_session_is_touched(self) -> None:
+        """A typo in state must fail closed as invalid_params, not reach the driver."""
+        backend = WebBackend()
+
+        def poisoned(_session_id: str) -> Any:
+            raise AssertionError("an unknown wait state must not reach the session")
+
+        backend._get = poisoned  # type: ignore[method-assign]
+        with pytest.raises(WebError) as info:
+            backend.wait_selector("s", "#done", state="settled")
+        assert info.value.code == "invalid_params"
+
+    def test_an_empty_selector_is_refused_before_the_session_is_touched(self) -> None:
+        backend = WebBackend()
+
+        def poisoned(_session_id: str) -> Any:
+            raise AssertionError("an empty selector must not reach the session")
+
+        backend._get = poisoned  # type: ignore[method-assign]
+        with pytest.raises(WebError) as info:
+            backend.wait_selector("s", "   ")
+        assert info.value.code == "invalid_params"
+
+    def test_a_negative_timeout_does_not_wedge_a_live_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-wait-neg")
+        try:
+            page = _FakeActionPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            with pytest.raises(WebError) as info:
+                backend.wait_selector("s", "#done", timeout=-1.0)
+            assert info.value.code == "invalid_params"
+            assert runner.wedged is False
+            assert page.waits == []
+        finally:
+            runner.shutdown()
+
+    def test_a_wait_that_resolves_reports_the_state_it_reached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-wait-ok")
+        try:
+            page = _FakeActionPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            payload = backend.wait_selector("s", "#done", state="hidden", timeout=10**9)
+            assert payload == {"waited": True, "selector": "#done", "state": "hidden"}
+            # The wait was clamped to the schema ceiling before reaching the page.
+            assert page.waits == [("#done", "hidden", _MAX_NAV_TIMEOUT_S * 1000.0)]
+        finally:
+            runner.shutdown()
+
+    def test_a_state_that_never_arrives_surfaces_as_backend_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-wait-fail")
+        try:
+            page = _FakeActionPage(fail=True)
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            with pytest.raises(WebError) as info:
+                backend.wait_selector("s", "#never", timeout=5.0)
+            assert info.value.code == "backend_error"
+        finally:
+            runner.shutdown()
+
+    def test_every_advertised_wait_state_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-wait-states")
+        try:
+            page = _FakeActionPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+            for state in _WAIT_STATES:
+                payload = backend.wait_selector("s", "#x", state=state, timeout=5.0)
+                assert payload["state"] == state
+        finally:
+            runner.shutdown()
+
+
 class TestInteractionToolSurface:
     def test_click_and_type_are_writes_that_do_not_auto_execute(self) -> None:
         for name in ("web.click", "web.type"):
@@ -245,8 +345,15 @@ class TestInteractionToolSurface:
             assert spec.agent_auto_execute is False
             assert spec.effects == frozenset({ToolEffect.STATE_CHANGE})
 
+    def test_wait_is_read_only_and_may_auto_execute(self) -> None:
+        """A wait observes, it does not mutate, so it is a read that can auto-run."""
+        spec = COMMAND_CATALOG.require("web.wait")
+        assert spec.write is False
+        assert spec.agent_auto_execute is True
+        assert spec.effects == frozenset({ToolEffect.READ_ONLY})
+
     def test_interaction_is_selector_based_not_a_script_evaluator(self) -> None:
         """The new tools must not reopen the door web.evaluate keeps shut."""
         public = {name for name in dir(WebBackend) if not name.startswith("_")}
-        assert {"click", "type_text"} <= public
+        assert {"click", "type_text", "wait_selector"} <= public
         assert not {"evaluate", "eval", "run_code"} & public

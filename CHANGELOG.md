@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（148 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **268（149 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -610,7 +610,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **静态**：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）。
   WASM 反编译复用现有 `ghidra.*` 加 ghidra-wasm-plugin——wabt 的 `wasm-decompile` 已于
   2026-06 被上游删除，不再作为路径。
-- **动态**：`web.*` 14 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
+- **动态**：`web.*` 15 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
 - **交互**：`web.click` / `web.type` 让 Web 线从"只能观察"进到"能驱动多步流程"——按 CSS
@@ -619,6 +619,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不会卡住或 wedge 会话线程),`web.type` 只回填入文本的长度、绝不回显文本本身,免得口令/令牌
   落进转写;元素在超时内始终不可操作则以 `backend_error` 拒绝。仍**只接受选择器,不接受脚本**,
   与不提供 `web.evaluate` 同一条边界。
+- **同步**：`web.wait` 补上多步流程缺的那一环——点击触发异步导航/AJAX 更新后,先等预期元素
+  到达某个 DOM 状态(`visible`/`hidden`/`attached`/`detached`)再读,免得 `dom.snapshot` /
+  `network.get` 与页面抢跑。只读工具(不改状态),同样在触碰会话前校验选择器与状态、排队前夹取
+  超时;未知状态先拒为 `invalid_params`,状态在超时内未到达则记 `backend_error`。
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
   含 `proxy.ca.install_android`。
 
@@ -1111,8 +1115,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （`agent_auto_approve_effects` / `agent_auto_approve_tools` / `agent_never_auto_approve`）
   连同环境变量与效果列成表，并写明未配置=packed-analysis 预设、显式空列表=fail-closed
   两条易踩坑规则。
-- 修正文档口径：README 里「敌意输入下全部返回信封」的工具数从过时的 262 改为 266（=全部
-  267 个 MCP 工具减去会真删数据的 `artifacts.gc`），并改述为「绑定工具数 − 1」的不变式，
+- 修正文档口径：README 里「敌意输入下全部返回信封」的工具数从过时的 262 改为 267（=全部
+  268 个 MCP 工具减去会真删数据的 `artifacts.gc`），并改述为「绑定工具数 − 1」的不变式，
   跟 `test_tool_fault_contract.py` 的断言一致，避免再随目录增长漂移。
 - `CONTRIBUTING.md` 补上平台差异说明：CI 的 quality job 跑在 windows-latest，`python -m mypy`
   的权威零错误门在 Windows；在 Linux/macOS 直接跑 mypy 会报若干 Windows 专属 stdlib 属性
@@ -1164,7 +1168,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **OpenAI 桥接 CLI 三形态**：默认输出完整导出(count==tools==name_map)、`--names-only`
   只剩 `{name_map,count}`、`--output` 把完整 JSON 写到(自动创建的)路径并在 stdout 报告而不
   把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
-- **全表面资源策略有界**：全部 267 个工具的 `resource_policy` 都有有限且为正的超时与为正的
+- **全表面资源策略有界**：全部 268 个工具的 `resource_policy` 都有有限且为正的超时与为正的
   输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
 - **ScyllaHide 画像映射纯函数直测**：别名/节名规范化与其 fail-closed 拒绝(空串或未知名会连
   同白名单一起报出)、3 字符短 token(`vmp`/`tmd`)只按词边界匹配以免命中别的词内部、非壳类
@@ -1267,7 +1271,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类
   碰撞有守卫,这条路径没有)。catalog 存在多段点名(`breakpoints.condition.set`),碰撞并非假想。
-  新增契约:钉住出厂全表面 267 个 MCP 名折叠后无碰撞,并直测别名解析(点名/下划线/多段名都命中同一
+  新增契约:钉住出厂全表面 268 个 MCP 名折叠后无碰撞,并直测别名解析(点名/下划线/多段名都命中同一
   工具、无点名工具与未知名不受影响、无点名时 `get_tool` 保持原样不被闭包替换)。
 - **MCP server 的 `write_allowed` 接线回归**：`create_server` 从 `local_full_access` 读入共享
   catalog 的 `write_allowed`;该处的常驻注释记着它曾一度没被读、只读部署照拿全写面。此前没有任何

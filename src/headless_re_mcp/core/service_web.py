@@ -126,6 +126,13 @@ class WebAnalysisMixin:
     ) -> Result[JsonObject]:
         return self._web_wrap(session_id, "type_text", session_id, selector, text, timeout=timeout)
 
+    def web_wait(
+        self, session_id: str, selector: str, state: str = "visible", timeout: float = 5.0
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id, "wait_selector", session_id, selector, state=state, timeout=timeout
+        )
+
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:
             data = self._web.close(session_id)

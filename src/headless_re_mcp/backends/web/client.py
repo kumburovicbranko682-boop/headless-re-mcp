@@ -49,6 +49,10 @@ _MAX_METADATA_BYTES = 1024
 # the CDP channel and into the page.
 _MAX_SELECTOR_BYTES = 2048
 _MAX_TYPE_TEXT_BYTES = 64 * 1024
+# Playwright's wait_for_selector states. An unknown value would otherwise reach
+# the driver and raise there; reject it up front so a typo fails closed as
+# invalid_params rather than as a backend_error from deep inside Playwright.
+_WAIT_STATES = ("visible", "hidden", "attached", "detached")
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -686,6 +690,39 @@ class WebBackend:
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"type failed: {exc}", selector=target) from exc
             return {"typed": True, "selector": target, "length": len(value)}
+
+        return self._runner(handle).call(work, timeout=bound + 10.0)
+
+    def wait_selector(
+        self, session_id: str, selector: str, *, state: str = "visible", timeout: float = 5.0
+    ) -> JsonObject:
+        """Wait for a selector to reach a DOM state -- the sync click/type need.
+
+        click and fill auto-wait for their *own* target, but a click that fired
+        an async navigation or an AJAX update leaves the next reader
+        (dom_snapshot, network_get) racing the page. This is the primitive that
+        closes the gap: wait for the element the flow expects before reading.
+        Bounded and validated like the actions -- selector and state are checked
+        before the session is touched, the wait is clamped before it is queued,
+        and a state that never arrives within timeout surfaces as backend_error
+        (the element did not reach it) rather than hanging the session thread.
+        """
+        target = _require_selector(selector)
+        if state not in _WAIT_STATES:
+            raise WebError(
+                "invalid_params", "unknown wait state", state=state, allowed=list(_WAIT_STATES)
+            )
+        handle = self._get(session_id)
+        bound = _bound_nav_timeout(timeout)
+
+        def work() -> JsonObject:
+            try:
+                handle.page.wait_for_selector(target, state=state, timeout=bound * 1000.0)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError(
+                    "backend_error", f"wait failed: {exc}", selector=target, state=state
+                ) from exc
+            return {"waited": True, "selector": target, "state": state}
 
         return self._runner(handle).call(work, timeout=bound + 10.0)
 
