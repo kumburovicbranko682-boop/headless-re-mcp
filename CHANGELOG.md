@@ -368,6 +368,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 测试（wasm.wat / wasm.info 各自独立探测所需的 wabt 二进制，缺失即优雅降级而非事故）
+
+- wabt 把 `wasm2wat` 与 `wasm-objdump` 装成两个独立可执行文件，`WasmClient` 也逐个解析——于是一台机器
+  完全可能只有 `wasm2wat` 而没有 `wasm-objdump`（半截安装、发行版拆包、只软链了其一）。`wat` 用
+  `wasm2wat`、`info` 用 `wasm-objdump`，故每个操作都在 `_require_input` 里先查自己需要的那个工具
+  （`tool is None` → `capability_unavailable`），随后才用 `assert self._objdump is not None` 给类型收窄。
+  真正让 `info` 在缺 `wasm-objdump` 时干净降级的是这个**按操作**的检查，而不是 `available` 属性——后者只
+  反映 `wasm2wat`，一旦 `info` 图省事改判 `available`，在只有 wasm2wat 的机器上就会越过闸门、对着 `None`
+  的 objdump 撞上 `assert` 抛 `AssertionError`，被服务层记成 `internal_error` 事故（记录/告警），而不是调用
+  方能据以行动的「这个工具没装」。顺序也要紧：工具检查在文件存在与 `\0asm` 魔数检查之前，故缺二进制哪怕
+  对着一个合法模块也照报缺失。此前无人钉住——既有 wasm 测试都是两个二进制齐备。新增
+  `test_wasm_per_binary_capability.py` 两个方向都钉：只有 `wasm2wat` 时对**合法模块**调 `info` 得
+  `capability_unavailable`（绝非 assert）；只有 `wasm-objdump` 时 `wat` 得 `capability_unavailable`，而 `info`
+  越过能力闸门抵达文件检查（对不存在路径报 `not_found`），证明解析与闸门都是按二进制独立的。定向变异：把
+  `_require_input` 的 `if tool is None` 改成 `if not self.available`，三条用例齐以预期的 `assert self._objdump
+  is not None` 的 `AssertionError` 失败——正是本守卫要挡的那桩事故。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
