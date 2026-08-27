@@ -19,5 +19,25 @@ def test_nonempty_dict_summarizes_key_value_pairs() -> None:
     assert "b=two" in summary
 
 
+def test_a_dict_within_the_field_cap_names_no_omission() -> None:
+    # Four fields fit, so there is nothing left out and nothing to disclose.
+    summary = _summarize_value({"a": 1, "b": 2, "c": 3, "d": 4})
+    assert "a=1" in summary
+    assert "d=4" in summary
+    assert "more" not in summary
+
+
+def test_a_dict_over_the_field_cap_says_how_many_it_dropped() -> None:
+    # Six small fields render under the cell-width cut, so without an explicit
+    # count the two dropped fields would vanish silently. Name them.
+    summary = _summarize_value(
+        {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6}
+    )
+    assert "a=1" in summary
+    assert "d=4" in summary
+    assert "e=5" not in summary
+    assert "(+2 more)" in summary
+
+
 def test_scalar_summarizes_through_the_cell_formatter() -> None:
     assert _summarize_value("plain") == "plain"

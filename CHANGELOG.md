@@ -127,6 +127,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Markdown 报告的知识单元格披露被省略的字段数,而非把部分字典当成完整发现）
+
+- `report.generate` 把每条知识事实的 `value` 渲染进表格一个单元格,`_summarize_value` 只取字典
+  的前 4 个字段拼成 `key=v, …`。字段多于 4 个时,其余被静默丢弃——一条十字段的发现被渲染成四
+  字段,读起来就是一条四字段的发现,而报告恰是别人留存并据以行动的产物。更隐蔽的是:字段虽多但
+  都很短时,整串远不到 120 字符的单元格宽度上限,连 `_cell` 那个"…"截断标记都不会触发,于是完全
+  无迹可循。这与本模块 `_note_if_partial` 的原则("报告从不提及的发现,与从未做出的发现无法区
+  分")自相矛盾。现在超出 4 字段时,单元格末尾追加 `… (+N more)` 明说省了几个;不超过 4 个则一
+  字不加。字段上限提取为 `_SUMMARY_FIELD_CAP` 常量。新增测试:6 个小字段如实报 `(+2 more)` 且
+  被省字段不出现;4 个字段的字典不含 "more"。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
