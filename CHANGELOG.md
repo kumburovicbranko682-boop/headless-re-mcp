@@ -1307,6 +1307,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   精确/大小写、host/url 子串、状态区间选错误与精确码、状态区间排除无响应流、多过滤 AND、空白串忽略、命中集分页与 `dropped` 不受过滤影响。实机 gate(`test_proxy_lifecycle_gate.py`)对真实
   mitmproxy 捕获的 GET/POST 用各过滤读回,证明过滤读的正是真实抓包的摘要字段。
 
+- **`apk.xrefs` 只能列某方法的调用者(xref-from),回答不了「这个方法又调了谁」(xref-to)——而数据流追踪两个方向都要。** androguard 的 `MethodAnalysis` 同时提供
+  `get_xref_from`(调用者)与 `get_xref_to`(被调者),二者返回同样的 `(class, ref, offset)` 三元组,故用一个 `direction` 开关同时驱动:`direction="callers"`(默认,行为不变)列
+  调用 `method_name` 的方法,放在 `callers` 字段;`direction="callees"` 列 `method_name` 自身调用的方法,列字段改名为 `callees`(而非 `callers`),两者互不混用。payload 回显 `direction`,
+  使 callees 回复不会被误读成 callers;每行仍是 `{class, method}` 且 `has_more` 语义(行数上限或字节预算裁剪)不变。非 callers/callees 的取值按 `invalid_params` 拒绝,不静默回退默认。
+  工具描述补上 `direction` 与 `callees` 字段。单测(`test_apk_fields.py`):同一方法 2 个调用者 / 3 个被调者——callees 走 `get_xref_to` 得 3 且落 `callees` 字段无 `callers` 键、默认走
+  `get_xref_from` 得 2 且落 `callers` 无 `callees`(2≠3 证明取的是正确那一侧),以及未知 direction 报 `invalid_params`。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex 里
+  `caller→callee` 这条 invoke 边两个方向都读回:callers of `callee` 含 `caller`,callees of `caller` 含 `callee`,证明真实 androguard 的 `get_xref_to` 路径可用而非仅 mock。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

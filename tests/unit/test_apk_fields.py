@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, ApkError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -101,6 +103,62 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert "method" not in payload
     doc = " ".join(_tool_docstring("apk.xrefs").split())
     assert "callers (class and method), method_name" in doc
+
+
+class _FakeDirectionalMethod(_FakeMethod):
+    """A _FakeMethod that also exposes xref-to (callees), for the direction switch."""
+
+    def __init__(self, name: str, callers: int, callees: int) -> None:
+        super().__init__(name, callers)
+        self._callees = callees
+
+    def get_xref_to(self) -> list[tuple[object, _FakeCall, int]]:
+        return [(None, _FakeCall(index), index) for index in range(self._callees)]
+
+
+def test_apk_xrefs_callees_direction_reads_xref_to_and_answers_under_callees(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """direction=callees must read xref-to and answer under callees, not callers.
+
+    Measured: a method with 2 callers and 3 callees -> direction callees gives
+    count 3 in a callees field with no callers key and direction echoed; the
+    default still gives the 2 callers in a callers field with no callees key.
+    The 2-vs-3 split is what proves callees read get_xref_to, not get_xref_from.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeDirectionalMethod("decrypt", 2, 3)]),
+    )
+    apk = tmp_path / "app.apk"
+    callees = client.xrefs(apk, "decrypt", direction="callees")
+    assert callees["direction"] == "callees"
+    assert callees["count"] == 3
+    assert len(callees["callees"]) == 3
+    assert "callers" not in callees
+    default = client.xrefs(apk, "decrypt")
+    assert default["direction"] == "callers"
+    assert default["count"] == 2
+    assert len(default["callers"]) == 2
+    assert "callees" not in default
+    doc = " ".join(_tool_docstring("apk.xrefs").split())
+    assert "direction" in doc
+    assert "callees" in doc
+
+
+def test_apk_xrefs_rejects_an_unknown_direction(tmp_path: Path, monkeypatch: Any) -> None:
+    """A direction other than callers/callees is invalid_params, not a silent default."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeDirectionalMethod("decrypt", 1, 1)]),
+    )
+    with pytest.raises(ApkError) as info:
+        client.xrefs(tmp_path / "app.apk", "decrypt", direction="sideways")
+    assert info.value.code == "invalid_params"
 
 
 class _ManifestBody:

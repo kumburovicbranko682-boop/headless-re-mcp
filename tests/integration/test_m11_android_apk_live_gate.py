@@ -90,11 +90,25 @@ def test_m11_androguard_apk_surface() -> None:
     # caller -> callee is a real invoke edge in the dex, so asking for callers of
     # callee must return caller. A wrong parse yields an empty caller list.
     xrefs = client.xrefs(_APK, "callee")
+    assert xrefs["direction"] == "callers"
     assert xrefs["count"] >= 1
     assert any(
         caller["method"] == "caller" and "Sample" in caller["class"]
         for caller in xrefs["callers"]
     ), xrefs["callers"]
+
+    # The other direction of the same edge: asking for callees of caller must
+    # return callee, read from androguard's get_xref_to (a different 4.x call than
+    # get_xref_from above). This answers under callees, not callers, and echoes
+    # the direction -- a drifted xref-to that returned nothing is caught here.
+    callees = client.xrefs(_APK, "caller", direction="callees")
+    assert callees["direction"] == "callees"
+    assert "callers" not in callees
+    assert callees["count"] >= 1
+    assert any(
+        callee["method"] == "callee" and "Sample" in callee["class"]
+        for callee in callees["callees"]
+    ), callees["callees"]
 
     # Manifest side: these use androguard's APK object (binary AXML decode plus
     # component queries), a different 4.x surface from the DEX analysis above.

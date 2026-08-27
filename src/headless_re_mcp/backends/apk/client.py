@@ -751,41 +751,65 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self,
+        path: Path,
+        method_name: str,
+        *,
+        limit: int = 100,
+        direction: str = "callers",
+    ) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
+        # Callers (xref-from) is only half of xref analysis; tracing what a method
+        # does needs its callees (xref-to) too. androguard exposes both on a
+        # MethodAnalysis with the same (class, ref, offset) tuple shape, so one
+        # direction switch drives both; keep "callers" the default so the existing
+        # contract is unchanged. Reject anything else rather than silently defaulting.
+        mode = direction.strip().lower()
+        if mode not in ("callers", "callees"):
+            raise ApkError(
+                "invalid_params",
+                "direction must be 'callers' or 'callees'",
+                direction=direction,
+            )
         cap = max(1, int(limit))
-        callers: list[JsonObject] = []
+        rows: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
-            for _, call, _ in method.get_xref_from():
-                if len(callers) >= cap:
+            edges = method.get_xref_from() if mode == "callers" else method.get_xref_to()
+            for _, ref, _ in edges:
+                if len(rows) >= cap:
                     # Only set once something was actually left out, so a result
                     # that happens to fill the page is not reported as partial.
                     has_more = True
                     break
-                callers.append(
+                rows.append(
                     {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
+                        "class": str(ref.class_name),
+                        "method": str(ref.name),
                     }
                 )
             if has_more:
                 break
         # Bound the list by encoded size too: xrefs has no offset to page with,
-        # so a budget cut just means some callers are omitted -- fold it into
+        # so a budget cut just means some rows are omitted -- fold it into
         # has_more so a caller does not read a trimmed list as the whole set.
-        callers, _dropped, budget_cut = fit_json_list(callers, reserve=_LIST_FIELD_RESERVE)
+        rows, _dropped, budget_cut = fit_json_list(rows, reserve=_LIST_FIELD_RESERVE)
+        # The list field names the direction so a callees reply is never mistaken
+        # for callers: callers (xref-from) or callees (xref-to), never both.
+        list_key = "callers" if mode == "callers" else "callees"
         return {
             "method_name": target,
-            "callers": callers,
-            "count": len(callers),
-            # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
+            "direction": mode,
+            list_key: rows,
+            "count": len(rows),
+            # A caller deciding "these are all the rows" has to know whether the
+            # enumeration ended or merely stopped.
             "has_more": has_more or budget_cut,
         }
 

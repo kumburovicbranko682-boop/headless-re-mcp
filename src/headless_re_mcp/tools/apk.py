@@ -176,15 +176,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         method_name: str,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        direction: str = "callers",
     ) -> dict[str, Any]:
-        """List callers of every method named method_name.
+        """List callers of a method, or the methods it calls (by direction).
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
-        has_more is also set when the result-size budget trimmed the list; there
-        is no offset here, so a trimmed list simply omits the rest.
+        Answers with callers (class and method), method_name, direction, count,
+        and has_more so a page that filled the limit is not read as the whole
+        list. has_more is also set when the result-size budget trimmed the list;
+        there is no offset here, so a trimmed list simply omits the rest.
+        direction selects which way the xref runs: "callers" (the default) lists
+        the methods that call method_name, under the callers field; "callees"
+        lists the methods that method_name itself calls, and then the list field
+        is callees, not callers. Either way each row is a class and method pair,
+        and direction is echoed back so a callees reply is never read as callers.
+        Any other direction is rejected as invalid_params.
         """
-        return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
+        return _dump(
+            analysis.apk_xrefs(session_id, method_name, limit=limit, direction=direction)
+        )
 
     @tools.tool(name="apk.decompile")
     def apk_decompile(
