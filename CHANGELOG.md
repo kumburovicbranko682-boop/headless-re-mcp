@@ -61,6 +61,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 新增回归（`device.packages` 先按设备顺序截断再排序、解析跳过不吃配额，由异构清单直测固定）
+
+- `device.packages` 逐行解析 `pm list packages`,收满 `limit` 个即 `break`,循环外再 `pkgs.sort()`。
+  两处行为都要紧且 `test_adb_device_readouts` 都没钉:一是**先截断后排序**——`pm` 按设备自己的顺序
+  (非字母序)吐包名,配额是加在这条流上的,`sort()` 只把留下的这一页排来显示,所以被截断的一页是设备
+  最先列出的 `limit` 个(再排序),*不是*字母序最小的 `limit` 个,`has_more` 表示「设备列出的比配额多」。
+  既有用例喂的是逆序清单却只断言 `set(page) <= {全部}`,而「先排序再截断」(回字母序末尾那几个)同样满足
+  这条——于是把实现改成 sort-then-cap 会悄悄换掉截断页的内容而测试照绿。新增用例钉死*哪几个*包回来:
+  逆序清单 `com.e..com.a` 取 `limit=3` 必须回 `[com.c, com.d, com.e]`(设备序前三再排序),而非
+  `[com.a, com.b, com.c]`。二是**解析跳过且不吃配额**——非 `package:` 行(pm 横幅/告警)与空名 `package:`
+  行都丢弃,`package:` 前缀用 `split(":", 1)` 剥掉故名字里含冒号(`com.mid:weird`)仍完整保留;且配额计在
+  留下的包数上、判定在跳过之后,夹在包之间的噪声行不占配额。既有用例只喂干净的 `package:name` 行,这些
+  跳过分支全是空操作。新增用例喂进横幅、空名、噪声与含冒号的包名,断言只回真实包名、含冒号者保留;并用
+  噪声夹在包之间、`limit=2` 钉住噪声不吃配额(否则该页会短一个)。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
