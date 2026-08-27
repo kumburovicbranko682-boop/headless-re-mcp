@@ -55,7 +55,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
-### 修复（`..` 绕过产物归属守卫）
+### 修复（`proxy.flow.get` 现在也交回请求体）
+
+- `proxy.flow.get` 此前只回响应体,请求那侧仅有 method/url/headers。逆向一个 app 的流量时,
+  请求体(POST 载荷、上传的表单、API 参数)往往正是想看的东西——而这段字节其实**早已保留在内存里**
+  (`_flow_stored_bytes` 把请求体计入了保留字节上限),只是从不回传:既缺了完整性,又白占了内存。
+- 现在请求那侧与响应对称:新增 `size` 与 `body`(不超过 200000 字节时内联),超限则溢出到独立制品
+  `flow-req-<uuid>.bin` 并回 `body_path`(此时无 `body` 键)。响应侧行为不变(制品仍是 `flow-<uuid>.bin`)。
+  请求体读取走 `getattr` 兜底,GET 等无体请求安全回 `size=0`/`body=""`,不再依赖对象一定有 `raw_content`。
+- 内联/溢出判定抽成共享的 `_emit_body`,请求与响应两侧完全一致;200000 的内联上限提为具名常量。
+- 新增回归:请求体内联并带 `size`、大请求体溢出到 `flow-req-*.bin` 且逐字节一致、无体请求安全回空,
+  以及 `proxy.flow.get` 描述点名请求侧的 `body`。
 
 - 全仓沿用 `not session_id or Path(session_id).name != session_id` 作「单路径段」判据,但
   `Path("..").name == ".."`,故 `..` 能溜过。用在 `_session_artifact_roots` 时后果最重:每个

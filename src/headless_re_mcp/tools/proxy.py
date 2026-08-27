@@ -72,10 +72,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).
 
-        Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        Answers with id, request (method, url, headers, size, and body or
+        body_path) and response (status, headers, size, and body or
+        body_path). The request body -- a POST payload or uploaded form -- is
+        returned too, not just the response. On each side a body at most 200000
+        bytes is that side's body; anything larger is that side's body_path and
+        there is no body key there. There are no top-level headers or body
+        fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

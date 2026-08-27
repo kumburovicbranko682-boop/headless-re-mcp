@@ -31,6 +31,9 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or under this is inlined into the reply; anything larger spills to
+# an artifact so a multi-megabyte body is not forced through the JSON envelope.
+_MAX_INLINE_FLOW_BODY = 200_000
 _OMITTED_BODY = object()
 
 
@@ -127,6 +130,35 @@ def _content_len(part: Any) -> int:
         return len(content)
     except TypeError:
         return 0
+
+
+def _raw_content(part: Any) -> bytes:
+    """The decoded body of a request or response, or empty when there is none."""
+    if part is None:
+        return b""
+    try:
+        content = getattr(part, "raw_content", None)
+    except Exception:  # noqa: BLE001 - mitmproxy may raise decoding a bad body
+        return b""
+    return content or b""
+
+
+def _emit_body(raw: bytes, *, artifact_dir: Path, prefix: str) -> JsonObject:
+    """Inline a small body, or spill a large one to ``prefix-<uuid>.bin``.
+
+    Returns the body-related fields for one side of a flow: always ``size``,
+    then either ``body`` (text) when small enough to inline or ``body_path``
+    (an artifact) when over the inline cap -- never both.
+    """
+    section: JsonObject = {"size": len(raw)}
+    if len(raw) > _MAX_INLINE_FLOW_BODY:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        out = artifact_dir / f"{prefix}-{uuid4().hex}.bin"
+        out.write_bytes(raw)
+        section["body_path"] = str(out)
+    else:
+        section["body"] = raw.decode("utf-8", errors="replace")
+    return section
 
 
 def _encoded_len(value: object) -> int:
@@ -493,31 +525,24 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
+        # Surface both bodies. The request body -- a POST payload, an uploaded
+        # form -- is often the point of capturing the flow, and it was already
+        # retained in memory (counted against the retain cap) yet never
+        # returned; only the response body was. Both spill the same way.
         result: JsonObject = {
             "id": flow_id,
             "request": {
                 "method": req.method,
                 "url": req.pretty_url,
                 "headers": dict(req.headers),
+                **_emit_body(_raw_content(req), artifact_dir=artifact_dir, prefix="flow-req"),
             },
             "response": {
                 "status": getattr(resp, "status_code", None),
                 "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
+                **_emit_body(_raw_content(resp), artifact_dir=artifact_dir, prefix="flow"),
             },
         }
-        if len(body) > 200_000:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

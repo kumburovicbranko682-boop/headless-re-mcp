@@ -161,6 +161,91 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     assert "response" in doc
 
 
+def test_proxy_flow_get_surfaces_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """A POST payload is the point of capturing the flow; it must come back.
+
+    Before, request carried only method/url/headers, so the body an app
+    uploaded was retained in memory (counted against the retain cap) yet
+    never returned -- only the response body was. Now request carries size
+    and body, symmetric with the response.
+    """
+    sent = b'{"user":"a","pass":"b"}'
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/login",
+        headers={"content-type": "application/json"},
+        raw_content=sent,
+    )
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["request"]["size"] == len(sent)
+    assert payload["request"]["body"] == sent.decode()
+    assert "body_path" not in payload["request"]
+    assert payload["response"]["body"] == "ok"
+    doc = _tool_docstring("proxy.flow.get")
+    assert "request" in doc
+    assert "body" in doc
+
+
+def test_proxy_flow_get_spills_a_large_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """A large request body spills to its own artifact, like the response."""
+    big = b"P" * (200_000 + 1)
+    request = SimpleNamespace(method="POST", pretty_url="http://x/up", headers={}, raw_content=big)
+    response = SimpleNamespace(status_code=204, headers={}, raw_content=b"")
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert "body" not in payload["request"]
+    assert payload["request"]["size"] == len(big)
+    spilled = Path(payload["request"]["body_path"])
+    assert spilled.parent == tmp_path
+    assert spilled.name.startswith("flow-req-") and spilled.suffix == ".bin"
+    assert spilled.read_bytes() == big
+    # An empty response body still inlines to an empty string, not a path.
+    assert payload["response"]["body"] == ""
+    assert payload["response"]["size"] == 0
+
+
+def test_proxy_flow_get_tolerates_a_request_with_no_body(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A GET whose fake request has no raw_content must not raise."""
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", headers={})
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"hi")
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["request"]["size"] == 0
+    assert payload["request"]["body"] == ""
+    assert payload["response"]["body"] == "hi"
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 
