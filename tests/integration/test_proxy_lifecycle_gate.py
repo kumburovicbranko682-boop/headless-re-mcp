@@ -8,8 +8,15 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import contextlib
 import socket
+import threading
 import time
+import urllib.request
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +36,115 @@ def _mitmproxy_available() -> bool:
     except ProxyError:
         return False
     return True
+
+
+_ORIGIN_MARKER = "proxy-origin-marker-9449"
+
+
+class _OriginHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        body = f"{_ORIGIN_MARKER}:{self.path}".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _origin_site() -> Iterator[str]:
+    """A loopback HTTP origin for the proxy to forward to and record."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OriginHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+def _poll(fn: Callable[[], Any], predicate: Callable[[Any], bool], *, tries: int = 40) -> Any:
+    result = fn()
+    for _ in range(tries):
+        if predicate(result):
+            return result
+        time.sleep(0.25)
+        result = fn()
+    return result
+
+
+@pytest.mark.integration
+def test_proxy_records_traffic_forwarded_through_it(tmp_path: Path) -> None:
+    """A request routed through the proxy must show up as a readable flow.
+
+    The lifecycle gates prove the port opens and closes; none proves the proxy
+    actually *captures* anything, which is the entire point of the line. Stand up
+    a loopback origin, route a real HTTP GET through the running proxy to it, and
+    assert the flow was recorded (method, url, 200), that flow_get returns the
+    origin's response body, and that HAR export contains the entry. Plain HTTP so
+    no CA trust is needed; mitmproxy records asynchronously, so the read polls.
+    skip != pass when mitmproxy is unavailable.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy capture Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("capture", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            target = f"{origin}/hello"
+            handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(handler)
+            with opener.open(target, timeout=15.0) as response:
+                fetched = response.read().decode("utf-8", errors="replace")
+            # Sanity: the client really reached the origin through the proxy.
+            assert _ORIGIN_MARKER in fetched, fetched
+
+            listing = _poll(
+                lambda: backend.flows("capture", limit=100),
+                lambda r: any(str(f.get("url", "")).endswith("/hello") for f in r["flows"]),
+            )
+            hits = [f for f in listing["flows"] if str(f.get("url", "")).endswith("/hello")]
+            assert hits, listing["flows"]
+            flow = hits[0]
+            assert flow["method"] == "GET", flow
+            assert flow["status"] == 200, flow
+
+            detail = backend.flow_get("capture", str(flow["id"]), tmp_path)
+            assert detail["response"]["status"] == 200, detail
+            body = detail["response"].get("body", "")
+            assert _ORIGIN_MARKER in body, detail
+
+            har_path = tmp_path / "capture.har"
+            har = backend.export_har("capture", har_path)
+            assert har["entry_count"] >= 1, har
+            assert har_path.is_file()
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_flow_get_on_an_unknown_id_is_a_clean_not_found() -> None:
+    """Asking for a flow that was never captured must be a structured miss."""
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy capture Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("missing-flow", host="127.0.0.1", port=port)
+    try:
+        with pytest.raises(ProxyError) as info:
+            backend.flow_get("missing-flow", "no-such-flow", Path("/tmp"))
+        assert info.value.code == "not_found", info.value.code
+    finally:
+        backend.close_all()
 
 
 @pytest.mark.integration
