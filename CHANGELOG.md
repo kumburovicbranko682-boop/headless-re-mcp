@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（共享受管子进程 mixin 的跨平台合同）
+
+- `backends/common/subprocess_rpc.py` 的既有 terminate 测试只验证 Win32 后代枚举、在
+  Linux 上 skip，导致 mixin 的启动 kwargs、`pid` / `analyzer_windows` 属性与 `_lock`
+  接缝在 Linux CI 上从未被执行。新增 `tests/unit/test_subprocess_rpc_mixin.py` 固定各
+  平台都成立的部分:`no_window_popen_kwargs()` 的返回形态(Linux 上 `creationflags==0`、
+  `startupinfo is None`;Windows 上抑制控制台窗口且 `wShowWindow==0`)、`pid` 属性、
+  `analyzer_windows` 排序并累积目击集(窗口关闭后仍留在累积集里)、`terminate_process`
+  在有无 `_lock` 两种情形下都真实回收进程且释放锁。Linux 行覆盖 44% → 89%(仅余
+  Windows 专有的 `STARTUPINFO` 分支,由形态测试在 Windows job 覆盖)。
+
 ### 测试（IDA worker RPC 客户端合同测试）
 
 - `IdaWorkerClient` 的传输层此前只有窗口历史上限一项合同有测试（行覆盖 32%）。新增
