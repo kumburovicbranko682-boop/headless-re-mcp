@@ -158,13 +158,17 @@ rpc.exports = {
     });
     return out;
   },
-  methods: function (className, limit) {
+  methods: function (className, filter, limit) {
     var out = [];
     Java.perform(function () {
       var clazz = Java.use(className);
       var methods = clazz.class.getDeclaredMethods();
       for (var i = 0; i < methods.length && out.length < limit; i++) {
-        out.push(methods[i].toString());
+        var sig = methods[i].toString();
+        if (filter && sig.indexOf(filter) === -1) {
+          continue;
+        }
+        out.push(sig);
       }
     });
     return out;
@@ -685,8 +689,13 @@ class FridaClient:
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
+                    # Filter in-agent before the cap, like classes: a target
+                    # method (doFinal, checkLicense) on a class with hundreds of
+                    # declared methods is findable rather than buried, and there
+                    # is no offset to page past the cap otherwise.
                     values, has_more = _page(
-                        script.exports_sync.methods(class_name, capped + 1), capped
+                        script.exports_sync.methods(class_name, name_filter or "", capped + 1),
+                        capped,
                     )
                     return {
                         "class_name": class_name,

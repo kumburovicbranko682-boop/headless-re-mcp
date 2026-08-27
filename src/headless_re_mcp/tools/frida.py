@@ -178,14 +178,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_java_methods(
         session_id: str,
         class_name: str,
+        name_filter: str = "",
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
         Answers with methods, class_name, count, and has_more so a page that
-        filled the limit is not read as every declared method.
+        filled the limit is not read as every declared method. name_filter
+        keeps only methods whose signature contains that substring
+        (case-sensitive), applied before the cap, so a target method
+        (e.g. doFinal, checkLicense) on a large class is findable rather than
+        buried past the limit.
         """
-        return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
+        return _dump(
+            analysis.frida_java_methods(
+                session_id, class_name, name_filter=name_filter, limit=limit, pid=pid
+            )
+        )
 
     return tools.bindings

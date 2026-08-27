@@ -249,8 +249,11 @@ class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
         return [f"c{index}" for index in range(int(count))]
 
-    def methods(self, class_name: str, count: int) -> list[str]:
-        return [f"m{index}" for index in range(int(count))]
+    def methods(self, class_name: str, name_filter: str, count: int) -> list[str]:
+        rows = [f"m{index}" for index in range(25)]
+        if name_filter:
+            rows = [row for row in rows if name_filter in row]
+        return rows[: int(count)]
 
 
 class _JavaScript:
@@ -319,6 +322,26 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_frida_java_methods_name_filter_finds_a_method_by_name() -> None:
+    """The Java analogue of the exports filter: no offset, so a target method
+    on a big class must be reachable by name.
+
+    Filter 'm2' against the 25-method fake matches m2 and m20..m24 -> count 6,
+    has_more False, drawn only from matches.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _JavaDevice()  # type: ignore[method-assign]
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", name_filter="m2", limit=64
+    )
+    assert set(payload["methods"]) == {"m2", "m20", "m21", "m22", "m23", "m24"}
+    assert payload["count"] == 6
+    assert payload["has_more"] is False
 
 
 class _SpawnDevice:

@@ -422,6 +422,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   沿用「多取一条」的探针机制，故目标符号即便埋在 512 之后也能连同地址一并捞出。既有无过滤行为不变
   （`name_filter` 默认空）。至此 frida 的三个枚举器（modules / exports / java.classes）都能按名字收敛，
   `frida.modules(name_filter)` → 精确模块名 → `frida.exports(module, name_filter)` → 精确符号地址这条链彻底打通。
+- **`frida.java.methods` 是 Java 侧的同一个缺口**：只有 `limit`（上限 2000）、无 offset、无方法名过滤，一个声明了
+  上百方法的类里找目标方法（`doFinal`、`checkLicense`）只能整页拉回来自己扫。现在加 `name_filter`：agent 端
+  （`_JAVA_SCRIPT.methods`）在截断前按方法签名子串 `sig.indexOf(filter) !== -1` 过滤（与 `classes` 同一范式，大小写
+  敏感），`has_more` 仍走「多取一条」探针。至此 frida 四个枚举器（modules / exports / java.classes / java.methods）
+  全部支持按名字收敛，Java 侧 `frida.java.classes(name_filter)` → 精确类名 → `frida.java.methods(class, name_filter)`
+  → 目标方法这条链与 native 侧对称打通。既有无过滤行为不变（`name_filter` 默认空）。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩
