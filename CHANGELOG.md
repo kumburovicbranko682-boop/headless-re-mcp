@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+apksigner 线（`apk.sign`）首次有了真实签名的执行覆盖，补齐 apktool 线最后一个只对 mock 跑过的工具。此前没
+有任何测试证明后端能产出一个签名有效的 APK，而这段代码还涉及安全敏感路径（keystore 密码经环境变量而非
+argv 传给 apksigner、失败时从 stderr 擦除密码）。新增
+`tests/integration/test_apksigner_sign_live_gate.py`：用 keytool 现场生成一次性 keystore（自定义 keystore 路
+径，不碰 `~/.android`），经 `ApktoolClient.sign` 对提交的夹具 `fixtures/android/gate_sample.apk` 签名，断言
+返回 `signed=True` 且产物是有效 zip；再独立运行 `apksigner verify` 复核签名（v1/v2/v3 全过），不依赖客户端
+自带的 verify 步骤。新增 `linux-apksigner-sign` CI job：装 JDK 21 + Android build-tools r34 的 apksigner、跑
+该 gate 并解析 junitxml，apksigner 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

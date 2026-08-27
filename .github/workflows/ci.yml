@@ -152,6 +152,55 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apksigner-sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install apksigner (Android build-tools)
+        run: |
+          curl -fsSL -o /tmp/build-tools.zip \
+            https://dl.google.com/android/repository/build-tools_r34-linux.zip
+          unzip -q /tmp/build-tools.zip -d "$HOME/build-tools"
+          echo "HEADLESS_RE_APKSIGNER=$HOME/build-tools/android-14/apksigner" >> "$GITHUB_ENV"
+
+      - name: Install the package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: apksigner sign gate runs for real (skip != pass)
+        run: |
+          "$HEADLESS_RE_APKSIGNER" --version
+          python -m pytest tests/integration/test_apksigner_sign_live_gate.py \
+            -rs --tb=short --junitxml=apksigner-sign-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apksigner-sign-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # apksigner, a JDK and keytool were just installed, so a skip here means
+          # the backend could not sign a real APK -- the false-green "skip != pass"
+          # warns about. This is the only test that runs apk.sign for real.
+          if not cases:
+              sys.exit("no apksigner-sign gate was collected")
+          if skipped:
+              sys.exit(f"apksigner-sign gate skipped despite an installed apksigner: {skipped}")
+          print(f"apksigner-sign gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
