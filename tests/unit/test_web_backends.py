@@ -306,6 +306,48 @@ class TestProxyStopFreesTheListenPort:
             loop.close()
 
 
+class TestProxyDropsTheKeepservingAddon:
+    """keepserving.running() reads ctx.options.rfile and can raise at startup.
+
+    The addon does nothing for a live intercepting proxy -- it only schedules
+    work when a file-read or replay was requested on startup, which this proxy
+    never does -- so the client removes it before the master runs, deleting both
+    the fragile ``No such option: rfile`` read and the latent post-replay
+    shutdown it would otherwise perform. This pins that removal without
+    mitmproxy; the live proxy gate covers the rest.
+    """
+
+    def _fake_master(self, *, present: bool) -> tuple[object, object, list[object]]:
+        addon = object()
+        removed: list[object] = []
+
+        class _Addons:
+            def get(self, name: str) -> object | None:
+                return addon if (name == "keepserving" and present) else None
+
+            def remove(self, target: object) -> None:
+                removed.append(target)
+
+        class _Master:
+            addons = _Addons()
+
+        return _Master(), addon, removed
+
+    def test_keepserving_is_removed_before_the_master_runs(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _drop_keepserving
+
+        master, addon, removed = self._fake_master(present=True)
+        _drop_keepserving(master)
+        assert removed == [addon], "the fragile keepserving addon must be removed"
+
+    def test_a_master_without_the_addon_is_a_no_op(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _drop_keepserving
+
+        master, _addon, removed = self._fake_master(present=False)
+        _drop_keepserving(master)  # older mitmproxy that lacks the addon
+        assert removed == []
+
+
 class _TrackingWebBackend:
     def __init__(self) -> None:
         self.live: set[str] = set()

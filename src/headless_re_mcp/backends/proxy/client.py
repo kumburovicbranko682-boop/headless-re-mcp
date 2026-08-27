@@ -42,6 +42,26 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+def _drop_keepserving(master: Any) -> None:
+    """Remove the ``keepserving`` addon before the master runs.
+
+    Its ``running()`` hook unconditionally reads ``ctx.options.rfile`` (an
+    option owned by the readfile addon) alongside the replay options; when that
+    read lands before the option is visible the addon raises
+    ``AttributeError: No such option: rfile`` during startup. The addon is inert
+    for a live intercepting proxy -- it only schedules work when a file-read or
+    replay was requested on startup, which this embedded proxy never does -- and
+    if it ever did fire it would shut the proxy down once a replay drained,
+    killing a long-lived capture. Dropping it removes both the fragile read and
+    that latent teardown. Best-effort and version-tolerant: an older mitmproxy
+    without the addon is a no-op.
+    """
+    with contextlib.suppress(Exception):
+        addon = master.addons.get("keepserving")
+        if addon is not None:
+            master.addons.remove(addon)
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -355,6 +375,7 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            _drop_keepserving(master)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
