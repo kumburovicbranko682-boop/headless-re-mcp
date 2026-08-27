@@ -115,6 +115,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   HTTP 源站、再用 stdlib 经代理发一条 GET(无外网、无额外依赖),轮询直到流入环,断言方法/URL/状态码正确、
   `flow_get` 能取回响应状态与内联 body、`export_har` 至少导出一条。缺 mitmproxy 时如实 skip(skip 不等于 pass)。
 
+### 新增（浏览器动态读取 Gate：拿回来的就是页面真发生的）
+
+- 浏览器动态线过去只有「开得起来、scripts/console/DOM 列得出」(`test_web_re_gate`)与「关得掉」
+  (`test_web_lifecycle_gate`)两条实测,调用方真正依赖的读取面——`web.network.list` 之后按 requestId 经
+  `Network.getResponseBody` 取响应体、按 scriptId 经 `Debugger.getScriptSource` 取脚本源码、截图落盘、
+  HAR 导出、`web.navigate` 换页——毫无真机覆盖,CDP 契约漂移或 spill 接线断掉都会伪装成「页面本来就空」。
+  新增 `test_web_dynamic_gate`:stdlib 起本地源站(一页 HTML + 外链 JS),开真 Chromium,轮询网络环直到
+  两个资源都入环(CDP 事件落在驱动线程上,晚于 goto 返回是常态),断言按 id 取回的响应体与脚本源码逐字
+  等于源站所served、截图文件非空、HAR 至少一条、导航后 URL/标题切换。id 一律在导航前使用——刷新会按
+  设计作废旧 id。缺 Playwright/浏览器时如实 skip(skip 不等于 pass)。
+
 ### 新增（Linux 便携后端 Gate 的 CI 通路）
 
 - **每次提交的 CI（`ci.yml`）只跑单测,Android/Web/portable-static 的实测 Gate 从不在 CI 执行**,于是
@@ -122,9 +133,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `windows-integration.yml` 的形态),但无需自托管 runner:非 PE 那几条线依赖的后端都能在 GitHub 自带的
   Ubuntu 镜像上装齐——apt 装 radare2 与 wabt、镜像自带 C 编译器供 r2 ELF 夹具、npm 装 webcrack、
   Playwright 装 Chromium、pip 装 mitmproxy。装完先打印各后端版本(装失败与 Gate 跳过可区分),再按非 PE
-  范围跑 `test_android_re_gate` / `test_web_re_gate` / `test_web_lifecycle_gate` / `test_proxy_lifecycle_gate` /
-  `test_proxy_capture_gate` / `test_m11_r2_live_gate` / `test_agent_browser_smoke`,`-rs` 打印每条跳过原因。PE 流水线的 Gate 需要
-  IDA/x64dbg/Windows 夹具,不纳入本 job。
+  范围跑 `test_android_re_gate` / `test_web_re_gate` / `test_web_lifecycle_gate` / `test_web_dynamic_gate` /
+  `test_proxy_lifecycle_gate` / `test_proxy_capture_gate` / `test_m11_r2_live_gate` / `test_agent_browser_smoke`,
+  `-rs` 打印每条跳过原因。PE 流水线的 Gate 需要 IDA/x64dbg/Windows 夹具,不纳入本 job。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
