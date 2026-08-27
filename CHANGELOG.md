@@ -47,6 +47,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   末尾之后返回空页,不可被滥用)。两例都断言各后端的已知分页工具确实被扫到,防止枚举失效导致空过。新增分页工具若漏掉
   bound 会在此失败。(纯测试新增,无行为变更。)
 
+### 测试（修复 unattended 线程泄漏守卫在整套并跑时的假失败）
+
+- `test_unattended_resource_bounds.py` 的三处线程守卫过去用 `threading.active_count() == baseline` 断言“操作不泄漏
+  线程”。但 `active_count()` 是进程级全局计数,而 pytest 串行执行:被测代码本身不会让计数低于基线(自起自收,净零;泄漏
+  才净增),真正在多秒循环里波动的只有更早的用例遗留、正在收尾的线程,它们把计数压到基线*以下*——于是会话 churn 守卫
+  在整套运行里偶发 `assert 10 == 12`(收缩,并非泄漏)。
+- 两处纯泄漏检查(`repeated_refused_starts_leave_no_residue` 的 8 次拒绝、`repeated_cycles_leave_no_threads` 的 120 次
+  会话 churn)改断言 `active_count() <= baseline`:泄漏使计数随次数增长,`<=` 照抓;遗留线程收尾只会下降,不再误判。
+- `runner_thread_does_not_outlive_shutdown` 改为直接对 runner 自有的 `_thread` 断言 `is_alive()` / `join` 后
+  `not is_alive()`,不再借道全局计数——这正是用例名所述属性,且完全不受无关线程波动影响。(纯测试改动,无行为变更。)
+
 ### 测试（钉住 proxy.flow_get 的制品登记与登记失败降级契约）
 
 - `proxy.flow_get` 会把请求/响应体各自 spill 到磁盘并登记为独立 kind 的制品(`proxy_flow_request_body` /

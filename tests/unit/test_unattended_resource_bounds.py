@@ -538,7 +538,13 @@ class TestConcurrentStartDoesNotLeakABackend:
                 with pytest.raises(ProxyError):
                     backend.start("session", port=port)
             assert len(logging.getLogger().handlers) == handlers_before
-            assert threading.active_count() == threads_before
+            # A per-refusal thread leak makes the count GROW (eight refusals ->
+            # eight stuck threads), which <= catches. Exact equality was fragile:
+            # active_count() is process-global and pytest runs serially, so the
+            # only other movement during this multi-second loop is prior tests'
+            # leftover threads winding down, which pushes the count *below* the
+            # baseline and is not a leak. Assert "did not grow", not "unchanged".
+            assert threading.active_count() <= threads_before
             assert time.monotonic() - started < 8.0
         finally:
             holder.close()
@@ -632,20 +638,22 @@ class TestBrowserCallsAreThreadConfinedAndBounded:
             runner.shutdown()
 
     def test_the_runner_thread_does_not_outlive_shutdown(self) -> None:
-        import threading
-        import time
-
         from headless_re_mcp.backends.web.client import _Runner
 
-        before = threading.active_count()
+        # Assert on the runner's own worker thread rather than
+        # threading.active_count(): the global counter drifts as unrelated suite
+        # threads wind down during this test, so an exact before/after comparison
+        # was fragile in both directions. The property this test names -- the
+        # runner thread does not outlive shutdown -- is exactly is_alive() on the
+        # one thread the runner owns.
         runner = _Runner("test-exit")
         runner.call(lambda: None)
-        assert threading.active_count() == before + 1
+        assert runner._thread.is_alive()
         runner.shutdown()
-        deadline = time.monotonic() + 5.0
-        while threading.active_count() > before and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert threading.active_count() == before
+        # shutdown() already joins with a timeout; join again defensively so a
+        # slow hand-off cannot read as a leak, then require the thread is gone.
+        runner._thread.join(timeout=5.0)
+        assert not runner._thread.is_alive()
 
     def test_closing_a_wedged_session_kills_the_driver_tree(self, monkeypatch: Any) -> None:
         """Playwright objects cannot be closed from this thread once it is stuck.
@@ -2870,7 +2878,14 @@ class TestSessionChurnStaysBounded:
                 closed = service.close_session(session_id)
                 assert closed.ok, closed.error
 
-            assert threading.active_count() == threads_before
+            # A per-session thread leak makes the count GROW with the cycles
+            # (120 sessions -> ~120 stuck threads), which <= catches. Exact
+            # equality was fragile: active_count() is process-global and pytest
+            # runs serially, so the only other movement during this ~1.7s loop is
+            # prior tests' leftover threads winding down, which pushes the count
+            # *below* the baseline (observed 10 vs 12) and is not a leak. Assert
+            # "churn did not grow the thread count", not "unchanged".
+            assert threading.active_count() <= threads_before
             usage = measure_usage(root)
             # 7.7 MB written against a 1 MB budget.
             assert usage.bytes < 3 * budget
