@@ -112,6 +112,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   签名那步才暴露。现要求产物非空且能通过 `zipfile.is_zipfile` 校验，否则在重打包这步就报
   `backend_error`（附 `size` 与 stderr 摘录）。
 
+### 修复（apk 检查工具对没有 manifest 的 zip 不再回空成功）
+
+- `apk.open` 早已拒绝一个读不出包名的 zip（不是 APK），但它并不是其余检查工具的前置步骤，
+  而 `certificates` / `components` / `native_libs` / `permissions` / `classes` / `methods` /
+  `strings` / `xrefs` 各自独立地经 `_apk` / `_parsed` 重新解析同一路径。androguard 能解析任意
+  zip：一个没有 AndroidManifest 的归档（改名的 zip、被截断的下载、指错的路径）解析出来的对象
+  包名为空、权限/组件/证书/DEX 视图全空——与「一个真 APK 恰好什么都没声明」无从区分。于是这些
+  工具此前会对一个根本不是 APK 的文件回 `{certificates: [], v1_signed: false}`、`{permissions: []}`、
+  `{classes: []}` 等空成功，无人值守的 agent 会据此得出「未签名、无权限、无组件」的错误结论——
+  正是 `apk.open` 当初修掉的那类欺骗性空成功。现在在解析边界（`_apk` / `_parsed`）统一判定：
+  androguard 解析成功但 `get_package()` 为空即记 `backend_error: not an APK`，每个读取方只在最前面
+  拒绝一次。真 APK 一定声明包名（包括没有 DEX 的 split APK，它仍带 manifest），故对合法输入是空操作。
 
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
