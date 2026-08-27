@@ -67,6 +67,14 @@ _DEX_STRING = "hello world"
 _DEX_CALLER = "main"
 _DEX_CALLEE = "onCreate"
 
+# Two-class-DEX expectations: App.run invoke-virtuals Helper.greet, so the xref
+# crosses a class boundary (the populated DEX above only proves the same-class
+# case).
+_DEX_APP_SMALI = "Lcom/example/App;"
+_DEX_HELPER_SMALI = "Lcom/example/Helper;"
+_DEX_CROSS_CALLER = "run"
+_DEX_CROSS_CALLEE = "greet"
+
 
 def _s(text: str) -> int:
     return _IDX[text]
@@ -308,6 +316,143 @@ def _build_populated_dex() -> bytes:
     return bytes(buf)
 
 
+def _build_two_class_dex() -> bytes:
+    """A valid DEX 035 with two classes where one virtual-calls the other.
+
+    ``com.example.App.run`` (static) does ``invoke-virtual`` on
+    ``com.example.Helper.greet`` (a virtual method), so the analysis has to
+    resolve a call whose callee lives in a *different* class. That is the xref
+    edge the single-class populated DEX cannot exercise: same-class resolution
+    can succeed even if cross-class method-id resolution is broken. All id tables
+    stay in the DEX-mandated sorted order so androguard parses it as-is.
+    """
+    no_index = 0xFFFFFFFF
+    strings = [
+        "Lcom/example/App;",  # 0  App descriptor
+        "Lcom/example/Helper;",  # 1  Helper descriptor
+        "Ljava/lang/Object;",  # 2  shared superclass
+        "V",  # 3  void / shorty
+        "greet",  # 4  Helper's virtual method
+        "run",  # 5  App's caller
+    ]
+    s_app, s_helper, s_obj, s_v, s_greet, s_run = range(6)
+    type_to_str = [s_app, s_helper, s_obj, s_v]
+    t_app, t_helper, t_obj, t_v = 0, 1, 2, 3
+    n_str, n_type, n_proto, n_method, n_class = len(strings), 4, 1, 2, 2
+
+    string_ids_off = 0x70
+    type_ids_off = string_ids_off + 4 * n_str
+    proto_ids_off = type_ids_off + 4 * n_type
+    method_ids_off = proto_ids_off + 12 * n_proto
+    class_defs_off = method_ids_off + 8 * n_method
+    data_off = class_defs_off + 32 * n_class
+
+    data = bytearray()
+
+    def cursor() -> int:
+        return data_off + len(data)
+
+    def align4() -> None:
+        while (data_off + len(data)) % 4:
+            data.append(0)
+
+    str_data_off: list[int] = []
+    for text in strings:
+        str_data_off.append(cursor())
+        data += _uleb128(len(text)) + text.encode("ascii") + b"\x00"
+
+    align4()
+    code_run = cursor()
+    # const/4 v0, 0; invoke-virtual {v0}, Helper.greet (method 1); return-void
+    run_insns = [0x0012, 0x106E, 1, 0x0000, 0x000E]
+    data += struct.pack("<HHHHII", 1, 0, 1, 0, 0, len(run_insns))
+    data += b"".join(struct.pack("<H", unit) for unit in run_insns)
+
+    align4()
+    code_greet = cursor()
+    data += struct.pack("<HHHHII", 0, 0, 0, 0, 0, 1) + struct.pack("<H", 0x000E)  # return-void
+
+    class_data_app = cursor()
+    data += _uleb128(0) + _uleb128(0) + _uleb128(1) + _uleb128(0)  # 1 direct method
+    data += _uleb128(0) + _uleb128(0x9) + _uleb128(code_run)  # run (method 0), public static
+    class_data_helper = cursor()
+    data += _uleb128(0) + _uleb128(0) + _uleb128(0) + _uleb128(1)  # 1 virtual method
+    data += _uleb128(1) + _uleb128(0x1) + _uleb128(code_greet)  # greet (method 1), public
+
+    align4()
+    map_off = cursor()
+    entries = [
+        (0x0000, 1, 0),
+        (0x0001, n_str, string_ids_off),
+        (0x0002, n_type, type_ids_off),
+        (0x0003, n_proto, proto_ids_off),
+        (0x0005, n_method, method_ids_off),
+        (0x0006, n_class, class_defs_off),
+        (0x2002, n_str, str_data_off[0]),
+        (0x2001, 2, code_run),
+        (0x2000, 2, class_data_app),
+        (0x1000, 1, map_off),
+    ]
+    data += struct.pack("<I", len(entries))
+    for typ, count, off in entries:
+        data += struct.pack("<HHII", typ, 0, count, off)
+
+    data_size = len(data)
+    file_size = data_off + data_size
+
+    buf = bytearray(data_off)
+    for i, off in enumerate(str_data_off):
+        struct.pack_into("<I", buf, string_ids_off + 4 * i, off)
+    for i, si in enumerate(type_to_str):
+        struct.pack_into("<I", buf, type_ids_off + 4 * i, si)
+    struct.pack_into("<III", buf, proto_ids_off, s_v, t_v, 0)
+    struct.pack_into("<HHI", buf, method_ids_off, t_app, 0, s_run)  # method 0: App.run()V
+    struct.pack_into("<HHI", buf, method_ids_off + 8, t_helper, 0, s_greet)  # method 1: greet()V
+    struct.pack_into(
+        "<IIIIIIII",
+        buf,
+        class_defs_off,
+        t_app,
+        0x1,
+        t_obj,
+        0,
+        no_index,
+        0,
+        class_data_app,
+        0,
+    )
+    struct.pack_into(
+        "<IIIIIIII",
+        buf,
+        class_defs_off + 32,
+        t_helper,
+        0x1,
+        t_obj,
+        0,
+        no_index,
+        0,
+        class_data_helper,
+        0,
+    )
+    buf += data
+
+    buf[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", buf, 32, file_size)
+    struct.pack_into("<I", buf, 36, 0x70)
+    struct.pack_into("<I", buf, 40, 0x12345678)  # endian tag
+    struct.pack_into("<I", buf, 52, map_off)
+    struct.pack_into("<II", buf, 56, n_str, string_ids_off)
+    struct.pack_into("<II", buf, 64, n_type, type_ids_off)
+    struct.pack_into("<II", buf, 72, n_proto, proto_ids_off)
+    struct.pack_into("<II", buf, 80, 0, 0)  # no fields
+    struct.pack_into("<II", buf, 88, n_method, method_ids_off)
+    struct.pack_into("<II", buf, 96, n_class, class_defs_off)
+    struct.pack_into("<II", buf, 104, data_size, data_off)
+    buf[12:32] = hashlib.sha1(bytes(buf[32:])).digest()  # noqa: S324 - DEX spec uses SHA-1
+    struct.pack_into("<I", buf, 8, zlib.adler32(bytes(buf[12:])) & 0xFFFFFFFF)
+    return bytes(buf)
+
+
 def _build_apk(path: Path, *, dex: bytes | None = None) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("AndroidManifest.xml", _build_manifest_axml())
@@ -452,5 +597,46 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         no_callers = service.apk_xrefs(session_id, _DEX_CALLER)
         assert no_callers.ok and no_callers.data is not None, no_callers.error
         assert no_callers.data["callers"] == []
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_dex_readers_resolve_a_cross_class_xref(tmp_path: Path) -> None:
+    """A call whose callee lives in another class must resolve to its caller.
+
+    The populated-DEX test above proves same-class xref resolution, which can
+    keep working even if cross-class method-id resolution regresses. Here
+    App.run invoke-virtuals Helper.greet, so greet's only caller is a method in
+    a *different* class; that edge is the one an agent relies on to trace a call
+    graph across an app, and it fails here if androguard's class/method wiring
+    drifts under ApkClient.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "two_class.apk", dex=_build_two_class_dex())
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        classes = service.apk_classes(session_id, limit=50)
+        assert classes.ok and classes.data is not None, classes.error
+        assert classes.data["total"] == 2
+        assert set(classes.data["classes"]) == {_DEX_APP_SMALI, _DEX_HELPER_SMALI}
+
+        # The whole point: greet is called only from App.run, a different class.
+        cross = service.apk_xrefs(session_id, _DEX_CROSS_CALLEE)
+        assert cross.ok and cross.data is not None, cross.error
+        assert cross.data["count"] == 1, cross.data
+        caller = cross.data["callers"][0]
+        assert caller["class"] == _DEX_APP_SMALI, caller
+        assert caller["method"] == _DEX_CROSS_CALLER, caller
+
+        # run itself is never called back.
+        back = service.apk_xrefs(session_id, _DEX_CROSS_CALLER)
+        assert back.ok and back.data is not None, back.error
+        assert back.data["callers"] == []
     finally:
         service.close_all()
