@@ -493,8 +493,18 @@ def test_android_apk_xrefs_finds_the_real_caller(tmp_path: Path) -> None:
 
         methods = service.apk_methods(session_id, _CLASS_SMALI)
         assert methods.ok, methods.error
-        names = {method["name"] for method in methods.data["methods"]}
-        assert {"caller", "callee"} <= names, methods.data["methods"]
+        by_name = {method["name"]: method for method in methods.data["methods"]}
+        assert {"caller", "callee"} <= set(by_name), methods.data["methods"]
+        # apk.methods documents descriptor and access, not just name. Both come
+        # from androguard attributes (getattr(..., "descriptor"/"access", "")),
+        # so a renamed attribute or a dropped field would silently return the
+        # empty-string default and still pass a name-only assertion. Pin them
+        # against the two no-arg static voids this DEX actually defines.
+        for name in ("caller", "callee"):
+            method = by_name[name]
+            assert method["descriptor"] == "()V", method
+            access = method["access"].lower()
+            assert "public" in access and "static" in access, method
 
         callers_of_callee = service.apk_xrefs(session_id, "callee")
         assert callers_of_callee.ok, callers_of_callee.error
