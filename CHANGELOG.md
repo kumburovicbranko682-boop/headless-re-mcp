@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（Ghidra 内存视图）
+
+- `ghidra.segments`（只读）通过 analyzeHeadless 的 `ExportJson.py` 新增 `segments` 模式，列出
+  Ghidra 排布出的内存块（`.text`/`.data`/`.bss` 等）——二进制的内存图。此前 Ghidra 后端是最小的
+  一组（仅 analyze/decompile/functions/symbols/xrefs），没有任何查看内存布局与段权限的入口。每条
+  item 带 `name`、`start`、`end`（Ghidra 格式地址，`end` 为最后一个字节、闭区间）、`size`，以及
+  `read`/`write`/`execute` 三个权限布尔和 `initialized`（`.bss` 式只占地址空间、磁盘上无字节的块
+  为 `false`）；同时可写又可执行的块值得留意。外加 `count` 与 `has_more`，让填满上限的一页不被误
+  读成完整内存图。没有 `address`/`sections`/`segments` 字段。导出失败是报错，而非「没有内存块」。
 
 ### 依赖
 

@@ -77,6 +77,25 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+elif mode == "segments":
+    items = []
+    for block in program.getMemory().getBlocks():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        items.append(
+            {
+                "name": block.getName(),
+                "start": str(block.getStart()),
+                "end": str(block.getEnd()),
+                "size": int(block.getSize()),
+                "read": bool(block.isRead()),
+                "write": bool(block.isWrite()),
+                "execute": bool(block.isExecute()),
+                "initialized": bool(block.isInitialized()),
+            }
+        )
+    payload["items"] = items
 elif mode == "decompile":
     text = ""
     found = False

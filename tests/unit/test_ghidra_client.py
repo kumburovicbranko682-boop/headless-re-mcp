@@ -453,3 +453,67 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_ghidra_segments_passes_the_segments_mode_and_returns_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """segments must reach analyzeHeadless as its own postScript mode.
+
+    Measured against the client: the mode string is threaded through as a
+    postScript argument, and the block permission booleans survive the JSON
+    round-trip so a caller can spot a write+execute block.
+    """
+    calls: list[list[str]] = []
+    payload = (
+        '{"mode": "segments", "items": [{"name": ".text", "start": "00401000",'
+        ' "end": "00402fff", "size": 8192, "read": true, "write": false,'
+        ' "execute": true, "initialized": true}]}'
+    )
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    listed = client.segments(_binary(tmp_path), tmp_path / "project")
+
+    assert any("segments" in argv for argv in calls)
+    assert listed["items"][0]["name"] == ".text"
+    assert listed["items"][0]["execute"] is True
+    assert listed["items"][0]["write"] is False
+    assert listed["items"][0]["initialized"] is True
+
+
+def test_ghidra_segments_description_names_its_fields() -> None:
+    """The catalog must name the permission booleans, not just say "sections"."""
+    described = _tool_docstring("ghidra.segments")
+    assert "read/write/execute" in described
+    assert "initialized" in described
+    assert "has_more" in described
+    assert "start" in described and "end" in described
+    lowered = described.casefold()
+    assert "write and execute" in lowered
+
+
+def test_segments_mode_uses_get_blocks_and_reports_permissions() -> None:
+    """ExportJson's segments mode reads the memory blocks and their r/w/x.
+
+    Ghidra's Jython cannot run in CI, so this pins the script text: the mode
+    must iterate getMemory().getBlocks() and emit the permission booleans, or
+    a caller keying on execute/write reads a memory map that never carried it.
+    """
+    source = (
+        Path(ghidra_client.__file__).resolve().parent / "scripts" / "ExportJson.py"
+    ).read_text(encoding="utf-8")
+    assert 'mode == "segments"' in source
+    assert "getMemory().getBlocks()" in source
+    for field in ("isRead()", "isWrite()", "isExecute()", "isInitialized()"):
+        assert field in source
