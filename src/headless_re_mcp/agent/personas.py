@@ -169,16 +169,21 @@ class PersonaStore:
                 if _PERSONA_ID_RE.fullmatch(normalized_id) is None:
                     continue
                 path = self._body_path(normalized_id)
-                personas.append(
-                    {
-                        "id": normalized_id,
-                        "title": str(meta.get("title") or persona_id),
-                        "builtin": bool(meta.get("builtin")),
-                        "source": meta.get("source"),
-                        "bytes": path.stat().st_size if path.is_file() else 0,
-                        "current": str(data.get("current")) == normalized_id,
-                    }
-                )
+                body_present = path.is_file()
+                entry: JsonObject = {
+                    "id": normalized_id,
+                    "title": str(meta.get("title") or persona_id),
+                    "builtin": bool(meta.get("builtin")),
+                    "source": meta.get("source"),
+                    "bytes": path.stat().st_size if body_present else 0,
+                    "current": str(data.get("current")) == normalized_id,
+                }
+                if not body_present:
+                    # bytes == 0 alone conflates "empty persona" with "body
+                    # file gone": both listed identically, but selecting a
+                    # gone one raises and runs silently fall back to default.
+                    entry["missing"] = True
+                personas.append(entry)
             personas.sort(
                 key=lambda item: (
                     not item["current"],
@@ -186,17 +191,36 @@ class PersonaStore:
                     item["title"],
                 )
             )
-            return {"current": data.get("current") or DEFAULT_PERSONA_ID, "personas": personas}
+            recorded = str(data.get("current") or DEFAULT_PERSONA_ID)
+            effective = self._effective_current(data)
+            payload: JsonObject = {"current": recorded, "personas": personas}
+            if effective != recorded:
+                # The recorded selection no longer resolves (body deleted,
+                # entry dropped, id invalid), so runs are using the fallback
+                # while the UI kept naming the broken one as active. Present
+                # only when they differ so the intact case stays unchanged.
+                payload["current_effective"] = effective
+            return payload
+
+    def _effective_current(self, data: JsonObject) -> str:
+        """The persona id current_prompt() will actually load for this index.
+
+        The recorded "current" can point at an entry whose body file has been
+        deleted out from under the store; prompt loading then falls back to the
+        default persona. One shared helper so current_id() and the public
+        listing can never disagree about where that fallback lands.
+        """
+        current = str(data.get("current") or DEFAULT_PERSONA_ID)
+        items = data.get("items")
+        known = isinstance(items, dict) and isinstance(items.get(current), dict)
+        valid = _PERSONA_ID_RE.fullmatch(current) is not None
+        exists = valid and self._body_path(current).is_file()
+        return current if known and exists else DEFAULT_PERSONA_ID
 
     def current_id(self) -> str:
         with self._lock:
             data = self._read_index()
-            current = str(data.get("current") or DEFAULT_PERSONA_ID)
-            items = data.get("items")
-            known = isinstance(items, dict) and isinstance(items.get(current), dict)
-            valid = _PERSONA_ID_RE.fullmatch(current) is not None
-            exists = valid and self._body_path(current).is_file()
-        return current if known and exists else DEFAULT_PERSONA_ID
+            return self._effective_current(data)
 
     def current_prompt(self) -> str:
         return self.prompt_for(self.current_id())
