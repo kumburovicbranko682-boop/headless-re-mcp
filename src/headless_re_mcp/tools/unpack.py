@@ -238,8 +238,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with candidates, candidate_count, authoritative false,
         claims_universal_unpack false, and unpack. There is no confirmed_oep_rva
-        field. When observations are empty, it may auto-collect from the
-        dynamic backend; it never auto-confirms OEP.
+        field. candidate_count counts only the returned candidates: when more
+        RVAs scored than max_candidates, the lowest-scored are dropped and
+        candidates_truncated, candidates_total and candidates_limit are added so
+        the cut is not read as the full set. When observations are empty, it may
+        auto-collect from the dynamic backend; it never auto-confirms OEP.
         """
         return _dump(
             analysis.unpack_score_oep(
