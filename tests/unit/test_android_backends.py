@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import struct
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,42 @@ def _apk(path: Path) -> Path:
         archive.writestr("classes.dex", b"dex\n035\x00")
         archive.writestr("lib/arm64-v8a/libx.so", b"\x7fELF")
         archive.writestr("META-INF/CERT.RSA", b"sig")
+    return path
+
+
+def _apk_with_signing_block(path: Path, scheme_ids: list[int]) -> Path:
+    """Write an APK whose Signing Block advertises ``scheme_ids``.
+
+    The block is spliced in just before the central directory -- exactly where
+    a real signer puts it -- and the End Of Central Directory offset is fixed up
+    so the archive still parses as a valid ZIP.
+    """
+    base = path.with_suffix(".base.apk")
+    with zipfile.ZipFile(base, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", b"dex\n035\x00")
+    raw = base.read_bytes()
+    eocd = raw.rfind(b"PK\x05\x06")
+    cd_size = int.from_bytes(raw[eocd + 12 : eocd + 16], "little")
+    cd_offset = int.from_bytes(raw[eocd + 16 : eocd + 20], "little")
+    pairs = b""
+    for scheme_id in scheme_ids:
+        value = b"\x00" * 8
+        pairs += struct.pack("<Q", 4 + len(value)) + struct.pack("<I", scheme_id) + value
+    block_size = len(pairs) + 8 + 16
+    block = (
+        struct.pack("<Q", block_size)
+        + pairs
+        + struct.pack("<Q", block_size)
+        + b"APK Sig Block 42"
+    )
+    local = raw[:cd_offset]
+    central = raw[cd_offset : cd_offset + cd_size]
+    trailer = bytearray(raw[cd_offset + cd_size :])
+    inner = trailer.rfind(b"PK\x05\x06")
+    trailer[inner + 16 : inner + 20] = struct.pack("<I", cd_offset + len(block))
+    path.write_bytes(local + block + central + bytes(trailer))
+    base.unlink()
     return path
 
 
@@ -356,6 +393,32 @@ class TestApkClassification:
         assert info["native_abis"] == ["arm64-v8a"]
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+        # A v1-only archive with no signing block is not v2/v3 signed.
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
+
+    def test_describe_apk_detects_v2_and_v3_signing_block(self, tmp_path: Path) -> None:
+        """A modern signer is often v2/v3-only, which the META-INF check misses."""
+        v2 = describe_apk(_apk_with_signing_block(tmp_path / "v2.apk", [0x7109871A]))["apk"]
+        assert (v2["signed_v1"], v2["signed_v2"], v2["signed_v3"]) == (False, True, False)
+
+        v3 = describe_apk(_apk_with_signing_block(tmp_path / "v3.apk", [0xF05368C0]))["apk"]
+        assert (v3["signed_v2"], v3["signed_v3"]) == (False, True)
+
+        both = describe_apk(
+            _apk_with_signing_block(tmp_path / "both.apk", [0x7109871A, 0xF05368C0])
+        )["apk"]
+        assert (both["signed_v2"], both["signed_v3"]) == (True, True)
+
+        # v3.1 (key rotation) is a v3 variant and counts as v3.
+        v31 = describe_apk(_apk_with_signing_block(tmp_path / "v31.apk", [0x1B93AD61]))["apk"]
+        assert (v31["signed_v2"], v31["signed_v3"]) == (False, True)
+
+    def test_describe_apk_ignores_unknown_signing_block_ids(self, tmp_path: Path) -> None:
+        """An unrelated block ID must not be read as a signature scheme."""
+        info = describe_apk(_apk_with_signing_block(tmp_path / "u.apk", [0x11223344]))["apk"]
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"

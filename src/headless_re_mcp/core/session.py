@@ -362,6 +362,24 @@ _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
+# APK Signature Scheme v2/v3 live in the APK Signing Block, which sits between
+# the last local entry and the central directory -- not as ZIP entries, so the
+# v1 (JAR) META-INF check cannot see them. A modern apksigner build is often
+# v2/v3-only, which the v1 check reads as unsigned. The block ends, just before
+# the central directory, with an 8-byte size, and a 16-byte magic; each scheme
+# is one ID-value pair keyed by these IDs (v3.1 rotates v3, so it counts as v3).
+_APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+_APK_SIG_SCHEME_V2_ID = 0x7109871A
+_APK_SIG_SCHEME_V3_ID = 0xF05368C0
+_APK_SIG_SCHEME_V3_1_ID = 0x1B93AD61
+_ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
+_ZIP_EOCD_MIN = 22
+_ZIP_MAX_COMMENT = 0xFFFF
+_ZIP64_SENTINEL = 0xFFFFFFFF
+# Real signing blocks are a few kilobytes even with many signers; this only
+# refuses a pathological size before allocating for it.
+_APK_SIG_BLOCK_MAX = 8 * 1024 * 1024
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -428,6 +446,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
             if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
         }
     )
+    signed_v2, signed_v3 = _apk_signature_schemes(path)
     return {
         "apk": {
             "native_abis": abis,
@@ -437,8 +456,74 @@ def describe_apk(path: Path) -> dict[str, Any]:
                 name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
                 for name in names
             ),
+            "signed_v2": signed_v2,
+            "signed_v3": signed_v3,
         }
     }
+
+
+def _apk_signature_schemes(path: Path) -> tuple[bool, bool]:
+    """Return ``(signed_v2, signed_v3)`` from the APK Signing Block.
+
+    Fail-closed: any structural surprise (a comment, ZIP64, a truncated or
+    oversized block) yields ``(False, False)`` so this cheap identity fact never
+    raises on a hostile or unusual archive.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            tail_len = min(size, _ZIP_EOCD_MIN + _ZIP_MAX_COMMENT)
+            handle.seek(size - tail_len)
+            tail = handle.read(tail_len)
+            eocd = tail.rfind(_ZIP_EOCD_SIGNATURE)
+            if eocd < 0 or eocd + _ZIP_EOCD_MIN > len(tail):
+                return (False, False)
+            comment_len = int.from_bytes(tail[eocd + 20 : eocd + 22], "little")
+            if eocd + _ZIP_EOCD_MIN + comment_len != len(tail):
+                # The record does not end the file where its comment length
+                # says: not the real EOCD (or an archive shape we do not read).
+                return (False, False)
+            cd_size = int.from_bytes(tail[eocd + 12 : eocd + 16], "little")
+            cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
+            if _ZIP64_SENTINEL in (cd_size, cd_offset):
+                return (False, False)
+            if cd_offset < 24 or cd_offset > size:
+                return (False, False)
+            handle.seek(cd_offset - 16)
+            if handle.read(16) != _APK_SIG_BLOCK_MAGIC:
+                return (False, False)
+            handle.seek(cd_offset - 24)
+            block_size = int.from_bytes(handle.read(8), "little")
+            if not 24 <= block_size <= _APK_SIG_BLOCK_MAX:
+                return (False, False)
+            block_start = cd_offset - 8 - block_size
+            if block_start < 0:
+                return (False, False)
+            handle.seek(block_start)
+            block = handle.read(block_size + 8)
+    except OSError:
+        return (False, False)
+    return _apk_signing_block_ids(block)
+
+
+def _apk_signing_block_ids(block: bytes) -> tuple[bool, bool]:
+    """Walk the ID-value pairs of a read APK Signing Block for scheme IDs."""
+    signed_v2 = signed_v3 = False
+    # block = [uint64 size][pairs...][uint64 size][16-byte magic]; the trailing
+    # size + magic are the last 24 bytes and the leading size is the first 8.
+    cursor = 8
+    end = len(block) - 24
+    while cursor + 8 <= end:
+        pair_len = int.from_bytes(block[cursor : cursor + 8], "little")
+        if pair_len < 4 or cursor + 8 + 4 > len(block):
+            break
+        scheme_id = int.from_bytes(block[cursor + 8 : cursor + 12], "little")
+        if scheme_id == _APK_SIG_SCHEME_V2_ID:
+            signed_v2 = True
+        elif scheme_id in (_APK_SIG_SCHEME_V3_ID, _APK_SIG_SCHEME_V3_1_ID):
+            signed_v3 = True
+        cursor += 8 + pair_len
+    return (signed_v2, signed_v3)
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
