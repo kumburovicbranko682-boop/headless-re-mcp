@@ -506,6 +506,74 @@ async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_a_deeply_nested_chunk_is_blamed_on_the_provider(tmp_path: Path) -> None:
+    """A run of unmatched '[' raises RecursionError, not JSONDecodeError.
+
+    20k bytes sit far under the SSE line cap, so this reaches json.loads,
+    whose C decoder recurses once per bracket. The narrow except let that
+    escape as an opaque internal incident where the sibling malformed-chunk
+    path deliberately blames the provider with a ValueError.
+    """
+    del tmp_path
+    flood = "[" * 20_000
+
+    def nested(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=f"data: {flood}\n\ndata: [DONE]\n\n")
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(nested),
+    )
+
+    with pytest.raises(ValueError, match="not JSON"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_tool_arguments_are_blamed_on_the_provider(
+    tmp_path: Path,
+) -> None:
+    """The model writes the arguments text, so injection can nest it at will.
+
+    Valid JSON chunks carry an arguments string of 20k '[' -- inside the 4 MiB
+    assembly cap -- and the final json.loads of the assembled buffer raises
+    RecursionError. It must land as the same provider-blaming ValueError the
+    invalid-arguments path already raises, not an internal incident.
+    """
+    del tmp_path
+    chunk = {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-a",
+                            "function": {"name": "doctor", "arguments": "[" * 20_000},
+                        }
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+
+    def nested_args(request: httpx.Request) -> httpx.Response:
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(nested_args),
+    )
+
+    with pytest.raises(ValueError, match="invalid tool arguments at index 0"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_stream_stops_reading_an_oversized_sse_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

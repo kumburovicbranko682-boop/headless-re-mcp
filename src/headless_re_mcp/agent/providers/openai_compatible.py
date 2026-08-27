@@ -380,7 +380,10 @@ class OpenAICompatibleProvider:
                     break
                 try:
                     chunk = _normalize_chunk(json.loads(data))
-                except json.JSONDecodeError as exc:
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    # A chunk nested a few thousand levels deep raises
+                    # RecursionError out of the C decoder, not JSONDecodeError;
+                    # both are the provider's fault, not an internal incident.
                     raise ValueError(
                         f"provider emitted a stream chunk that is not JSON: {data[:200]}"
                     ) from exc
@@ -431,7 +434,10 @@ class OpenAICompatibleProvider:
         for index, item in sorted(tool_fragments.items()):
             try:
                 arguments = json.loads(item["arguments"] or "{}")
-            except json.JSONDecodeError as exc:
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # The model writes this text, so a prompt-injected run can make
+                # it arbitrarily deep within the buffer cap; RecursionError from
+                # the decoder must land as the same provider-blaming ValueError.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
