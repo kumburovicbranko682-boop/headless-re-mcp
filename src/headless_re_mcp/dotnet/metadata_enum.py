@@ -408,11 +408,27 @@ def _simple_index_size(row_counts: dict[int, int], table: int) -> int:
 
 
 def _table_row_size(meta: _MetaCtx, table: int) -> int:
+    return table_row_size(
+        meta.row_counts,
+        table,
+        string_index_size=meta.string_index_size,
+        blob_index_size=meta.blob_index_size,
+        guid_index_size=meta.guid_index_size,
+    )
+
+
+def table_row_size(
+    rc: dict[int, int],
+    table: int,
+    *,
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+) -> int:
     """ECMA-335 II.22 row sizes for tables we may need to skip/parse."""
-    rc = meta.row_counts
-    s = meta.string_index_size
-    b = meta.blob_index_size
-    g = meta.guid_index_size
+    s = string_index_size
+    b = blob_index_size
+    g = guid_index_size
     type_def_or_ref = _coded_index_size(rc, (0x02, 0x01, 0x1B), 2)
     has_constant = _coded_index_size(rc, (0x04, 0x08, 0x17), 2)
     has_custom_attribute = _coded_index_size(
@@ -527,12 +543,44 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
 
 
 def _table_start(meta: _MetaCtx, table: int) -> int:
-    offset = meta.table_data_offset
+    return table_start_offset(
+        meta.row_counts,
+        table,
+        table_data_offset=meta.table_data_offset,
+        string_index_size=meta.string_index_size,
+        blob_index_size=meta.blob_index_size,
+        guid_index_size=meta.guid_index_size,
+    )
+
+
+def table_start_offset(
+    row_counts: dict[int, int],
+    table: int,
+    *,
+    table_data_offset: int,
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+) -> int:
+    """Byte offset of ``table`` inside the #~ stream.
+
+    Tables sit back to back in ascending table-id order, so this is the table
+    data offset plus the row bytes of every lower-numbered table present.
+    Kept free of ``_MetaCtx`` so clr_inspect can locate the Assembly table
+    without duplicating the ECMA-335 row schemas.
+    """
+    offset = table_data_offset
     for bit in range(table):
-        rows = meta.row_counts.get(bit)
+        rows = row_counts.get(bit)
         if not rows:
             continue
-        offset += _table_row_size(meta, bit) * rows
+        offset += rows * table_row_size(
+            row_counts,
+            bit,
+            string_index_size=string_index_size,
+            blob_index_size=blob_index_size,
+            guid_index_size=guid_index_size,
+        )
     return offset
 
 

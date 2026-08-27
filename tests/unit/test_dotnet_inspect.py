@@ -9,7 +9,12 @@ import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, DotnetKind, inspect_dotnet
+from headless_re_mcp.dotnet.clr_inspect import (
+    DotnetInspectError,
+    DotnetKind,
+    _parse_metadata_root,
+    inspect_dotnet,
+)
 
 
 def _write_native_pe(path: Path) -> None:
@@ -80,6 +85,69 @@ def _write_verified_clr_pe(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)  # flags + 0 streams
     path.write_bytes(image)
+
+
+def _metadata_with_assembly_table() -> bytes:
+    """BSJB metadata whose #~ stream holds Module, TypeRef, TypeDef, Assembly."""
+    strings_heap = b"\0Payload.dll\0Payload\0"
+    module_name_idx = 1  # "Payload.dll"
+    assembly_name_idx = 13  # "Payload"
+
+    rows = bytearray()
+    # Module: Generation + Name + Mvid + EncId + EncBaseId
+    rows += struct.pack("<HHHHH", 0, module_name_idx, 0, 0, 0)
+    # TypeRef: ResolutionScope + Name + Namespace
+    rows += struct.pack("<HHH", 0, 0, 0)
+    # TypeDef: Flags + Name + Namespace + Extends + FieldList + MethodList
+    rows += struct.pack("<IHHHHH", 0, 0, 0, 0, 1, 1)
+    # Assembly: HashAlgId + Version(4x2) + Flags + PublicKey + Name + Culture
+    rows += struct.pack("<IHHHHIHHH", 0x8004, 1, 2, 3, 4, 0, 0, assembly_name_idx, 0)
+
+    valid = (1 << 0x00) | (1 << 0x01) | (1 << 0x02) | (1 << 0x20)
+    tables_stream = bytearray()
+    tables_stream += struct.pack("<IBBBB", 0, 2, 0, 0, 1)  # reserved, ver 2.0, HeapSizes, reserved
+    tables_stream += struct.pack("<QQ", valid, 0)  # Valid, Sorted
+    tables_stream += struct.pack("<IIII", 1, 1, 1, 1)  # one row per present table
+    tables_stream += rows
+
+    version = b"v4.0.30319\0\0"  # 4-byte aligned
+    root = bytearray()
+    root += b"BSJB"
+    root += struct.pack("<HHI", 1, 1, 0)
+    root += struct.pack("<I", len(version))
+    root += version
+    root += struct.pack("<HH", 0, 2)  # flags, stream count
+    headers_at = len(root)
+    root += b"\0" * (8 + 4)  # "#~" header: offset + size + name padded to 4
+    root += b"\0" * (8 + 12)  # "#Strings" header: offset + size + name padded to 12
+    tables_off = len(root)
+    root += tables_stream
+    strings_off = len(root)
+    root += strings_heap
+    struct.pack_into("<II", root, headers_at, tables_off, len(tables_stream))
+    root[headers_at + 8 : headers_at + 11] = b"#~\0"
+    struct.pack_into("<II", root, headers_at + 12, strings_off, len(strings_heap))
+    root[headers_at + 20 : headers_at + 29] = b"#Strings\0"
+    return bytes(root)
+
+
+def test_assembly_name_survives_tables_between_module_and_assembly() -> None:
+    """assembly_name must come out even with TypeRef/TypeDef in between.
+
+    Real assemblies always carry tables between Module (0x00) and Assembly
+    (0x20). The old walk bailed at the first table it did not know how to
+    skip, so module_name worked while assembly_name was null for every real
+    input -- exactly the shape this metadata reproduces.
+    """
+    version, streams, module_name, assembly_name, stats = _parse_metadata_root(
+        _metadata_with_assembly_table()
+    )
+    assert version == "v4.0.30319"
+    assert streams == ["#~", "#Strings"]
+    assert module_name == "Payload.dll"
+    assert assembly_name == "Payload"
+    assert stats is not None
+    assert stats.type_count == 1
 
 
 def test_inspect_native_pe(tmp_path: Path) -> None:

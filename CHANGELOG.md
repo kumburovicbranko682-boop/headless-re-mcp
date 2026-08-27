@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.inspect` 的 assembly_name 对真实程序集总是空）
+
+- `dotnet.inspect` 报告里的 `assembly_name` 对每个真实 .NET 程序集都返回 null。
+  `_parse_tables_and_names` 用一个只认识 Module（0x00）与 Assembly（0x20）两张表的
+  循环遍历 `#~` 流,遇到中间任何一张不认识的表就 `break`。而真实程序集在这两张表之间
+  必然夹着 TypeRef/TypeDef/MethodDef 等表,于是循环在到达 Assembly 之前就退出,
+  `assembly_name` 永远拿不到——只有 `module_name`(紧跟表头)侥幸能读出。现改为复用
+  `metadata_enum` 里完整的 ECMA-335 II.22 行尺寸表(经 `table_start_offset` 累加所有
+  低位表的字节数)直接定位 Assembly 表,再按 HashAlgId(4)+Version(4×2)+Flags(4)+
+  PublicKey(blob) 偏移读取 Name 字符串索引。遇到无法定尺寸的保留表位则留空而非从
+  猜测的偏移瞎读;`table_row_size` / `table_start_offset` 提升为不依赖 `_MetaCtx` 的
+  纯函数以便 `clr_inspect` 复用,避免重复维护两套行 schema。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
