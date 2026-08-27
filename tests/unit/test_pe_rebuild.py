@@ -258,6 +258,66 @@ def test_rebuild_imports_in_place_names_sit_at_published_rvas() -> None:
         iat_rva += 8
 
 
+@pytest.mark.parametrize(
+    ("pe32_plus", "thunk_size", "ordinal_bit"),
+    [(True, 8, 63), (False, 4, 31)],
+    ids=["x64", "x86"],
+)
+def test_rebuild_imports_encodes_by_ordinal_thunks_with_the_ordinal_flag(
+    pe32_plus: bool, thunk_size: int, ordinal_bit: int
+) -> None:
+    """An ordinal-only import must become a flagged thunk, not a named one.
+
+    A thunk imported by ordinal is ``IMAGE_ORDINAL_FLAG | ordinal`` -- the high
+    bit of the pointer-wide slot set and the ordinal in the low 16 bits -- and it
+    carries no hint/name entry. If the rebuild instead treated it as a named
+    import it would publish a hint/name RVA the loader would dereference into
+    whatever bytes sat there, resolving the wrong API or faulting; and if it
+    dropped the flag the ordinal value would be read as an RVA. Both the ILT and
+    the IAT must carry the same encoding so the loader's before/after views
+    agree. The mixed ordinal+named path had no direct coverage, and the whole
+    32-bit rebuild branch (4-byte thunks, flag at bit 31, PE32 header offsets)
+    had none at all.
+    """
+    dump = _make_runtime_dump(pe32_plus=pe32_plus)
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [
+        {"kind": "api", "module": "user32.dll", "name": "", "ordinal": 7},
+        {"kind": "api", "module": "user32.dll", "name": "MessageBoxA", "ordinal": 0},
+        {"kind": "null", "value": 0},
+    ]
+    rebuilt, report = rebuild_imports(remapped, entries)
+    assert any("modules=1" in change for change in report.changes)
+
+    headers = parse_runtime_headers(rebuilt)
+    assert headers["architecture"] == ("x64" if pe32_plus else "x86")
+    import_dir = headers["directories"][1]
+    iat_dir = headers["directories"][12]
+    # One real descriptor + the null terminator; three thunk slots (two APIs and
+    # the per-module null) at the architecture's pointer width.
+    assert import_dir["size"] == 2 * 20
+    assert iat_dir["size"] == 3 * thunk_size
+
+    desc_off = _file_offset_for_rva(rebuilt, int(import_dir["rva"]), length=20)
+    original_first_thunk, _ts, _fc, name_rva, first_thunk = struct.unpack_from(
+        "<IIIII", rebuilt, desc_off
+    )
+    assert _ascii_at_rva(rebuilt, name_rva) == "user32.dll"
+
+    fmt = "<Q" if pe32_plus else "<I"
+    ordinal_flag = 1 << ordinal_bit
+    for base_rva in (original_first_thunk, first_thunk):  # ILT then IAT
+        off = _file_offset_for_rva(rebuilt, base_rva, length=thunk_size)
+        by_ordinal = struct.unpack_from(fmt, rebuilt, off)[0]
+        by_name = struct.unpack_from(fmt, rebuilt, off + thunk_size)[0]
+        assert by_ordinal & ordinal_flag, "ordinal import lost its IMAGE_ORDINAL_FLAG"
+        assert by_ordinal & 0xFFFF == 7
+        assert by_name & ordinal_flag == 0, "named import must not carry the ordinal flag"
+        assert _ascii_at_rva(rebuilt, by_name + 2) == "MessageBoxA"
+        # The null terminator slot after the two entries stays zero.
+        assert struct.unpack_from(fmt, rebuilt, off + 2 * thunk_size)[0] == 0
+
+
 def test_hostile_number_of_sections_is_refused_before_header_growth() -> None:
     dump = bytearray(_make_runtime_dump())
     pe_offset = struct.unpack_from("<I", dump, 0x3C)[0]
