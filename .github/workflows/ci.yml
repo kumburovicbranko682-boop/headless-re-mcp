@@ -152,6 +152,44 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with proxy extra
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+
+      - name: mitmproxy lifecycle gate runs for real (skip != pass)
+        run: |
+          python -c "from mitmproxy import version; print('mitmproxy', version.VERSION)"
+          python -m pytest tests/integration/test_proxy_lifecycle_gate.py \
+            -rs --tb=short --junitxml=proxy-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("proxy-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # mitmproxy was just installed, so a skip here means the gate could not
+          # reach it -- the false-green "skip != pass" warns about. This gate is
+          # what caught the mitmproxy 12 listener that stop() left bound on Linux,
+          # so leaving it unrun would let that regression back in silently.
+          if not cases:
+              sys.exit("no proxy gate was collected")
+          if skipped:
+              sys.exit(f"proxy gate skipped despite an installed mitmproxy: {skipped}")
+          print(f"proxy gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

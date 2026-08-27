@@ -5,6 +5,12 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+mitmproxy 生命周期 gate 进入 CI：新增 `linux-proxy` job，装 `.[proxy]` 后真实跑
+`test_proxy_lifecycle_gate.py`（start 即在监听、stop 后端口真正释放、占用端口被拒、
+`close_all` 收尾），并解析 junitxml，mitmproxy 已装却 skip 时判失败（skip ≠ pass）。
+正是这条 gate 抓出过 mitmproxy 12 在 Linux 上 `stop()` 未释放监听 socket 的回归，不在
+CI 跑会让它悄悄复发。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
