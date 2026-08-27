@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+存储故障的诚实降级新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_storage_failure_gate.py`）。无人值守 Agent 与本服务一聊数小时,期间会话库有三种坏法,各有其唯一正确的答案——此前只在单元层对分类器与存储直接证明过,没有测试在真实 MCP 传输上弄坏存储再读客户端实际收到什么。库文件变只读(杀毒隔离、卷被重挂只读):`session.create` 照常工作——会话活在内存里、当下完全可用——但信封必须说 `persisted: false` 并点名原因,因为一个悄悄熬不过重启的会话就是等着重启引爆的谎言。库被彻底损坏:存储型工具必须回结构化 `storage_unavailable` 且标不可重试——故障属于实例而非请求,重试永远无济于事——同时不碰存储的工具照常应答。整棵产物树被删(磁盘清理):下一次调用必须原地重建目录与 schema 而非让此后每次调用都失败到进程终老,进程自己的工作集不因丢盘而丢,而磁盘上重建的账本冷读起来诚实地是新的、不复活已随树毁灭的行。三种情形存储回来后同进程无重启无人工自愈。POSIX 权限位实现故障、stdio 回环、纯 Python、无后端。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
