@@ -147,8 +147,13 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses to write into a directory that already exists, but the
+        # caller (service_jsre) hands us a freshly-created per-call artifact dir,
+        # so without --force every unpack fails with "output directory already
+        # exists". --force tells webcrack to reuse the dir it was pointed at.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "--force"],
+            timeout=timeout,
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
