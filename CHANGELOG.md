@@ -102,6 +102,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   签名那步才暴露。现要求产物非空且能通过 `zipfile.is_zipfile` 校验，否则在重打包这步就报
   `backend_error`（附 `size` 与 stderr 摘录）。
 
+### 测试（apk.repack / apk.sign 把调用方给的路径限定在本会话产物树内，且在启 apktool/apksigner 之前）
+
+- `apk.repack` 收 `decoded_dir`、`apk.sign` 收 `apk_path` 与 `keystore`——都是调用方自选的磁盘路径。
+  不加限制，调用方就能让 apktool/apksigner 指向机器上任何位置：从任意目录重打包、给工作区之外的 APK
+  签名、读取与本工具无关的 keystore。服务经 `_require_session_path` → `_session_owns_artifact_path` 逐个限定，
+  凡解析后不落在**本会话**产物树内的一律回 `invalid_params`，且在 apktool / apksigner 启动之前就回绝。
+  `test_session_artifact_ownership.py` 已把 `_session_owns_artifact_path` 谓词单测到位（自有/他会话/根外/点号
+  id/软链外逃），但没有任何测试钉住 `apk.repack` / `apk.sign` 确实**调用**了它——这正是 frida 边界那种
+  「谓词已测、调用它的服务接线未测」的裂缝：去掉 `_require_session_path` 调用（或把路径交给工具之后才解析），
+  孤立的谓词测试照过，而 apktool/apksigner 会对攻击者命名的路径动手。新增
+  `test_apk_repack_sign_input_confinement.py` 堵上：外部路径（以及**他会话**树内的路径，用以证明这是「本会话
+  所有」而非仅「在产物根内」）一律以 `invalid_params` 回绝，且被打桩的工具从未被调用——故回绝确实发生在任何
+  子进程之前。签名用例特意给一个合法的树内 `apk_path`，以证明回绝来自 `keystore` 检查本身，调用方无法借一个
+  有效 APK 参数把任意 keystore 夹带进来。定向变异：删掉 repack 与 sign 里的 `_require_session_path` 调用，四条
+  用例齐以「外部路径抵达 apktool/apksigner 并返回 ok=True」失败。
 
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
