@@ -156,9 +156,10 @@ jobs:
   # real backends are present. linux-quality installs none of them, so those
   # gates were never exercised in CI and their maturity rested on unit tests
   # alone. This job installs the portable backends -- radare2 (static),
-  # wabt + webcrack + Playwright Chromium (web), adbutils/androguard/frida
-  # (android), mitmproxy (shared proxy) -- and runs the integration gates so a
-  # regression in any of those lines fails here instead of in production.
+  # wabt + webcrack + Playwright Chromium (web), androguard plus the jadx Java
+  # decompiler on a JRE (android), mitmproxy (shared proxy) -- and runs the
+  # integration gates so a regression in any of those lines fails here instead
+  # of in production.
   linux-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -174,16 +175,28 @@ jobs:
           node-version: "24"
 
       - name: Install portable backends
+        env:
+          # Pinned so the jadx line is reproducible; bump deliberately.
+          JADX_VERSION: "1.5.6"
         run: |
           sudo apt-get update
           # radare2: portable static analysis. wabt: wasm2wat/wasm-objdump.
           # adb: Android device bridge. upx-ucl: the upx CLI. build-essential:
           # the C compiler the portable r2 ELF gate builds its fixture with.
+          # default-jre-headless: the JRE jadx runs on. unzip: to unpack jadx.
           sudo apt-get install -y --no-install-recommends \
-            radare2 wabt adb upx-ucl build-essential
+            radare2 wabt adb upx-ucl build-essential default-jre-headless unzip
           # webcrack drives JS deobfuscation/unpacking for the web line.
           npm install -g webcrack
           echo "$(npm config get prefix)/bin" >> "$GITHUB_PATH"
+          # jadx (Java decompiler) is the Android source line; it decompiles the
+          # real classes.dex the Android gate builds. Ship the pinned release and
+          # put its launcher on PATH so Settings.load() discovers it via which().
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          mkdir -p "$HOME/jadx"
+          unzip -q -o /tmp/jadx.zip -d "$HOME/jadx"
+          echo "$HOME/jadx/bin" >> "$GITHUB_PATH"
 
       - name: Install package with Android/Web/portable extras
         run: |
