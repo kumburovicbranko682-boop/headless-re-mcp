@@ -547,6 +547,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Windows 上可能让 `communicate()` 永不返回。全部改走同一个有界执行器。
 - **apktool / jadx / ghidra 按会话落盘的树不进产物表**。解码、导出源码和分析工程会留下
   整棵目录，关会话也不删。写入后按会话目录数和体积淘汰最旧的（刚写入的那份保留）。
+- **`js.unpack_bundle` 的 jsre 目录被两个 pruner 各管一遍，字节上限还漏了失败路径**。成功后
+  先走共享的 `prune_capped_dir`（用 `JSRE_UNPACK_MAX_ENTRIES` / `_BYTES` 双重封顶）淘汰，
+  `finally` 里又跑一遍只按条数淘汰、从未接进别处的 `prune_jsre_unpack_dirs`（keep
+  `_MAX_JSRE_UNPACK_DIRS = 8`）。两个 8 眼下相等，正是 `limits.py` 要消除的「同一上限自己和
+  自己悄悄对不上」；而 webcrack 报错留下的半棵树只被那个没有字节上限的 pruner 收，一夜连环
+  失败照样能把 jsre 目录顶到磁盘满。删掉影子副本，改成在 `finally` 里跑共享的 `prune_capped_dir`
+  —— 成功与失败都按同一条条数＋字节规矩淘汰（`prune_capped_dir` 保留最新那棵，成功回包引用的
+  树不会被删），其「留最新、按条数与字节」的行为本就有直测覆盖。
 - **样本间隔离步骤仍走 `subprocess.run`**。无人值守的入口正是这里：配置的命令通常是
   拉起 hypervisor 工具的脚本，超时只杀到脚本，子进程继承管道后 Windows 上的排空没有
   截止时间，工作线程就停在那次轮换上，而虚拟机还是脏的。改走同一个有界执行器。

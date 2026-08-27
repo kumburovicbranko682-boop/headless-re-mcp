@@ -2,39 +2,19 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from headless_re_mcp.core.service_jsre import (
-    _MAX_JSRE_UNPACK_DIRS,
-    JsReAnalysisMixin,
-    prune_jsre_unpack_dirs,
-)
+from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_ENTRIES
+from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
 
 
 def _fill_unpack(directory: Path, *, files: int = 100, size: int = 10 * 1024) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(files):
         (directory / f"mod-{index}.js").write_bytes(b"x" * size)
-
-
-def test_prune_keeps_only_the_newest_unpack_trees(tmp_path: Path) -> None:
-    root = tmp_path / "jsre"
-    root.mkdir()
-    for index in range(20):
-        directory = root / f"unpack-{index:03d}"
-        _fill_unpack(directory)
-        os.utime(directory, (index + 1, index + 1))
-
-    prune_jsre_unpack_dirs(root, keep=8)
-
-    left = sorted(path.name for path in root.iterdir())
-    assert left == [f"unpack-{index:03d}" for index in range(12, 20)]
-    total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == 8 * 100 * 10 * 1024
 
 
 class _FakeJs:
@@ -74,9 +54,9 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
 
     root = tmp_path / "jsre"
     dirs = [path for path in root.iterdir() if path.is_dir()]
-    assert len(dirs) == _MAX_JSRE_UNPACK_DIRS
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
+    assert total == JSRE_UNPACK_MAX_ENTRIES * 100 * 10 * 1024
 
 
 def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
