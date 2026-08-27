@@ -75,15 +75,24 @@ def _get_through_proxy(url: str, proxy_port: int) -> bytes:
         return bytes(response.read())
 
 
-def _wait_for_flow(backend: ProxyBackend, session_id: str) -> dict:
+def _matching_flows(backend: ProxyBackend, session_id: str) -> list[dict]:
+    return [
+        flow
+        for flow in backend.flows(session_id)["flows"]
+        if _PATH in str(flow.get("url", ""))
+    ]
+
+
+def _wait_for_flow(backend: ProxyBackend, session_id: str, *, at_least: int = 1) -> list[dict]:
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        listed = backend.flows(session_id)
-        for flow in listed["flows"]:
-            if _PATH in str(flow.get("url", "")):
-                return flow
+        matches = _matching_flows(backend, session_id)
+        if len(matches) >= at_least:
+            return matches
         time.sleep(0.1)
-    raise AssertionError("proxy did not record the request within the timeout")
+    raise AssertionError(
+        f"proxy did not record {at_least} matching flow(s) within the timeout"
+    )
 
 
 @pytest.mark.integration
@@ -97,7 +106,7 @@ def test_a_request_through_the_proxy_is_captured(_origin: str, tmp_path: Path) -
         body = _get_through_proxy(_origin, port)
         assert body == _MARKER
 
-        flow = _wait_for_flow(backend, "capture")
+        flow = _wait_for_flow(backend, "capture")[0]
         assert flow["method"] == "GET"
         assert flow["status"] == 200
         flow_id = str(flow["id"])
@@ -115,5 +124,28 @@ def test_a_request_through_the_proxy_is_captured(_origin: str, tmp_path: Path) -
         loaded = json.loads(har_path.read_text(encoding="utf-8"))
         urls = [entry["request"]["url"] for entry in loaded["log"]["entries"]]
         assert any(_PATH in url for url in urls)
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_replaying_a_flow_reissues_the_request(_origin: str, tmp_path: Path) -> None:
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("replay", host="127.0.0.1", port=port)
+    try:
+        assert _get_through_proxy(_origin, port) == _MARKER
+        first = _wait_for_flow(backend, "replay")[0]
+
+        replayed = backend.replay("replay", str(first["id"]))
+        assert replayed["replayed"] is True
+
+        # Replay re-sends through the same proxy pipeline, so a second flow for
+        # the same URL must show up -- proof the request really went out again.
+        again = _wait_for_flow(backend, "replay", at_least=2)
+        assert len(again) >= 2
+        assert all(flow["status"] == 200 for flow in again)
     finally:
         backend.close_all()
