@@ -169,6 +169,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.targets")
+    def web_targets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    ) -> dict[str, Any]:
+        """List every page/tab in the browser context, not just the driven one.
+
+        Answers with targets (index, url, title, is_active, opener), count,
+        total, offset, has_more, and targets_capped so a page that filled the
+        limit is not read as every tab. is_active marks the page this session
+        drives (the one web.screenshot and web.dom.snapshot read); opener is the
+        index of the page that spawned this one (a window.open popup or
+        target=_blank tab), null for a top-level tab. index and opener are
+        absolute positions in the full list, stable across pages. There is no
+        pages, tabs or targetId field.
+        """
+        return _dump(analysis.web_targets(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

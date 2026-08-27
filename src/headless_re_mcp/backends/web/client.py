@@ -41,6 +41,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A context holds a handful of pages/tabs in practice; 200 bounds a page that
+# spawns popups in a loop while each entry costs a title() round-trip.
+_MAX_TARGETS = 200
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -781,6 +784,66 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def targets(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List every page/tab in the context, not just the driven one.
+
+        The session drives a single page, but a window.open popup or a
+        target=_blank link opens another page in the same context -- exactly how
+        an OAuth/SSO consent step or a payment window arrives -- and nothing in
+        the surface showed those pages even existed, let alone their URLs. This
+        reads Playwright's context.pages. Each page is a row with its url, title,
+        is_active (the one this session drives, so screenshot/dom read it) and
+        opener (the index of the page that spawned it, null for a top-level tab
+        or when the opener is unknown); index/opener are absolute positions in
+        the full list, stable across pages. A page that raises on read (closing
+        mid-enumeration) reports an empty url/title rather than failing the call.
+        """
+        handle = self._get(session_id)
+
+        def work() -> tuple[list[JsonObject], bool]:
+            try:
+                pages = list(handle.context.pages or [])
+            except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                raise WebError("backend_error", f"cannot read targets: {exc}") from exc
+            active = handle.page
+            collected = pages[:_MAX_TARGETS]
+            capped = len(pages) > _MAX_TARGETS
+            position = {id(page): i for i, page in enumerate(collected)}
+            rows: list[JsonObject] = []
+            for i, page in enumerate(collected):
+                try:
+                    url = page.url
+                except Exception:  # noqa: BLE001 - a closing page can raise on read
+                    url = ""
+                try:
+                    opener = page.opener()
+                except Exception:  # noqa: BLE001 - opener() is best-effort/version-varying
+                    opener = None
+                opener_index = position.get(id(opener)) if opener is not None else None
+                rows.append(
+                    {
+                        "index": i,
+                        "url": _bounded_metadata(url, _MAX_URL_BYTES)[0],
+                        "title": _safe_title(page),
+                        "is_active": page is active,
+                        "opener": opener_index,
+                    }
+                )
+            return rows, capped
+
+        rows, capped = self._runner(handle).call(work)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_TARGETS))
+        window = rows[start : start + cap]
+        return {
+            "targets": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "targets_capped": capped,
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
