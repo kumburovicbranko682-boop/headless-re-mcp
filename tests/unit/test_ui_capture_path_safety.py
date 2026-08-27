@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,7 +30,15 @@ def test_invalid_ui_capture_session_cannot_create_directories_outside_artifacts(
 
         assert result.ok is False
         assert result.error is not None
-        assert result.error.code == "invalid_request"
+        # On Windows the capture path runs and the session-id guard rejects the
+        # traversal as invalid_request; off Windows the capability is gated out
+        # first, so the honest answer is unsupported_on_platform. Either way the
+        # traversal must never materialize a directory outside artifact_root --
+        # that no-escape invariant is the real subject of this test.
+        if os.name == "nt":
+            assert result.error.code == "invalid_request"
+        else:
+            assert result.error.code == "unsupported_on_platform"
         assert not escaped.exists()
     finally:
         service.close_all()
