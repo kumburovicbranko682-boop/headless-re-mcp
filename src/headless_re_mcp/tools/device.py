@@ -144,8 +144,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the last N lines of logcat (non-streaming snapshot).
 
         Answers with lines, requested, and truncated when the dump was cut
-        at the character cap. An adb error line (a dead or offline device) is
-        a failure, not a one-line snapshot.
+        at the character cap. When truncated cut mid-line, the leading fragment
+        is dropped and partial_line_dropped is true, so every returned line is
+        whole -- a half line is never passed off as a complete entry. An adb
+        error line (a dead or offline device) is a failure, not a one-line
+        snapshot.
         """
         return _dump(analysis.device_logcat(serial, lines=lines))
 

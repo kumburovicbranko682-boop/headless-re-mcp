@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（device.logcat 不再把截断后的首行残行当成完整日志行）
+
+- `device.logcat` 超过 `_MAX_LOGCAT_CHARS`(200000)时按字符尾切到最后一段。切点落在字符边界上,
+  除非恰好紧跟换行,否则尾切后的第一行是「缺了开头的残行」。过去把这半行原样放进 `lines` 返回:
+  调用方按时间戳/标签解析首行会读到损坏数据,而 `truncated` 只说「整体被截」,不说「首行是半行」。
+  现尾切时判断切点前一个字符是否换行,不是则把这条残行丢掉,并回 `partial_line_dropped=true` 明说
+  丢了;切点正好落在换行后时首行完整,予以保留。这样返回的每一行都是完整行,半行不会被冒充成真日志。
+  回归测试以打桩的 `_device_shell` 覆盖切在行中(丢残行)、切在换行(留整行)、未截断(不丢不标)三种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

@@ -625,13 +625,28 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "logcat failed", output=text[:800])
         truncated = len(text) > _MAX_LOGCAT_CHARS
+        partial_line_dropped = False
         if truncated:
+            # Tailing to the last _MAX_LOGCAT_CHARS lands on a character
+            # boundary, so unless it happens to sit right after a newline the
+            # first surviving line is a fragment missing its start. Handing that
+            # back as a whole entry corrupts a caller parsing its timestamp/tag,
+            # and truncated already says earlier lines are gone -- so drop the
+            # fragment and say we did rather than pass a half line off as real.
+            if text[-_MAX_LOGCAT_CHARS - 1] != "\n":
+                partial_line_dropped = True
             text = text[-_MAX_LOGCAT_CHARS:]
-        return {
-            "lines": text.splitlines()[-capped:],
+        rows = text.splitlines()
+        if partial_line_dropped and rows:
+            rows = rows[1:]
+        result: JsonObject = {
+            "lines": rows[-capped:],
             "requested": capped,
             "truncated": truncated,
         }
+        if partial_line_dropped:
+            result["partial_line_dropped"] = True
+        return result
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:
         dev = self._device(serial)
