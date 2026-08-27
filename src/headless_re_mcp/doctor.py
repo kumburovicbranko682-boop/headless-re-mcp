@@ -132,6 +132,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
     probes = [
         probe_platform(),
         probe_python(),
+        probe_config_keys(current),
         probe_ida(current),
         (
             probe_x64dbg_source(current)
@@ -271,6 +272,36 @@ def _is_elevated() -> bool | None:
         return bool(shell32.IsUserAnAdmin())
     except (AttributeError, OSError):
         return None
+
+
+def probe_config_keys(settings: Settings) -> Probe:
+    """Advisory: name the config-file keys that Settings.load ignored.
+
+    Every key load() reads shares its field's name, so a typo -- "ghidra_hom"
+    for ghidra_home -- was silently ignored: the operator set the value,
+    nothing complained, and the tool probe below reported "missing" as if
+    nothing had been configured at all. Never part of the required set, so it
+    cannot flip overall readiness; it exists so the ignored key is named in
+    the one report an operator actually reads.
+    """
+    unknown = list(getattr(settings, "unknown_config_keys", ()) or ())
+    if not unknown:
+        return Probe(
+            "config_keys",
+            ProbeStatus.READY,
+            "every config file key is recognized",
+            {"unknown_keys": []},
+        )
+    shown = ", ".join(unknown[:5])
+    if len(unknown) > 5:
+        shown += f" and {len(unknown) - 5} more"
+    return Probe(
+        "config_keys",
+        ProbeStatus.DETECTED,
+        f"{len(unknown)} config key(s) not recognized and ignored: {shown}",
+        {"unknown_keys": unknown},
+        "Check config.json for typos; unrecognized keys have no effect.",
+    )
 
 
 def probe_isolation(settings: Settings) -> Probe:
