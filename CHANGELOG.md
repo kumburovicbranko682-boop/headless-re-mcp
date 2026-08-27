@@ -157,6 +157,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 修复（`apk.certificates` 只报 v1，v2/v3 签名的现代包读成未签名）
+
+- 现代 APK（target SDK 30+）常直接放弃 v1 JAR 签名、只走 APK Signature Scheme v2/v3，而
+  `apk.certificates` 只回 `v1_signed`（由 META-INF 里的签名文件推出）：一个完整签好的现代包因此
+  显示 `v1_signed: False`，看上去像未签名，尽管证书列表其实是有的（androguard 的
+  `get_certificates` 本就并了 v1/v2/v3）。现补上 `v2_signed` / `v3_signed` / `v31_signed`（来自
+  `is_signed_v2/v3/v31`，探测不到就按未签名报，不让一次解析异常掀翻整个读取）以及综合的 `signed`，
+  调用方据此把未签名包与「丢了 v1、改用 v2/v3」的现代包区分开。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
