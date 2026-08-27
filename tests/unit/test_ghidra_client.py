@@ -266,6 +266,50 @@ def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
     assert payload["found"] is True
 
 
+@pytest.mark.parametrize(
+    "address",
+    ["", "   ", "main", "0xZZZ", "0x401000; rm -rf /", "../etc/passwd", -1],
+)
+def test_ghidra_rejects_a_bad_address_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, address: object
+) -> None:
+    """A malformed address is invalid_params, and no headless run is paid for.
+
+    ExportJson.py only learns an address is unparsable after a full import+analyze
+    (up to the caller's 600s), so a garbage address used to burn a whole run and
+    come back as found=false / empty items. Validate it up front instead: forcing
+    run_bounded to fail proves the reject happens before the JVM is launched.
+    """
+
+    def must_not_run(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("analyzeHeadless launched for an invalid address")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", must_not_run)
+    client = _client(tmp_path)
+    for call in (
+        lambda: client.decompile(_binary(tmp_path), tmp_path / "project", address),  # type: ignore[arg-type]
+        lambda: client.xrefs(_binary(tmp_path), tmp_path / "project", address),  # type: ignore[arg-type]
+    ):
+        with pytest.raises(ghidra_client.GhidraError) as caught:
+            call()
+        assert caught.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize(
+    "address", ["0x401000", "401000", "deadbeef", "ram:00401000", "1234:5678", 0x401000]
+)
+def test_ghidra_accepts_real_address_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, address: object
+) -> None:
+    """A legitimate Ghidra address passes validation and reaches the run."""
+    _decompile_run(
+        monkeypatch, '{"mode": "decompile", "decompiled": "", "truncated": false}'
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", address)  # type: ignore[arg-type]
+    assert payload["found"] is False
+
+
 def test_ghidra_refuses_an_oversized_export_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

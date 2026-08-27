@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,29 @@ _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+# What ExportJson.py can actually turn into an address: getAddressFactory()
+# .getAddress parses hex (optionally 0x-prefixed) with an optional space/segment
+# prefix like "ram:" or a real-mode "1234:". Anything else -- an empty string, a
+# symbol name, shell junk -- makes it return null, but only after a full headless
+# import+analyze (up to the caller's 600s ceiling) has already run and produced
+# nothing. So the malformed address has to be rejected before that, the way
+# r2.disasm/r2.xrefs check their integer address up front.
+_ADDRESS_RE = re.compile(r"^(?:[A-Za-z0-9_.]+:)?(?:0[xX])?[0-9A-Fa-f]+$")
+
+
+def _require_address(address: str | int) -> None:
+    """Refuse an address ExportJson.py could never resolve, before the JVM runs."""
+    if isinstance(address, bool):
+        raise GhidraError("invalid_params", "address must be a hex address string")
+    if isinstance(address, int):
+        if address < 0:
+            raise GhidraError("invalid_params", "address must be non-negative", address=address)
+        return
+    text = str(address).strip()
+    if not text or _ADDRESS_RE.match(text) is None:
+        raise GhidraError(
+            "invalid_params", "address is not a valid Ghidra address", address=str(address)
+        )
 
 
 def _project_lock(project_dir: Path) -> Any:
@@ -125,6 +149,7 @@ class GhidraClient:
         timeout: float = 180.0,
         max_heap: str = "2G",
     ) -> JsonObject:
+        _require_address(address)
         return self._export(
             binary,
             project_dir,
@@ -144,6 +169,7 @@ class GhidraClient:
         timeout: float = 180.0,
         max_heap: str = "2G",
     ) -> JsonObject:
+        _require_address(address)
         return self._export(
             binary,
             project_dir,
