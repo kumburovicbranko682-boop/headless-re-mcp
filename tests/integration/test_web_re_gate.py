@@ -84,6 +84,33 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    """js.unpack_bundle had no live gate, and it was broken on every call.
+
+    The JS smoke path only exercised js.deobfuscate, which streams to stdout and
+    never touches -o. unpack_bundle takes the -o path: the service pre-creates the
+    output directory and hands it to webcrack, but webcrack 2.x aborts with
+    "output directory already exists" on an existing -o dir unless -f is passed --
+    so every unpack failed (verified against webcrack 2.16.0: backend_error,
+    "output directory already exists") behind a deobfuscate-only smoke test. Drive
+    the real -o/-f path end to end so that regression fails here, not in production.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        # result.ok is the whole point: without -f this is backend_error.
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+        assert result.data["output_dir"]
+        assert isinstance(result.data["files"], list)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")

@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`js.unpack_bundle` 在 webcrack 2.x 上每次调用都失败）
+
+- `js.unpack_bundle` 客户端先 `out_dir.mkdir(...)` 造好输出目录（服务层的产物目录也会先建），
+  再以 `-o <dir>` 交给 webcrack；而 webcrack 2.x 一旦 `-o` 指向已存在的目录便直接以
+  「output directory already exists」中止，因此在当前 webcrack 下**每一次拆包都必然失败**
+  （对 webcrack 2.16.0 实测：`backend_error`、"output directory already exists"）。而这条
+  路只有 `js.deobfuscate`（走 stdout、不碰 `-o`）在冒烟，拆包的回归无人看守。给 webcrack
+  命令补上 `-f`（强制覆盖）：对已存在目录覆盖写、对新建目录同样接受，两条路径都正确。同时给
+  `tests/integration/test_web_re_gate.py` 加 `test_js_unpack_bundle_when_webcrack_present`
+  实机 gate 走通 `-o`/`-f` 全路径，webcrack 缺席时按「skip != pass」诚实跳过——下次回归在此
+  失败而非流到生产。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
