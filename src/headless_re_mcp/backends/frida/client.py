@@ -156,6 +156,7 @@ rpc.exports = {
   methods: function (className, limit) {
     var out = [];
     var found = false;
+    var total = 0;
     Java.perform(function () {
       var clazz;
       try {
@@ -165,11 +166,16 @@ rpc.exports = {
       }
       found = true;
       var methods = clazz.class.getDeclaredMethods();
+      // total is methods.length, not out.length: getDeclaredMethods already
+      // materialized the whole array, so the true count is free. classes above
+      // cannot do this -- it throws to stop at the cap rather than walk every
+      // loaded class -- but here the full list is already in hand.
+      total = methods.length;
       for (var i = 0; i < methods.length && out.length < limit; i++) {
         out.push(methods[i].toString());
       }
     });
-    return {found: found, methods: out};
+    return {found: found, methods: out, total: total};
   }
 };
 """
@@ -704,19 +710,31 @@ class FridaClient:
                     # list alone read as the latter and hid a bad class name. The
                     # bare-array branch tolerates the older script shape, exactly
                     # as ``modules`` does.
+                    method_total: int | None = None
                     if isinstance(raw, dict):
                         found = bool(raw.get("found"))
                         values, has_more = _page(list(raw.get("methods") or []), capped)
+                        raw_total = raw.get("total")
+                        if isinstance(raw_total, int) and not isinstance(raw_total, bool):
+                            method_total = raw_total
                     else:
                         found = True
                         values, has_more = _page(list(raw or []), capped)
-                    return {
+                    result: JsonObject = {
                         "class_name": class_name,
                         "found": found,
                         "methods": values,
                         "count": len(values),
                         "has_more": has_more,
                     }
+                    # total is how many methods the class declares, not how many
+                    # this page returned -- classes cannot report one (it stops
+                    # at the cap), but a fully-materialized method list can, so a
+                    # caller sizes the next limit instead of paging blind. Guard
+                    # the type so an older bare-array script degrades cleanly.
+                    if method_total is not None:
+                        result["total"] = method_total
+                    return result
                 raise FridaError("invalid_params", "mode must be classes or methods")
             finally:
                 with contextlib.suppress(Exception):

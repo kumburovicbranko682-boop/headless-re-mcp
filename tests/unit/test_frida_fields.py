@@ -246,6 +246,9 @@ def test_frida_java_classes_puts_the_list_in_classes_and_says_when_it_stopped() 
     assert payload["count"] == 10
     assert len(payload["classes"]) == 10
     assert payload["has_more"] is True
+    # classes stops at the cap rather than walk every loaded class, so unlike
+    # methods it cannot report a total -- pin that it does not pretend to.
+    assert "total" not in payload
     doc = _tool_docstring("frida.java.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
@@ -270,8 +273,10 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     assert payload["count"] == 10
     assert len(payload["methods"]) == 10
     assert payload["has_more"] is True
-    # A bare-array script shape is tolerated and reported as found.
+    # A bare-array script shape is tolerated and reported as found, and it
+    # carries no total, so the field must be absent rather than guessed.
     assert payload["found"] is True
+    assert "total" not in payload
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
@@ -325,7 +330,10 @@ def test_frida_java_methods_reports_a_class_that_is_not_loaded_as_not_found() ->
 
 
 def test_frida_java_methods_reports_a_loaded_class_with_methods_as_found() -> None:
-    """found true with a full page still paginates via has_more."""
+    """found true with a full page still paginates via has_more.
+
+    This older dict shape has no total, so the field is omitted, not guessed.
+    """
     client = _java_client_returning(_JavaApiFound(found=True, count=11))
     payload = client.java_enumerate(
         None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
@@ -333,6 +341,53 @@ def test_frida_java_methods_reports_a_loaded_class_with_methods_as_found() -> No
     assert payload["found"] is True
     assert payload["count"] == 10
     assert payload["has_more"] is True
+    assert "total" not in payload
+
+
+class _JavaMethodsTotal:
+    """Newer script shape: methods() caps at the limit and reports the total.
+
+    getDeclaredMethods materializes the whole array, so total is the declared
+    count regardless of the page size, exactly like the injected script.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+
+    def methods(self, class_name: str, limit: int) -> dict[str, Any]:
+        del class_name
+        returned = min(int(limit), self._total)
+        return {
+            "found": True,
+            "methods": [f"m{index}" for index in range(returned)],
+            "total": self._total,
+        }
+
+
+def test_frida_java_methods_reports_the_declared_method_total() -> None:
+    """A class with more methods than the page returns total so the caller can
+    size the next limit instead of paging blind."""
+    client = _java_client_returning(_JavaMethodsTotal(40))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert payload["count"] == 10
+    assert payload["has_more"] is True
+    assert payload["total"] == 40
+    doc = _tool_docstring("frida.java.methods")
+    assert "total" in doc
+
+
+def test_frida_java_methods_total_equals_count_when_the_class_is_small() -> None:
+    """A class that fits the page returns every method, has_more False, and a
+    total equal to the count -- not a total silently equal to the page size."""
+    client = _java_client_returning(_JavaMethodsTotal(6))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=64
+    )
+    assert payload["count"] == 6
+    assert payload["total"] == 6
+    assert payload["has_more"] is False
 
 
 def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() -> None:
