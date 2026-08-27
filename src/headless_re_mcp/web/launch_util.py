@@ -137,7 +137,9 @@ def probe_our_healthz(host: str, port: int, *, timeout: float = 0.6) -> JsonObje
     except OSError:
         return None
     finally:
-        if sock is not None:
+        # no branch: sock is None only when a return is already pending, so the
+        # false case never falls through to the parse below.
+        if sock is not None:  # pragma: no branch
             with contextlib.suppress(OSError):
                 sock.shutdown(socket.SHUT_RDWR)
             with contextlib.suppress(OSError):
