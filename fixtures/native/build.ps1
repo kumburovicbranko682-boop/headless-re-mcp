@@ -38,6 +38,31 @@ function Resolve-VisualStudioInstance {
     return $resolved
 }
 
+function Resolve-VisualStudioGenerator([string]$Instance) {
+    # CMake's Visual Studio generator name embeds the product year and must
+    # match the instance: pairing "Visual Studio 17 2022" with the VS 18
+    # install that hosted runners now carry is a configure-time error.
+    $installerRoot = [Environment]::GetFolderPath("ProgramFilesX86")
+    $vswhere = Join-Path $installerRoot "Microsoft Visual Studio/Installer/vswhere.exe"
+    $version = $null
+    if (Test-Path $vswhere) {
+        $reported = @(& $vswhere -path $Instance -property installationVersion)
+        if ($LASTEXITCODE -eq 0 -and $reported.Count -gt 0) {
+            $version = $reported[0].Trim()
+        }
+    }
+    $major = if ($version) { [int]$version.Split(".")[0] } else { $null }
+    switch ($major) {
+        16 { return "Visual Studio 16 2019" }
+        17 { return "Visual Studio 17 2022" }
+        18 { return "Visual Studio 18 2026" }
+    }
+    # Unknown major or unqueryable instance: omit -G and let CMake pick its
+    # default, which on Windows is the newest Visual Studio -- the same
+    # instance the -latest resolution above just found.
+    return $null
+}
+
 function Resolve-Compiler([string]$Arch) {
     if ($Arch -eq "x86") {
         if ($env:HEADLESS_RE_FIXTURE_CC_X86) {
@@ -73,12 +98,15 @@ function Build-Fixture([string]$Arch) {
         $configureArguments = @("--fresh", "-S", $sourceRoot, "-B", $buildDir)
         if ($vsInstance) {
             $platform = if ($Arch -eq "x86") { "Win32" } else { "x64" }
+            $generator = Resolve-VisualStudioGenerator $vsInstance
+            if ($generator) {
+                $configureArguments += @("-G", $generator)
+            }
             $configureArguments += @(
-                "-G", "Visual Studio 17 2022",
                 "-A", $platform,
                 "-DCMAKE_GENERATOR_INSTANCE:PATH=$vsInstance"
             )
-            Write-Output "fixture compiler[$Arch]: MSVC at $vsInstance"
+            Write-Output "fixture compiler[$Arch]: MSVC at $vsInstance (generator: $(if ($generator) { $generator } else { 'cmake default' }))"
         } else {
             $compiler = Resolve-Compiler $Arch
             $compilerDir = Split-Path $compiler -Parent
