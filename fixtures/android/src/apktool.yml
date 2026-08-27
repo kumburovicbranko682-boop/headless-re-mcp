@@ -1,0 +1,15 @@
+!!brut.androlib.meta.MetaInfo
+apkFileName: fixture.apk
+isFrameworkApk: false
+usesFramework:
+  ids:
+  - 1
+sdkInfo:
+  minSdkVersion: '21'
+  targetSdkVersion: '30'
+packageInfo:
+  forcedPackageId: '127'
+version: 2.10.0
+versionInfo:
+  versionCode: '1'
+  versionName: '1.0'

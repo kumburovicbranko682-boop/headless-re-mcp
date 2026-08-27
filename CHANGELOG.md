@@ -43,36 +43,39 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
-### 测试（APK DEX 分析：补上只测降级、从不测真 DEX 的空白）
+### 测试（APK 全线：以一个真 APK 夹具补上「只测降级、从不测真机」的空白）
 
-- **`apk.classes` / `methods` / `strings` / `xrefs` 从没在**合法 DEX** 上被驱动过。**
-  Android RE gate 造的合成 APK 里 `classes.dex` 是占位符，androguard 根本解析不了，
-  于是整套 DEX 分析只被断言「优雅降级不崩」，四个工具的成功路径无人跑——这正是
-  androguard API 漂移会藏身的盲区：某个方法被改名/删除（frida 17 那类破坏，如
-  `Analysis.get_classes` / `MethodAnalysis.get_xref_from` / `StringAnalysis.get_value`）
-  只在对真 DEX 跑时才在运行期炸。新增 `fixtures/android/classes.dex`（用 smali 2.5.2 从
-  同目录 `Hello.smali` 汇编出的 660 字节真 DEX）和 `test_apk_dex_analysis_gate.py`：把真
-  DEX 打进 APK，经 `AnalysisService` 全栈跑四个工具，钉住 `classes=[LHello;]`（外部
-  `Ljava/lang/Object;` 被过滤）、`methods` 含 `<init>/decryptSecret/main`、`strings` 含
-  `s3cr3t-flag-value`、`xrefs decryptSecret` 解出调用者 `LHello;->main`（正是
-  `get_xref_from()` 元组解包那条会随 API 漂移悄悄坏掉的路径）。androguard 4.1.4 上全栈实测
-  通过；缺 `android` extra 时明确 skip（skip≠pass）。同时以 API 内省确认客户端所用的
+Android RE gate 造的合成 APK 里 AndroidManifest.xml 不是合法 AXML、classes.dex 是占位符，
+androguard/jadx/apktool 因此只被断言「优雅降级不崩」，没有任何一条真机成功路径被跑到。这正是
+版本漂移（frida 17 那类破坏——某个 API/CLI 开关被改名或删除）藏身的盲区：只在对真 APK 跑时才
+在运行期炸，基于 fake 的单测一律照过。新增单个真 APK 夹具 `fixtures/android/fixture.apk`
+（由 `fixtures/android/src` 用 apktool 2.10.0 的内置 aapt2 编译：合法 AXML 清单 + 真 classes.dex，
+包名 `com.example.fixture`、`INTERNET` 权限、`MainActivity`，含 `main→decryptSecret` 调用边与可
+恢复字符串 `s3cr3t-flag-value`；`src/` 连同 apktool.yml/smali 一并入库以备重建），并据此加四条
+gate（缺相应工具时明确 skip，skip≠pass）：
+
+- **DEX 分析**（`test_apk_dex_analysis_gate.py`）：经 `AnalysisService` 全栈跑
+  `apk.classes/methods/strings/xrefs`，钉住 `classes=[Lcom/example/fixture/MainActivity;]`
+  （外部 `Ljava/lang/Object;` 被过滤）、`methods` 含 `<init>/decryptSecret/main`、`strings` 含
+  `s3cr3t-flag-value`、`xrefs decryptSecret` 解出调用者 `MainActivity->main`（正是
+  `get_xref_from()` 元组解包那条会随 API 漂移悄悄坏掉的路径）。同时以 API 内省确认客户端所用的
   androguard 全部方法在 4.1.4 上仍在（唯一缺失的 `APK.get_requested_permissions` 早已被
-  `permissions` 的 try/except 回退兜住）。
-
-### 测试（jadx 反编译：补上只测降级、从不真机反编译的空白）
-
-- **`apk.decompile` / `apk.export_sources` 从没对真 APK 跑过 jadx。** Android RE gate 只在
-  jadx 缺席时断言 jadx 系工具「回结构化信封不崩」；jadx 是外部 CLI，其参数与落盘布局会随版本
-  漂移（又是那类只在运行期才炸的破坏）：`--output-dir` / `--no-imports` 可能被改名，源码可能
-  不再落到 `<out>/sources/` 下，而所有基于 fake 的单测照样过。新增
-  `test_apk_jadx_decompile_gate.py`（复用同一 660 字节真 DEX 打成 APK）：按 `config.py` 同款
-  顺序发现 jadx（`HEADLESS_RE_JADX` 或 PATH 上的 `jadx`），像 `test_m11_r2_live_gate` 那样直接
-  驱动 `JadxClient` 端到端，钉住 `export_sources` 落出 `<out>/sources/…/Hello.java`、
-  `--no-imports` 这条独立开关仍被走到、`decompile("Hello")` 解出的源码确含 `decryptSecret` 与
-  `s3cr3t-flag-value`（证明 jadx 真反编译了字节码，而非空信封）。jadx 1.5.0 上实测通过：
-  `--output-dir` / `--no-imports` 仍在，默认包类落到 `sources/defpackage/Hello.java`；缺 jadx
-  时明确 skip（skip≠pass）。
+  `permissions` 的 try/except 回退兜住）。androguard 4.1.4 上全栈实测通过。
+- **清单面**（`test_apk_manifest_gate.py`）：合成 gate 因清单非法 AXML 只能测不崩、从不校验任何
+  解析值；本 gate 经全栈跑 `apk.open/manifest/permissions/components`，钉住真实解析出的
+  包名 `com.example.fixture`、`versionName=1.0`、`min/target SDK=21/30`、`INTERNET` 权限与
+  `MainActivity` 活动，并验证未签名 APK 的 `certificates` 干净降级为 `v1_signed=False`。
+- **jadx 反编译**（`test_apk_jadx_decompile_gate.py`）：按 `config.py` 同款顺序发现 jadx
+  （`HEADLESS_RE_JADX` 或 PATH），像 `test_m11_r2_live_gate` 那样直接驱动 `JadxClient` 端到端，
+  钉住 `export_sources` 落出 `<out>/sources/com/example/fixture/MainActivity.java`、`--no-imports`
+  这条独立开关仍被走到、`decompile` 解出的源码含 `decryptSecret` 与 `s3cr3t-flag-value`。因夹具类
+  带正规包名，`decompile` 走的是精确 `sources/<pkg>/Class.java` 命中路径而非同名兜底。jadx 1.5.0
+  实测通过：`--output-dir` / `--no-imports` 仍在。
+- **apktool 解包**（`test_apk_apktool_decode_gate.py`）：全套件此前从不对真 APK 跑 apktool。按
+  `config.py` 顺序发现 apktool（`HEADLESS_RE_APKTOOL` 或 PATH），直接驱动 `ApktoolClient.decode`，
+  钉住 AXML 清单被解回文本（含包名与 `INTERNET`）、classes.dex 被反汇编出带 `decryptSecret` 的
+  `MainActivity.smali`。apktool 2.10.0 实测通过：`d -o -f` 与产物布局（`AndroidManifest.xml` +
+  `smali*/`）仍如客户端所设。
 
 ### 变更（监控台检查器）
 
