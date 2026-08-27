@@ -127,6 +127,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（provider 重试警报的 error 字段被截到 300 字符却不标注）
+
+- `RetryingProvider` 每次退避重试都发一条 `provider_retry` 警报，`error` 字段直接
+  `f"{type}: {exc}"[:300]` 无声切断。而 provider 侧恰恰特意把 HTTP 错误响应体拼进重抛的异常消息
+  （流式请求下不读 body 异常就只剩“429”），于是这段文本常规就超 300 字符——主机说明“撞了哪个限
+  制、多久恢复”的正文正好在截点之后，被切掉的一半读起来却像完整错误。现在超限时追加
+  `...[truncated]` 并保持总长不超预算，与 `error_boundary`、`text_stream`、doctor 等既有截断标记
+  口径一致。补回归测试钉住：超长错误带标记且 ≤300 字符、开头保留异常类型与状态；短错误原样透传。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
