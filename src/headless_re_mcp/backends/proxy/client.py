@@ -46,6 +46,12 @@ _MAX_INLINE_BODY = 200_000
 _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
+# A WebSocket connection is one flow that carries many frames. flow.get returns
+# a bounded, chronological slice of them so a text protocol (JSON over WS is the
+# common case) is readable without unbounding the tool response: the first N
+# frames, each inlined as text only when short and valid UTF-8.
+_MAX_WS_MESSAGES = 200
+_MAX_WS_MESSAGE_BYTES = 8 * 1024
 _OMITTED_BODY = object()
 
 
@@ -300,6 +306,46 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
     return out, truncated
 
 
+def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
+    """Bounded, chronological view of a flow's WebSocket frames for flow.get.
+
+    Returns ``(messages, total_count, truncated)``. mitmproxy holds every frame
+    on ``flow.websocket.messages`` (each has ``from_client`` and ``content``), so
+    handing the whole list back would be unbounded. The first ``_MAX_WS_MESSAGES``
+    frames are returned in order -- the start of a socket carries the auth /
+    subscribe handshake an analyst most wants -- each with ``from_client`` and the
+    decoded ``size``; a short valid-UTF-8 frame also carries ``text``, while a
+    binary or oversized frame reports ``omitted`` ("binary" / "too_large") with
+    no lossy text, mirroring how bodies are handled. ``truncated`` is set when
+    more frames existed than were returned so a reader never mistakes the slice
+    for the whole conversation.
+    """
+    ws = getattr(flow, "websocket", None)
+    frames = getattr(ws, "messages", None)
+    if not frames:
+        return [], 0, False
+    total = len(frames)
+    out: list[JsonObject] = []
+    for frame in frames[:_MAX_WS_MESSAGES]:
+        try:
+            content = bytes(getattr(frame, "content", b"") or b"")
+        except (TypeError, ValueError):
+            content = b""
+        entry: JsonObject = {
+            "from_client": bool(getattr(frame, "from_client", False)),
+            "size": len(content),
+        }
+        if len(content) > _MAX_WS_MESSAGE_BYTES:
+            entry["omitted"] = "too_large"
+        else:
+            try:
+                entry["text"] = content.decode("utf-8")
+            except UnicodeDecodeError:
+                entry["omitted"] = "binary"
+        out.append(entry)
+    return out, total, total > _MAX_WS_MESSAGES
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -345,6 +391,33 @@ class _FlowRecorder:
         err = getattr(flow, "error", None)
         message = str(getattr(err, "msg", None) or err or "flow error")
         self._record(flow, error_msg=message)
+
+    def websocket_message(self, flow: Any) -> None:  # mitmproxy calls this per frame
+        # A WebSocket is one flow: `response` already recorded its 101 handshake,
+        # so without this hook proxy.flows showed a bare status-101 row and every
+        # frame -- the actual application protocol an RE session is here for --
+        # was silently dropped. mitmproxy appends each frame to
+        # flow.websocket.messages and calls this after; roll the running count and
+        # decoded byte total onto that existing summary so the row advertises the
+        # traffic (the frames themselves stay on the raw flow, served bounded by
+        # flow.get). Counters only, so a chatty socket never bloats the summary.
+        ws = getattr(flow, "websocket", None)
+        messages = getattr(ws, "messages", None)
+        if not messages:
+            return
+        latest = messages[-1]
+        try:
+            size = len(bytes(getattr(latest, "content", b"") or b""))
+        except (TypeError, ValueError):
+            size = 0
+        flow_id = str(getattr(flow, "id", None) or "")
+        with self._lock:
+            for summary in reversed(self.flows):
+                if summary.get("id") == flow_id:
+                    summary["websocket"] = True
+                    summary["ws_messages"] = int(summary.get("ws_messages") or 0) + 1
+                    summary["ws_bytes"] = int(summary.get("ws_bytes") or 0) + size
+                    break
 
     def _record(self, flow: Any, *, error_msg: str | None = None) -> None:
         req = getattr(flow, "request", None)
@@ -679,7 +752,15 @@ class ProxyBackend:
         if resp_headers_cut:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
-        return {"id": flow_id, "request": request, "response": response}
+        out: JsonObject = {"id": flow_id, "request": request, "response": response}
+        ws_messages, ws_total, ws_truncated = _bounded_ws_messages(flow)
+        if ws_total:
+            out["websocket"] = True
+            out["websocket_messages"] = ws_messages
+            out["websocket_message_count"] = ws_total
+            if ws_truncated:
+                out["websocket_truncated"] = True
+        return out
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)

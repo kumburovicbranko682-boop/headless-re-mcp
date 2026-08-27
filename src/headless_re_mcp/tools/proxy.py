@@ -62,15 +62,18 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response_size), count, total, offset, has_more, and dropped.
         response_size is the decoded response body length in bytes (0 when the
         response had no body). body_omitted is set on a row whose
-        request/response body was over the retain cap. A flow mitmproxy could
-        not complete (TLS refused, upstream unreachable, connection reset) is
-        captured too, carrying error=true and error_msg with a null status;
-        such flows were previously dropped entirely. A completed flow always
-        carries a numeric status and no error field. The list field is flows,
-        not items or requests, and the type column is content_type. dropped is
-        how many the capture ring already evicted; a page that filled the limit
-        is not the whole log. metadata_truncated marks bounded oversized summary
-        fields.
+        request/response body was over the retain cap. A WebSocket connection is
+        one flow: its row carries the 101 handshake with websocket=true plus
+        ws_messages (frame count) and ws_bytes (decoded frame bytes), so a socket
+        that is capturing traffic is not read as an empty 101; fetch the frames
+        with proxy.flow.get. A flow mitmproxy could not complete (TLS refused,
+        upstream unreachable, connection reset) is captured too, carrying
+        error=true and error_msg with a null status; such flows were previously
+        dropped entirely. A completed flow always carries a numeric status and no
+        error field. The list field is flows, not items or requests, and the type
+        column is content_type. dropped is how many the capture ring already
+        evicted; a page that filled the limit is not the whole log.
+        metadata_truncated marks bounded oversized summary fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
@@ -86,7 +89,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         are bounded in count and size; metadata_truncated on request or
         response marks a clipped header map or field. There is no top-level
         headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        mojibake body string. A WebSocket flow also answers websocket=true,
+        websocket_message_count, and websocket_messages: the first frames in
+        order, each with from_client and size, plus text for a short UTF-8 frame
+        or omitted (binary/too_large) otherwise; websocket_truncated is set when
+        more frames existed than were returned.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

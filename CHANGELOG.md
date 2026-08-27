@@ -49,6 +49,29 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy 现抓 WebSocket 帧，不再只留一条空的 101 握手）
+
+- 抓包 addon 只接了 `response` / `error`。可 mitmproxy 把一个 WebSocket 当作一条流投递：
+  `response` 记下 101 握手后，每来一帧调用一次 `websocket_message`，帧本身挂在
+  `flow.websocket.messages` 上。于是 `proxy.flows` 里 WebSocket 只显示一行 status=101、
+  `response_size=0` 的记录，`proxy.flow.get` 也取不到任何帧——逆向会话真正要看的应用层协议
+  （实时接口常走 WS，且多为 JSON 文本）被整段悄悄丢弃。改法：recorder 新接 `websocket_message`
+  钩子，在既有的那条 101 summary 上滚动累计 `ws_messages`（帧数）与 `ws_bytes`（解码字节数）
+  并置 `websocket=true`，只累加计数、绝不把帧塞进 summary，故再吵的 socket 也不撑大摘要；
+  `proxy.flow.get` 对 WebSocket 流回传有界的 `websocket_messages`——按时序取前
+  `_MAX_WS_MESSAGES`(200) 帧，每帧带 `from_client` 与解码 `size`，短且合法 UTF-8 的帧附
+  `text`、二进制或超过每帧上限(8 KiB)的帧改报 `omitted`（binary/too_large）而不做有损解码，
+  另给 `websocket_message_count` 总数与 `websocket_truncated` 截断标记。普通 HTTP 流既无这些
+  summary 字段、flow.get 也不加 websocket 键，行为不变。帧留在原始流上按需读取，本改动不在我们
+  这侧新增无界内存。单测（构造假 mitmproxy 流，不走网络）：recorder 钩子把 3 帧的计数与字节滚到
+  101 行上、普通流不长出 websocket 字段；flow.get 回传的帧文本/方向/omitted 正确，帧数超过 200
+  时截断并标记。新增 live gate（`test_proxy_websocket_capture_live_gate.py`）：用真实 mitmproxy
+  转发一次真实 WebSocket 对话——`websockets` 回声源把每条消息变成 `echo:`+原文,客户端经代理连上
+  并互发两条,断言该流行 `websocket=true`、`ws_messages≥4`（两个方向各两帧）,且 flow.get 同时取到
+  客户端的 `hello` 与服务端另一形态的 `echo:hello`；“守卫其守卫”——两方向文本不同,故都在即证明两向
+  都真经代理抓到而非单侧回显。CI 新增 `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该
+  gate，skip≠pass 守卫在两者已装却仍 skip 时判失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
