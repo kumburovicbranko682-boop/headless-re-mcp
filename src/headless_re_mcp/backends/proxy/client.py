@@ -364,11 +364,23 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
-        # The decoded response body length is known here, before the flow may be
-        # dropped from the retain ring, so the summary keeps it even for a flow
-        # whose body was not retained -- and the HAR export can report a real
-        # content size instead of the -1 "unknown" sentinel.
+        # The received (on-wire) response body length is known here, before the
+        # flow may be dropped from the retain ring, so the summary keeps it even
+        # for a flow whose body was not retained -- and the HAR export can report
+        # a real bodySize instead of the -1 "unknown" sentinel. This is the length
+        # as it crossed the wire (``raw_content``), i.e. compressed for an encoded
+        # response; measuring it stays cheap and never decompresses on mitmproxy's
+        # event-loop thread.
         response_size = _content_len(resp)
+        # Whether that on-wire length is also the decoded content length. HAR's
+        # content.size is the *decoded* size and bodySize the *received* size, so
+        # for a Content-Encoding'd response the two differ and the on-wire length
+        # is not the content size. A one-header read (no decompression) records
+        # only the fact of encoding; the export then reports content.size as
+        # unknown for an encoded flow rather than misstating the compressed length
+        # as the decoded one.
+        encoding = resp.headers.get("content-encoding", "") if resp else ""
+        response_encoded = str(encoding).strip().lower() not in ("", "identity")
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -401,6 +413,11 @@ class _FlowRecorder:
                 "content_type": content_type,
                 "response_size": response_size,
             }
+            if response_encoded:
+                # Absent means "not encoded" (the common case), so the summary
+                # stays lean; present marks a flow whose on-wire length is not
+                # its decoded content length.
+                entry["response_encoded"] = True
             if omitted:
                 entry["body_omitted"] = True
             if error_msg is not None:
@@ -729,7 +746,13 @@ class ProxyBackend:
                 url=f.get("url"),
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
-                response_body_size=f.get("response_size"),
+                # response_size is the received (on-wire) length -> bodySize.
+                # It is also the decoded content.size only when the response was
+                # not Content-Encoding'd; for an encoded flow the decoded length
+                # is unknown here (the export never decompresses), so leave
+                # content_size None rather than report the compressed length.
+                body_size=f.get("response_size"),
+                content_size=None if f.get("response_encoded") else f.get("response_size"),
             )
             for f in inst.recorder.snapshot()
         ]

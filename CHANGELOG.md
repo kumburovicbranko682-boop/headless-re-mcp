@@ -49,6 +49,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy 导出的 HAR 区分 bodySize（线上）与 content.size（解压后））
+
+- HAR 导出把同一个数——线上收到的正文字节数(取自 mitmproxy 的 `raw_content`)——同时塞进每条
+  entry 的 `response.bodySize` 与 `response.content.size`。可 HAR 1.2 里这两者含义不同:`bodySize`
+  是线上收到(压缩后按线传输)的字节数,`content.size` 是按 `Content-Encoding` 解压后的长度,规范
+  明说二者只有在未压缩时才相等、压缩时 `content.size` 更大。于是一个 gzip 响应的 `content.size` 被写
+  成了它的压缩长度——HAR 消费端(Chrome DevTools 导入 HAR、Firefox 等)会读成"没有压缩",且低报了
+  内容大小。改法:`har_entry` 把两者拆成独立入参,`body_size` 填 `bodySize`、`content_size` 填
+  `content.size`,任一未知时各自落 -1"不可用"。proxy 抓流时顺手记一个 `response_encoded`(只读一次
+  `Content-Encoding` 头,不解压、不在 mitmproxy 事件循环线程上做重活):导出时线上长度照填 `bodySize`,
+  但**只有未编码**的流才把该长度也当作 `content.size`,编码过的流 `content.size` 留 -1(导出从不解压,
+  解压后长度在此确不可知),而不是把压缩长度冒充成解压后大小。`response_encoded` 同时出现在
+  `proxy.flows` 每行上(编码流为 true,未编码不带该字段),文档串据此更正:`proxy.flows` 说明
+  `response_size` 是线上(压缩)长度、由 `response_encoded` 标注,`proxy.export_har` 说明 `bodySize`
+  为线上长度、`content.size` 为解压后长度(未编码时等于 bodySize,编码时为 -1)。单测:`har_entry` 两个
+  尺寸独立填充与压缩流 content.size 留 -1;proxy 导出对未编码流两字段同值、对 gzip 流 `bodySize` 为线上
+  长度而 `content.size` 为 -1。新增 live gate(`test_proxy_har_content_size_live_gate.py`):经真实
+  mitmproxy 分别转发一次 gzip 与一次 identity 响应,导出 HAR 后断言 gzip entry 的 `bodySize` 为压缩长度、
+  `content.size` 为 -1 且两者不等,identity entry 两字段同为真实长度;并"守卫其守卫"——先断言压缩体确实
+  更小,故通过意味着两个尺寸被区分开而非恰好相等。CI 新增 `linux-proxy-har-content-size` job 装 mitmproxy
+  跑该 gate,skip≠pass 守卫在 mitmproxy 已装却仍 skip 时判失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

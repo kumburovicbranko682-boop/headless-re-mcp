@@ -60,8 +60,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
-        response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
+        response_size is the received (on-wire) response body length in bytes
+        (0 when the response had no body); it is the compressed length for a
+        Content-Encoding'd response, which response_encoded marks true on that
+        row (absent means not encoded). body_omitted is set on a row whose
         request/response body was over the retain cap. A flow mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;
@@ -105,9 +107,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        dropped to keep the file under the capture cap. Each entry's
+        response.bodySize is the received (on-wire) body length; content.size is
+        the decoded length -- equal to bodySize for an unencoded response, and
+        -1 (unknown) for a Content-Encoding'd one, since the export never
+        decompresses. There is no har, output or artifact field. path is the
+        file; looking for har after a successful export reads as a missing
+        capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

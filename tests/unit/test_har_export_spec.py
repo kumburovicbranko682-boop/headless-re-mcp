@@ -121,21 +121,42 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
 
 
-def test_har_entry_reports_a_known_response_body_size() -> None:
-    """When the capture knows the decoded body length it must not emit -1."""
+def test_har_entry_reports_known_body_and_content_sizes() -> None:
+    """bodySize (on-wire) and content.size (decoded) are filled independently."""
     known = har_entry(
         method="GET",
         url="https://x/1",
         status=200,
         mime_type="application/json",
-        response_body_size=1234,
+        body_size=800,
+        content_size=1234,
     )
+    # content.size is the decoded length; bodySize is the received on-wire length.
     assert known["response"]["content"]["size"] == 1234
-    assert known["response"]["bodySize"] == 1234
+    assert known["response"]["bodySize"] == 800
     # Absent or negative size falls back to the spec's -1 "not available".
     unknown = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
     assert unknown["response"]["content"]["size"] == -1
     assert unknown["response"]["bodySize"] == -1
+
+
+def test_har_entry_keeps_content_size_unknown_when_only_the_wire_size_is_known() -> None:
+    """A compressed response: bodySize is known, content.size stays -1.
+
+    HAR's content.size is the decoded length; reporting the compressed on-wire
+    length there would read as "no compression" to a consumer. When the capture
+    measured only the transferred bytes, bodySize carries them and content.size
+    is the spec's -1 rather than a wrong decoded size.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://x/gz",
+        status=200,
+        mime_type="application/json",
+        body_size=321,
+    )
+    assert entry["response"]["bodySize"] == 321
+    assert entry["response"]["content"]["size"] == -1
 
 
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
@@ -234,7 +255,9 @@ def test_web_har_export_refuses_when_even_an_empty_har_exceeds_the_cap(
     assert info.value.code == "too_large"
 
 
-def _proxy_backend_with_flows(count: int, *, url_pad: int = 0, body_len: int = 0) -> ProxyBackend:
+def _proxy_backend_with_flows(
+    count: int, *, url_pad: int = 0, body_len: int = 0, encoded: bool = False
+) -> ProxyBackend:
     recorder = _FlowRecorder()
     for index in range(count):
         request = SimpleNamespace(
@@ -242,9 +265,12 @@ def _proxy_backend_with_flows(count: int, *, url_pad: int = 0, body_len: int = 0
             pretty_url=f"http://x/{'q' * url_pad}/{index}",
             host="x",
         )
+        headers = {"content-type": "text/plain"}
+        if encoded:
+            headers["content-encoding"] = "gzip"
         response = SimpleNamespace(
             status_code=200,
-            headers={"content-type": "text/plain"},
+            headers=headers,
             raw_content=b"x" * body_len if body_len else None,
         )
         recorder.response(
@@ -280,8 +306,35 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     backend.export_har("s", out)
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     for entry in doc["log"]["entries"]:
+        # An unencoded response: the on-wire length is also the decoded length,
+        # so both fields carry it.
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+def test_proxy_export_har_leaves_content_size_unknown_for_an_encoded_flow(
+    tmp_path: Path,
+) -> None:
+    """A gzip'd response: HAR bodySize is the on-wire length, content.size is -1.
+
+    The recorder measures only the transferred (compressed) bytes -- it never
+    decompresses on the capture thread -- and marks the flow encoded. The export
+    must then report that on-wire length as bodySize but leave content.size at
+    the spec's -1, not restate the compressed length as the decoded content size
+    (which a HAR consumer would read as "no compression").
+    """
+    backend = _proxy_backend_with_flows(3, body_len=200, encoded=True)
+    # The summary marks the flow encoded; proxy.flows still reports the on-wire
+    # length as response_size.
+    flows = backend.flows("s", offset=0, limit=10)
+    assert all(row["response_size"] == 200 for row in flows["flows"])
+    assert all(row.get("response_encoded") is True for row in flows["flows"])
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    for entry in doc["log"]["entries"]:
+        assert entry["response"]["bodySize"] == 200
+        assert entry["response"]["content"]["size"] == -1
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(

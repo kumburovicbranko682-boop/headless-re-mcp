@@ -88,25 +88,38 @@ def har_entry(
     mime_type: str | None,
     started_date_time: str | None = None,
     resource_type: str | None = None,
-    response_body_size: int | None = None,
+    body_size: int | None = None,
+    content_size: int | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
     Members the captures never recorded are filled with the spec's placeholders
     -- empty cookie/header arrays, -1 sizes, unknown timings -- because omitting
     them makes a strict consumer reject the entire log rather than the one
-    absent field. ``queryString`` is parsed from the URL, and when the capture
-    knows the decoded response body length (``response_body_size``) it fills
-    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    absent field. ``queryString`` is parsed from the URL, and ``resource_type``
+    rides along as Chrome's ``_resourceType`` extension so the browser capture
+    keeps that hint.
+
+    HAR draws a distinction the callers must respect: ``response.bodySize`` is
+    the number of bytes *received on the wire* (compressed, as transferred),
+    while ``response.content.size`` is the *decoded* length after any
+    ``Content-Encoding`` is undone -- the spec says they are equal only when
+    there was no compression, and ``content.size`` is the larger of the two
+    otherwise. So ``body_size`` fills ``bodySize`` and ``content_size`` fills
+    ``content.size``, each independently; either is the -1 "not available"
+    sentinel when unknown. A capture that measured only the transferred bytes of
+    a compressed response passes ``body_size`` and leaves ``content_size`` None
+    rather than claiming the compressed length as the decoded size (which would
+    read as "no compression" to a HAR consumer).
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
-    if isinstance(response_body_size, int) and response_body_size >= 0:
-        content_size = response_body_size
-    else:
-        content_size = _UNKNOWN_SIZE
+    received_size = (
+        body_size if isinstance(body_size, int) and body_size >= 0 else _UNKNOWN_SIZE
+    )
+    decoded_size = (
+        content_size if isinstance(content_size, int) and content_size >= 0 else _UNKNOWN_SIZE
+    )
     entry: JsonObject = {
         "startedDateTime": started_date_time or _iso_now(),
         "time": 0,
@@ -126,10 +139,10 @@ def har_entry(
             "httpVersion": "",
             "cookies": [],
             "headers": [],
-            "content": {"size": content_size, "mimeType": str(mime_type or "")},
+            "content": {"size": decoded_size, "mimeType": str(mime_type or "")},
             "redirectURL": "",
             "headersSize": _UNKNOWN_SIZE,
-            "bodySize": content_size,
+            "bodySize": received_size,
         },
         "cache": {},
         "timings": dict(_UNKNOWN_TIMINGS),
