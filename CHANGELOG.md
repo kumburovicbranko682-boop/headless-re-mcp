@@ -266,10 +266,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
-### 修复（`_table_row_size` 五处元数据表列宽按 ECMA-335 取错列类型）
+### 修复（`_table_row_size` 六处元数据表列宽按 ECMA-335 取错列类型）
 
 - `_table_row_size`（`dotnet/metadata_enum.py`,给 `_table_start` 累加各表字节以定位待枚举表）
-  有五处列宽与 ECMA-335 II.22 不符,都会平移其后所有表的起点从而读偏后续枚举:
+  有六处列宽与 ECMA-335 II.22 不符,都会平移其后所有表的起点从而读偏后续枚举:
   - InterfaceImpl(0x09):`Interface` 列当成 MethodDef 简单索引(`_simple_index_size(rc, 0x06)`),
     实为 TypeDefOrRef **编码索引**(II.22.23),现用 `type_def_or_ref`。
   - MethodSemantics(0x18):`Method` 列当成 MethodDefOrRef 编码索引,实为 MethodDef **简单索引**
@@ -282,9 +282,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   - File(0x26):`HashValue` 列当成 Implementation 编码索引,实为 Blob 索引(II.22.19),现用 `b`。
   - NestedClass(0x29):`EnclosingClass` 列当成 Implementation 编码索引,两列实为 TypeDef **简单索引**
     (II.22.32),现两列都用 `_simple_index_size(rc, 0x02)`。
-- 除 AssemblyRef 外的四处只在相关行数/堆越过对应阈值时才与错值分叉,小程序集里都塌成 2 字节而
-  看不出来。新增五条直测:用 20000 行的 TypeRef/File 或 40000 行 MemberRef、4 字节 blob 堆等各自
-  强制目标列取 4 字节,断言五表行宽分别命中修正值;AssemblyRef 另用默认小堆断言 20(错值为 22),
+  - MethodSpec(0x2B) 与 GenericParamConstraint(0x2C) 被**互换**:0x2B 套了
+    GenericParamConstraint 的 `Owner(GenericParam)+Constraint(TypeDefOrRef)`,0x2C 套了
+    MethodSpec 的 `Method(MethodDefOrRef)+Instantiation(blob)`。二者在大/宽堆输入上才分叉
+    (40000 MemberRef + 4 字节 blob 堆时 MethodSpec 应为 8、GenericParamConstraint 为 4,互换则读成
+    4 与 8)。现按 II.22.29 / II.22.21 归位。这两表排在最高枚举表 ManifestResource(0x28)之后,
+    故当前不改变枚举结果,但把共享的 `_table_row_size` 修成对任意调用者都正确。
+- 除 AssemblyRef 外的其余处只在相关行数/堆越过对应阈值时才与错值分叉,小程序集里都塌成 2 字节而
+  看不出来。新增六条直测:用 20000 行的 TypeRef/File 或 40000 行 MemberRef、4 字节 blob 堆等各自
+  强制目标列取 4 字节,断言各表行宽分别命中修正值;AssemblyRef 另用默认小堆断言 20(错值为 22),
   并保留一条小行数用例钉住 InterfaceImpl/NestedClass 常见情形仍是 4(2+2)。
 
 ### 修复（`inspect_dotnet` 的 `assembly_name` 对真实程序集恒为 null）

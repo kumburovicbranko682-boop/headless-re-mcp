@@ -522,8 +522,11 @@ def _row_size(
         # NestedClass: NestedClass(TypeDef index) + EnclosingClass(TypeDef index).
         0x29: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x02),
         0x2A: 0,  # GenericParam; fixed below
-        0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
-        0x2C: method_def_or_ref + b,  # MethodSpec
+        # 0x2B is MethodSpec (Method=MethodDefOrRef + Instantiation=blob) and 0x2C is
+        # GenericParamConstraint (Owner=GenericParam index + Constraint=TypeDefOrRef);
+        # they were transposed, so both carried the other's column layout.
+        0x2B: method_def_or_ref + b,  # MethodSpec
+        0x2C: _simple_index_size(rc, 0x2A) + type_def_or_ref,  # GenericParamConstraint
     }
     # Fix ClassLayout: PackingSize(2)+ClassSize(4)+Parent TypeDef
     sizes[0x0F] = 2 + 4 + _simple_index_size(rc, 0x02)

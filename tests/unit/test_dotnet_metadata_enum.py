@@ -269,3 +269,21 @@ def test_file_hashvalue_column_is_a_blob_not_an_implementation_index() -> None:
     """
     meta = _ctx({}, heap_sizes=0x04)  # 4-byte blob heap, 2-byte strings.
     assert _table_row_size(meta, 0x26) == 10
+
+
+def test_methodspec_and_genericparamconstraint_are_not_transposed() -> None:
+    """0x2B is MethodSpec and 0x2C is GenericParamConstraint, not the reverse.
+
+    The two rows had been swapped: 0x2B carried GenericParamConstraint's
+    Owner(GenericParam) + Constraint(TypeDefOrRef) layout and 0x2C carried
+    MethodSpec's Method(MethodDefOrRef) + Instantiation(blob). The widths only
+    part company on large or wide-heap inputs, so ordinary assemblies hid it.
+    With 40,000 MemberRefs the MethodDefOrRef coded index is 4 bytes and a 4-byte
+    blob heap makes the blob index 4, so the spec-correct MethodSpec row is
+    Method(4) + Instantiation(4) = 8, while GenericParamConstraint stays
+    Owner(GenericParam, 2) + Constraint(TypeDefOrRef, 2) = 4. The transposed
+    sizing would instead read 0x2B as 4 and 0x2C as 8.
+    """
+    meta = _ctx({0x0A: 40000}, heap_sizes=0x04)
+    assert _table_row_size(meta, 0x2B) == 8  # MethodSpec
+    assert _table_row_size(meta, 0x2C) == 4  # GenericParamConstraint
