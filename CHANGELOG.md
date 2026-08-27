@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web 动态抓取（network.list/get 响应体、har.export、screenshot、script.source 对真实本地页）** / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2（**含整条 `r2.*` 服务面 in-PE 端到端**）/ Ghidra（**functions/decompile/symbols/xrefs 四模式**）/ **本机 Frida 动态插桩（attach/枚举/内存读取/hook）** 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web 动态抓取（network.list/get 响应体、har.export、screenshot、script.source 对真实本地页）** / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android androguard 静态面（manifest/permissions/components/certificates/native_libs/classes/methods/strings/xrefs 对真实 APK）** / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2（**含整条 `r2.*` 服务面 in-PE 端到端**）/ Ghidra（**functions/decompile/symbols/xrefs 四模式**）/ **本机 Frida 动态插桩（attach/枚举/内存读取/hook）** 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -59,6 +59,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   脚本响应体（getResponseBody）与脚本源码（getScriptSource）都带回被服务端塞进去的 marker、`wasm.list`
   对无 wasm 的页干净地解析成空集、HAR 落成能被解析且含这两条请求的真实文件、截图是真正的 PNG 字节。
   浏览器起不来时才 skip。
+- **androguard 静态面此前零真实覆盖**：Android RE gate 只对一份合成（非法）APK 做分类,androguard 从没真正
+  解析过任何东西,`apk.manifest` / `permissions` / `components` / `certificates` / `native_libs` / `classes` /
+  `methods` / `strings` / `xrefs` 九个工具都没内容级断言,而单元测试把 androguard 整个 mock 掉（正是藏过两个
+  Ghidra bug 的那种盲区）；androguard 4.x 又大改了这套 API,没测的面会随版本悄悄烂掉。新增 gate 用 apktool
+  从手写清单（一个包名、一条 INTERNET 权限、一个 launcher activity）与一个 smali 类（`Sample`:`greet` 返回
+  marker 字符串、`use` 调它以造出交叉引用）现搭一份真 APK,塞入 native lib 条目,并在 apksigner/keytool 在时
+  签名,然后经 `AnalysisService` 逐个证明真实事实:包名/主 activity/ABI、那条声明的权限、launcher 组件、
+  native 库、类与其方法、marker 字符串、`use`→`greet` 的调用者边,以及签名后读回的 `CN=Gate` 证书。
+  androguard/apktool 缺失或构建失败才 skip;缺 apksigner/keytool 时证书腿退化为断言未签名信封。
 - **Android 反编译此前从未端到端跑过**：既有 Android gate 只在一份合成 APK 上验证分类与优雅降级，
   从不真正反编译（那需要真实 `classes.dex` 与一套 jadx 安装），jadx 单元测试也只 mock 子进程——
   正是这类 mock 让上面两个 Ghidra bug 长期蒙混过关。新增 gate 构造一份货真价实的 Android 制品
