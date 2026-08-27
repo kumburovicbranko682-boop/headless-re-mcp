@@ -69,6 +69,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   描述点明两份指纹的用途(sha1 对齐威胁情报、sha256 为更强摘要)。
 - 新增回归:伪证书带 `sha1_fingerprint` → 结果里 `sha1`/`sha256` 均如实填充,并断言描述里点名 `sha1`。
 
+### 修复（`apk.certificates` 把无法解析的签名证书无声丢弃,签名者集合看着完整实则少了一份)
+
+- `apk.certificates` 遍历 `apk.get_certificates()` 逐份组装 subject/issuer/serial/sha256,组装失败就
+  `except Exception: continue`——**无声跳过**。于是 `get_certificates()` 明明给了三份证书、其中一份在读取字段
+  时抛错(asn1crypto 序列化不了),列表里只剩两份,且**没有任何标记**提示少了一份。这份沉默恰好落在分诊里
+  价值最高的字段上——签名者身份(恶意样本据此归因),又恰好落在对抗性输入上:恶意 APK 会故意塞畸形签名证书
+  来把工具搞崩或搞哑。逆向者据这份列表判断有几个签名者,系统性地漏掉抛错那份。姊妹分支(报告 v2/v3 方案)只往
+  返回里加了 `v2_signed`/`v3_signed`,没碰这个 `except` 循环。
+- 现在循环里数一个 `cert_errors`,只要有证书解析失败就在结果里带上 `cert_parse_errors`(其值为失败份数),
+  提示签名者集合不完整。好证书照旧返回、解析本身绝不因一份坏证书而失败(与原 `continue` 的容错一致);字段纯
+  增量:全部证书都能解析时该字段不出现,短证书场景行为不变。`apk.certificates` 描述点明 `cert_parse_errors`
+  的语义。
+- 新增回归:`get_certificates()` 给出「好、坏(读 subject 抛 ValueError)、好」三份 → 返回两份证书、
+  `cert_parse_errors=1`,并断言描述里点名该字段;全部可解析时 → 不出现 `cert_parse_errors`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -280,6 +280,7 @@ class ApkClient:
                 break
             sig_files.append(str(name))
         certs_more = False
+        cert_errors = 0
         for cert in apk.get_certificates():
             if len(items) >= _MAX_CERTIFICATES:
                 certs_more = True
@@ -303,6 +304,14 @@ class ApkClient:
                     }
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
+                # A cert asn1crypto could not serialize was dropped here with no
+                # trace, so get_certificates() yielding three certs but one
+                # raising left two in the list and no sign a signer went missing.
+                # That silent loss lands on the highest-value field for triage --
+                # signer identity -- and precisely on adversarial input: malware
+                # ships malformed signing certs to trip up tooling. Count them so
+                # the signer set is not read as complete when one vanished.
+                cert_errors += 1
                 continue
         # Modern APKs (target SDK 30+) often drop the v1 JAR signature entirely
         # and rely on APK Signature Scheme v2/v3, so reporting only v1_signed made
@@ -312,7 +321,7 @@ class ApkClient:
         v2_signed = _scheme_signed(apk, "is_signed_v2")
         v3_signed = _scheme_signed(apk, "is_signed_v3")
         v31_signed = _scheme_signed(apk, "is_signed_v31")
-        return {
+        result: JsonObject = {
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": v1_signed,
@@ -322,6 +331,9 @@ class ApkClient:
             "signed": v1_signed or v2_signed or v3_signed or v31_signed,
             "has_more": certs_more or files_more,
         }
+        if cert_errors:
+            result["cert_parse_errors"] = cert_errors
+        return result
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)

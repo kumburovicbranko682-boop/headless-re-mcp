@@ -73,6 +73,23 @@ class _V2OnlyApk:
         return False
 
 
+class _BadCert:
+    @property
+    def subject(self) -> str:
+        # A malformed/hostile cert asn1crypto cannot serialize: accessing a
+        # field raises something other than AttributeError, so it propagates
+        # past getattr's default and trips the append.
+        raise ValueError("malformed certificate")
+
+
+class _MixedCertApk:
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[object]:
+        return [_Cert(0), _BadCert(), _Cert(1)]
+
+
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
 
@@ -99,6 +116,7 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+<<<<<<< HEAD
     assert "v2_signed" in doc
     assert "sha1" in doc
 
@@ -136,3 +154,28 @@ def test_apk_certificates_reports_both_sha1_and_sha256_fingerprints() -> None:
     assert first["sha256"] == "aa"
     doc = _tool_docstring("apk.certificates")
     assert "sha1" in doc
+
+
+def test_apk_certificates_counts_unparseable_certs_instead_of_dropping_them() -> None:
+    """A cert that fails to serialize is counted, not silently dropped.
+
+    get_certificates yields three certs but the middle one raises while being
+    read. The two good certs must still come back, and cert_parse_errors must
+    say one signer went missing -- otherwise the signer list reads as complete
+    when a (often adversarial) cert vanished.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _MixedCertApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert len(payload["certificates"]) == 2
+    assert payload["cert_parse_errors"] == 1
+    doc = _tool_docstring("apk.certificates")
+    assert "cert_parse_errors" in doc
+
+
+def test_apk_certificates_omits_the_error_field_when_every_cert_parses() -> None:
+    """The signal is additive: a clean parse never carries cert_parse_errors."""
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert "cert_parse_errors" not in payload
