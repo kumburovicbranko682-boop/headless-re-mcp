@@ -43,6 +43,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（r2 给 ELF 目标也补上模块相对 rva 与架构）
+
+- `r2.disasm` / `r2.xrefs` 等工具把 r2 报的虚拟地址经 `enrich_r2_payload` 归一成
+  `{module, rva, va}`，可这套映射只认 PE：`pe_preferred_base` 读的是 PE 的 ImageBase，
+  遇到 ELF 直接返回 `(None, None)`。于是 Android 原生库（`.so`）和 Linux 可执行文件——r2
+  面向的非 PE 目标——每一条地址都只剩一个裸 `va`，既没有模块归属、也没有架构，无法跨会话
+  重定基或交叉引用。现新增 `elf_preferred_base`：像读 PE 头一样只读前缀，从 ELF 的最低
+  `PT_LOAD` 段 `p_vaddr` 取首选装载基址（与 r2 的 `baddr` 对齐；位置无关的 `.so` 恰为 0），
+  据此把 va 归一成模块相对 rva，并按 `e_machine` 给 x86/x64 打上架构标签。与 PE 不同，基址 0
+  在 ELF 里是常态而非"未知"哨兵（意味着 rva == va），因此如实返回而非丢弃——这正是把主流
+  arm64 `.so` 的每条地址补上模块归属的关键；`Architecture` 枚举没有 ARM 成员，故 arm/arm64
+  仍保留基址、但不谎报架构。`enrich_r2_payload` 改调新的 `preferred_base` 分派器：按魔数先试
+  PE、再试 ELF，PE（哪怕 ImageBase 读成哨兵 0）绝不会被再当成 ELF 重读。\
+  新增十条直测：arm64 `.so` 在基址 0 补上 `{module, rva=va}` 且不打架构、x86_64 可执行按
+  `va - base` 算出 rva、32 位与大端头按各自偏移/字节序解码、多个 `PT_LOAD` 取最低者、ARM 保留
+  基址无架构、无 `PT_LOAD` 时基址 None 但架构仍在、非 ELF（含 PE）与截断头如实降级不抛，以及
+  分派器对 PE 与 ELF 分别落到正确读取器。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
