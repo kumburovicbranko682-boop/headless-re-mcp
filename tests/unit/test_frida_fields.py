@@ -395,6 +395,54 @@ def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
     assert state["detached"] is True
 
 
+def test_frida_local_read_times_out_and_detaches_the_probe() -> None:
+    """modules/exports/memory_read bounded only the attach, not the RPC.
+
+    Measured: an exports_sync.modules that never returned parked the worker
+    forever with the session still attached, because only _attach_local carried
+    a deadline while script.load() and the RPC ran unbounded on the worker
+    thread. The read probes now share the device ops' outer deadline: on a hang
+    the session is detached and the caller gets a timeout. modules stands in for
+    all three -- they route through the same _run_local_script.
+    """
+    state = {"detached": False}
+
+    class _HangExports:
+        def modules(self, limit: int) -> dict[str, Any]:
+            del limit
+            time.sleep(10)
+            return {"modules": [], "total": 0}
+
+    class _HangScript:
+        exports_sync = _HangExports()
+
+        def load(self) -> None:
+            return None
+
+    class _HangSession:
+        def create_script(self, source: str) -> _HangScript:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            state["detached"] = True
+
+    class _HangFrida:
+        def attach(self, pid: int) -> _HangSession:
+            del pid
+            return _HangSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _HangFrida()
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, limit=10, timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert state["detached"] is True
+
+
 def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:
     """The catalog said bind a device and never named the payload.
 

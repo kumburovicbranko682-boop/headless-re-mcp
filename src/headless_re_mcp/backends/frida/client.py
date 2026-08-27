@@ -315,13 +315,13 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+    def modules(
+        self, pid: int, *, allowed_pid: int, limit: int = 64, timeout: float = _PROBE_TIMEOUT_S
+    ) -> JsonObject:
         self._require(pid, allowed_pid)
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            capped = max(1, min(int(limit), 256))
+        capped = max(1, min(int(limit), 256))
+
+        def use(script: Any) -> JsonObject:
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
@@ -345,9 +345,8 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._run_local_script(pid, _ENUM_SCRIPT, use, timeout=timeout)
 
     def exports(
         self,
@@ -356,16 +355,16 @@ class FridaClient:
         *,
         allowed_pid: int,
         limit: int = 64,
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+        name = module_name.strip()
+
+        def use(script: Any) -> JsonObject:
+            raw = script.exports_sync.exports(name, capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)
@@ -382,26 +381,29 @@ class FridaClient:
                 )
             return {
                 "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
+                "module": str(raw.get("module") or name),
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._run_local_script(pid, _ENUM_SCRIPT, use, timeout=timeout)
 
     def memory_read(
-        self, pid: int, address: int, size: int, *, allowed_pid: int
+        self,
+        pid: int,
+        address: int,
+        size: int,
+        *,
+        allowed_pid: int,
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+
+        def use(script: Any) -> JsonObject:
             data = bytes(script.exports_sync.read(int(address), int(size)))
             return {
                 "address": address,
@@ -409,9 +411,8 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._run_local_script(pid, _ENUM_SCRIPT, use, timeout=timeout)
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
@@ -474,6 +475,55 @@ class FridaClient:
                 _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+
+    def _run_local_script(
+        self,
+        pid: int,
+        source: str,
+        use: Callable[[Any], T],
+        *,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> T:
+        """Attach, load ``source``, hand the script to ``use``, detach -- all
+        under one outer deadline.
+
+        The read probes used to bound only the attach (via ``_attach_local``)
+        and then ran ``script.load()`` and the synchronous ``exports_sync.*``
+        RPC on the worker thread with no ceiling. A target that wedged while
+        loading the script or enumerating (a huge module table, a faulting
+        ``Memory.readByteArray``) parked that worker for good -- exactly the
+        hang the device-side ops already fence off with ``_run_deadline``.
+        Doing attach, load and RPC in one ``work()`` keeps them on a single
+        daemon thread the caller can abandon on timeout.
+        """
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> T:
+            try:
+                session = _invoke(self._frida.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                script = session.create_script(source)
+                script.load()
+                return use(script)
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
+        try:
+            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"frida script failed: {exc}", pid=pid) from exc
 
     def _require(self, pid: int, allowed_pid: int) -> None:
         if pid != allowed_pid:
