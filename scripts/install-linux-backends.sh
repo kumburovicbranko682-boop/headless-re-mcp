@@ -6,6 +6,7 @@
 #   apktool   APK decode/rebuild           (Android repackaging track)
 #   apksigner APK signing                  (Android repackaging track)
 #   jadx      DEX -> Java decompiler        (Android decompilation track)
+#   chromium  Playwright browser           (Web dynamic / CDP track)
 # These are the non-PE backends the Web, radare2 and Android tracks depend on;
 # without them the matching integration gates skip, and skip != pass. Each tool
 # is discovered on PATH by the backend, so this only needs to put them there.
@@ -178,6 +179,29 @@ install_jadx() {
   echo "jadx: $(jadx --version 2>/dev/null | head -1 || echo "installed to ${dest}")"
 }
 
+install_chromium() {
+  # The Web dynamic gate drives Chromium over CDP through Playwright. Playwright
+  # is the Python 'browser' extra, so this only runs when that package is
+  # importable; otherwise it points the caller at the extra rather than failing.
+  local py="${PYTHON:-python3}"
+  if ! "${py}" -c 'import playwright' >/dev/null 2>&1; then
+    echo "chromium: skipped (Playwright not importable via ${py}; install the browser extra: pip install '.[browser]')"
+    return 0
+  fi
+  # install-deps apt-installs Chromium's shared libraries and needs root; the
+  # browser download itself must run as the invoking user so the cache lands in
+  # their home, not root's. 'playwright install' is idempotent.
+  echo "chromium: installing OS deps + browser via Playwright…"
+  as_root env "PATH=${PATH}" "${py}" -m playwright install-deps chromium \
+    || echo "  ! playwright install-deps failed (needs root/apt); browser may still launch" >&2
+  if "${py}" -m playwright install chromium >/dev/null 2>&1; then
+    echo "chromium: installed (Playwright)"
+  else
+    echo "  ! playwright chromium download failed; see https://playwright.dev/python" >&2
+    return 1
+  fi
+}
+
 install_ghidra() {
   if [[ -n "${HEADLESS_RE_GHIDRA_HOME:-}" && -x "${HEADLESS_RE_GHIDRA_HOME}/support/analyzeHeadless" ]]; then
     echo "ghidra: already present (${HEADLESS_RE_GHIDRA_HOME})"
@@ -230,6 +254,7 @@ install_wabt || failures=$((failures + 1))
 install_webcrack || failures=$((failures + 1))
 install_apktool || failures=$((failures + 1))
 install_jadx || failures=$((failures + 1))
+install_chromium || failures=$((failures + 1))
 install_ghidra || failures=$((failures + 1))
 
 if [[ "${failures}" -gt 0 ]]; then
