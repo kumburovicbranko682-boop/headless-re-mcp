@@ -74,6 +74,47 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.search")
+    def proxy_search(
+        session_id: str,
+        host: str = "",
+        method: str = "",
+        url: str = "",
+        content_type: str = "",
+        status_class: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Return only the captured flows matching the given predicates.
+
+        The targeted counterpart to proxy.flows (which pages the whole capture)
+        and proxy.summary (which only tallies): once summary shows a class is
+        present, this pulls the rows in it. host, url and content_type are
+        case-insensitive substring matches (content_type against the raw header,
+        so "json" matches "application/json"); method is exact
+        (case-insensitive); status_class is one of 1xx, 2xx, 3xx, 4xx, 5xx, or
+        error (the pseudo-class for a flow mitmproxy could not complete, which
+        carries a null status). An empty predicate does not constrain, so no
+        filters behaves like proxy.flows. Answers with flows (the same row shape
+        as proxy.flows), count (this page), total (all matches), offset,
+        has_more, scanned (retained flows examined), dropped (already evicted
+        from the ring, so a match set is not read as the whole session), and
+        filters (the normalised predicates applied). Searches only what the ring
+        still holds (capped at 2000). There is no items or results field.
+        """
+        return _dump(
+            analysis.proxy_search(
+                session_id,
+                host=host,
+                method=method,
+                url=url,
+                content_type=content_type,
+                status_class=status_class,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).

@@ -35,6 +35,10 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# The status buckets proxy.search accepts; "error" is the extra pseudo-class
+# for flows mitmproxy could not complete (a null status), which no numeric
+# class would match.
+_STATUS_CLASSES = frozenset({"1xx", "2xx", "3xx", "4xx", "5xx"})
 # A body at or under this stays inline as text; anything larger, or anything
 # that is not valid UTF-8, spills to a file so the caller never receives a
 # lossy decode masquerading as the real bytes.
@@ -642,6 +646,82 @@ class ProxyBackend:
             "offset": start,
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
+        }
+
+    def search(
+        self,
+        session_id: str,
+        *,
+        host: str = "",
+        method: str = "",
+        url: str = "",
+        content_type: str = "",
+        status_class: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Return only the retained flows matching every supplied predicate.
+
+        The targeted counterpart to flows (which pages the whole ring) and to
+        summary (which only tallies): summary says a class is present, this
+        pulls the rows in it. Empty predicates do not constrain, so no filter
+        behaves like flows. Reads the same snapshot ring, so it searches what is
+        still retained (capped at _MAX_FLOWS); dropped says how many the ring
+        already evicted, so a match set is not misread as the session's whole
+        history.
+        """
+        inst = self._get(session_id)
+        host_q = host.strip().lower()
+        method_q = method.strip().upper()
+        url_q = url.strip().lower()
+        type_q = content_type.strip().lower()
+        status_q = status_class.strip().lower()
+        if status_q and status_q not in _STATUS_CLASSES and status_q != "error":
+            raise ProxyError(
+                "invalid_params",
+                "status_class must be one of 1xx, 2xx, 3xx, 4xx, 5xx, error",
+                status_class=status_class,
+            )
+        items = inst.recorder.snapshot()
+        matches: list[JsonObject] = []
+        for entry in items:
+            if host_q and host_q not in str(entry.get("host") or "").lower():
+                continue
+            if method_q and method_q != str(entry.get("method") or "").upper():
+                continue
+            if url_q and url_q not in str(entry.get("url") or "").lower():
+                continue
+            if type_q and type_q not in str(entry.get("content_type") or "").lower():
+                continue
+            if status_q:
+                status = entry.get("status")
+                if status_q == "error":
+                    if not entry.get("error"):
+                        continue
+                elif not (isinstance(status, int) and f"{status // 100}xx" == status_q):
+                    continue
+            matches.append(entry)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = matches[start : start + cap]
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        return {
+            "flows": window,
+            "count": len(window),
+            "total": len(matches),
+            "offset": start,
+            "has_more": start + len(window) < len(matches),
+            "scanned": len(items),
+            "dropped": dropped,
+            "filters": {
+                "host": host_q,
+                "method": method_q,
+                "url": url_q,
+                "content_type": type_q,
+                "status_class": status_q,
+            },
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
