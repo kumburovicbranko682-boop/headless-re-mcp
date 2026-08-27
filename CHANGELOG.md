@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（内置纯 Python PE 侦测引擎端到端 Gate）
+
+- 别的侦测 Gate 都依赖外部第二意见（DIE 那条驱动 `diec`、Exeinfo 那条要 Windows GUI 程序），而**恒**
+  运行的那台引擎——`detect.scan(use_die=False)` 及其上的 `packer.classify` / `unpack.recommend` /
+  `detect.explain`——此前没有端到端覆盖：UPX 启发式、段熵计算或路由推荐一旦回归，只有等真样本进来才暴露。
+  新增 `tests/integration/test_detection_builtin_gate.py`，用一对已提交夹具（UPX 打包件与其未打包原件）
+  钉住这台引擎。它刻意不依赖任何外部工具，故在任何机器上都真跑、绝不跳过（skip 不等于 pass，这里也无可跳）：
+  打包件被判为 UPX（`builtin:packer:upx-sections`，证据含 `UPX0`/`UPX1` 段名）、UPX1 段高熵证据 7.5（>7.0）、
+  UPX 加载段的 rwx 异常，`packer.classify` 结论 `candidates`、`unpack.recommend` 路由到官方
+  `unpack.upx.test`/`unpack.auto`；未打包原件仍认得是 PE 但 `none_detected`、路由 `none`，且证据数严格少于
+  打包件。`detect.explain` 取回单条 finding 与其证据、对未知 id 回 `finding_not_found`、空 id 回
+  `invalid_request`；关闭会话后 `detect.scan`/`packer.classify`/`unpack.recommend` 一律 `invalid_request`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
