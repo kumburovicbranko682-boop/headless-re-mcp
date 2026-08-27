@@ -216,6 +216,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   父目录、把目录留给 webcrack 自己创建：空的残留目录先删掉让它接管，非空目录则先报
   `invalid_params` 而不是硬跑进去、再把里面本就存在的文件当成拆包结果误报成功。服务每次用
   全新的 `unpack-<uuid>` 目录，所以连续拆包都能成。
+- **`frida.memory_read` 在 frida 17 上必败**。注入脚本用的是 `Memory.readByteArray(ptr,size)`，
+  而 frida 17 已把 `Memory.read*` 系列全部移除、读操作改挂到 `NativePointer` 上
+  （`ptr(addr).readByteArray(size)`）——于是脚本一调就抛 `TypeError: not a function`，
+  `memory_read` 在所有现代 frida 上都读不到内存，而 `modules` / `exports`（走 `Process.*`）
+  照常能用，掩盖了这条断裂。唯一的 frida 活体门要 Windows PE 夹具、在 Linux 核心上直接 skip，
+  且从不读内存，所以这个回归一路溜过。现改用 `NativePointer` 读法；新增 `test_frida_local_live_gate.py`
+  在 POSIX 核心上 attach 一个本地进程、跑通 attach/modules/exports/memory_read/hook，并断言在
+  某模块基址读回 ELF 魔数——正是能逮住这个「API 被删」缺陷的断言（缺 frida / 无目标 / ptrace
+  受限均 skip≠pass）。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
@@ -627,6 +636,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_r2_elf_live_gate` 现在除 open/functions/disasm/xrefs 外还覆盖 strings/imports/exports：
   用系统 C 编译器编一个带已知字符串的小 ELF，断言 `izj`/`iij`/`iEj` 都解析成带统一 Address 的
   条目（编进去的字符串、一个 libc 导入、我们自己的一个导出）。缺工具/编译器一律 skip（≠pass）。
+  `test_frida_local_live_gate` 是 frida 在 POSIX 核心上的首个活体门（此前只有需 Windows PE 夹具、
+  在 Linux 直接 skip 的 M11 门，且从不读内存）：attach 一个本地进程、跑 attach/modules/exports/
+  memory_read/hook，并断言 per-session pid 边界拒绝越权 pid、在模块基址读回 ELF 魔数——正是
+  `frida.memory_read` 那条 API-被删缺陷的护栏。`test_web_re_gate` 再加一条 `web.wasm.list` 活体门：
+  页面里真的编译实例化一个 WASM 模块，断言它被 CDP 报成 `wasm://`、语言 WebAssembly，且
+  `wasm_only` 过滤确实收窄了完整脚本表（页面里另有 JS 脚本）。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
