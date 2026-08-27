@@ -255,6 +255,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
   里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
 
+### 修复（r2 JSON 扫描：括号洪水二次方、深嵌套直接抛异常）
+
+- `parse_r2_json` 与 DIE 的 `_parse_json` 是同一个模式、同样的两个坑：它在每个 `[` / `{`
+  处尝试 `decoder.raw_decode(text, index)`，失败一次的代价是 O(len)（`JSONDecodeError`
+  构造行列号要从缓冲区头数起），把每个括号都试一遍就是 **O(n²)**——而这一步在捕获**之后**
+  跑，不受子进程超时约束，r2 stdout 只有上限（兆级）不是很小，其中的括号正是样本能左右的
+  内容（opcode 的 `[rbp+0x10]`、字符串、C++ 名）。更糟的是它只捕获 `JSONDecodeError`：
+  一串不闭合的 `[`（几千个即可）会让 C 解码器递归到 `RecursionError`，直接从这个
+  best-effort 解析里**抛出去**，把后捕获的富化变成 internal_error（实测 2 万个 `[`
+  即触发）。现与 DIE 同一方案：真正的 JSON 值总在 banner 之后的头几个括号内，
+  以 `_MAX_JSON_VALUE_SCANS`（256）封顶尝试次数使洪水变线性，并把 `RecursionError`
+  （连同 `ValueError` / `TypeError`）纳入吞掉的集合。新增两条回归：2 万个 `[` 返回
+  `None` 不抛；对 5 万个 `{` 计数 `raw_decode` 调用不超过上限。两条在旧扫描下都失败。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
