@@ -218,6 +218,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **HAR 导出的 `response.redirectURL` 一直为空，重定向链丢失**。该字段按 HAR 规范就是响应 `Location` 头的跳转目标，
+  而 web 与 proxy 两侧现在都已把响应头传给 `har_entry`，于是直接在其中用 `header_value` 从 Location 头还原 redirectURL——
+  两个导出器同时受益，OAuth 跳转、追踪器、短链这类重定向链不再在查看器里显示为空白。
 - **`apk.open` 不报应用级安全标志**。首轮排查最看重的 `android:debuggable`、`allowBackup`、`usesCleartextTraffic`
   和是否自带 Network Security Config，之前一个都没有。现在新增 `security` 子对象四项一并给出：这些标志挂在唯一的
   `<application>` 标签上，按属性名读取可靠（不像按名字查组件那样会因相对名不匹配而失准），缺失属性回落到应用实际运行的

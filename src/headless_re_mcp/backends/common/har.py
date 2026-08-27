@@ -10,9 +10,10 @@ malformed -- a file that opens nowhere is not an export. These builders fill
 every required field, using the real capture timestamp when one was recorded,
 the request parameters recovered from the URL for ``queryString``, the raw
 request/response headers when the capture retained them, the request body as
-``postData`` when the capture held it, and honest "unknown" sentinels (``-1``
-sizes, empty arrays) where the capture did not retain that detail, so the
-document loads while never claiming data it does not have.
+``postData`` when the capture held it, the redirect target recovered from the
+response ``Location`` header for ``redirectURL``, and honest "unknown"
+sentinels (``-1`` sizes, empty arrays) where the capture did not retain that
+detail, so the document loads while never claiming data it does not have.
 """
 
 from __future__ import annotations
@@ -208,7 +209,11 @@ def har_entry(
             "cookies": [],
             "headers": response_headers or [],
             "content": {"size": 0, "mimeType": mime_type or ""},
-            "redirectURL": "",
+            # The HAR spec's redirectURL is the Location response header; both
+            # capture sides already hand the headers over, so recover the
+            # redirect target here rather than drop the chain (OAuth hops,
+            # trackers, URL shorteners) a viewer would otherwise show as blank.
+            "redirectURL": header_value(response_headers, "location"),
             "headersSize": -1,
             "bodySize": -1,
         },

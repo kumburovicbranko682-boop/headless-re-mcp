@@ -152,6 +152,35 @@ def test_har_headers_degrades_and_bounds() -> None:
     assert len(long[0]["value"]) == 8 * 1024
 
 
+def test_har_entry_recovers_redirect_url_from_the_location_header() -> None:
+    """A 3xx's Location header is the redirect target; the HAR must show it."""
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="GET",
+        url="https://x/login",
+        status=302,
+        mime_type="text/html",
+        response_headers=[
+            {"name": "Location", "value": "https://x/dashboard"},
+            {"name": "content-type", "value": "text/html"},
+        ],
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["response"]["redirectURL"] == "https://x/dashboard"
+
+
+def test_har_entry_redirect_url_is_empty_without_a_location_header() -> None:
+    entry = har_entry(
+        started_at=None,
+        method="GET",
+        url="https://x",
+        status=200,
+        mime_type="text/html",
+        response_headers=[{"name": "content-type", "value": "text/html"}],
+    )
+    assert entry["response"]["redirectURL"] == ""
+
+
 def test_har_entry_populates_headers_when_the_capture_kept_them() -> None:
     entry = har_entry(
         started_at=1_700_000_000.0,

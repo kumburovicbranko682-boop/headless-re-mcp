@@ -220,9 +220,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         DevTools, HAR analyzers) can open; each entry carries the required
         request/response, timings and startedDateTime members, its queryString
         recovered from the request URL, the request/response headers CDP
-        reported, and the request body (as request.postData) for a row whose
-        POST payload CDP inlined at send time, with unknown fields left as
-        empty/`-1` rather than omitted.
+        reported, the request body (as request.postData) for a row whose POST
+        payload CDP inlined at send time, and redirectURL recovered from the
+        response Location header, with unknown fields left as empty/`-1` rather
+        than omitted.
         Answers with path and entry_count, plus artifact_id when the HAR was
         registered. There is no har, entries or artifact field.
         """
