@@ -9,13 +9,27 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+# Every ghidra.* tool schema declares ``0 < timeout <= 600``. analyzeHeadless
+# runs through the shared run_bounded, which trusts its caller to bound the
+# deadline: a NaN makes ``remaining <= 0`` never fire, so the JVM import/analyze
+# never times out, and a huge value lets it hold a core for that long. The MCP
+# schema bounds this, but the agent transport invokes handlers straight from
+# model arguments with no schema check -- the same gap clamp_cli_timeout closes
+# for jadx/r2/apktool/windbg. Clamp at the public entry points so the bound
+# holds regardless of transport.
+_MAX_TIMEOUT_S = 600.0
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 # What ExportJson.py can actually turn into an address: getAddressFactory()
 # .getAddress parses hex (optionally 0x-prefixed) with an optional space/segment
@@ -74,6 +88,10 @@ class GhidraClient:
         max_heap: str = "2G",
         delete_project: bool = True,
     ) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise GhidraError("invalid_params", str(exc)) from exc
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
         if not binary.is_file():
@@ -191,6 +209,10 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
     ) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise GhidraError("invalid_params", str(exc)) from exc
         with _project_lock(project_dir):
             return self._export_unlocked(
                 binary,

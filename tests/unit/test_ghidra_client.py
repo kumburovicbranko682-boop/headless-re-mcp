@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -355,6 +356,63 @@ def test_ghidra_accepts_real_address_forms(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", address)  # type: ignore[arg-type]
     assert payload["found"] is False
+
+
+@pytest.mark.parametrize("bad", [math.nan, 0.0, -1.0, -600.0])
+def test_ghidra_rejects_a_bad_timeout_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """A NaN or non-positive timeout is invalid_params, and no JVM is launched.
+
+    analyzeHeadless goes through the shared run_bounded, whose deadline loop
+    never fires for a NaN (``remaining <= 0`` is always false), so a NaN from
+    the agent transport would let the import/analyze run unbounded; a huge
+    value would run that long. Reject/clamp up front, the way jadx/r2/windbg
+    guard their run_bounded timeout. The guard is before the capability check,
+    so even an unconfigured ghidra names the bad parameter rather than
+    capability_unavailable. inf is not here: it clamps to the ceiling, not a
+    reject (see the cap test).
+    """
+
+    def must_not_run(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("analyzeHeadless launched for an invalid timeout")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", must_not_run)
+    # Unconfigured on purpose: guard-first means invalid_params still wins.
+    client = ghidra_client.GhidraClient(home=None)
+    binary = _binary(tmp_path)
+    project = tmp_path / "project"
+    for call in (
+        lambda: client.analyze_binary(binary, project, timeout=bad),
+        lambda: client.functions(binary, project, timeout=bad),
+        lambda: client.symbols(binary, project, timeout=bad),
+        lambda: client.xrefs(binary, project, "0x401000", timeout=bad),
+        lambda: client.decompile(binary, project, "0x401000", timeout=bad),
+    ):
+        with pytest.raises(ghidra_client.GhidraError) as caught:
+            call()
+        assert caught.value.code == "invalid_params"
+
+
+def test_ghidra_caps_a_huge_or_infinite_timeout_to_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout over the ceiling (or inf) is capped to 600 before run_bounded."""
+    seen: list[float] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        seen.append(kwargs.get("timeout"))
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    binary = _binary(tmp_path)
+    client.functions(binary, tmp_path / "project", timeout=10**9)
+    client.analyze_binary(binary, tmp_path / "project2", timeout=math.inf)
+    assert seen == [ghidra_client._MAX_TIMEOUT_S, ghidra_client._MAX_TIMEOUT_S]
 
 
 def test_ghidra_refuses_an_oversized_export_json(
