@@ -83,3 +83,56 @@ def test_json_roundtrip_via_stdlib() -> None:
     frame = len(raw.encode()).to_bytes(4, "little") + raw.encode()
     parsed = parse_rpc_frame(frame)
     validate_rpc_envelope(parsed, request_id="9")
+
+
+_VALID_ENVELOPE: dict[str, object] = {
+    "protocol": "headless-re-xdbg",
+    "version": 1,
+    "id": "1",
+    "ok": True,
+}
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"protocol": "someone-elses-tool"}, "RPC protocol mismatch"),
+        ({"protocol": None}, "RPC protocol mismatch"),
+        ({"version": 2}, "RPC version mismatch"),
+        ({"version": None}, "RPC version mismatch"),
+        ({"id": "a-stale-id"}, "RPC id mismatch"),
+        ({"ok": None}, "RPC ok must be boolean"),
+        ({"ok": 1}, "RPC ok must be boolean"),
+        ({"ok": "true"}, "RPC ok must be boolean"),
+    ],
+)
+def test_validate_rpc_envelope_rejects_a_mismatched_field(
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    """Each envelope field the peer controls has its own guard.
+
+    parse_rpc_frame proves the bytes are a JSON object; this validator is the
+    next line -- it confirms the object came from our x64dbg plugin, at the
+    version we speak, answering the request we sent. A field the peer got wrong
+    (a foreign protocol tag, an unspoken version, a stale id, or an ``ok`` that
+    is not a real boolean) must raise rpc_protocol_error rather than pass as a
+    valid reply. ``ok: 1`` is rejected on purpose: bool is an int subclass, and
+    a truthy int is not the boolean the contract requires.
+    """
+    response = {**_VALID_ENVELOPE, **mutation}
+    with pytest.raises(XdbgRpcError) as caught:
+        validate_rpc_envelope(response, request_id="1")
+    assert caught.value.code == "rpc_protocol_error"
+    assert str(caught.value) == message
+
+
+def test_validate_rpc_envelope_only_checks_id_when_one_was_requested() -> None:
+    """The id guard is conditional: no request id, no id comparison.
+
+    A caller that sent no id must not have a reply rejected just because the
+    peer echoed one; the id check fires only when request_id is provided, so a
+    differing id is tolerated here while every other field still validates.
+    """
+    response = {**_VALID_ENVELOPE, "id": "a-different-id"}
+    validate_rpc_envelope(response, request_id=None)
