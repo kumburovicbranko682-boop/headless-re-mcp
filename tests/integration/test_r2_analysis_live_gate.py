@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -63,7 +64,7 @@ def _compile_elf(tmp_path: Path) -> Path | None:
     return out if result.returncode == 0 and out.is_file() else None
 
 
-def _function_offset(functions: dict, needle: str) -> int | None:
+def _function_offset(functions: dict[str, Any], needle: str) -> int | None:
     for item in functions.get("items", []):
         if needle in str(item.get("name")) and isinstance(item.get("offset"), int):
             return int(item["offset"])

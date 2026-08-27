@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+radare2 线的分析面深度首次对齐 Ghidra gate。原有 r2 live gate 只列函数，且依赖 Windows PE 夹具，
+在 Linux 上整体 skip；而 `r2.strings`/`r2.imports`/`r2.disasm`/`r2.xrefs` 这些操作者真正用的工具
+从未对真实二进制跑过，解析逻辑只见过 mock。新增
+`tests/integration/test_r2_analysis_live_gate.py`：现场编译一个含命名函数（`add_numbers`/
+`multiply`/`main`）、独特字符串（`r2_gate_marker`）和 `printf` 导入的 ELF（`-O0 -no-pie` 保证不被
+内联且地址固定），断言 r2 恢复出的是这些具体事实——函数名齐全、字符串命中标记、导入表含 printf、
+对 `add_numbers` 反汇编出含 `add` 与 `ret` 的真实指令流、xrefs 返回地址映射的结构化数据——而非
+"列表非空"。新增 `linux-r2-analysis` CI job：apt 装 radare2、跑该 gate 并解析 junitxml，r2 已装却
+skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
