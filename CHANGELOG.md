@@ -300,6 +300,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   手工编码的 `add(i32,i32)` 模块(免 wabt),轮询到 `Debugger.scriptParsed` 后断言 Chromium 把它
   报成 `language=WebAssembly` 且 URL 以 `wasm://` 开头,整条 WASM 发现路径端到端验证。仅当
   Playwright/Chromium 缺失时 skip。
+- `web.console` 的抓取此前只断言调用回 ok、从不看内容。inspect Gate 现轮询到页面 load 期
+  `console.log('gate-ready')` 被录进来才算过——`Runtime.enable` 在导航前完成故不漏,证明
+  `Runtime.consoleAPICalled`→录制器这条链真的把控制台消息收下,而非空列表也能蒙混。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`

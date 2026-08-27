@@ -137,8 +137,22 @@ def test_web_cdp_open_and_inspect() -> None:
             assert scripts.ok, scripts.error
             assert isinstance(scripts.data["scripts"], list)
 
-            console = service.web_console(session_id)
-            assert console.ok, console.error
+            # The page calls console.log('gate-ready') at load; the recorder must
+            # actually capture it, not merely return an empty list. Runtime is
+            # enabled before navigation so the message is not missed, but
+            # consoleAPICalled is async, so poll briefly.
+            captured: list[str] = []
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                console = service.web_console(session_id)
+                assert console.ok, console.error
+                captured = [str(entry.get("text")) for entry in console.data["console"]]
+                if any("gate-ready" in text for text in captured):
+                    break
+                time.sleep(0.1)
+            assert any("gate-ready" in text for text in captured), (
+                f"web.console did not capture the page's console.log: {captured}"
+            )
 
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
