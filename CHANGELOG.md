@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（supervise 真进程守护 Gate）
+
+- 新集成 Gate `tests/integration/test_supervisor_live_gate.py`（纯 Python，任何平台可跑）第一次让
+  `python -m headless_re_mcp supervise` CLI 守护**真实** serve-web 子进程——此前 Supervisor 的
+  单测全部注入假 spawn/probe/clock。观察面就是操作员读的东西：supervisor 自己的结构化 JSON
+  日志行，加上对子进程 `/healthz` 的真实 HTTP 探测。
+- 钉住无人值守部署站立其上的两条语义：**崩溃即重启且有界**（硬杀真实子进程后 supervisor 记
+  `child.restarting(reason=crashed)` 并拉起新 pid、同端口重新应答；再杀一次花光
+  `--max-restarts` 预算，supervisor 以 `restart_limit` 自行收敛退出，计数如实
+  `starts=2 / crash_restarts=2`，绝不无限重启）；**拒绝不是崩溃**（另一控制台已持有制品根时，
+  子进程按 sysexits 约定以 78 拒绝启动，supervisor 记 `supervisor.child_refused(exit_code=78)`
+  后一次都不重启、以 `child_refused_to_start` 收场——重启改变不了拒绝运行的配置）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
