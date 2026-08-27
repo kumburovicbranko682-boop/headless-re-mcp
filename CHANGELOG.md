@@ -1255,6 +1255,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
 
+### 修复（doctor idalib 探针把无界输出塞进 details）
+
+- `probe_ida` 的运行期探针用 `completed.stdout.strip()` / `completed.stderr.strip()` 把 idalib
+  探测子进程的整份 stdout/stderr 原样写进 `details`,而 `_probe_run` 只在 `run_bounded` 的 8 MiB
+  上限处截流。一个损坏或恶意的 `idapro` 包只要往输出里灌数据,就能把几 MB 塞进探针详情——继而
+  灌进 CLI、Web 安装页与 MCP 工具渲染的每一份 doctor 报告。`doctor.py` 里其余探针早已用
+  `_bounded_text`(4096 字符)封顶存量,此处改为同一约定;就绪判定仍看未截断的原始输出,截断
+  不会把 READY 结论翻掉。
+
 ### 变更（Android 后端清理）
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
