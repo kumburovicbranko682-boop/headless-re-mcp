@@ -150,6 +150,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 测试（WASM：`wasm.wat` / `wasm.info` 补一个真模块，不再只测空头）
+
+- **`wasm.wat` 此前只对空模块头（`\x00asm\x01\x00\x00\x00`）跑过，`wasm.info` 一条真机路径都没有。**
+  Web RE gate 的 WASM 用例只写了 8 字节 magic+version 再断言 `"module" in wat`——wasm2wat 的反汇编几乎
+  没被走到，而 `wasm.info`（`wasm-objdump -h -x`）完全无 live 覆盖。两者都是版本敏感的外部 CLI（wabt）：
+  某个开关或产物布局一旦漂移、或 objdump 不再吐 section 详情，基于 fake 的测试照样过，只在对真模块跑时
+  才在运行期炸。新增真模块夹具 `fixtures/web/fixture.wasm`（由 `fixtures/web/fixture.wat` 用 wabt 的
+  wat2wasm 编译：两个导出函数 `add`/`inc`、一段 memory、一个可变 global、一段数据 `wasm-fixture-marker`；
+  `.wat` 源一并入库以备重建），并加 `test_wasm_live_gate.py` 两条 gate，经 `AnalysisService` 全栈跑：
+  `wasm.wat` 钉住反汇编真解出两个 `(func`、`i32.add`、三个 `(export`（add/inc/mem）、`(memory`、`(global`
+  与数据串；`wasm.info` 钉住 `wasm-objdump` 枚举出 Type/Function/Memory/Global/Export/Code/Data 各 section
+  且 Section Details 点到真函数名 `<add>`/`<inc>` 与导出名。wabt 1.0.34 实测通过；缺 wabt 时明确 skip
+  （skip≠pass）。原空模块冒烟用例保留。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
