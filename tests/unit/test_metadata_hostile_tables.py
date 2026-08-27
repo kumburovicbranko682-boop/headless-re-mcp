@@ -18,10 +18,19 @@ import pytest
 
 from headless_re_mcp.dotnet.metadata_enum import enumerate_metadata
 
-MANAGED = (
+_DE4DOT = (
     Path(__file__).resolve().parents[2]
     / "artifacts" / "tools" / "de4dotEx-3.2.4-net48" / "AssemblyData.dll"
 )
+_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+)
+# The row-count bound is size-independent: a table cannot declare more rows than
+# its #~ stream holds, whether the file is a 60 KB de4dot build or the 1 KB
+# committed fixture. Prefer the richer real assembly when a dev has one, but
+# fall back to the fixture so this DoS guard actually runs in CI instead of
+# skipping -- skip is not a pass on the path that once took 1.2 GB of heap.
+MANAGED = _DE4DOT if _DE4DOT.is_file() else _FIXTURE
 
 pytestmark = pytest.mark.skipif(
     not MANAGED.is_file(), reason="no managed assembly available to mutate"
@@ -64,11 +73,31 @@ def _tilde_stream(raw: bytes) -> int:
     raise AssertionError("no #~ stream in the fixture")
 
 
+_TYPEDEF_TABLE = 0x02
+
+
+def _typedef_rowcount_offset(raw: bytes) -> int:
+    """File offset of the TypeDef row count inside the #~ header.
+
+    rows[] is packed in ascending table order for the bits set in ``valid``, so
+    TypeDef's slot is at ordinal = (number of set bits below 0x02). Computing it
+    from ``valid`` rather than hardcoding a position lets this run against any
+    assembly -- the de4dot build has TypeRef before TypeDef, the minimal fixture
+    does not.
+    """
+    tilde = _tilde_stream(raw)
+    valid = struct.unpack_from("<Q", raw, tilde + 8)[0]
+    ordinal = bin(valid & ((1 << _TYPEDEF_TABLE) - 1)).count("1")
+    return tilde + 24 + ordinal * 4
+
+
+def _declared_typedef_rows(raw: bytes) -> int:
+    return struct.unpack_from("<I", raw, _typedef_rowcount_offset(raw))[0]
+
+
 def _with_typedef_rows(value: int) -> bytes:
     raw = bytearray(MANAGED.read_bytes())
-    # rows[] is packed in ascending table order for the bits set in `valid`;
-    # this fixture has Module, TypeRef, TypeDef, so TypeDef is the third.
-    offset = _tilde_stream(bytes(raw)) + 24 + 2 * 4
+    offset = _typedef_rowcount_offset(bytes(raw))
     raw[offset : offset + 4] = struct.pack("<I", value)
     return bytes(raw)
 
@@ -96,9 +125,15 @@ def test_a_table_cannot_declare_more_rows_than_its_stream_holds(
 
 
 def test_an_honest_assembly_enumerates_exactly_as_before() -> None:
-    """The bound must not touch a file that was telling the truth."""
+    """The bound must not touch a file that was telling the truth.
+
+    The expected count is read straight from the file's own TypeDef row count so
+    the assertion holds for whichever assembly backs the test -- the de4dot build
+    reports 77 types, the committed fixture reports 2.
+    """
+    declared = _declared_typedef_rows(MANAGED.read_bytes())
     page = enumerate_metadata(MANAGED, kind="types", offset=0, limit=20)
 
-    assert page.total == 77
-    assert len(page.items) == 20
-    assert page.truncated is True
+    assert page.total == declared
+    assert len(page.items) == min(declared, 20)
+    assert page.truncated is (declared > 20)

@@ -16,10 +16,20 @@ import pytest
 
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
 
-MANAGED = (
+# A real de4dot build is the richest thing to mutate when a dev has one, but it
+# is never in CI, so this hardening used to skip there entirely -- "skip != pass"
+# on the exact fail-closed paths that matter most. The committed minimal
+# assembly is a genuine managed image too, so fall back to it: the mutations
+# below are structural (break the metadata pointer, expect an unverified
+# downgrade) and hold for any valid CLR image regardless of size.
+_DE4DOT = (
     Path(__file__).resolve().parents[2]
     / "artifacts" / "tools" / "de4dotEx-3.2.4-net48" / "AssemblyData.dll"
 )
+_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+)
+MANAGED = _DE4DOT if _DE4DOT.is_file() else _FIXTURE
 
 pytestmark = pytest.mark.skipif(
     not MANAGED.is_file(), reason="no managed assembly available to mutate"
