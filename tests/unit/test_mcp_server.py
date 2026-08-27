@@ -319,6 +319,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "proxy.status",
         "proxy.flows",
         "proxy.flow.get",
+        "proxy.ws.frames",
         "proxy.replay",
         "proxy.export_har",
         "proxy.ca.install_android",

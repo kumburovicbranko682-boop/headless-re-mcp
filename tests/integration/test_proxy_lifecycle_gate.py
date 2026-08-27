@@ -676,8 +676,8 @@ def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
     the running proxy: the client sends one text frame and the origin pushes back
     a text and a binary frame; proxy.flows must then flag the flow as a WebSocket
     with a message count, and proxy.flow.get must return the frames with their
-    direction, type and payloads (binary as base64). skip != pass without
-    mitmproxy.
+    direction, type and payloads (binary as base64). proxy.ws.frames must then
+    page the same conversation via offset/limit. skip != pass without mitmproxy.
     """
     if not _mitmproxy_available():
         pytest.skip("mitmproxy not installed — proxy WebSocket Gate not run (skip != pass)")
@@ -723,6 +723,23 @@ def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
             assert any(
                 base64.b64decode(f["payload"]) == _WS_BINARY_REPLY for f in recv_binary
             ), recv_binary
+
+            # proxy.ws.frames walks the same conversation via offset/limit, so a
+            # busy socket whose frames spill past flow.get's inline cap stays
+            # fully reachable. Page it one frame at a time and confirm the walk
+            # reproduces flow.get's inline frames in order.
+            head = backend.ws_frames("ws", str(flow["id"]), offset=0, limit=1)
+            assert head["url"].endswith(_WS_PATH)
+            assert head["total"] == len(frames)
+            assert head["offset"] == 0
+            assert head["count"] == 1
+            assert head["has_more"] is True
+            tail = backend.ws_frames("ws", str(flow["id"]), offset=1, limit=100)
+            assert tail["offset"] == 1
+            assert tail["count"] == len(frames) - 1
+            assert tail["has_more"] is False
+            walked = head["frames"] + tail["frames"]
+            assert [f["payload"] for f in walked] == [f["payload"] for f in frames]
 
             # The HAR export carries the socket as DevTools _webSocketMessages,
             # so the captured frames re-import into DevTools.
