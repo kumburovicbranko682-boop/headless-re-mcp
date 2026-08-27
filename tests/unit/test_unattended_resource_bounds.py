@@ -3838,6 +3838,89 @@ class TestDeviceForceStopIsHonest:
         assert result["stopped"] is True
         assert result["remaining_pids"] == []
 
+    def test_ps_fallback_ignores_a_prefix_sharing_neighbour(self) -> None:
+        """A running app whose name merely shares a prefix is not the target.
+
+        The old ``ps`` fallback matched ``package in line`` as a substring, so
+        ``com.example.app`` matched ``com.example.appstore`` and force_stop
+        read its own success as a failure. Only the target package (and its
+        ``:sub`` processes) count.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        ps_output = (
+            "USER    PID  PPID    VSZ   RSS WCHAN ADDR S NAME\n"
+            "u0_a99 5555  1234 100000 50000 0       0 S com.example.appstore\n"
+            "u0_a88 6666  1234 100000 50000 0       0 S com.example.app.helper\n"
+        )
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return "/system/bin/sh: pidof: not found"
+                if args == "ps -A":
+                    return ps_output
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is True
+        assert result["remaining_pids"] == []
+
+    def test_ps_fallback_matches_the_target_and_its_subprocess(self) -> None:
+        """The exact package and its ``package:sub`` rows are real remainders.
+
+        The PID comes from the leading numeric column, not the numeric USER a
+        substring scan could otherwise pick up.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        ps_output = (
+            "USER    PID  PPID    VSZ   RSS WCHAN ADDR S NAME\n"
+            "u0_a10 4242  1234 100000 50000 0       0 S com.example.app\n"
+            "u0_a10 4300  1234 100000 50000 0       0 S com.example.app:remote\n"
+            "u0_a99 5555  1234 100000 50000 0       0 S com.example.appstore\n"
+        )
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return "pidof: not found"
+                if args == "ps -A":
+                    return ps_output
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is False
+        assert result["remaining_pids"] == [4242, 4300]
+
+    def test_pids_from_ps_matches_names_exactly_and_caps_the_count(self) -> None:
+        from headless_re_mcp.backends.adb.client import _pids_from_ps
+
+        # Exact name and colon-subprocess match; a shared prefix without the
+        # colon boundary (com.example.app2, com.example.appstore) does not.
+        rows = (
+            "u0_a1  1  0 . . . . S com.example.app\n"
+            "u0_a1  2  0 . . . . S com.example.app:svc\n"
+            "u0_a1  3  0 . . . . S com.example.app2\n"
+            "u0_a1  4  0 . . . . S com.example.appstore\n"
+        )
+        assert _pids_from_ps(rows, "com.example.app") == [1, 2]
+
+        # A blank line and a header do not crash or match.
+        assert _pids_from_ps("\nUSER PID PPID NAME\n", "com.example.app") == []
+
+        # Runaway process lists are capped at 16 remainders.
+        many = "".join(
+            f"u0_a1  {i}  0 . . . . S com.example.app\n" for i in range(1, 40)
+        )
+        assert _pids_from_ps(many, "com.example.app") == list(range(1, 17))
+
 
 class TestDevicePullRefusesTreesAndHugeFiles:
     def test_a_directory_is_refused_before_copy(self, tmp_path: Any) -> None:
