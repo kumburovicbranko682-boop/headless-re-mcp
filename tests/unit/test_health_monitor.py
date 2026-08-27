@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import threading
 import time
 
 from headless_re_mcp.core.health import BackendHealthMonitor
@@ -259,3 +261,59 @@ def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:
         "a fresh drop must be retried at once, not held back by the previous failure"
     )
     assert while_failing < 15
+
+
+def test_the_backoff_map_survives_forget_racing_the_sweep() -> None:
+    """forget() and the sweep both mutate the reconnect-backoff map concurrently.
+
+    forget() runs on the closing caller's thread and iterates the map under the
+    lock; the sweep adds an entry the moment forget() drops one. The backoff map
+    used to be touched without the lock that already guarded ``_entries``, so a
+    session close racing a sweep could raise "dictionary changed size during
+    iteration" (or delete a key a pop had just removed). Every reconnect fails so
+    the map churns on each check, and the GIL switch interval is pinned tiny so
+    forget()'s comprehension is preempted mid-iteration rather than finishing
+    inside one time slice -- the buggy version fails almost immediately, the
+    locked version cannot interleave at all.
+    """
+    sessions = [f"s{i}" for i in range(200)]
+    entries: list[tuple[str, BackendKind, object]] = []
+    for sid in sessions:
+        worker = FakeWorker(connected=False)
+        worker.reconnect_error = ConnectionError("gone")
+        entries.append((sid, BackendKind.X64DBG, worker))
+    monitor = BackendHealthMonitor(FakeRuntimes(entries), interval_s=0.0)
+
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def sweep() -> None:
+        try:
+            while not stop.is_set():
+                monitor.check_once()
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion
+            errors.append(exc)
+
+    def forgetter() -> None:
+        try:
+            while not stop.is_set():
+                for sid in sessions:
+                    monitor.forget(sid)
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion
+            errors.append(exc)
+
+    previous_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    threads = [threading.Thread(target=sweep) for _ in range(2)]
+    threads += [threading.Thread(target=forgetter) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        time.sleep(1.5)
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=2.0)
+        sys.setswitchinterval(previous_interval)
+
+    assert not errors, f"concurrent forget/sweep raced on the backoff map: {errors[:3]!r}"

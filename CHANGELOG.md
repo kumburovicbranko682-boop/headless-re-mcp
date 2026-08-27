@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（后端健康监控的 reconnect 退避表在会话关闭并发扫描时会崩）
+
+- `BackendHealthMonitor` 用 `_lock` 保护它发布的两张表。`_entries`（健康行）处处在锁内读写，
+  但后加的 `_reconnect_backoff`（连续 reconnect 失败计数与本次要跳过的 check 数）只有
+  `forget()` 那一处在锁内迭代删除，扫描线程一侧全在锁外改它：`_check_backend` 里两处
+  `self._reconnect_backoff.pop(key, None)`（含每个已连通后端每轮都会走的 `elif connected`
+  分支）、`_reconnect_is_due` 与 `_note_reconnect_failed` 的读改写都没拿锁。`forget()` 由
+  关闭会话的调用者线程执行（`service.py` 的 close/recover 三处），与每 5 秒一轮的健康扫描线程
+  真并发：扫描线程在锁外增删键时，`forget()` 锁内的推导式
+  `[item for item in self._reconnect_backoff if item[0] == session_id]` 会抛
+  `RuntimeError: dictionary changed size during iteration`，或紧随的 `del` 撞上扫描线程刚
+  `pop` 掉的键抛 `KeyError`。扫描线程里的异常被 `_run` 兜住只记一条
+  `health_sweep_failed`（该轮修复丢失），但 `forget()` 无此保护，异常会沿会话关闭路径上抛。
+  现让 `_reconnect_is_due`、`_note_reconnect_failed` 与 `_check_backend` 的两处 `pop` 一律在
+  `self._lock` 内访问 `_reconnect_backoff`，与 `_entries` 同锁；由于 `_check_backend` 调用它们时
+  并不持锁、`_lock` 是非重入的普通锁、且都不跨越可长达 30 秒的 `reconnect()` 调用，不会自死锁也
+  不会拖慢串行扫描。新增回归 `test_the_backoff_map_survives_forget_racing_the_sweep`：把 GIL
+  切换间隔临时压到 1e-6 后，用 2 个扫描线程与 2 个 `forget` 线程并发搅动 200 个持续
+  reconnect 失败的后端，断言两侧都不抛；去掉锁后该回归几乎立刻以
+  `dictionary changed size during iteration` 失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
