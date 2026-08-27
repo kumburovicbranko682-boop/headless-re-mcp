@@ -23,7 +23,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import parse_qsl, urlsplit
@@ -884,7 +884,7 @@ class WebBackend:
         # feeds (DevTools Import HAR, HAR Analyzer, har-validator) reject it.
         # Emit conformant entries and populate the request/response headers now
         # that they are captured, so the export is actually loadable.
-        started = datetime.now(timezone.utc).isoformat()
+        started = datetime.now(UTC).isoformat()
         with handle.lock:
             entries = [
                 {
