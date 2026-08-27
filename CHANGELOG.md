@@ -1118,6 +1118,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   类名 caller 且**未触行数上限**故 `has_more` 只能来自字节裁剪的 `xrefs`、300 行长 url 的 `flows`——各断言 `0<count<limit`、`has_more` 为真、
   且整条 JSON 编码体不超 `RESULT_BUDGET_BYTES`;另有一条小页面用例断言合身时不裁、`has_more` 不误报。
 
+- **`web.network.list`/`web.console`/`web.scripts` 的分页结果同样会被传输层整条丢弃——只按行数封顶,没按编码字节裁。**
+  Web 动态侧和 apk/proxy 是同一类:每行的**逐字段**元数据早已按上限兜住(`url` 封 `_MAX_URL_BYTES`=16KiB、console 每条文本封
+  `_MAX_CONSOLE_TEXT`=8KiB),但**整页列表**从未按编码体积裁——1000 行 network、2000 行 console、2000 条 scripts 各自能到几 MB。
+  `web.scripts` 的 catalog 描述自己就记着「整份列表 441 KiB」,早已越过 262144 传输预算:一旦编码体超预算,`bounded_tool_result` 照旧把
+  **整条**回复(行、`count`/`total`/`offset`、`has_more`、`dropped`)换成约 16KiB 摘要,行数上限拦不住,溢出来自长度。现在每条在算
+  `has_more` **之前**用 `fit_json_list` 把窗口按编码体积裁进「预算−16KiB 余量」。`network.list` 与 `scripts` 是 offset/limit 向前翻页,保留
+  前缀即可;`console` 是「最近 N 条」视图、没有 offset,故**反向**裁剪(`fit_json_list` 取前导段→喂进倒序页→再倒回)以留住最新、丢掉最旧,
+  并把裁剪并入 `has_more`,免得半页被读成整个近期缓冲。三条工具描述同步更新:读 `count`、别读 `limit`,凭 `has_more` 翻页;console 注明留新弃旧。
+  单测(`test_web_list_budget.py`)用真实超量捕获跑真实预算:300 行 ~16KiB url 的 network、300 条 ~16KiB url 的 scripts——各断言 `0<count<limit`、
+  `has_more` 为真、编码体不超预算;`console` 用 200 条 ~8KiB 文本且 `limit`=2000(**不触行数上限**故 `has_more` 只能来自字节裁剪)、并断言留下的
+  末行是最新的一条(#199)、首行不是最旧(#0);另有一条小页面用例断言合身时不裁、`has_more` 不误报。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
