@@ -62,6 +62,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（APK 包名探测不再被 zip 炸弹撑爆内存）
+
+- `device.connect` 用来把拉取的 APK 匹配到已安装包名的廉价探测 `_apk_package_name`，此前用
+  `ZipFile.read("AndroidManifest.xml")[:65536]`——`read` 会**先**把整个成员解压进内存再切片，于是
+  一个高压缩比的 AndroidManifest.xml（zip 炸弹，样本可控）在切片前就能吃满内存，是无人值守下的
+  一次 OOM。改为 `archive.open(...)` 流式读取并只取 `_MAX_MANIFEST_BYTES`（64 KiB）解压字节，
+  包名仍落在这段前缀内。回归用 `tracemalloc` 钉住：一个解压后 64 MiB 的清单在有界读取下峰值
+  <8 MiB（旧实现约 148 MiB），并单测确认只消费前缀。
+
 ### 修复（UI 截图/OCR 的会话 id 校验顺序）
 
 - `ui.screenshot` / `ui.ocr` 现在**先**校验会话 id 再判平台。此前平台门在前，Linux 上一个带

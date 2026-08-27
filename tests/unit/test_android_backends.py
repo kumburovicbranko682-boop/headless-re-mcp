@@ -12,7 +12,14 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    _MAX_MANIFEST_BYTES,
+    AdbBackend,
+    AdbError,
+    _apk_package_name,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -325,6 +332,55 @@ class TestApkClassification:
             archive.writestr("readme.txt", "hello")
         with pytest.raises(ValueError):
             describe_apk(plain)
+
+
+class TestApkPackageNameIsBounded:
+    """The cheap package-id probe must not decompress a whole manifest.
+
+    ``_apk_package_name`` runs on device.connect to match a pulled APK to its
+    installed package, on an operator-supplied file. Reading the member with
+    ``ZipFile.read`` would inflate the entire (attacker-controlled) manifest
+    into memory before slicing, so a zip-bombed AndroidManifest.xml was an
+    unattended OOM. The read is now streamed and capped.
+    """
+
+    def test_a_zip_bombed_manifest_is_not_fully_decompressed(self, tmp_path: Path) -> None:
+        import tracemalloc
+
+        bomb = tmp_path / "bomb.apk"
+        # ~64 MiB of a single byte compresses to a handful of KiB on disk but
+        # would balloon back to 64 MiB if read whole. The package id sits in the
+        # first bytes, within the cap, so a bounded read still finds it.
+        manifest = b'<manifest package="com.example.bomb">\n' + b"A" * (64 * 1024 * 1024)
+        with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", manifest)
+            archive.writestr("classes.dex", b"dex\n035\x00")
+
+        tracemalloc.start()
+        try:
+            result = _apk_package_name(bomb)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert result == "com.example.bomb"
+        # A bounded read holds ~64 KiB; decompressing the whole member would
+        # peak orders of magnitude above this ceiling.
+        assert peak < 8 * 1024 * 1024, (
+            f"peak {peak} bytes suggests the whole manifest member was decompressed"
+        )
+
+    def test_only_the_capped_prefix_of_the_manifest_is_consulted(
+        self, tmp_path: Path
+    ) -> None:
+        past_cap = tmp_path / "late.apk"
+        # Push the only package marker past the read cap; a bounded read must not
+        # see it, so the probe reports "unknown" rather than scanning the rest.
+        filler = b"A" * (_MAX_MANIFEST_BYTES + 4096)
+        manifest = filler + b'<manifest package="com.example.late">'
+        with zipfile.ZipFile(past_cap, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", manifest)
+        assert _apk_package_name(past_cap) is None
 
 
 class TestApktoolBoundaries:

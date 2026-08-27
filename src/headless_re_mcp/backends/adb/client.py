@@ -29,6 +29,10 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
+# The package id lives in the first few hundred bytes of AndroidManifest.xml.
+# Read at most this much of the *decompressed* member so a zip-bombed manifest
+# cannot balloon into memory before we slice it.
+_MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
@@ -184,8 +188,11 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with zipfile.ZipFile(path) as archive, archive.open("AndroidManifest.xml") as member:
+            # Stream the member and stop at the cap: ``archive.read(name)`` would
+            # decompress the whole entry first, so a highly compressed manifest
+            # (a zip bomb) would exhaust memory before the ``[:65536]`` slice.
+            data = member.read(_MAX_MANIFEST_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:
