@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`report.generate` 的“最近动作”段被截断却谎报为完整审计）
+
+- 报告渲染器给“发现”和“制品”两段都加了 `_note_if_partial`:一旦 `report.generate` 把某段截到
+  上限,就注明“Showing N of M”。可“最近动作”(审计)段漏掉了这一步。`report.generate` 以
+  `audit_limit`(1..200)取审计、`list_audit` 又硬性封顶 256 行,于是动作数超过上限的会话渲染出的
+  审计表看着像完整历史——而报告里没列出的动作,和从未发生过的动作无从区分,正是该 helper
+  文档里点名要避免的“截断却读作完整”。现按与另两段一致的方式,在“最近动作”标题后调用
+  `_note_if_partial`(名词用 actions);`list_audit` 本就回传 `total`,故 `total>已显示` 时如实注明
+  “Showing N of M actions”,不截断时不加任何免责声明。新增回归:审计超限时报告注明、恰好列全时
+  不加声明。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

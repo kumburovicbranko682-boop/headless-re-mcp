@@ -200,6 +200,44 @@ def test_a_capped_report_says_it_is_capped() -> None:
     assert "Showing 100 of 247 artifacts" in partial
 
 
+def test_a_capped_audit_section_says_it_is_capped() -> None:
+    """report.generate caps the audit trail too (audit_limit 1..200, store 256).
+
+    The other two capped sections disclose it; the ``Recent actions`` table did
+    not, so a session with more actions than the cap rendered an audit log that
+    read as the whole history -- an action the report never lists reads exactly
+    like one that never happened.
+    """
+    audit = {
+        "entries": [
+            {"at": f"2026-08-11T00:00:{i:02d}+00:00", "action": "static.open", "ok": True}
+            for i in range(50)
+        ],
+        "count": 50,
+        "total": 4096,
+    }
+
+    markdown = render_markdown_report(session=_SESSION, audit=audit, generated_at="t")
+
+    assert "## Recent actions" in markdown
+    assert "Showing 50 of 4096 actions" in markdown
+
+
+def test_a_complete_audit_section_needs_no_disclaimer() -> None:
+    audit = {
+        "entries": [
+            {"at": "2026-08-11T00:00:00+00:00", "action": "static.open", "ok": True},
+        ],
+        "count": 1,
+        "total": 1,
+    }
+
+    markdown = render_markdown_report(session=_SESSION, audit=audit, generated_at="t")
+
+    assert "## Recent actions" in markdown
+    assert "Showing" not in markdown
+
+
 def test_report_reads_the_list_artifacts_key() -> None:
     """Production list_artifacts returns artifacts, not entries."""
     markdown = render_markdown_report(
