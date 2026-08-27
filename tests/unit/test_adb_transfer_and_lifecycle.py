@@ -252,6 +252,97 @@ def test_pull_returns_the_size_on_success(tmp_path: Path) -> None:
     assert local.read_bytes() == b"data"
 
 
+class _PullSync:
+    """A sync whose stat probe 404s and whose pull is scripted by ``writer``.
+
+    The pre-stat in ``pull`` is best-effort -- older adbutils has no ``sync.stat``
+    or it raises for a path that is not there -- so this fake raises from stat to
+    drive that fallthrough, then hands ``writer`` the local path to decide what
+    the transfer left behind: nothing, a directory, or an oversized file. That is
+    what makes the post-pull guards (which only run when the pre-stat could not)
+    the sole line of defence being exercised here.
+    """
+
+    def __init__(self, writer: Any) -> None:
+        self._writer = writer
+        self.pulled = False
+
+    def stat(self, remote: str, timeout: float | None = None) -> Any:
+        del remote, timeout
+        raise RuntimeError("stat: no such remote path")
+
+    def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+        del remote, timeout
+        self.pulled = True
+        self._writer(Path(local))
+
+
+def test_pull_reports_not_found_when_the_transfer_wrote_nothing(tmp_path: Path) -> None:
+    """A remote path that does not exist must not read as a 0-byte success.
+
+    adb sync can report a clean pull yet move no bytes when the remote path is
+    absent -- older adbutils does not raise, and the pre-stat probe is
+    best-effort. ``capped_file_size`` returns 0 for a missing file, so without
+    the explicit check the reply would be a size-0 success a caller opens as a
+    real empty file. The transfer is attempted (proving this is the post-pull
+    guard, not a pre-stat refusal), then the absent local file becomes not_found
+    with the remote path in the details.
+    """
+    sync = _PullSync(lambda _path: None)
+    dev = _FakeDev(sync=sync)
+    local = tmp_path / "sub" / "missing.bin"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/does-not-exist", local)
+    assert excinfo.value.code == "not_found"
+    assert excinfo.value.details.get("remote") == "/sdcard/does-not-exist"
+    assert sync.pulled is True
+    assert not local.exists()
+
+
+def test_pull_refuses_and_cleans_up_a_directory_the_transfer_created(tmp_path: Path) -> None:
+    """A pull that materialises a directory locally is refused, not kept.
+
+    The pre-stat directory check cannot fire when stat is unavailable, so if the
+    transfer itself lands a directory at the local path -- adb pulling a remote
+    dir despite the best-effort probe -- it must be removed and reported as
+    invalid_params rather than left on disk as a bogus "file".
+    """
+    sync = _PullSync(lambda path: path.mkdir(parents=True, exist_ok=True))
+    dev = _FakeDev(sync=sync)
+    local = tmp_path / "sub" / "as_dir"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/somedir", local)
+    assert excinfo.value.code == "invalid_params"
+    # The stray directory is torn down, not left behind as a fake result.
+    assert not local.exists()
+
+
+def test_pull_enforces_the_capture_cap_after_the_transfer(tmp_path: Path) -> None:
+    """When the pre-stat could not size it, the post-pull cap is the real guard.
+
+    The pre-stat refusal only fires when ``sync.stat`` answered; with stat
+    unavailable, an oversized file is caught only after it lands, so the pulled
+    file must be refused too_large and removed rather than left occupying the
+    capture budget for the life of the process. The local file is made sparse so
+    the test does not write 64 MiB; ``capped_file_size`` reads the stat length.
+    """
+
+    def _write_oversized(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            handle.truncate(UNREGISTERED_CAPTURE_MAX_BYTES + 1)
+
+    sync = _PullSync(_write_oversized)
+    dev = _FakeDev(sync=sync)
+    local = tmp_path / "sub" / "big.bin"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/big.bin", local)
+    assert excinfo.value.code == "too_large"
+    assert excinfo.value.details.get("size") == UNREGISTERED_CAPTURE_MAX_BYTES + 1
+    # capped_file_size deletes an over-cap file it was asked to measure.
+    assert not local.exists()
+
+
 def test_push_rejects_a_missing_local_file(tmp_path: Path) -> None:
     """A local path that is not a file never reaches adb."""
     dev = _FakeDev(sync=_Sync(stat_result=None))
