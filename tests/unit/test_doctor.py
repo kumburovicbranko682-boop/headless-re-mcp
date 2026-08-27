@@ -549,6 +549,98 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.details["hidden_desktop_supported"] is False
 
 
+class TestOptionalToolProbesCheckTheirRuntime:
+    """jadx/apktool/apksigner start a JVM and webcrack runs under node.
+
+    The capabilities catalog maps those lines to these probes, so a launcher
+    sitting on PATH without its interpreter advertised tools that failed on
+    every call. The probe now reports blocked -- tool present, runtime absent --
+    with the runtime named in the remediation, matching the honesty rule the
+    playwright browser probe follows.
+    """
+
+    def _which(self, mapping: dict[str, str]) -> object:
+        return lambda command: mapping.get(command)
+
+    def test_launcher_with_its_runtime_is_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            doctor_module.shutil,
+            "which",
+            self._which({"jadx": "/opt/jadx/bin/jadx", "java": "/usr/bin/java"}),
+        )
+        probe = doctor_module.probe_optional_tool(
+            "jadx", _settings(None, tmp_path), "jadx", ("jadx",), runtime="java"
+        )
+        assert probe.status is ProbeStatus.DETECTED
+        assert probe.details["java"] == "/usr/bin/java"
+
+    def test_launcher_without_its_runtime_is_blocked_with_remediation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            doctor_module.shutil, "which", self._which({"webcrack": "/usr/local/bin/webcrack"})
+        )
+        probe = doctor_module.probe_optional_tool(
+            "webcrack", _settings(None, tmp_path), "webcrack", ("webcrack",), runtime="node"
+        )
+        assert probe.status is ProbeStatus.BLOCKED
+        assert probe.details["missing_runtime"] == "node"
+        assert "node" in (probe.remediation or "")
+
+    def test_a_configured_path_is_also_held_to_the_runtime_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launcher = tmp_path / "apktool"
+        launcher.touch()
+        settings = replace(_settings(None, tmp_path / "artifacts"), apktool=launcher)
+        monkeypatch.setattr(doctor_module.shutil, "which", self._which({}))
+        monkeypatch.delenv("JAVA_HOME", raising=False)
+        probe = doctor_module.probe_optional_tool(
+            "apktool", settings, "apktool", ("apktool",), runtime="java"
+        )
+        assert probe.status is ProbeStatus.BLOCKED
+
+    def test_java_resolves_through_java_home_when_not_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The jadx and apksigner launchers honour JAVA_HOME before PATH."""
+        java = tmp_path / "jdk" / "bin" / "java"
+        java.parent.mkdir(parents=True)
+        java.touch()
+        monkeypatch.setattr(
+            doctor_module.shutil, "which", self._which({"jadx": "/opt/jadx/bin/jadx"})
+        )
+        monkeypatch.setenv("JAVA_HOME", str(tmp_path / "jdk"))
+        probe = doctor_module.probe_optional_tool(
+            "jadx", _settings(None, tmp_path / "artifacts"), "jadx", ("jadx",), runtime="java"
+        )
+        assert probe.status is ProbeStatus.DETECTED
+
+    def test_a_missing_tool_stays_missing_not_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No launcher means nothing to block on: the tool is simply absent."""
+        monkeypatch.setattr(doctor_module.shutil, "which", self._which({}))
+        probe = doctor_module.probe_optional_tool(
+            "jadx", _settings(None, tmp_path), "jadx", ("jadx",), runtime="java"
+        )
+        assert probe.status is ProbeStatus.MISSING
+
+    def test_native_tools_keep_the_plain_presence_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wabt and adb are native binaries; no runtime gate applies."""
+        monkeypatch.setattr(
+            doctor_module.shutil, "which", self._which({"wasm2wat": "/usr/bin/wasm2wat"})
+        )
+        probe = doctor_module.probe_optional_tool(
+            "wabt", _settings(None, tmp_path), "wabt", ("wasm2wat",)
+        )
+        assert probe.status is ProbeStatus.DETECTED
+
+
 class _FakePlaywrightSpec:
     origin = "/fake/site-packages/playwright/__init__.py"
 

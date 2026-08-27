@@ -199,13 +199,17 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("androguard", "androguard"),
         probe_python_module("adbutils", "adbutils"),
         probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
-        probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat"), runtime="java"),
+        probe_optional_tool(
+            "apktool", current, "apktool", ("apktool", "apktool.bat"), runtime="java"
+        ),
+        probe_optional_tool(
+            "apksigner", current, "apksigner", ("apksigner", "apksigner.bat"), runtime="java"
+        ),
         # Web reverse-engineering (all optional).
         probe_playwright("playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",), runtime="node"),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
     ]
     return DoctorReport(
@@ -1080,21 +1084,66 @@ def probe_command(name: str, candidates: tuple[str, ...]) -> Probe:
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} backend is not installed")
 
 
+def _find_tool_runtime(runtime: str) -> str | None:
+    """Locate the interpreter a launcher script starts, or None when absent.
+
+    ``java`` also honours JAVA_HOME because the jadx and apksigner launchers do;
+    other runtimes (node) resolve from PATH only, matching their env-shebang or
+    .cmd shims.
+    """
+    found = shutil.which(runtime)
+    if found:
+        return found
+    if runtime == "java":
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home:
+            candidate = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def probe_optional_tool(
     name: str,
     settings: Settings,
     settings_attr: str,
     commands: tuple[str, ...],
+    *,
+    runtime: str | None = None,
 ) -> Probe:
-    """Detect an optional CLI from its configured path or PATH, never blocking."""
+    """Detect an optional CLI from its configured path or PATH, never blocking.
+
+    ``runtime`` names an interpreter the tool's launcher needs at call time:
+    jadx, apktool, and apksigner are scripts that start a JVM, and webcrack runs
+    under node. A launcher without its runtime fails on every call, so it
+    reports blocked -- the same honesty rule as the playwright browser probe --
+    rather than advertising a capability that cannot run.
+    """
     configured = getattr(settings, settings_attr, None)
+    details: dict[str, Any] | None = None
+    summary = f"{name} configured"
     if configured is not None and Path(str(configured)).is_file():
-        return Probe(name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)})
-    found = {candidate: shutil.which(candidate) for candidate in commands}
-    found = {candidate: path for candidate, path in found.items() if path}
-    if found:
-        return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+        details = {"path": str(configured)}
+    else:
+        found = {candidate: shutil.which(candidate) for candidate in commands}
+        found = {candidate: path for candidate, path in found.items() if path}
+        if found:
+            details = dict(found)
+            summary = f"{name} command detected"
+    if details is None:
+        return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+    if runtime is not None:
+        runtime_path = _find_tool_runtime(runtime)
+        if runtime_path is None:
+            return Probe(
+                name,
+                ProbeStatus.BLOCKED,
+                f"{name} is present but its {runtime} runtime was not found",
+                {**details, "missing_runtime": runtime},
+                remediation=f"Install {runtime} and put it on PATH so {name} can start.",
+            )
+        details[runtime] = runtime_path
+    return Probe(name, ProbeStatus.DETECTED, summary, details)
 
 
 def probe_python_module(name: str, module: str) -> Probe:

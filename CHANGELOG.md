@@ -242,6 +242,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   与 `chromium_headless_shell-*` 两种构建),既不启动也不 import 浏览器。包在且浏览器已装 → detected;
   包在但无浏览器 → missing 并给出 `python -m playwright install chromium` 的补救提示;包不在 → missing。
   这样 `web.cdp` 的状态就与 `web.open` 是否真能跑一致了。四条分支均有 CI 可跑的单测覆盖。
+- **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
+  这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
+  node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
+  却没有 JRE、或装了 webcrack 却没有 node 的机器,会把这些行报成 `detected`,而它们其实每次调用都会
+  在 launch 时失败;能力目录又把 `apk.jadx` / `apk.apktool` / `jsre.webcrack` 映射到这些探针。现在
+  探针接受一个 `runtime` 参数:启动器在、但对应运行时找不到时报 `blocked` 并在补救提示里点名缺的是
+  哪个运行时(与 playwright 浏览器探针同一口径);`java` 会像 jadx/apksigner 启动器那样先认 `JAVA_HOME`
+  再看 PATH。原生工具(wabt、adb)不带 `runtime`,保持原来的"在即可"判断。工具根本没装时仍是 `missing`
+  ——没有启动器就无所谓缺运行时。六条分支均有 CI 可跑的单测覆盖(含正/负路径与 `JAVA_HOME` 回退)。
 - **`js.unpack_bundle` 一直是坏的：webcrack 拒绝客户端刚建好的输出目录**。`unpack_bundle` 先
   `out_dir.mkdir()` 再跑 `webcrack -o out_dir`，而 webcrack 不给 `-f` 就对已存在的输出目录直接
   报错退出（`output directory already exists`，webcrack 2.16.0 复现）；服务每次都递一个全新的
