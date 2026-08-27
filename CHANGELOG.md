@@ -70,6 +70,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（web.har.export 报告被裁剪的条目数并在描述里点名 truncated）
+
+- `web.har.export` 为塞进抓包字节上限会从尾部丢弃条目并置 `truncated`，但工具描述只写了 `path` 与
+  `entry_count`，连 `truncated` 都没点名——照描述读的调用方根本不知道该检查 HAR 是否被裁剪。现载荷
+  新增 `dropped`（为塞进上限而丢弃的条目数，与 proxy.export_har 一致），描述也补齐 `truncated` /
+  `dropped` / `size`：`dropped` 非零即表示 HAR 只是会话的一部分。
+
 ### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
 
 - `device.pull` 过去在 adb sync“干净返回却没写出本地文件”时（远端路径不存在，较旧 adbutils 不抛异常，

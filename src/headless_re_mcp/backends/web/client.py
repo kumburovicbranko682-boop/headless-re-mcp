@@ -698,6 +698,7 @@ class WebBackend:
             ]
         import json
 
+        captured = len(entries)
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
@@ -720,9 +721,13 @@ class WebBackend:
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
         out_path.write_text(text, encoding="utf-8")
+        # entry_count is what the file holds after any byte-cap trimming; dropped
+        # is how many captured requests were left out to fit, so a truncated HAR
+        # is not read as the whole session.
         return {
             "path": str(out_path),
             "entry_count": len(entries),
+            "dropped": captured - len(entries),
             "truncated": truncated,
             "size": len(encoded),
         }
