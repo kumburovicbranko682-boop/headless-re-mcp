@@ -9,6 +9,7 @@ reported as a running capture.
 from __future__ import annotations
 
 import socket
+import threading
 import time
 
 import pytest
@@ -99,6 +100,47 @@ def test_two_sessions_cannot_silently_share_one_port() -> None:
         assert backend.status("second") == {"running": False}
     finally:
         backend.close_all()
+
+
+@pytest.mark.integration
+def test_concurrent_starts_do_not_race_on_the_global_master() -> None:
+    """One proxy per session is a supported multi-session shape.
+
+    Two DumpMasters built on different threads used to race on mitmproxy's
+    process-global ctx: one master's running() hook read the other's half-built
+    Options (rfile not yet loaded), the logged AttributeError tripped
+    errorcheck, and the innocent proxy died with 'mitmproxy failed to start'.
+    Bring several up at once and require every one to actually listen.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    ports = [_free_port() for _ in range(4)]
+    errors: list[BaseException] = []
+
+    def start(index: int, port: int) -> None:
+        try:
+            backend.start(f"race-{index}", host="127.0.0.1", port=port)
+        except BaseException as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=start, args=(index, port))
+        for index, port in enumerate(ports)
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30.0)
+        assert not errors, errors
+        for index, port in enumerate(ports):
+            assert backend.status(f"race-{index}")["running"] is True
+            assert _port_accepts("127.0.0.1", port, timeout=1.0) is True
+    finally:
+        backend.close_all()
+    for port in ports:
+        assert _port_accepts("127.0.0.1", port, timeout=0.25) is False
 
 
 @pytest.mark.integration

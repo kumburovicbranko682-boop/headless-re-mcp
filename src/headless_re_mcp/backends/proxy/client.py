@@ -17,8 +17,9 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 JsonObject = dict[str, Any]
@@ -297,7 +298,34 @@ class _FlowRecorder:
             return self._retained_bytes
 
 
+class _StartupBarrier:
+    """A no-op mitmproxy addon whose ``running`` hook fires a callback.
+
+    Registered last, so its ``running()`` runs after every built-in addon's
+    ``running()`` -- the point past which this master's startup hooks have
+    finished reading the process-global ``mitmproxy.ctx``. Used to release the
+    construction lock exactly when it is safe for another master to take it.
+    """
+
+    def __init__(self, on_running: Callable[[], None]) -> None:
+        self._on_running = on_running
+
+    def running(self) -> None:
+        self._on_running()
+
+
 class _ProxyInstance:
+    # mitmproxy keeps the active master in a process-global ``mitmproxy.ctx``.
+    # Two DumpMasters built on different threads race on it: one master's
+    # ``running()`` hook (keepserving) reads ``ctx.options.rfile`` while the
+    # other master's construction has momentarily swapped ``ctx.options`` to a
+    # not-yet-loaded Options, and the AttributeError that mitmproxy logs trips
+    # its errorcheck addon into aborting the innocent master ("mitmproxy failed
+    # to start"). One proxy per session is a supported multi-session shape, so
+    # this raced ~2/15 concurrent starts. Serialize construction through the
+    # first ``running()`` hook so only one master owns the global ctx at a time.
+    _ctx_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(self, host: str, port: int) -> None:
         self.host = host
         self.port = port
@@ -347,6 +375,18 @@ class _ProxyInstance:
 
     def _run(self) -> None:
         loop: asyncio.AbstractEventLoop | None = None
+        # Held from before DumpMaster construction until this master's first
+        # running() hook has fired (see _ctx_lock). A list cell so the barrier
+        # callback and the finally can flip it exactly once between threads --
+        # the barrier runs on this same loop thread, so no extra lock is needed.
+        holding = [False]
+
+        def _release_ctx_lock() -> None:
+            if holding[0]:
+                holding[0] = False
+                with contextlib.suppress(RuntimeError):
+                    _ProxyInstance._ctx_lock.release()
+
         try:
             from mitmproxy import options
             from mitmproxy.tools.dump import DumpMaster
@@ -355,6 +395,8 @@ class _ProxyInstance:
             asyncio.set_event_loop(loop)
             self._loop = loop
             opts = options.Options(listen_host=self.host, listen_port=self.port)
+            _ProxyInstance._ctx_lock.acquire()
+            holding[0] = True
             # Only the constructor may disagree about kwargs across mitmproxy
             # versions. Catching TypeError around run() too would treat a bug
             # inside a running proxy as a signature mismatch and start a second
@@ -364,6 +406,10 @@ class _ProxyInstance:
             except TypeError:
                 master = DumpMaster(opts)
             master.addons.add(self.recorder)
+            # Added last so its running() runs after every built-in running()
+            # hook; releasing there hands the global ctx to the next master only
+            # once this one's startup has stopped reading it.
+            master.addons.add(_StartupBarrier(_release_ctx_lock))
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())
@@ -371,6 +417,9 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
+            # A startup that failed before running() never reached the barrier;
+            # release here so a crashed start cannot wedge every later start.
+            _release_ctx_lock()
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound

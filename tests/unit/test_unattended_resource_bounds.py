@@ -444,6 +444,53 @@ class TestProxyStopActuallyFreesThePort:
         assert close_servers < shutdown_loop
 
 
+class TestConcurrentProxyStartsDoNotRaceTheGlobalMaster:
+    """mitmproxy keeps the active master in a process-global ctx.
+
+    Two DumpMasters built on different threads raced on it: one master's
+    running() hook read the other's half-built Options and the logged error
+    aborted the innocent master. The live gate proves several proxies come up
+    at once; these prove the serialization is wired without needing mitmproxy.
+    """
+
+    def test_a_startup_barrier_releases_the_construction_lock(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _StartupBarrier
+
+        released: list[bool] = []
+        barrier = _StartupBarrier(lambda: released.append(True))
+        # mitmproxy calls running() with no arguments once startup hooks finish.
+        barrier.running()
+        assert released == [True]
+
+    def test_run_holds_one_process_wide_lock_across_masters(self) -> None:
+        import threading
+
+        from headless_re_mcp.backends.proxy.client import _ProxyInstance
+
+        # A single class-level lock, shared by every instance, is what forces
+        # one master to finish owning the global ctx before the next takes it.
+        first = _ProxyInstance("127.0.0.1", 1)
+        second = _ProxyInstance("127.0.0.1", 2)
+        assert first._ctx_lock is second._ctx_lock
+        assert isinstance(_ProxyInstance._ctx_lock, type(threading.Lock()))
+
+    def test_run_takes_the_lock_before_building_and_releases_via_the_barrier(
+        self,
+    ) -> None:
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance._run)
+        acquire = source.index("_ctx_lock.acquire()")
+        construct = source.index("DumpMaster(opts")
+        barrier = source.index("_StartupBarrier(")
+        # Lock first, then construct; the barrier is what hands ctx to the next.
+        assert acquire < construct
+        assert "_StartupBarrier" in source
+        assert barrier > acquire
+
+
 class TestConcurrentStartDoesNotLeakABackend:
     def test_two_proxy_starts_for_one_session_only_keep_one_instance(
         self, monkeypatch: Any
