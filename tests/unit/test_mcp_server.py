@@ -458,7 +458,9 @@ def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
     mentioned neither APK nor web, while session.create already accepts
     both and the live catalog had 42 apk-family tools and 25 web-family
     tools. A caller that follows the instructions will not start those
-    sessions.
+    sessions. Native ELF/Mach-O is the same failure a step later: the
+    portable backends analyse it, but a model that never hears "native"
+    will not open an ELF at all, so the instructions must name it too.
     """
     analysis = AnalysisService()
     try:
@@ -467,6 +469,7 @@ def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
         text = (server.instructions or "").casefold()
         assert "apk" in text
         assert "web" in text
+        assert "native" in text
         assert "authorized local pe, then open its static ida" not in text
         tools = server._tool_manager._tools
         apk = [name for name in tools if name.startswith(("apk.", "device."))]
@@ -1009,6 +1012,34 @@ async def test_session_create_description_names_the_nested_object() -> None:
         text = tool.description or ""
         assert "Answers with session" in text
         assert "no top-level session_id" in text
+    finally:
+        analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_session_create_advertises_the_native_target() -> None:
+    """A native ELF/Mach-O must be discoverable at session.create, both ways.
+
+    Two things have to agree or the native line is unreachable from the tool
+    surface: the free-text description has to name native so a model knows to
+    open an ELF, and the ``target`` enum has to accept "native" so it can force
+    the kind. Before native classification "native" was in neither, and an ELF
+    forced as PE was rejected at creation as "not a PE file".
+    """
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        tools = await server.list_tools()
+        tool = next(item for item in tools if item.name == "session.create")
+        assert "native" in (tool.description or "").casefold()
+        target = tool.inputSchema["properties"]["target"]
+        # The target field is Optional[Literal[...]], so pydantic emits the
+        # allowed strings under anyOf; flatten it and assert "native" is offered.
+        allowed = set(target.get("enum", []))
+        for branch in target.get("anyOf", []):
+            allowed.update(branch.get("enum", []))
+        assert {"pe", "apk", "web", "native"} <= allowed, target
     finally:
         analysis.close_all()
 
