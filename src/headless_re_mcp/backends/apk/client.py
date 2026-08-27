@@ -349,6 +349,59 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def subclasses(
+        self,
+        path: Path,
+        class_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """List internal classes that extend or implement a given type.
+
+        The inverse of the hierarchy in apk.class_info: instead of "what does
+        this class extend", it answers "what extends or implements this type".
+        The target need not be defined in the APK -- searching for a framework
+        base such as Landroid/app/Activity; or Ljava/lang/Runnable; is the point,
+        so it is accepted by name and never reported not_found. Each match is
+        class_name and relation ("extends" when the target is the superclass,
+        "implements" when it is an implemented interface); a class extends one
+        class and implements many interfaces, so the two are disjoint per row.
+        Accepts the dotted or Lsmali/form target. External classes are skipped
+        (their parentage is not defined here). Rows are sorted by class_name;
+        total is the number collected, capped at 10000 with scan_capped when
+        more may exist, and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        rows: list[JsonObject] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if len(rows) >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            if str(klass.extends) == smali:
+                rows.append({"class_name": str(klass.name), "relation": "extends"})
+            elif smali in {str(name) for name in (klass.implements or [])}:
+                rows.append({"class_name": str(klass.name), "relation": "implements"})
+        rows.sort(key=lambda row: row["class_name"])
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "target": smali,
+            "subclasses": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def methods(
         self,
         path: Path,

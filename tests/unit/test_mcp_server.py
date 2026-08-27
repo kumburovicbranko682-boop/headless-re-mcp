@@ -260,6 +260,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.components",
         "apk.native_libs",
         "apk.classes",
+        "apk.subclasses",
         "apk.methods",
         "apk.strings",
         "apk.xrefs",

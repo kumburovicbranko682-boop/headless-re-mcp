@@ -97,6 +97,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.subclasses")
+    def apk_subclasses(
+        session_id: str,
+        class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 1000,
+    ) -> dict[str, Any]:
+        """List internal classes that extend or implement a type (paginated).
+
+        The inverse of apk.class_info's hierarchy: instead of "what does this
+        class extend", it answers "what extends or implements this type" -- the
+        way to enumerate every Activity (Landroid/app/Activity;), every
+        implementation of a callback interface, or every subclass of a custom
+        base. The target need not be defined in the APK, so a framework class is
+        a valid query and is never reported not_found. Accepts the dotted or
+        Lsmali/form name. Answers with target, subclasses (class_name and
+        relation, "extends" or "implements"), count, total, offset and has_more
+        so a page that filled the limit is not read as every subclass. total is
+        the number collected, capped at 10000; scan_capped is true when more may
+        exist. External classes are skipped.
+        """
+        return _dump(analysis.apk_subclasses(session_id, class_name, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,
