@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **282（162 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **283（163 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -533,6 +533,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `ilj` 也纳入后端命令白名单。活体门在真 ELF 上跑：动态链接件的依赖清单里必有 `libc`、`module` 等于文件名；同一份源码用
   `-static` 现编（缺静态工具链时该分支 skip≠pass），依赖清单必为空。单测 mock `R2Client.run` 喂入 `ilj` 原始输出，钉住字符串
   清单整形、静态空列表、对象包裹格式的兼容、4096 截断、`ilj` 过白名单、docstring 形状。该工具计入读效果，工具面因此 281→282。
+- **Android 静态线能列类名（`apk.classes`）、能列某类的方法（`apk.methods`），却说不清「这一个类是什么」**。缺一个
+  类详情视角：它继承谁（角色——Activity/Service 基类，还是某个加密/混淆父类）、实现了哪些接口（`X509TrustManager` 是
+  证书固定绕过的经典信号，`Runnable` 是后台任务）、类修饰符、以及声明的字段（静态密钥与配置就藏在这儿）。此前要看这些只能
+  整包 jadx/apktool 反编。新增只读的 `apk.class_info`：`extends`/`implements` 取自高层 `ClassAnalysis`（恒在），访问标志与
+  字段取自底层 class-def（androguard 仅见引用的外部类没有 class-def 时优雅留空）。回 `class_name`（解析成 smali 描述符）、
+  `superclass`、`interfaces`、`access`、`fields`（各含 name/type/access）与 `field_count`、`method_count`、`is_external`；字段数
+  超过 1000（混淆或生成类）时 `has_more` 置真。未知类回 not_found、空类名回 invalid_params。活体门在真 classes.dex 上驱动整条
+  DEX 分析管线（class-def 读超类与访问标志、分析图数方法），断言超类、接口、访问、method_count 与未知类的 not_found——这正是
+  androguard 版本升级最易破的 API 面。单测 mock 已解析分析，钉住完整形状（super/接口/access/字段）、点号类名解析、not_found、
+  invalid_params、字段 1000 截断、docstring。该工具计入读效果，工具面因此 282→283。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

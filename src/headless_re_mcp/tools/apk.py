@@ -202,6 +202,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.class_info")
+    def apk_class_info(session_id: str, class_name: str) -> dict[str, Any]:
+        """One class's shape (dotted or Lsmali/form): what it is, not what it lists.
+
+        apk.classes gives the name list and apk.methods lists a class's methods;
+        this is the "tell me about this one class" view. Answers with class_name
+        (resolved to the smali descriptor), superclass (what it extends -- its
+        role: an Activity/Service base, or a crypto/obfuscation parent),
+        interfaces (what it implements -- ``X509TrustManager`` is a
+        cert-pinning-bypass smell, ``Runnable`` a background task), access (the
+        class modifiers, e.g. ``public final``), fields (each name, type
+        descriptor and access -- static keys and config live here) with
+        field_count, method_count and is_external. has_more is true when the
+        field list hit the cap (1000). An unknown class is not_found; an empty
+        class_name is invalid_params.
+        """
+        return _dump(analysis.apk_class_info(session_id, class_name))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

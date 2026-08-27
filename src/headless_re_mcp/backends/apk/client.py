@@ -25,6 +25,9 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# A class's field list. Most classes have a handful; an obfuscated or generated
+# one can carry hundreds, so the list is bounded and the overflow is flagged.
+_MAX_FIELDS = 1000
 _MAX_NATIVE_LIBS = 256
 # A single .so pulled out for r2/Ghidra. 64 MiB matches the unregistered-capture
 # budget the service enforces on trees, so a pathological lib is refused here
@@ -870,6 +873,71 @@ class ApkClient:
             "offset": offset,
             "has_more": offset + len(window) < len(methods),
             "scan_capped": scan_more,
+        }
+
+    @_guard_androguard
+    def class_info(self, path: Path, class_name: str) -> JsonObject:
+        """One class's shape: superclass, interfaces, access, fields, method count.
+
+        apk.classes lists class names and apk.methods lists a class's methods,
+        but nothing told you what a single class *is*: what it extends (its
+        role -- Activity/Service, or a crypto/obfuscation base), what it
+        implements (``X509TrustManager`` is a cert-pinning-bypass smell,
+        ``Runnable`` a background task), its access modifiers, and its declared
+        fields (static keys and config live here). This is the "tell me about
+        this one class" view that otherwise needed a full jadx/apktool decode.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        found = next(
+            (
+                klass
+                for klass in parsed.analysis.get_classes()
+                if klass.name == target or klass.name == smali
+            ),
+            None,
+        )
+        if found is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+
+        # extends/implements come from the high-level ClassAnalysis and are
+        # always present; access flags and fields need the underlying class-def,
+        # which is absent for a class androguard only saw referenced (external).
+        interfaces = [str(iface) for iface in (getattr(found, "implements", None) or [])]
+        vm_class = found.get_vm_class() if hasattr(found, "get_vm_class") else None
+        access = ""
+        fields: list[JsonObject] = []
+        fields_more = False
+        if vm_class is not None:
+            try:
+                access = str(vm_class.get_access_flags_string())
+            except Exception:  # noqa: BLE001 - access string varies by androguard build
+                access = ""
+            for field in vm_class.get_fields():
+                if len(fields) >= _MAX_FIELDS:
+                    fields_more = True
+                    break
+                fields.append(
+                    {
+                        "name": str(field.get_name()),
+                        "type": str(field.get_descriptor()),
+                        "access": str(field.get_access_flags_string()),
+                    }
+                )
+        method_count = sum(1 for _ in found.get_methods())
+        return {
+            "class_name": found.name,
+            "superclass": str(getattr(found, "extends", "") or ""),
+            "interfaces": interfaces,
+            "access": access,
+            "fields": fields,
+            "field_count": len(fields),
+            "method_count": method_count,
+            "is_external": found.is_external(),
+            "has_more": fields_more,
         }
 
     @_guard_androguard

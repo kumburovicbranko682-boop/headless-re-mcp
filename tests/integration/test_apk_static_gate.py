@@ -530,6 +530,23 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert method["name"] == _DEX_METHOD
         assert method["descriptor"] == "()V"
 
+        # class_info must read the class-def against a real DEX: the superclass
+        # and access come from the underlying ClassDefItem, method_count from
+        # the analysis graph. This is the API a version bump could break.
+        info = service.apk_class_info(session_id, "com.example.headlessre.Secret")
+        assert info.ok, info.error
+        assert info.data["class_name"] == _DEX_CLASS
+        assert info.data["superclass"] == _DEX_SUPER
+        assert info.data["interfaces"] == []
+        assert "public" in info.data["access"]
+        assert info.data["method_count"] == 1
+        assert info.data["is_external"] is False
+        assert info.data["has_more"] is False
+        missing = service.apk_class_info(session_id, "com.example.headlessre.Missing")
+        assert missing.ok is False
+        assert missing.error is not None
+        assert missing.error.code == "not_found"
+
         strings = service.apk_strings(session_id, limit=50)
         assert strings.ok, strings.error
         assert _DEX_METHOD in strings.data["strings"]
