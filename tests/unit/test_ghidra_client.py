@@ -249,6 +249,7 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     xrefs = _tool_docstring("ghidra.xrefs")
     assert "from" in xrefs
     assert "has_more" in xrefs
+    assert "resolved" in xrefs
     assert "to and from" not in xrefs
     assert "Outgoing refs are not listed" in xrefs
 
@@ -311,6 +312,48 @@ def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
     assert payload["found"] is True
+
+
+def test_ghidra_xrefs_reports_resolved_false_when_the_address_did_not_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An address the AddressFactory rejects used to read as "no references".
+
+    ExportJson writes items [] and resolved false when getAddress returns null.
+    Without resolved, a caller cannot tell an unparsable address from a real one
+    with no incoming refs, and an unattended pass would conclude the code is
+    dead.
+    """
+    _decompile_run(monkeypatch, '{"mode": "xrefs", "items": [], "resolved": false}')
+    client = _client(tmp_path)
+    payload = client.xrefs(_binary(tmp_path), tmp_path / "project", "not-an-address")
+    assert payload["resolved"] is False
+    assert payload["items"] == []
+
+
+def test_ghidra_xrefs_reports_resolved_true_with_no_refs_for_a_real_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resolved address with zero incoming refs is distinct from an unparsable one."""
+    _decompile_run(monkeypatch, '{"mode": "xrefs", "items": [], "resolved": true}')
+    client = _client(tmp_path)
+    payload = client.xrefs(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["resolved"] is True
+    assert payload["items"] == []
+
+
+def test_ghidra_xrefs_derives_resolved_when_the_script_omitted_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Across the interpreter boundary any item still proves the address resolved."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "xrefs", "items": [{"from": "0x401000", "to": "0x402000", "type": "DATA"}]}',
+    )
+    client = _client(tmp_path)
+    payload = client.xrefs(_binary(tmp_path), tmp_path / "project", "0x402000")
+    assert payload["resolved"] is True
+    assert len(payload["items"]) == 1
 
 
 def test_ghidra_refuses_an_oversized_export_json(

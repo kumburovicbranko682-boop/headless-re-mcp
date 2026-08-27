@@ -69,7 +69,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to address, as Ghidra resolved them.
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed.
+        to and type, plus count and has_more. Also resolved: it is false when
+        the address string did not parse, so an empty items then means "no such
+        address", not "no references to it". Outgoing refs are not listed.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
