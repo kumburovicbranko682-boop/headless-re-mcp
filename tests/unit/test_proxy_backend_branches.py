@@ -28,6 +28,8 @@ from headless_re_mcp.backends.proxy import client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOW_HEADERS_TOTAL_BYTES,
     _OMITTED_BODY,
+    ProxyBackend,
+    ProxyError,
     _bounded_headers,
     _content_len,
     _drain_proxy_servers,
@@ -39,8 +41,6 @@ from headless_re_mcp.backends.proxy.client import (
     _raw_body,
     _shutdown_loop,
     _uninstall_master_logging,
-    ProxyBackend,
-    ProxyError,
 )
 
 MP = pytest.MonkeyPatch
