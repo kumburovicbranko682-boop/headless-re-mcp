@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 measure_usage 在恶劣条件下仍诚实计量：文件数上限截断为下限、跳过无法 stat 的项）
+
+- artifact GC 在每条线的会话关闭时都会跑(web 会话的 HAR/截图、APK pull、PE dump 一视同仁),并依据\
+  `measure_usage` 的结果决定是否回收,故这个遍历既不能在超大目录上卡死、也不能在不可读项上崩掉。既有\
+  retention 测试只跑了正常遍历,新增 `test_measure_usage_bounds.py` 以真实临时目录钉住两条恶劣路径:超过\
+  文件数上限时提前停止,`files` 停在上限且 `truncated=True`——同时 `bytes` 明确为“下限”,调用方不会把提前\
+  停止误当成一个令人安心的小目录;遇到无法 stat 的项(断裂符号链接)时跨过它、仍把可读文件计全,而非中止\
+  整次计量。core/retention.py 的 `measure_usage` 上限截断与跳过支(58、61-62)由此覆盖(外层 rglob 的\
+  OSError 兜底在 3.12 上因 rglob 吞掉 scandir 错误而不可达,属防御性深度)。(纯测试补充,无行为变更。)
+
 ### 测试（钉住会话水合的降级契约：单条坏行/坏存储不拖垮整队恢复，含 web 会话按 URL 恢复）
 
 - 控制台重启时,上一轮遗留为 `unclean` 的会话(PE / APK / web 一视同仁)要从 sessions.db 行里重新绑定;\
