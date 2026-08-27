@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（.NET 未压缩 `#-` 元数据流的 ExtraData 字段被忽略,整张表读偏 4 字节）
+
+- `dotnet.inspect` / `dotnet.enumerate` 解析 `#~` 与 `#-` 两种 tables 流,但只有 `#-`
+  (未压缩,用于 ENC 增量以及一些故意用它绊倒简单解析器的混淆器)会在 `HeapSizes` 字节置
+  0x40(ExtraData)位,表示行数数组与首行之间插了一个 4 字节字段。两个解析器
+  (`metadata_enum._load_metadata_context` 与 `clr_inspect._parse_tables_and_names`)
+  都在读完行数后直接把游标当作表数据起点,没有跳过这 4 字节,于是每张表都往前偏 4 字节:
+  Module/Assembly 名读到错误的字符串索引,枚举出的类型/方法/字段行整体错位——不是报错,
+  而是自信地给出错误结果。现在两处都在 `heap_sizes & 0x40` 时把游标 +4;标准 `#~` 流从不
+  置该位,行为不变。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
