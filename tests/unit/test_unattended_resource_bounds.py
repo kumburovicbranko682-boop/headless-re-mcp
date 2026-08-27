@@ -3183,6 +3183,140 @@ class TestUnpackProbesKillWhatTheyStart:
         assert output == ""
 
 
+class TestSubprocessBackendsClampTheirTimeout:
+    """The apk.*/js.*/wasm.* schemas bound timeout with Field(le=...), but the
+    agent transport reaches these handlers through catalog.invoke ->
+    handler(**arguments) with no pydantic validation. An unclamped timeout would
+    flow straight into run_bounded, so an unattended jadx/apktool/webcrack run
+    could keep a core (and a lock on the sample) far past the schema ceiling.
+    Each backend now clamps to its own ceiling, the way the Frida backend's
+    _bound_timeout already does.
+    """
+
+    def test_jadx_caps_the_timeout_at_its_schema_ceiling(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jadx import client as mod
+
+        seen: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            del cmd
+            seen.append(float(kwargs["timeout"]))
+            return Completed(0, b"", b"")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        exe = tmp_path / "jadx"
+        exe.write_bytes(b"")
+
+        mod.JadxClient(exe).export_sources(apk, tmp_path / "out", timeout=10_000_000)
+
+        assert seen == [mod._MAX_TIMEOUT_S]
+
+    def test_apktool_caps_the_timeout_at_its_schema_ceiling(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.apktool import client as mod
+        from headless_re_mcp.backends.common.bounded_run import Completed
+
+        seen: list[float] = []
+        out_dir = tmp_path / "decoded"
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            del cmd
+            seen.append(float(kwargs["timeout"]))
+            # decode() treats a present AndroidManifest.xml as a successful decode.
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+            return Completed(0, b"", b"")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        exe = tmp_path / "apktool"
+        exe.write_bytes(b"")
+
+        mod.ApktoolClient(exe, None).decode(apk, out_dir, timeout=10_000_000)
+
+        assert seen == [mod._MAX_TIMEOUT_S]
+
+    def test_webcrack_deobfuscate_caps_the_timeout_at_its_schema_ceiling(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jsre import client as mod
+
+        seen: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            del cmd
+            seen.append(float(kwargs["timeout"]))
+            return Completed(0, b"ok", b"")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "webcrack"
+        exe.write_bytes(b"")
+        src = tmp_path / "app.js"
+        src.write_text("x", encoding="utf-8")
+
+        mod.JsClient(exe).deobfuscate(src, timeout=10_000_000)
+
+        assert seen == [mod._MAX_TOOL_TIMEOUT_S]
+
+    def test_webcrack_unpack_uses_its_own_higher_ceiling(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """unpack_bundle's schema allows longer than the single-file tools, so
+        its clamp is the higher of the two jsre ceilings, not the shared one."""
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jsre import client as mod
+
+        seen: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            del cmd
+            seen.append(float(kwargs["timeout"]))
+            return Completed(0, b"", b"")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "webcrack"
+        exe.write_bytes(b"")
+        src = tmp_path / "bundle.js"
+        src.write_text("x", encoding="utf-8")
+
+        mod.JsClient(exe).unpack_bundle(src, tmp_path / "out", timeout=10_000_000)
+
+        assert seen == [mod._MAX_UNPACK_TIMEOUT_S]
+        assert mod._MAX_UNPACK_TIMEOUT_S > mod._MAX_TOOL_TIMEOUT_S
+
+    def test_a_timeout_within_the_ceiling_is_passed_through_unchanged(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Clamping is a ceiling, not a rewrite: a schema-valid value survives."""
+        from headless_re_mcp.backends.common.bounded_run import Completed
+        from headless_re_mcp.backends.jsre import client as mod
+
+        seen: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+            del cmd
+            seen.append(float(kwargs["timeout"]))
+            return Completed(0, b"ok", b"")
+
+        monkeypatch.setattr(mod, "run_bounded", fake_run)
+        exe = tmp_path / "webcrack"
+        exe.write_bytes(b"")
+        src = tmp_path / "app.js"
+        src.write_text("x", encoding="utf-8")
+
+        mod.JsClient(exe).deobfuscate(src, timeout=45.0)
+
+        assert seen == [45.0]
+
+
 class TestDeviceListsDiscloseTruncation:
     """pm list / getprop used to return everything they found, or cut silently.
 

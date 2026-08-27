@@ -17,6 +17,14 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# Timeout ceiling mirrors the MCP-schema Field(le=1800.0) on apk.decode /
+# apk.repack / apk.sign. It is enforced here, not only in the schema, because
+# the agent transport reaches these handlers through catalog.invoke ->
+# handler(**arguments) with no pydantic validation: a model-supplied timeout
+# would otherwise flow straight into run_bounded uncapped and an unattended
+# apktool/apksigner JVM could run past the schema ceiling. The Frida backend
+# already clamps for the same reason.
+_MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
@@ -31,6 +39,7 @@ class ApktoolError(RuntimeError):
 
 
 def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+    timeout = min(float(timeout), _MAX_TIMEOUT_S)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)

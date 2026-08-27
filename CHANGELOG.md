@@ -205,6 +205,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `limit` 则无视页上限（`apk.xrefs` 更是完全没有上限）。web/proxy/frida/adb 后端早就无论走哪条
   传输都自行 clamp；APK 这条没有。现在后端统一 clamp（`offset` 归零下限、`limit` 收到与 schema
   一致的页上限），两条传输行为一致。
+- **子进程后端的 `timeout` 上限只写在 schema 里**。`apk.decompile/export_sources/decode/repack/sign`
+  与 `js.deobfuscate/beautify/unpack_bundle`、`wasm.wat/info` 的 `timeout` 上界（`le=600/1200/1800`）
+  只在 MCP 输入 schema 里；但 Agent 编排器经 `catalog.invoke` → `handler(**arguments)` 直接调用，
+  不跑 pydantic 值校验，模型给的超大 `timeout` 会原样流进 `run_bounded`，一个无人值守的
+  jadx/apktool/webcrack 就能远超 schema 上限地占着一个核（和样本文件锁）。Frida 后端早有
+  `_bound_timeout` 收敛，这三条子进程后端没有。现在各自按对应工具的 schema `le` 在后端 clamp，
+  两条传输行为一致。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

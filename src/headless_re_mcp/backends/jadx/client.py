@@ -20,6 +20,14 @@ _MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# Timeout ceiling mirrors the MCP-schema Field(le=1800.0) on apk.decompile and
+# apk.export_sources. It is enforced here, not only in the schema, because the
+# agent transport reaches these handlers through catalog.invoke ->
+# handler(**arguments) with no pydantic validation: a model-supplied timeout
+# would otherwise flow straight into run_bounded uncapped and an unattended jadx
+# JVM could run past the schema ceiling. The Frida backend already clamps for
+# the same reason.
+_MAX_TIMEOUT_S = 1800.0
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -158,6 +166,7 @@ class JadxClient:
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)
+        timeout = min(float(timeout), _MAX_TIMEOUT_S)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
         try:

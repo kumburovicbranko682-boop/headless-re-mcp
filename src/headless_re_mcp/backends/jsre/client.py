@@ -26,6 +26,16 @@ _MAX_COUNTED_FILES = 50_000
 # run_bounded. Sixteen mebibytes is enough for a real module and not enough
 # to keep a core busy for the rest of the timeout.
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
+# Timeout ceilings mirror the MCP-schema Field(le=...) on the js.*/wasm.* tools
+# these methods back (600s for deobfuscate/beautify/wat/info, 1200s for
+# unpack_bundle). They are enforced here, not only in the schema, because the
+# agent transport reaches these handlers through catalog.invoke ->
+# handler(**arguments) with no pydantic validation: a model-supplied timeout
+# would otherwise flow straight into run_bounded uncapped and an unattended node
+# run could outlive the schema ceiling. The Frida backend already clamps for the
+# same reason.
+_MAX_TOOL_TIMEOUT_S = 600.0
+_MAX_UNPACK_TIMEOUT_S = 1200.0
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -78,6 +88,11 @@ def _require_existing_file(path: Path, *, missing: str) -> Path:
     return resolved
 
 
+def _bounded_timeout(timeout: float, cap: float) -> float:
+    """Cap a caller timeout at the tool's schema ceiling. See _MAX_*_TIMEOUT_S."""
+    return min(float(timeout), cap)
+
+
 def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
@@ -125,7 +140,10 @@ class JsClient:
 
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
-        stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
+        stdout, stderr, code = _run(
+            [str(self.executable), str(resolved)],
+            timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
@@ -148,7 +166,8 @@ class JsClient:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            timeout=_bounded_timeout(timeout, _MAX_UNPACK_TIMEOUT_S),
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
@@ -192,7 +211,10 @@ class WasmClient:
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
+        stdout, stderr, code = _run(
+            [str(self._wasm2wat), str(resolved)],
+            timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
@@ -203,7 +225,8 @@ class WasmClient:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
         stdout, stderr, code = _run(
-            [str(self._objdump), "-h", "-x", str(resolved)], timeout=timeout
+            [str(self._objdump), "-h", "-x", str(resolved)],
+            timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
         )
         if code != 0 and not stdout:
             raise JsReError(
