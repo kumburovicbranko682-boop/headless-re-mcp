@@ -91,8 +91,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with classes, count, total, offset, and has_more so a page
         that filled the limit is not read as the whole collected list.
-        total is the number collected, capped at 10000; scan_capped is true
-        when the real class count may be higher. has_more only means a
+        Classes are sorted before the cap is applied, so when the app has more
+        than the 10000-class cap the kept classes are the alphabetically-first
+        ones and paging is a true alphabetical walk, not an arbitrary DEX-order
+        slice shown sorted. total is that number, capped at 10000; scan_capped
+        is true when the real class count is higher. has_more only means a
         larger offset still has collected rows.
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))

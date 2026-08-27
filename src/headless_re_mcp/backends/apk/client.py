@@ -328,16 +328,23 @@ class ApkClient:
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
-        names: list[str] = []
-        scan_more = False
-        for klass in parsed.analysis.get_classes():
-            if klass.is_external():
-                continue
-            if len(names) >= _MAX_CLASSES_COLLECT:
-                scan_more = True
-                break
-            names.append(klass.name)
+        names = [
+            klass.name for klass in parsed.analysis.get_classes() if not klass.is_external()
+        ]
+        # Sort before applying the cap. Capping the DEX-iteration order first and
+        # only then sorting returned an arbitrary _MAX_CLASSES_COLLECT-class slice
+        # shown sorted, so an app with more classes than the cap silently dropped
+        # whole ranges of alphabetically-early classes that happened to sit past
+        # the cap in DEX order -- and a caller paging this "sorted" list read it
+        # as an alphabetical walk that was really missing entries. Androguard has
+        # already materialised every class to answer get_classes(), so collecting
+        # the names adds only a small fraction: the cap bounds the response, not
+        # the parse. Sorting first makes the cap keep the alphabetically-first
+        # classes, so pagination is a true alphabetical walk.
         names.sort()
+        scan_more = len(names) > _MAX_CLASSES_COLLECT
+        if scan_more:
+            names = names[:_MAX_CLASSES_COLLECT]
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
         window = names[start : start + cap]
         return {

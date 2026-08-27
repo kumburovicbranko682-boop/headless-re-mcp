@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.classes` 先按 DEX 顺序封顶再排序,超过一万类的应用分页漏掉字母靠前的类）
+
+- `apk.classes` 先按 androguard 的 DEX 遍历顺序收集类名、到 `_MAX_CLASSES_COLLECT`(10000)就停,**之后**才
+  `names.sort()`。于是一个类数超过一万的应用(大型 App 常见),返回的其实是「DEX 顺序里的前一万个」排了个序——
+  凡是字母靠前、却恰好排在 DEX 顺序一万名开外的类,统统被无声丢掉。调用方拿着这份「已排序」的列表翻页,
+  以为是一次完整的字母序遍历,实则整段整段地缺;`scan_capped=true` 只说「还有更多」,并不揭示**缺的正是字母
+  靠前那批**。姊妹分支只修了 `_cap_names`(native_libs/components/permissions),没动 `classes`。
+- 现在改成**先排序再封顶**:收齐全部非 external 类名后排序,再截前 10000。androguard 为了应答 `get_classes()`
+  本就把每个类都materialize在内存里了,单收一份类名只是其中极小一部分——封顶限的是**响应**不是解析,故这里
+  收全部类名再排序不引入新的内存敞口。封顶后留下的即字母序最靠前的一万个,分页遂成一次真正的字母序遍历;
+  `scan_capped` 仍在真实类数超限时为真。`apk.classes` 描述点明「先排序后封顶、超限时留下字母靠前者」。
+- 新增回归:把 `_MAX_CLASSES_COLLECT` 压到 3、按 z/y/x/b/a 的 DEX 顺序喂 5 个类 → 返回 `La;/Lb;/Lx;`(字母序
+  前三)而非旧法的 x/y/z,`La;`/`Lb;` 虽在 DEX 顺序末尾仍保留、`Lz;` 被丢;未超限时全部按序返回;
+  并断言描述里点名「先排序后封顶」。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
