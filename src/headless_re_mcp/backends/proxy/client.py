@@ -34,6 +34,10 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or under this stays inline as text; anything larger, or anything
+# that is not valid UTF-8, spills to a file so the caller never receives a
+# lossy decode masquerading as the real bytes.
+_MAX_INLINE_BODY = 200_000
 _OMITTED_BODY = object()
 
 
@@ -177,6 +181,51 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _raw_body(part: Any) -> bytes:
+    """The raw bytes of a request/response, or empty when there is no body.
+
+    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
+    failure there is not a reason to fail the whole fetch, so it reads as an
+    empty body the same way a bodyless message does.
+    """
+    if part is None:
+        return b""
+    try:
+        content = part.raw_content
+    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
+        return b""
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    return b""
+
+
+def _emit_body(raw: bytes, artifact_dir: Path) -> JsonObject:
+    """Describe one message body without ever handing back a lossy decode.
+
+    Text within the inline cap comes back as ``body``; a larger body, or one
+    that is not valid UTF-8, spills to a ``.bin`` artifact and comes back as
+    ``body_path`` with ``spill_reason`` so a caller can tell "too big to inline"
+    from "not text" and never mistakes replacement characters for real bytes.
+    """
+    out: JsonObject = {"size": len(raw)}
+    if not raw:
+        out["body"] = ""
+        return out
+    too_large = len(raw) > _MAX_INLINE_BODY
+    if not too_large:
+        try:
+            out["body"] = raw.decode("utf-8")
+            return out
+        except UnicodeDecodeError:
+            pass
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dest = artifact_dir / f"flow-{uuid4().hex}.bin"
+    dest.write_bytes(raw)
+    out["body_path"] = str(dest)
+    out["spill_reason"] = "too_large" if too_large else "binary"
+    return out
 
 
 class _FlowRecorder:
@@ -502,32 +551,21 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+        request: JsonObject = {
+            "method": req.method,
+            "url": req.pretty_url,
+            "headers": dict(req.headers),
         }
-        if len(body) > 200_000:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
-        return result
+        # The request body is what an agent reverse-engineering an API most
+        # wants to see -- what was actually POSTed -- and used to be dropped
+        # entirely, leaving only the response.
+        request.update(_emit_body(_raw_body(req), artifact_dir))
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": dict(resp.headers) if resp else {},
+        }
+        response.update(_emit_body(_raw_body(resp), artifact_dir))
+        return {"id": flow_id, "request": request, "response": response}
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
