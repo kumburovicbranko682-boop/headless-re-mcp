@@ -175,6 +175,86 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+class _CapturingCdp:
+    """Records CDP handlers so a test can drive them directly."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, method: str) -> None:
+        del method
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+def _wired_capture() -> tuple[_CapturingCdp, _FakeHandle]:
+    cdp = _CapturingCdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    return cdp, handle
+
+
+def test_web_capture_flags_a_response_served_from_disk_cache() -> None:
+    """A disk-cache hit must not read as a live network fetch.
+
+    Measured: responseReceived with fromDiskCache -> entry from_cache True,
+    while status stays the cached 200. Without the flag an analyst counts the
+    cache hit as a real server call.
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "c1", "request": {"url": "https://a.test/app.js", "method": "GET"},
+         "type": "Script"}
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "c1",
+         "response": {"status": 200, "mimeType": "application/javascript",
+                      "fromDiskCache": True}}
+    )
+    entry = handle.requests["c1"]
+    assert entry["from_cache"] is True
+    assert entry["status"] == 200
+    doc = _tool_docstring("web.network.list")
+    assert "from_cache" in doc
+
+
+def test_web_capture_flags_a_memory_cache_hit_from_requestServedFromCache() -> None:
+    """A memory-cache hit arrives on its own event, not on the response.
+
+    Measured: requestServedFromCache -> entry from_cache True even though the
+    response carried no fromDiskCache flag, so both cache paths are visible.
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "c2", "request": {"url": "https://a.test/logo.png", "method": "GET"},
+         "type": "Image"}
+    )
+    cdp.handlers["Network.requestServedFromCache"]({"requestId": "c2"})
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "c2", "response": {"status": 200, "mimeType": "image/png"}}
+    )
+    assert handle.requests["c2"]["from_cache"] is True
+
+
+def test_web_capture_leaves_no_from_cache_on_a_live_response() -> None:
+    """A response fetched from the network must not sprout a from_cache flag.
+
+    Measured: responseReceived with no cache flags -> the entry has no
+    from_cache key, so its absence cleanly means "came from the network".
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "c3", "request": {"url": "https://a.test/api", "method": "GET"},
+         "type": "XHR"}
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "c3", "response": {"status": 200, "mimeType": "application/json"}}
+    )
+    assert "from_cache" not in handle.requests["c3"]
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

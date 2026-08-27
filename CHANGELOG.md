@@ -60,6 +60,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`web.network.list` 标出命中缓存的响应,不再冒充实网请求）
+
+- 浏览器从自身缓存(磁盘缓存、service worker、prefetch,或纯内存缓存)服务的响应,
+  `Network.responseReceived` 依旧带着缓存里的状态触发,于是 `status: 200` 与一次真正的
+  实网抓取逐字节相同。用抓包去梳理"这次会话到底真访问了哪些端点"的分析者,会把缓存命中
+  当成一次真实的服务器调用记进去。现 `on_response` 读 `fromDiskCache`/`fromServiceWorker`/
+  `fromPrefetchCache`,并新订阅 `Network.requestServedFromCache`(纯内存缓存命中只在这个事件
+  上报,不会在响应上带 `fromDiskCache` 标志),命中任一即给条目置 `from_cache: true`;未命中
+  缓存的请求不带该键(缺席即"来自网络")。文档串同步说明,并新增三条直测:磁盘缓存命中置标志
+  且状态仍为缓存的 200、内存缓存命中经独立事件置标志、实网响应无 `from_cache` 键。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
