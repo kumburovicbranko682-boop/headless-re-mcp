@@ -46,6 +46,13 @@ _MAX_INLINE_BODY = 200_000
 _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
+# proxy.queries aggregates URL query parameters across the flow ring. Each of
+# these is bounded so a hostile capture (thousands of unique param names, a
+# 16 KiB value) cannot turn the aggregate into an unbounded blob.
+_MAX_QUERY_PARAMS = 256
+_MAX_QUERY_VALUES_PER = 5
+_MAX_QUERY_HOSTS_PER = 10
+_MAX_QUERY_VALUE_BYTES = 512
 _OMITTED_BODY = object()
 
 
@@ -642,6 +649,87 @@ class ProxyBackend:
             "offset": start,
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
+        }
+
+    def queries(self, session_id: str) -> JsonObject:
+        """Aggregate URL query parameters across every captured flow.
+
+        Reverse-engineering an API, the query string is where tokens, API keys
+        and tracking identifiers ride in plain sight; proxy.flows shows one URL
+        at a time, so a per-parameter rollup (how often each name appears, on
+        which hosts, with a few distinct sample values) is what surfaces the
+        secret reused across a hundred requests. Everything is bounded: at most
+        256 parameter names (most-used first), a few hosts and sample values
+        each, and each value clipped, with truncated flags so a bounded view is
+        never read as the whole picture.
+        """
+        from urllib.parse import parse_qsl, urlsplit
+
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        agg: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        flows_with_query = 0
+        for entry in items:
+            url = entry.get("url") or ""
+            host = entry.get("host") or ""
+            try:
+                query = urlsplit(url).query
+            except Exception:  # noqa: BLE001 - a malformed URL simply has no query
+                continue
+            if not query:
+                continue
+            pairs = parse_qsl(query, keep_blank_values=True)
+            if not pairs:
+                continue
+            flows_with_query += 1
+            for raw_name, raw_value in pairs:
+                name, name_cut = _bounded_metadata(raw_name, _MAX_QUERY_VALUE_BYTES)
+                rec = agg.get(name)
+                if rec is None:
+                    rec = {
+                        "count": 0,
+                        "hosts": [],
+                        "host_set": set(),
+                        "values": [],
+                        "value_set": set(),
+                        "truncated": name_cut,
+                    }
+                    agg[name] = rec
+                rec["count"] += 1
+                if name_cut:
+                    rec["truncated"] = True
+                if host and host not in rec["host_set"]:
+                    if len(rec["hosts"]) < _MAX_QUERY_HOSTS_PER:
+                        rec["host_set"].add(host)
+                        rec["hosts"].append(host)
+                    else:
+                        rec["truncated"] = True
+                value, value_cut = _bounded_metadata(raw_value, _MAX_QUERY_VALUE_BYTES)
+                if value_cut:
+                    rec["truncated"] = True
+                if value not in rec["value_set"]:
+                    if len(rec["values"]) < _MAX_QUERY_VALUES_PER:
+                        rec["value_set"].add(value)
+                        rec["values"].append(value)
+                    else:
+                        rec["truncated"] = True
+        ordered = sorted(agg.items(), key=lambda kv: (-kv[1]["count"], kv[0]))
+        params = [
+            {
+                "name": name,
+                "count": rec["count"],
+                "hosts": sorted(rec["hosts"]),
+                "sample_values": rec["values"],
+                "truncated": rec["truncated"],
+            }
+            for name, rec in ordered[:_MAX_QUERY_PARAMS]
+        ]
+        return {
+            "params": params,
+            "param_count": len(agg),
+            "flows_scanned": len(items),
+            "flows_with_query": flows_with_query,
+            "has_more": len(agg) > _MAX_QUERY_PARAMS,
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

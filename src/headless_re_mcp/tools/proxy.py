@@ -74,6 +74,23 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.queries")
+    def proxy_queries(session_id: str) -> dict[str, Any]:
+        """Aggregate URL query parameters across all captured flows.
+
+        Surfaces tokens, API keys and tracking identifiers that ride in query
+        strings, which proxy.flows only shows one URL at a time. Answers with
+        params (each carrying name, count, hosts, sample_values, and truncated),
+        param_count, flows_scanned, flows_with_query, and has_more. params is
+        sorted most-used first and capped at 256 names; count is total
+        occurrences across flows, not distinct URLs. sample_values holds a few
+        distinct values per name, and truncated on a row marks a clipped name or
+        value or an over-cap host/value list. has_more is true when more than
+        256 distinct parameter names were seen. There is no values or flows
+        field, and a full 256-row list with has_more false is every parameter.
+        """
+        return _dump(analysis.proxy_queries(session_id))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
