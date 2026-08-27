@@ -189,6 +189,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
   glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
 
+### 修复（`dotnet.enumerate` / `dotnet.xrefs` 把被 #~ 流截短的表报成完整）
+
+- CLR 元数据枚举先按表头声明的行数把整张表读进列表再分页，行数是样本里的一个数字，`_iter_table_rows`
+  为防 DoS 会把遍历夹到 `#~` 流实际放得下的行数（`_rows_the_stream_can_hold`）。当表头声明的行数超过流
+  能容纳的（被截断或手工构造的 `#~` 流），遍历被静默夹短，`total` 就回成夹短后的行数、`truncated`（分页语义）
+  仍为 false——调用方把 `total` 当成「整张类型/方法/字段/资源表」读时，读到的其实是损坏表的一个切片。
+- 现 `enumerate_metadata` 与 `list_memberref_xrefs` 新增 `rows_truncated`：仅当表头声明的行数多于流放得下的
+  行数时为 `true`，并附 `declared_total`（表头声明的行数，仅在被截短时出现）。`rows_truncated` 与既有的
+  `truncated` 分明：后者说的是分页在 `limit` 处截了窗口，前者说的是分页之前整张表就已短于它自己声明的行数。
+  `#Strings` 堆没有行数表，从不带 `rows_truncated`。两个工具文档串同步说明。
+- 新增单测：TypeDef 表头声明 5 行但流只放得下 2 行时 `rows_truncated=true`、`declared_total=5`、`total=2`；
+  声明与实际一致时 `rows_truncated=false` 且不带 `declared_total`。既有的 `test_metadata_hostile_tables`
+  在把某表行数改成 0x7FFFFFFF/0xFFFFFFFF 后另断言 `rows_truncated` 为真、`declared_total` 等于所声明值，
+  而诚实样本仍为假。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
