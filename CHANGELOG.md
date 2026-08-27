@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`ui.tree` 深度封顶的节点把 `children: []` 伪装成叶子）
+
+- `ui.tree`（win32 与 uia 两个后端）在节点触及 `max_depth` 时直接返回
+  `children: []`，且深度型截断不翻动顶层 `truncated`。于是一个其实在深度线
+  下方还有子窗口/控件的节点，被读成“这个窗口没有子节点”,按树查找控件的调用方会
+  在目标的上一层就放弃;而纯深度截断的整棵树还报 `truncated: false`，看不出被切过。
+  现在 `build_window_tree` / `build_uia_tree` 在深度边界处探一个仍在 PID 范围内的
+  子节点(win32 用 `max_callbacks=1`,不做完整枚举;uia 只数 `allowed_pids` 内的子控件,
+  范围外的本来也不会显示、不算被隐藏),命中则给该节点打 `children_truncated` 并置顶层
+  `truncated=true`。真正的叶子和范围外子节点不误报。`ui.tree` docstring 补充说明
+  `truncated` 覆盖 `max_depth` 截断,以及 `children_truncated` 字段。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
