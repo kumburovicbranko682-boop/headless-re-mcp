@@ -45,8 +45,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List declared and requested permissions.
 
         Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        so a list that filled the cap is not read as every permission. A cut
+        list is the alphabetically first names, not a sample. There is no
+        declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
@@ -66,7 +67,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        read as every component. A cut list is the alphabetically first
+        names, not a sample. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 
@@ -75,7 +77,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List bundled native libraries and their ABIs.
 
         Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
+        filled the cap is not read as every .so. A cut list is the
+        alphabetically first names, not a sample. There is no libs or
         libraries field.
         """
         return _dump(analysis.apk_native_libs(session_id))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
@@ -55,3 +56,31 @@ def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     assert "Answers with native_libs" in doc
     assert "abis" in doc
     assert "has_more" in doc
+
+
+class _ReverseOrderApk:
+    def get_files(self) -> list[str]:
+        # Archive order that is the reverse of the sorted order, so a cap
+        # taken before sorting keeps the wrong names.
+        return [f"lib/x86/z{index}.so" for index in range(9, -1, -1)]
+
+
+def test_apk_native_libs_lists_the_alphabetical_head_not_a_sample(
+    monkeypatch: Any,
+) -> None:
+    """A cut list capped archive order first, then sorted the kept slice.
+
+    Measured: 10 libs yielded z9..z0, cap 3 -> the page was z7/z8/z9
+    sorted, so the alphabetically first libs z0/z1/z2 were missing from a
+    list that reads as the head, and which .so files appear depended on
+    zip iteration order.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_NATIVE_LIBS", 3)
+    client = mod.ApkClient()
+    client._apk = lambda _path: _ReverseOrderApk()  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    assert payload["native_libs"] == ["lib/x86/z0.so", "lib/x86/z1.so", "lib/x86/z2.so"]
+    assert payload["count"] == 3
+    assert payload["has_more"] is True

@@ -38,15 +38,13 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    # Sort the whole set before capping. Capping first and sorting the kept
+    # slice returns whichever ``limit`` names the source happened to yield
+    # first, presented in sorted order -- a list that reads as the
+    # alphabetical head of the names while arbitrary names inside that range
+    # are silently missing.
+    items = sorted(str(item) for item in (values or []))
+    return items[:limit], len(items) > limit
 
 
 class _ParsedApk:
@@ -271,7 +269,6 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -279,16 +276,16 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
             libs.append(text)
+        # Sort before capping so a cut list is the alphabetical head of the
+        # .so names, not the archive-order first _MAX_NATIVE_LIBS sorted.
         libs.sort()
+        page = libs[:_MAX_NATIVE_LIBS]
         return {
-            "native_libs": libs,
+            "native_libs": page,
             "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
+            "count": len(page),
+            "has_more": len(libs) > len(page),
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

@@ -411,22 +411,22 @@ class AdbBackend:
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         pkgs: list[str] = []
-        has_more = False
         for line in str(raw).splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
             if not name:
                 continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
             pkgs.append(name)
+        # Sort before capping so a cut list is the alphabetical head of the
+        # installed packages, not the pm-list-order first ``capped`` sorted --
+        # otherwise which packages appear depends on device enumeration order.
         pkgs.sort()
+        page = pkgs[:capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "has_more": len(pkgs) > len(page),
             "third_party_only": third_party_only,
         }
 

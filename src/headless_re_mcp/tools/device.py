@@ -79,7 +79,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List installed package names, optionally only third-party ones.
 
         Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        page that filled the cap is not read as every package. A cut list is
+        the alphabetically first names, not a sample.
         """
         return _dump(
             analysis.device_packages(

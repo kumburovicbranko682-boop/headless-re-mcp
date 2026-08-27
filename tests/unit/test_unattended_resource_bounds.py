@@ -3154,6 +3154,21 @@ class TestDeviceListsDiscloseTruncation:
         assert result["count"] == 5
         assert result["has_more"] is False
 
+    def test_a_package_list_is_the_alphabetical_head_not_a_sample(self) -> None:
+        """A cut list capped pm-list order first, then sorted the kept slice.
+
+        Measured: pm listed com.z..com.a, cap 3 -> the page was the last
+        three enumerated sorted, so com.a/com.b/com.c were missing from a
+        list that reads as the head, and which packages appear depended on
+        device enumeration order.
+        """
+        letters = "zyxwvutsrqponm"
+        raw = "\n".join(f"package:com.{letter}" for letter in letters)
+        result = self._backend(raw).packages("emulator-5554", limit=3)
+        assert result["packages"] == ["com.m", "com.n", "com.o"]
+        assert result["count"] == 3
+        assert result["has_more"] is True
+
     def test_properties_past_the_cap_say_so(self) -> None:
         raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))
         result = self._backend(raw).properties("emulator-5554", limit=4)
@@ -3349,6 +3364,41 @@ class TestDeviceListsDiscloseTruncation:
         assert len(result["activities"]) == _MAX_COMPONENT_NAMES
         assert result["has_more"] is True
         assert result["main_activity"] == "A0"
+
+    def test_components_list_the_alphabetical_head_not_a_sample(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A cut component list capped manifest order first, then sorted it.
+
+        Measured: activities yielded A9..A0, cap 3 -> the page was A7/A8/A9
+        sorted, so the alphabetically first activities A0/A1/A2 were missing
+        from a list that reads as the head of the manifest.
+        """
+        from headless_re_mcp.backends.apk import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_COMPONENT_NAMES", 3)
+
+        class FakeApk:
+            def get_activities(self) -> list[str]:
+                return [f"A{index}" for index in range(9, -1, -1)]
+
+            def get_services(self) -> list[str]:
+                return []
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "A0"
+
+        client = mod.ApkClient()
+        client._apk = lambda path: FakeApk()  # type: ignore[method-assign]
+        result = client.components(tmp_path / "app.apk")
+        assert result["activities"] == ["A0", "A1", "A2"]
+        assert result["has_more"] is True
 
     def test_a_cut_manifest_says_it_was_cut(self, tmp_path: Any) -> None:
         from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
