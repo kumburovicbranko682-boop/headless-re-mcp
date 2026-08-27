@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.decode` 跳过资源被当成「APK 没有资源」）
+
+- `apk.decode` 用 `has_resources` 报告是否生成了 `res/` 目录。但 `no_resources` 会给 apktool 传 `-r`
+  (不反编译资源),于是无论 APK 里有没有资源,`res/` 都不会写出、`has_resources` 恒为 `False`——调用者
+  据此会断定「这个 APK 没有资源」,而事实是资源只是被跳过没解。这把「确实没有资源」和「按要求跳过了资源」
+  混为一谈。
+- 现在回包新增 `resources_decoded`(仅当传了 `no_resources` 才为 `False`),表明是否**尝试**过反编译资源:
+  `resources_decoded: False, has_resources: False` 读作「资源被跳过」,而 `resources_decoded: True,
+  has_resources: False` 才读作「资源解过、确实没有」。客户端与 `apk.decode` 描述同步点名该字段。
+- 新增回归:默认 `resources_decoded: True`、解过但无 `res/` 报真实的「没有资源」、`no_resources` 跳过时
+  `resources_decoded: False` 不被误当成资源缺失,以及 `apk.decode` 描述点名 `resources_decoded`。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
