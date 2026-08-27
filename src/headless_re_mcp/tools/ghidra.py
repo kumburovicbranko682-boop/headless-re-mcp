@@ -61,6 +61,25 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.exports")
+    def ghidra_exports(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """External entry points Ghidra found -- the binary's exports.
+
+        Runs the symbol table's external-entry-point iterator. Answers with
+        items, each carrying name (empty for an unnamed entry point, which is
+        still an export) and address, plus count and has_more so a page that
+        filled the limit is not read as every export. This is the export side
+        of the symbol table specifically -- what a loader can enter from
+        outside -- not the whole ghidra.symbols listing, and a second reading
+        beside r2.exports from a different engine. A failed export is an error,
+        not a binary with no exports.
+        """
+        return _dump(analysis.ghidra_exports(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,

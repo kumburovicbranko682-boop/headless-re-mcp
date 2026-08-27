@@ -453,3 +453,53 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_ghidra_exports_passes_the_exports_mode_and_returns_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """exports drives the postScript in exports mode and returns name/address.
+
+    Guards the plumbing (client -> ExportJson mode arg -> export_exports.json):
+    getExternalEntryPointIterator runs only inside Ghidra, but the mode routing
+    and the export read are what a wrong wiring would break. An unnamed entry
+    point survives with an empty name rather than being dropped.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(
+                    '{"mode": "exports", "items": [{"name": "JNI_OnLoad",'
+                    ' "address": "00012340"}, {"name": "", "address": "00012400"}],'
+                    ' "count": 2, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    listed = client.exports(_binary(tmp_path), tmp_path / "project")
+
+    assert listed["items"] == [
+        {"name": "JNI_OnLoad", "address": "00012340"},
+        {"name": "", "address": "00012400"},
+    ]
+    assert listed["has_more"] is False
+    assert listed["export_path"]
+    assert "exports" in calls[0]
+    assert any(arg.endswith("export_exports.json") for arg in calls[0])
+
+
+def test_ghidra_exports_description_names_its_fields() -> None:
+    """The docstring must promise name/address and the r2.exports cross-read."""
+    exports = _tool_docstring("ghidra.exports")
+    assert "name" in exports
+    assert "address" in exports
+    assert "r2.exports" in exports
+    assert "has_more" in exports

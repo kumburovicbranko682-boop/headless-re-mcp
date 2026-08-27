@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,16 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（`ghidra.exports` 列出 Ghidra 的导出/外部入口）
+
+- 新增只读工具 `ghidra.exports`：`ExportJson.py` 增加 `exports` 模式，走符号表的
+  external-entry-point 迭代器（`getExternalEntryPointIterator`），逐个 `getPrimarySymbol`
+  取名。这是符号表的导出侧——加载器可以从外部进入的地址，与 `ghidra.symbols` 的全量符号表不同，
+  也是继 `r2.exports` 之后来自另一引擎的第二视角；`r2.exports`、`static.exports`、`frida.exports`
+  都在，唯独 Ghidra 之前没有导出清单。回 `items`，每项含 `name`（匿名入口点为空——无名导出仍是导出，
+  不丢行）与 `address`，外加 `count` 与 `has_more`，满上限的一页不会被读成全部导出。导出失败按错误上抛，
+  不是「没有导出的二进制」。`ghidra.*` 只读线补上导出清单。
 
 ### 新增（监控台工作台）
 
@@ -1105,7 +1115,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **OpenAI 桥接 CLI 三形态**：默认输出完整导出(count==tools==name_map)、`--names-only`
   只剩 `{name_map,count}`、`--output` 把完整 JSON 写到(自动创建的)路径并在 stdout 报告而不
   把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
-- **全表面资源策略有界**：全部 265 个工具的 `resource_policy` 都有有限且为正的超时与为正的
+- **全表面资源策略有界**：全部 266 个工具的 `resource_policy` 都有有限且为正的超时与为正的
   输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
 - **ScyllaHide 画像映射纯函数直测**：别名/节名规范化与其 fail-closed 拒绝(空串或未知名会连
   同白名单一起报出)、3 字符短 token(`vmp`/`tmd`)只按词边界匹配以免命中别的词内部、非壳类

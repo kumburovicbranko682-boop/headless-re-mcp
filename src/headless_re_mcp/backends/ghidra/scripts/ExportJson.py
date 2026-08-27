@@ -60,6 +60,24 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+elif mode == "exports":
+    items = []
+    # External entry points are Ghidra's notion of exports: the addresses a
+    # loader could enter from outside. getPrimarySymbol names each; a bare
+    # entry point with no symbol still counts, so name falls back to empty
+    # rather than dropping the row (an unnamed export is still an export).
+    for addr in st.getExternalEntryPointIterator():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        sym = st.getPrimarySymbol(addr)
+        items.append(
+            {
+                "name": sym.getName() if sym is not None else "",
+                "address": str(addr),
+            }
+        )
+    payload["items"] = items
 elif mode == "xrefs":
     items = []
     if address_arg:
