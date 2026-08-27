@@ -162,20 +162,39 @@ def rank_iat_candidates(
         )
     )
     merged = _merge_overlaps(scored)
-    if max_candidates > 0 and len(merged) > max_candidates:
+    # merged is the full deduped, score-ordered set. raw_candidate_count counts
+    # pre-dedup scan hits, so it cannot tell a caller how many *distinct*
+    # candidates the cap dropped: with more survivors than max_candidates, the
+    # returned list is only the top slice and the tail -- which can hold a real,
+    # non-overlapping IAT -- is silently gone. Disclose the cut so an empty tail
+    # is not mistaken for "these are all the candidates there were".
+    merged_total = len(merged)
+    candidates_truncated = max_candidates > 0 and merged_total > max_candidates
+    if candidates_truncated:
         merged = merged[:max_candidates]
     best = merged[0] if merged else None
+    note = (
+        "ranked/deduped heuristic candidates; caller must confirm via "
+        "imports.read + rebuild gate"
+    )
+    if candidates_truncated:
+        note += (
+            f"; showing the top {len(merged)} of {merged_total} deduped candidates "
+            f"(max_candidates={max_candidates}), so {merged_total - len(merged)} "
+            "lower-ranked candidate(s) were dropped -- this is a slice, not the "
+            "full set"
+        )
     return {
         "candidates": merged,
         "candidate_count": len(merged),
         "raw_candidate_count": len(scored),
+        "merged_total": merged_total,
+        "candidates_truncated": candidates_truncated,
+        "max_candidates": max_candidates,
         "best": best,
         "blind_selection": False,
         "claims_universal_unpack": False,
-        "note": (
-            "ranked/deduped heuristic candidates; caller must confirm via "
-            "imports.read + rebuild gate"
-        ),
+        "note": note,
     }
 
 

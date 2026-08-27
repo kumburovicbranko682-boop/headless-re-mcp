@@ -340,7 +340,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List IAT candidates; caller must confirm before rebuild.
 
         Answers with candidates, candidate_count, confirmed false, and
-        claims_universal_unpack false. There is no items field.
+        claims_universal_unpack false. There is no items field. candidates is
+        the top slice of the deduped set: candidates_truncated says whether the
+        max_candidates cap dropped lower-ranked survivors, with merged_total
+        (distinct deduped candidates before the cap) and max_candidates, so an
+        empty tail is not mistaken for the full candidate set.
         """
         return _dump(
             analysis.unpack_iat_scan(

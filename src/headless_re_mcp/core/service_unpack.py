@@ -458,15 +458,27 @@ class UnpackMixin:
         data["candidates"] = ranked["candidates"]
         data["candidate_count"] = ranked["candidate_count"]
         data["raw_candidate_count"] = ranked["raw_candidate_count"]
+        # Surface the local dedupe cap so candidates is not read as the full set.
+        data["merged_total"] = ranked["merged_total"]
+        data["candidates_truncated"] = ranked["candidates_truncated"]
+        data["max_candidates"] = ranked["max_candidates"]
         data["best"] = ranked.get("best")
         data["confirmed"] = False
         data["claims_universal_unpack"] = False
         data["blind_selection"] = False
-        data["next"] = (
+        next_text = (
             "Caller must confirm one candidate via unpack.iat.validate "
             "(iat_va, size, optional oep_rva) before rebuild. "
             "IME/high-RVA noise is down-ranked; half-sparse layouts need validate."
         )
+        if ranked["candidates_truncated"]:
+            next_text += (
+                f" Showing the top {ranked['candidate_count']} of "
+                f"{ranked['merged_total']} deduped candidates "
+                f"(max_candidates={ranked['max_candidates']}); raise max_candidates "
+                "to see lower-ranked candidates before ruling out a real IAT."
+            )
+        data["next"] = next_text
         return _success(data, session_id=session_id, backend="unpack")
     def unpack_iat_validate(
         self,
