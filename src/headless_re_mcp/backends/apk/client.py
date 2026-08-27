@@ -40,16 +40,18 @@ class ApkError(RuntimeError):
 
 
 @contextmanager
-def _manifest_read(path: Path) -> Iterator[None]:
+def _androguard_read(path: Path) -> Iterator[None]:
     """Turn a lenient-androguard getter failure into a structured error.
 
-    androguard's ``APK`` constructor is lenient: on a file whose
-    AndroidManifest.xml is not valid AXML it logs the problem and still returns
-    an object, so the failure surfaces later from the getters called here --
-    ``get_package`` raises ``KeyError`` on such a file. A malformed APK is
+    androguard is lenient about damaged input: the ``APK`` constructor logs and
+    still returns an object when AndroidManifest.xml is not valid AXML, and
+    ``AnalyzeAPK`` likewise hands back an analysis over a partially-parsable
+    DEX. The failure then surfaces from the getters called under this guard --
+    manifest getters (``get_package`` raises ``KeyError``) or analysis getters
+    (``get_classes``/``get_strings``/``get_xref_from``). A malformed APK is
     hostile input, not a server defect, so it must read as ``backend_error``
-    instead of escaping as an ``internal_error`` incident. ``ApkError`` (an
-    already-structured invalid_params/not_found/backend_error) passes through.
+    instead of escaping as an ``internal_error`` incident. An already-structured
+    ``ApkError`` (invalid_params/not_found/backend_error) passes through.
     """
     try:
         yield
@@ -189,7 +191,7 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             return {
                 "opened": True,
                 "package": apk.get_package(),
@@ -210,7 +212,7 @@ class ApkClient:
 
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             try:
                 xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
             except Exception as exc:  # noqa: BLE001
@@ -223,7 +225,7 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
             try:
                 requested, requested_more = _cap_names(
@@ -240,7 +242,7 @@ class ApkClient:
 
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             items: list[JsonObject] = []
             try:
                 names = apk.get_signature_names()
@@ -280,7 +282,7 @@ class ApkClient:
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
             services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
             receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
@@ -296,7 +298,7 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        with _manifest_read(path):
+        with _androguard_read(path):
             libs: list[str] = []
             abis: set[str] = set()
             has_more = False
@@ -321,25 +323,26 @@ class ApkClient:
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
-        names: list[str] = []
-        scan_more = False
-        for klass in parsed.analysis.get_classes():
-            if klass.is_external():
-                continue
-            if len(names) >= _MAX_CLASSES_COLLECT:
-                scan_more = True
-                break
-            names.append(klass.name)
-        names.sort()
-        window = names[offset : offset + limit]
-        return {
-            "classes": window,
-            "count": len(window),
-            "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
-            "scan_capped": scan_more,
-        }
+        with _androguard_read(path):
+            names: list[str] = []
+            scan_more = False
+            for klass in parsed.analysis.get_classes():
+                if klass.is_external():
+                    continue
+                if len(names) >= _MAX_CLASSES_COLLECT:
+                    scan_more = True
+                    break
+                names.append(klass.name)
+            names.sort()
+            window = names[offset : offset + limit]
+            return {
+                "classes": window,
+                "count": len(window),
+                "total": len(names),
+                "offset": offset,
+                "has_more": offset + len(window) < len(names),
+                "scan_capped": scan_more,
+            }
 
     def methods(
         self,
@@ -353,93 +356,96 @@ class ApkClient:
         if not target:
             raise ApkError("invalid_params", "class_name is required")
         parsed = self._parsed(path)
-        found = [
-            klass
-            for klass in parsed.analysis.get_classes()
-            if klass.name == target or klass.name == _dotted_to_smali(target)
-        ]
-        if not found:
-            raise ApkError("not_found", "class not found", class_name=class_name)
-        methods: list[JsonObject] = []
-        scan_more = False
-        for klass in found:
-            for method in klass.get_methods():
-                if len(methods) >= _MAX_METHODS_COLLECT:
-                    scan_more = True
+        with _androguard_read(path):
+            found = [
+                klass
+                for klass in parsed.analysis.get_classes()
+                if klass.name == target or klass.name == _dotted_to_smali(target)
+            ]
+            if not found:
+                raise ApkError("not_found", "class not found", class_name=class_name)
+            methods: list[JsonObject] = []
+            scan_more = False
+            for klass in found:
+                for method in klass.get_methods():
+                    if len(methods) >= _MAX_METHODS_COLLECT:
+                        scan_more = True
+                        break
+                    methods.append(
+                        {
+                            "name": method.name,
+                            "descriptor": str(getattr(method, "descriptor", "")),
+                            "access": str(getattr(method, "access", "")),
+                        }
+                    )
+                if scan_more:
                     break
-                methods.append(
-                    {
-                        "name": method.name,
-                        "descriptor": str(getattr(method, "descriptor", "")),
-                        "access": str(getattr(method, "access", "")),
-                    }
-                )
-            if scan_more:
-                break
-        window = methods[offset : offset + limit]
-        return {
-            "class_name": found[0].name,
-            "methods": window,
-            "count": len(window),
-            "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
-            "scan_capped": scan_more,
-        }
+            window = methods[offset : offset + limit]
+            return {
+                "class_name": found[0].name,
+                "methods": window,
+                "count": len(window),
+                "total": len(methods),
+                "offset": offset,
+                "has_more": offset + len(window) < len(methods),
+                "scan_capped": scan_more,
+            }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        seen: set[str] = set()
-        scan_more = False
-        for item in parsed.analysis.get_strings():
-            if len(seen) >= _MAX_STRINGS_COLLECT:
-                scan_more = True
-                break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
-        values = sorted(seen)
-        window = values[offset : offset + limit]
-        return {
-            "strings": window,
-            "count": len(window),
-            "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
-            "scan_capped": scan_more,
-        }
+        with _androguard_read(path):
+            seen: set[str] = set()
+            scan_more = False
+            for item in parsed.analysis.get_strings():
+                if len(seen) >= _MAX_STRINGS_COLLECT:
+                    scan_more = True
+                    break
+                seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            values = sorted(seen)
+            window = values[offset : offset + limit]
+            return {
+                "strings": window,
+                "count": len(window),
+                "total": len(values),
+                "offset": offset,
+                "has_more": offset + len(window) < len(values),
+                "scan_capped": scan_more,
+            }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         target = method_name.strip() if isinstance(method_name, str) else ""
         if not target:
             raise ApkError("invalid_params", "method_name is required")
         parsed = self._parsed(path)
-        cap = max(1, int(limit))
-        callers: list[JsonObject] = []
-        has_more = False
-        for method in parsed.analysis.get_methods():
-            if method.is_external() or method.name != target:
-                continue
-            for _, call, _ in method.get_xref_from():
-                if len(callers) >= cap:
-                    # Only set once something was actually left out, so a result
-                    # that happens to fill the page is not reported as partial.
-                    has_more = True
+        with _androguard_read(path):
+            cap = max(1, int(limit))
+            callers: list[JsonObject] = []
+            has_more = False
+            for method in parsed.analysis.get_methods():
+                if method.is_external() or method.name != target:
+                    continue
+                for _, call, _ in method.get_xref_from():
+                    if len(callers) >= cap:
+                        # Only set once something was actually left out, so a
+                        # result that happens to fill the page is not partial.
+                        has_more = True
+                        break
+                    callers.append(
+                        {
+                            "class": str(call.class_name),
+                            "method": str(call.name),
+                        }
+                    )
+                if has_more:
                     break
-                callers.append(
-                    {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
-                    }
-                )
-            if has_more:
-                break
-        return {
-            "method_name": target,
-            "callers": callers,
-            "count": len(callers),
-            # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
-            "has_more": has_more,
-        }
+            return {
+                "method_name": target,
+                "callers": callers,
+                "count": len(callers),
+                # A caller deciding "these are all the callers" has to know
+                # whether the enumeration ended or merely stopped.
+                "has_more": has_more,
+            }
 
 
 def _dotted_to_smali(name: str) -> str:

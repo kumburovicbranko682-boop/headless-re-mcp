@@ -320,6 +320,22 @@ class _FakeParsed:
         return self._methods
 
 
+class _RaisingAnalysis:
+    """Every analysis getter throws, like androguard mid-parse on a bad DEX."""
+
+    def _boom(self) -> Any:
+        raise RuntimeError("androguard failed mid-analysis")
+
+    get_classes = _boom
+    get_strings = _boom
+    get_methods = _boom
+
+
+class _RaisingParsed:
+    def __init__(self) -> None:
+        self.analysis = _RaisingAnalysis()
+
+
 class TestApkXrefsSayWhenTheyStopped:
     """A caller list that hit the cap looks exactly like one that ended."""
 
@@ -447,6 +463,42 @@ class TestApkMalformedInputIsStructured:
             assert exc.code == "backend_error"
         else:
             assert isinstance(result, dict)
+
+
+class TestApkAnalysisFailuresAreStructured:
+    """A getter that throws mid-analysis reads as backend_error, not internal_error.
+
+    ``_parsed`` wraps ``AnalyzeAPK``, but the analysis object it hands back can
+    still raise from its getters on a partially-parsable DEX. Those escapes
+    reached the service as an internal_error incident; the ``_androguard_read``
+    guard makes every DEX read surface a structured backend_error instead. A
+    raising analysis double stands in for a corrupt DEX, so this needs neither
+    androguard nor a real fixture and runs on every host.
+    """
+
+    @pytest.mark.parametrize(
+        "op,args",
+        [
+            ("classes", ()),
+            ("strings", ()),
+            ("methods", ("com.example.Foo",)),
+            ("xrefs", ("decrypt",)),
+        ],
+    )
+    def test_a_raising_getter_becomes_backend_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        op: str,
+        args: tuple[Any, ...],
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _RaisingParsed())
+        with pytest.raises(ApkError) as info:
+            getattr(client, op)(tmp_path / "app.apk", *args)
+        assert info.value.code == "backend_error"
 
 
 class TestFridaEnumerationsSayWhenTheyStopped:
