@@ -19,6 +19,7 @@ import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core import service_unpack as mod
+from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.service_unpack import (
     _read_dump_for_rebuild,
@@ -539,3 +540,136 @@ def test_unpack_cancel_attempts_a_pause_when_dynamic_is_open(tmp_path: Path) -> 
     assert result.ok and result.data is not None
     assert result.data["debuggee_paused_attempted"] is True
     assert result.data["original_input_preserved"] is True
+
+
+# ---------------------------------------------------------------------------
+# unpack_iat_rebuild / unpack_pe_rebuild guard and refusal arms
+# ---------------------------------------------------------------------------
+
+
+def _cancelled_session(service: AnalysisService, tmp_path: Path) -> tuple[str, Path]:
+    """A session whose unpack orchestration is in a terminal (cancelled) phase."""
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.unpack_start(session_id, use_die=False, execute_upx=False).ok
+    assert service.unpack_cancel(session_id).ok
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    return session_id, dump
+
+
+def test_iat_rebuild_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session_id, dump = _cancelled_session(service, tmp_path)
+    result = service.unpack_iat_rebuild(session_id, str(dump), iat_va=0x140002000, size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code != "invalid_params"
+
+
+def test_iat_rebuild_rejects_a_dump_path_outside_the_artifact_root(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    outside = tmp_path / "loose.bin"
+    outside.write_bytes(_runtime_dump())
+    result = service.unpack_iat_rebuild(session_id, str(outside), iat_va=0x140002000, size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_iat_rebuild_rejects_non_list_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"entries": "nope"}),
+    )
+    result = service.unpack_iat_rebuild(session_id, str(dump), iat_va=0x140002000, size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_iat"
+
+
+def test_iat_rebuild_gate_refuses_an_unrecoverable_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    # No resolvable API entries: the rebuild gate must refuse the range.
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"entries": []}),
+    )
+    result = service.unpack_iat_rebuild(session_id, str(dump), iat_va=0x140002000, size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "iat_rebuild_blocked"
+
+
+def test_pe_rebuild_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session_id, dump = _cancelled_session(service, tmp_path)
+    result = service.unpack_pe_rebuild(session_id, str(dump), entry_point_rva=0x1000)
+    assert not result.ok and result.error is not None
+    assert result.error.code != "invalid_params"
+
+
+def test_pe_rebuild_rejects_a_dump_path_outside_the_artifact_root(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    outside = tmp_path / "loose.bin"
+    outside.write_bytes(_runtime_dump())
+    result = service.unpack_pe_rebuild(session_id, str(outside))
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_pe_rebuild_propagates_a_failed_imports_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    failure = Result[dict[str, Any]](
+        ok=False, error=RpcError(code="imports_read_failed", message="boom")
+    )
+    monkeypatch.setattr(service, "imports_read", lambda *a, **k: failure)
+    result = service.unpack_pe_rebuild(session_id, str(dump), iat_va=0x140002000, iat_size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "imports_read_failed"
+
+
+def test_pe_rebuild_rejects_non_list_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"entries": 5}),
+    )
+    result = service.unpack_pe_rebuild(session_id, str(dump), iat_va=0x140002000, iat_size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_iat"
