@@ -411,8 +411,20 @@ _DT_NEEDED = 1
 _DT_STRTAB = 5
 _DT_SONAME = 14
 _DT_STRSZ = 10
+_DT_BIND_NOW = 24
+_DT_FLAGS = 30
 _DT_FLAGS_1 = 0x6FFFFFFB
 _DF_1_PIE = 0x08000000
+# The exploit-mitigation ("checksec") facts. NX comes from PT_GNU_STACK's
+# permissions; RELRO from PT_GNU_RELRO plus whether the loader is told to bind
+# eagerly (DT_BIND_NOW, or DF_BIND_NOW/DF_1_NOW), which upgrades partial RELRO
+# to full. radare2's `iI` reports the same nx/relro, so the native gate can
+# cross-check the stdlib reading against real analysis.
+_PT_GNU_RELRO = 0x6474E552
+_PT_GNU_STACK = 0x6474E551
+_PF_X = 0x1
+_DF_BIND_NOW = 0x08
+_DF_1_NOW = 0x01
 _ELF_MAX_NEEDED = 512
 _ELF_MAX_STRTAB = 4 * 1024 * 1024
 # The GNU build-id (a PT_NOTE record) uniquely identifies a build and is how a
@@ -1942,6 +1954,19 @@ def _elf_layout_facts(
             pie = False
         if pie is not None:
             facts["pie"] = pie
+        # Exploit-mitigation posture, the same two radare2's `iI` reports. NX is
+        # on when a PT_GNU_STACK segment marks the stack non-executable (r2 reads
+        # it the same way: no such segment, or an executable one, means off).
+        # RELRO is "none" without PT_GNU_RELRO, "partial" with it, and "full"
+        # when the dynamic section also forces eager binding.
+        facts["nx"] = program["has_gnu_stack"] and not program["gnu_stack_exec"]
+        if program["has_gnu_relro"]:
+            bind_now = program["has_dynamic"] and _elf_dynamic_bind_now(
+                stream, order, bits, program["dyn_off"], program["dyn_sz"]
+            )
+            facts["relro"] = "full" if bind_now else "partial"
+        else:
+            facts["relro"] = "none"
         if program["interp"] is not None:
             facts["interpreter"] = program["interp"]
         build_id = _elf_build_id(stream, order, program["notes"])
@@ -1962,6 +1987,7 @@ def _elf_program_headers(
     stream.seek(phoff)
     table = stream.read(entsize * phnum)
     has_interp = has_dynamic = False
+    has_gnu_stack = gnu_stack_exec = has_gnu_relro = False
     interp: str | None = None
     dyn_off = dyn_sz = 0
     loads: list[tuple[int, int, int]] = []
@@ -1972,6 +1998,7 @@ def _elf_program_headers(
             break
         p_type = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
         if bits == 64:
+            p_flags = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
             p_offset = int.from_bytes(entry[8:16], order)  # type: ignore[arg-type]
             p_vaddr = int.from_bytes(entry[16:24], order)  # type: ignore[arg-type]
             p_filesz = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
@@ -1979,6 +2006,7 @@ def _elf_program_headers(
             p_offset = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
             p_vaddr = int.from_bytes(entry[8:12], order)  # type: ignore[arg-type]
             p_filesz = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+            p_flags = int.from_bytes(entry[24:28], order)  # type: ignore[arg-type]
         if p_type == _PT_LOAD and p_filesz > 0:
             loads.append((p_vaddr, p_offset, p_filesz))
         elif p_type == _PT_DYNAMIC:
@@ -1990,9 +2018,17 @@ def _elf_program_headers(
             interp = stream.read(p_filesz).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
         elif p_type == _PT_NOTE and 0 < p_filesz <= _ELF_MAX_NOTE_BYTES and p_offset > 0:
             notes.append((p_offset, p_filesz))
+        elif p_type == _PT_GNU_STACK:
+            has_gnu_stack = True
+            gnu_stack_exec = bool(p_flags & _PF_X)
+        elif p_type == _PT_GNU_RELRO:
+            has_gnu_relro = True
     return {
         "has_interp": has_interp,
         "has_dynamic": has_dynamic,
+        "has_gnu_stack": has_gnu_stack,
+        "gnu_stack_exec": gnu_stack_exec,
+        "has_gnu_relro": has_gnu_relro,
         "interp": interp,
         "dyn_off": dyn_off,
         "dyn_sz": dyn_sz,
@@ -2029,6 +2065,40 @@ def _elf_dynamic_pie(
             break
         if tag == _DT_FLAGS_1:
             return bool(val & _DF_1_PIE)
+    return False
+
+
+def _elf_dynamic_bind_now(
+    stream: BinaryIO, order: str, bits: int, dyn_off: int, dyn_sz: int
+) -> bool:
+    """True when the dynamic section forces eager binding -- what turns partial
+    RELRO into full. Any of three markers says so: a DT_BIND_NOW tag, DF_BIND_NOW
+    in DT_FLAGS, or DF_1_NOW in DT_FLAGS_1. Bounded exactly like the PIE reader; a
+    section we cannot read falls closed to False (partial), never raising.
+    """
+    if dyn_off <= 0 or dyn_sz <= 0:
+        return False
+    entsize = 16 if bits == 64 else 8
+    vsize = entsize // 2
+    count = min(dyn_sz // entsize, _ELF_MAX_DYN)
+    if count <= 0:
+        return False
+    stream.seek(dyn_off)
+    table = stream.read(entsize * count)
+    for i in range(count):
+        entry = table[i * entsize : (i + 1) * entsize]
+        if len(entry) < entsize:
+            break
+        tag = int.from_bytes(entry[0:vsize], order)  # type: ignore[arg-type]
+        val = int.from_bytes(entry[vsize:entsize], order)  # type: ignore[arg-type]
+        if tag == _DT_NULL:
+            break
+        if tag == _DT_BIND_NOW:
+            return True
+        if tag == _DT_FLAGS and val & _DF_BIND_NOW:
+            return True
+        if tag == _DT_FLAGS_1 and val & _DF_1_NOW:
+            return True
     return False
 
 

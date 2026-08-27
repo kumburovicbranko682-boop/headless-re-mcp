@@ -11,6 +11,7 @@ radare2 and a system ELF, both present on the Linux CI lane, so it runs there.
 from __future__ import annotations
 
 import glob
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,6 +22,12 @@ from headless_re_mcp.core.service import AnalysisService
 
 _MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
 _MACHO_MARKER = "headless-macho-fixture"
+
+# radare2 `iI` prints one mitigation per line, e.g. "nx    true" / "relro  full".
+_R2_NX_RE = re.compile(r"^nx\s+(true|false)\s*$", re.MULTILINE)
+_R2_RELRO_RE = re.compile(r"^relro\s+(\S+)\s*$", re.MULTILINE)
+# r2 spells "no RELRO" as "no"; the stdlib reader spells it "none".
+_R2_RELRO = {"full": "full", "partial": "partial", "no": "none"}
 
 
 def _system_elf() -> Path | None:
@@ -72,6 +79,19 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         # PE-specific ImageBase/arch mapping does not apply to an ELF, but the
         # module name always rides along, proving the info parse ran on our file.
         assert info.data["module"] == elf.name
+
+        # Exploit-mitigation posture, cross-checked against r2's own decode. The
+        # stdlib reader derives nx from PT_GNU_STACK and relro from PT_GNU_RELRO
+        # plus eager-binding tags; r2 reads the same segments independently, so
+        # the two must agree tool-free-fact for iI-line -- the mitigation
+        # analogue of the entry-point cross-check below.
+        iI = R2Client().run(elf, ["iI"], timeout=60.0)["raw"]
+        nx_match = _R2_NX_RE.search(iI)
+        relro_match = _R2_RELRO_RE.search(iI)
+        assert nx_match, iI
+        assert native["nx"] is (nx_match.group(1) == "true")
+        assert relro_match, iI
+        assert native["relro"] == _R2_RELRO[relro_match.group(1)]
 
         funcs = service.r2_functions(session_id, timeout=60.0)
         assert funcs.ok, funcs.error

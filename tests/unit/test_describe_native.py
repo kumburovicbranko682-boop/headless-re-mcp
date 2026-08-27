@@ -180,9 +180,12 @@ def _java_class() -> bytes:
     return b"\xca\xfe\xba\xbe" + (0).to_bytes(2, "big") + (52).to_bytes(2, "big") + b"\x00" * 8
 
 
-def _phdr64(p_type: int, p_offset: int = 0, p_filesz: int = 0, p_vaddr: int = 0) -> bytes:
+def _phdr64(
+    p_type: int, p_offset: int = 0, p_filesz: int = 0, p_vaddr: int = 0, p_flags: int = 0
+) -> bytes:
     entry = bytearray(56)
     entry[0:4] = p_type.to_bytes(4, "little")
+    entry[4:8] = p_flags.to_bytes(4, "little")  # p_flags follows p_type in ELF64
     entry[8:16] = p_offset.to_bytes(8, "little")
     entry[16:24] = p_vaddr.to_bytes(8, "little")
     entry[32:40] = p_filesz.to_bytes(8, "little")
@@ -302,6 +305,53 @@ def _elf64_static_with_symtab() -> bytes:
     return ehdr + program + sections
 
 
+# PT_GNU_STACK/PT_GNU_RELRO and the PF_X permission bit -- the segments that
+# carry the NX and RELRO mitigations. PF_R|PF_W is a non-executable stack.
+_PT_GNU_STACK = 0x6474E551
+_PT_GNU_RELRO = 0x6474E552
+_PF_RW = 0x6
+_PF_RWX = 0x7
+
+
+def _elf64_with_gnu_stack(*, executable: bool) -> bytes:
+    """A minimal ELF whose only program header is a PT_GNU_STACK.
+
+    The stack's PF_X bit is the whole NX signal: RW-only means NX on, RWX means
+    NX off. No PT_GNU_RELRO, so RELRO reads as none.
+    """
+    program = _phdr64(_PT_GNU_STACK, p_flags=_PF_RWX if executable else _PF_RW)
+    ehdr = _ehdr64(2, phoff=64, phnum=1, shoff=0, shnum=0)  # ET_EXEC
+    return ehdr + program
+
+
+def _elf64_relro(*, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0) -> bytes:
+    """A dynamic ELF carrying PT_GNU_RELRO plus a controllable dynamic section.
+
+    RELRO is partial with only the segment present; it upgrades to full when the
+    dynamic section forces eager binding -- via a DT_BIND_NOW tag, DF_BIND_NOW in
+    DT_FLAGS, or DF_1_NOW in DT_FLAGS_1 -- so each of the three markers is
+    exercised through the same builder.
+    """
+    entries: list[tuple[int, int]] = []
+    if bind_now_tag:
+        entries.append((24, 0))  # DT_BIND_NOW
+    if flags:
+        entries.append((30, flags))  # DT_FLAGS
+    if flags_1:
+        entries.append((0x6FFFFFFB, flags_1))  # DT_FLAGS_1
+    entries.append((0, 0))  # DT_NULL
+    dyn = b"".join(tag.to_bytes(8, "little") + val.to_bytes(8, "little") for tag, val in entries)
+    ph_off = 64
+    dyn_off = ph_off + 56 * 3  # three program headers precede the dynamic array
+    program = (
+        _phdr64(2, dyn_off, len(dyn))  # PT_DYNAMIC
+        + _phdr64(_PT_GNU_RELRO)
+        + _phdr64(_PT_GNU_STACK, p_flags=_PF_RW)  # non-exec stack -> nx on
+    )
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=3, shoff=0, shnum=0)  # ET_DYN
+    return ehdr + program + dyn
+
+
 def _write(tmp_path: Path, name: str, data: bytes) -> Path:
     path = tmp_path / name
     path.write_bytes(data)
@@ -353,6 +403,10 @@ def test_dynamic_pie_facts_from_program_headers(tmp_path: Path) -> None:
     assert facts["linking"] == "dynamic"
     assert facts["pie"] is True  # DT_FLAGS_1 carries DF_1_PIE
     assert facts["interpreter"] == "/lib64/ld.so.1"
+    # This image carries neither PT_GNU_STACK nor PT_GNU_RELRO, so the
+    # mitigations read as off/none -- the same call r2 makes on such a binary.
+    assert facts["nx"] is False
+    assert facts["relro"] == "none"
 
 
 def test_dynamic_needed_libraries_from_the_dynamic_string_table(tmp_path: Path) -> None:
@@ -385,6 +439,43 @@ def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     assert "needed" not in facts
     assert "soname" not in facts
     assert "build_id" not in facts
+
+
+def test_nx_reflects_the_gnu_stack_permissions(tmp_path: Path) -> None:
+    # NX is exactly PT_GNU_STACK-minus-execute: a non-executable stack reads on,
+    # an executable one reads off, matching how radare2 decides nx.
+    guarded = describe_native(
+        _write(tmp_path, "guarded.bin", _elf64_with_gnu_stack(executable=False))
+    )["native"]
+    assert guarded["nx"] is True
+    exec_stack = describe_native(
+        _write(tmp_path, "exec.bin", _elf64_with_gnu_stack(executable=True))
+    )["native"]
+    assert exec_stack["nx"] is False
+    # Neither carries PT_GNU_RELRO, so RELRO stays none regardless of the stack.
+    assert guarded["relro"] == "none"
+    assert exec_stack["relro"] == "none"
+
+
+def test_relro_is_partial_without_eager_binding(tmp_path: Path) -> None:
+    # PT_GNU_RELRO alone is partial RELRO: the segment exists but the loader is
+    # not told to resolve every relocation up front.
+    facts = describe_native(_write(tmp_path, "a.bin", _elf64_relro()))["native"]
+    assert facts["relro"] == "partial"
+    # The non-exec PT_GNU_STACK the builder adds still reads as NX on.
+    assert facts["nx"] is True
+
+
+def test_relro_is_full_when_binding_is_forced_eager(tmp_path: Path) -> None:
+    # Any of the three eager-binding markers upgrades partial RELRO to full, so
+    # each must independently produce "full".
+    for name, kwargs in (
+        ("bind_now_tag", {"bind_now_tag": True}),  # DT_BIND_NOW
+        ("df_bind_now", {"flags": 0x08}),  # DT_FLAGS & DF_BIND_NOW
+        ("df_1_now", {"flags_1": 0x01}),  # DT_FLAGS_1 & DF_1_NOW
+    ):
+        facts = describe_native(_write(tmp_path, f"{name}.bin", _elf64_relro(**kwargs)))["native"]
+        assert facts["relro"] == "full", name
 
 
 def test_elf_entry_point_reported_only_when_nonzero(tmp_path: Path) -> None:
@@ -420,6 +511,11 @@ def test_real_elf_pie_versus_shared_object() -> None:
     assert ls_facts["pie"] is True
     assert ls_facts["linking"] == "dynamic"
     assert ls_facts["interpreter"].startswith("/lib")
+    # A modern distro's /bin/ls is hardened: NX on with at least partial RELRO.
+    # The native r2 gate pins these to r2's own iI; here they must at least hold
+    # the shape a real toolchain produces.
+    assert ls_facts["nx"] is True
+    assert ls_facts["relro"] in {"partial", "full"}
     # A real executable always names where execution starts.
     assert ls_facts["entry"] > 0
     # A real dynamic executable names libc among its DT_NEEDED libraries.
