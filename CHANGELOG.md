@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（浏览器 smoke gate 跨平台可运行，并跟上中文工作台）
+
+- `tests/integration/test_agent_browser_smoke.py` 此前在模块顶层硬 import playwright、
+  启动时硬编码 Windows 的 Chrome 路径：没装 playwright 的机器整个收集直接报错，装了
+  playwright 的 Linux/macOS 机器则必然失败——而兄弟 gate（web lifecycle / web RE）都是
+  「装了才跑、跑不起来就带原因 skip」。现改为 `pytest.importorskip` 收集期守卫，启动顺序
+  为 playwright 自带 chromium（与 `WebBackend` 生产路径一致）→ 系统 Chrome
+  （`channel="chrome"`，覆盖原来那台只有系统 Chrome 的 Windows 机器）→ 带原因 skip。
+- 该 gate 的选择器还停留在旧英文监控台（"Agent analysis"、"Approve once" 等），对话
+  居中的中文工作台上线后必失败；现按真实 UI 重写（落地页「开始一段分析」、检查器
+  「事件」页签里的原始事件名、设置弹窗「保存模型」、批准卡「批准一次/拒绝」）。默认
+  packed-analysis 预设会自动批准 `state_change` 写操作，gate 现用环境变量清空预设以
+  真正走到批准卡；刷新后线程不再自动选中，断言改为等 `run.completed` 后重选线程并
+  数两条 "tool round finished"。在装好 chromium 的 Linux 上该 gate 从必失败变为 3 秒
+  真实跑通；无 playwright / 无浏览器时分别为收集期与运行期 skip。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
