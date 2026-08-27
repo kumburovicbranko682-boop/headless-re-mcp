@@ -79,10 +79,15 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
     assert by_id["detect.die"]["status"] == "missing"
-    # status_probe=None is always ready (ui.win32 has no probe).
-    assert by_id["ui.win32"]["status"] == "ready"
+    # ui.win32 gained a real probe (win32_ui) in the Linux port; absent from
+    # the stubbed report it falls back to missing like any other probe.
+    assert by_id["ui.win32"]["status_probe"] == "win32_ui"
+    assert by_id["ui.win32"]["status"] == "missing"
     # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
+    # No shipped capability carries status_probe=None any more, so pin the
+    # always-ready branch directly or it goes untested.
+    assert capabilities_catalog._probe_status(_stub_report(), None) == "ready"
 
     # Backend filter returns only that backend's capabilities.
     apk = list_capabilities(backend="apk")
@@ -90,8 +95,8 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
 
     # Status filter returns only matching entries.
     ready = {cap["id"] for cap in list_capabilities(status="ready")}
-    assert "ida.idalib" in ready and "ui.win32" in ready
-    assert "detect.die" not in ready
+    assert "ida.idalib" in ready
+    assert "detect.die" not in ready and "ui.win32" not in ready
 
 
 def test_describe_capability_finds_known_ids_and_none_for_unknown(
