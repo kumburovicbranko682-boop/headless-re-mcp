@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from headless_re_mcp.core.models import Address, Architecture
 
@@ -12,6 +12,16 @@ _MAX_ITEMS = 4096
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
 _MAX_HEADER = 1024 * 1024
+
+# ELF e_machine -> Architecture, mirroring session.detect_elf_architecture. Kept
+# local so this backend module stays decoupled from the session layer; both are
+# small, commented tables keyed by the same well-known constants.
+_ELF_MACHINE_TO_ARCH = {
+    0x03: Architecture.X86,
+    0x3E: Architecture.X64,
+    0x28: Architecture.ARM,
+    0xB7: Architecture.ARM64,
+}
 
 
 def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
@@ -70,6 +80,59 @@ def _needed_header_bytes(head: bytes) -> int | None:
         return None
     optional_size = int.from_bytes(head[pe_offset + 20 : pe_offset + 22], "little")
     return pe_offset + 24 + optional_size
+
+
+def elf_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
+    """Read an ELF's load base and architecture without spawning r2.
+
+    The ELF counterpart of ``pe_preferred_base``: the load base is the lowest
+    ``p_vaddr`` among the ``PT_LOAD`` segments, which matches radare2's own
+    ``$B`` for both ET_EXEC (e.g. 0x400000) and PIE ET_DYN (0), so ``va - base``
+    yields an rva consistent with the addresses r2 reports. Returns
+    ``(architecture, base)`` -- either may be None: a machine the enum cannot
+    name still yields its base, and a header too short or corrupt to trust
+    yields no base (addresses stay va-only) rather than a wrong one.
+    """
+    try:
+        with binary.open("rb") as stream:
+            ident = stream.read(64)
+            if len(ident) < 64 or ident[:4] != b"\x7fELF":
+                return None, None
+            is64 = ident[4] == 2
+            endian: Literal["big", "little"] = "big" if ident[5] == 2 else "little"
+            machine = int.from_bytes(ident[18:20], endian)
+            arch = _ELF_MACHINE_TO_ARCH.get(machine)
+            if is64:
+                e_phoff = int.from_bytes(ident[0x20:0x28], endian)
+                e_phentsize = int.from_bytes(ident[0x36:0x38], endian)
+                e_phnum = int.from_bytes(ident[0x38:0x3A], endian)
+                vaddr_off, vaddr_size = 16, 8
+            else:
+                e_phoff = int.from_bytes(ident[0x1C:0x20], endian)
+                e_phentsize = int.from_bytes(ident[0x2A:0x2C], endian)
+                e_phnum = int.from_bytes(ident[0x2C:0x2E], endian)
+                vaddr_off, vaddr_size = 8, 4
+            min_entry = vaddr_off + vaddr_size
+            if e_phoff <= 0 or e_phentsize < min_entry or not 0 < e_phnum <= 4096:
+                return arch, None
+            table_size = e_phentsize * e_phnum
+            if table_size > _MAX_HEADER:
+                return arch, None
+            stream.seek(e_phoff)
+            table = stream.read(table_size)
+    except OSError:
+        return None, None
+    if len(table) < table_size:
+        return arch, None
+    base: int | None = None
+    for index in range(e_phnum):
+        off = index * e_phentsize
+        p_type = int.from_bytes(table[off : off + 4], endian)
+        if p_type != 1:  # PT_LOAD
+            continue
+        vaddr = int.from_bytes(table[off + vaddr_off : off + vaddr_off + vaddr_size], endian)
+        base = vaddr if base is None else min(base, vaddr)
+    return arch, base
 
 
 def address_dict(
@@ -138,8 +201,14 @@ def enrich_r2_payload(
 ) -> JsonObject:
     """Parse *j payloads into items with unified Address fields."""
     module = binary.name
-    pe_arch, image_base = pe_preferred_base(binary)
-    arch = architecture or pe_arch
+    detected_arch, image_base = pe_preferred_base(binary)
+    # A PE parse that found nothing (no arch and no base) means this is not a
+    # PE; fall back to the ELF header so ELF addresses gain rva/module/arch too
+    # instead of staying va-only. A PE that named its arch but not its base is
+    # still a PE and must not be reparsed as ELF.
+    if detected_arch is None and image_base is None:
+        detected_arch, image_base = elf_preferred_base(binary)
+    arch = architecture or detected_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)
