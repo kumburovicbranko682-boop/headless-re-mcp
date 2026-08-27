@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+import zipfile
 from collections import OrderedDict
 from typing import Any
 
@@ -3700,7 +3701,10 @@ class TestDeviceInstallUninstallAreHonest:
         from headless_re_mcp.backends.adb import client as mod
 
         apk = tmp_path / "app.apk"
-        apk.write_bytes(b"PK\x03\x04")
+        # A real (if tiny) zip: install now refuses a non-APK before the device
+        # transfer, and _apk_package_name is monkeypatched below regardless.
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"manifest")
         monkeypatch.setattr(mod, "_apk_package_name", lambda path: "com.example.app")
 
         class Sync:
@@ -3730,7 +3734,10 @@ class TestDeviceInstallUninstallAreHonest:
         from headless_re_mcp.backends.adb import client as mod
 
         apk = tmp_path / "app.apk"
-        apk.write_bytes(b"PK\x03\x04")
+        # A real (if tiny) zip: install now refuses a non-APK before the device
+        # transfer, and _apk_package_name is monkeypatched below regardless.
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"manifest")
         monkeypatch.setattr(mod, "_apk_package_name", lambda path: "com.example.app")
 
         class Dev:
