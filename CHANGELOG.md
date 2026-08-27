@@ -162,6 +162,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 修复（`device.packages` 先截断后排序，回的是伪排序子集）
+
+- `AdbBackend.packages` 先按 `pm list packages` 的输出顺序收满 `limit` 个再 `sort()`，于是被截断的
+  一页是**看起来排好序、实则任意**的子集：`pm` 按自己的顺序列包，先截断就把「排在上限之后被列到的」
+  那些包丢掉，而不是丢字母序靠后的。真机常有五六百个包、默认 `limit=500` 很容易触发。后果是调用方
+  在这份「已排序」的回复里找某个明明落在返回区间内的包时会扑空（它被悄悄从中间截掉了），而
+  `has_more` 读起来像「最后一行之后还有」,真正的缺口却在中间。`device.packages` 的契约（回排序后的
+  `packages` + `has_more`）本就隐含返回的是字母序前缀。现在先收全（收集上限 `_MAX_PACKAGES_SCAN=10000`
+  兜住病态设备）、`sort()`、再切页，页即真正的字母序前缀，只把字母序末尾留给 `has_more`。现有测试
+  只断言 `count`/`has_more`/长度，故与本改动兼容；新增回归钉住截断页是字母序前缀（见
+  `test_unattended_resource_bounds.py`）。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。

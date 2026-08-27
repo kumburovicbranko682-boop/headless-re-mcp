@@ -35,6 +35,10 @@ _MAX_LOGCAT_CHARS = 200_000
 # slice ever ran.
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
+# Collect past the page cap so the returned page is the true alphabetical
+# prefix rather than an arbitrary slice of pm's output order; bound the scan
+# so a device with a pathological list cannot grow the parse without limit.
+_MAX_PACKAGES_SCAN = 10_000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
@@ -449,23 +453,31 @@ class AdbBackend:
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
-        pkgs: list[str] = []
-        has_more = False
+        names: list[str] = []
+        scan_capped = False
         for line in str(raw).splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
             if not name:
                 continue
-            if len(pkgs) >= capped:
-                has_more = True
+            if len(names) >= _MAX_PACKAGES_SCAN:
+                scan_capped = True
                 break
-            pkgs.append(name)
-        pkgs.sort()
+            names.append(name)
+        # Sort the whole list before paging so the page is the alphabetical
+        # prefix. Capping first and sorting the slice returned an arbitrary
+        # subset of pm's output order that only looked sorted: packages were
+        # dropped from wherever pm listed them past the cap, so a caller
+        # scanning the "sorted" reply for a name inside the returned range
+        # could miss one that was silently cut, and has_more read as "more
+        # after the last row" when the real gap was in the middle.
+        names.sort()
+        page = names[:capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "has_more": len(names) > capped or scan_capped,
             "third_party_only": third_party_only,
         }
 

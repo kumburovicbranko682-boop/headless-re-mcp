@@ -3157,6 +3157,22 @@ class TestDeviceListsDiscloseTruncation:
         assert result["count"] == 5
         assert result["has_more"] is False
 
+    def test_a_truncated_package_list_is_the_alphabetical_prefix(self) -> None:
+        """Sorting the capped slice returned an arbitrary subset that only
+
+        looked sorted. pm lists in its own order, so capping first dropped
+        packages from wherever it happened to list them past the cap -- here
+        com.mmm sorts between the two returned names yet was cut, so the reply
+        looked like a-to-z with a hole in the middle. Sorting before paging
+        makes the page the true alphabetical prefix and leaves only the tail
+        (com.zzz) for has_more.
+        """
+        raw = "package:com.zzz\npackage:com.aaa\npackage:com.mmm"
+        result = self._backend(raw).packages("emulator-5554", limit=2)
+        assert result["packages"] == ["com.aaa", "com.mmm"]
+        assert result["count"] == 2
+        assert result["has_more"] is True
+
     def test_properties_past_the_cap_say_so(self) -> None:
         raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))
         result = self._backend(raw).properties("emulator-5554", limit=4)
