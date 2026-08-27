@@ -25,6 +25,62 @@ _DATA_URL = (
     "</head><body>hello</body></html>"
 )
 
+# A 41-byte hand-assembled module exporting one function, so the WASM gate checks
+# real structure (a function body and a named export) instead of an empty module.
+# Equivalent WAT:
+#   (module
+#     (type (;0;) (func (param i32 i32) (result i32)))
+#     (func (;0;) (type 0) (param i32 i32) (result i32)
+#       local.get 0
+#       local.get 1
+#       i32.add)
+#     (export "add" (func 0)))
+_ADD_WASM = bytes(
+    (
+        0x00,
+        0x61,
+        0x73,
+        0x6D,
+        0x01,
+        0x00,
+        0x00,
+        0x00,  # magic + version
+        0x01,
+        0x07,
+        0x01,
+        0x60,
+        0x02,
+        0x7F,
+        0x7F,
+        0x01,
+        0x7F,  # functype (i32,i32)->i32
+        0x03,
+        0x02,
+        0x01,
+        0x00,  # func section: one function, type 0
+        0x07,
+        0x07,
+        0x01,
+        0x03,
+        0x61,
+        0x64,
+        0x64,
+        0x00,
+        0x00,  # export "add" -> func 0
+        0x0A,
+        0x09,
+        0x01,
+        0x07,
+        0x00,
+        0x20,
+        0x00,
+        0x20,
+        0x01,
+        0x6A,
+        0x0B,  # code: add + end
+    )
+)
+
 
 def _browser_available() -> bool:
     backend = WebBackend()
@@ -73,12 +129,43 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
         pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
     assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    raw = _JS_FIXTURE.read_text(encoding="utf-8")
+    # The secret is hidden behind \x hex escapes in the source, so its readable
+    # form must not already be present -- otherwise the assertion below would
+    # prove nothing about what webcrack actually did.
+    assert "H3adl3ss" not in raw
     service = AnalysisService()
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
-        assert result.data["bytes"] > 0
+        code = result.data["code"]
+        assert isinstance(code, str) and result.data["bytes"] > 0
+        # webcrack must have decoded the hex-escaped string array: the hidden
+        # secret and the member names it concealed now read as plain literals.
+        assert "H3adl3ss" in code, code
+        assert "charCodeAt" in code and "reduce" in code, code
+        # A clean pass on this tiny script is not a partial/aborted run.
+        assert "tool_failed" not in result.data, result.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    # Regression guard: unpack_bundle used to pre-create webcrack's -o directory,
+    # which made webcrack abort with "output directory already exists" on every
+    # call. A live run proves the capability actually produces files.
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1, result.data
+        assert result.data["files"], result.data
+        assert Path(result.data["output_dir"]).is_dir()
+        assert "tool_failed" not in result.data, result.data
     finally:
         service.close_all()
 
@@ -87,13 +174,38 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_ADD_WASM)
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert "(module" in wat
+        # Real structure, not just the module header: the exported function, its
+        # body opcode, and a local access all survive the round trip to WAT.
+        assert '(export "add"' in wat, wat
+        assert "i32.add" in wat and "local.get" in wat, wat
+        assert "tool_failed" not in result.data, result.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    # wasm.info (wasm-objdump) had no gate at all; drive it against the same real
+    # module and assert it reports the sections and the export by name.
+    if WasmClient()._objdump is None:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_ADD_WASM)
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        assert "Export" in objdump and "Function" in objdump, objdump
+        assert "add" in objdump, objdump
+        assert "tool_failed" not in result.data, result.data
     finally:
         service.close_all()

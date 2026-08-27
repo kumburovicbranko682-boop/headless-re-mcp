@@ -24,6 +24,35 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`js.unpack_bundle` 每次必败：客户端先建了 webcrack 拒绝的输出目录）
+
+- **`js.unpack_bundle`（webcrack 拆包线）过去每一次调用都失败**——报 `webcrack unpack failed`、
+  stderr 是 `output directory already exists`。根因：webcrack 的 `-o` 目录由它自己创建，只要目标已存在
+  就直接中止（**哪怕是空目录**）；而 `JsClient.unpack_bundle` 在启动 webcrack 之前先跑了
+  `out_dir.mkdir(parents=True, exist_ok=True)`，正好把那个目录建出来，于是 webcrack 必然中止，整条
+  拆包能力从来没成功过。现改成只确保**父目录**存在、把目标目录留给 webcrack 自己建；重用路径上遗留的
+  空目录会被清掉好让重试成功，但**非空**目录保持原样交给 webcrack 拒绝，绝不静默覆盖分析师已放进去的
+  文件。真机用 webcrack 2.16.0 核对：`js.unpack_bundle` 现在稳定返回 `file_count=1`、落出
+  `deobfuscated.js`、无 `tool_failed`，连跑两次都成。新增三条单测钉住「全新路径 / 空目录清理 /
+  非空目录保留」三种情形。
+
+### 测试（把 JS/WASM 静态线的 live gate 做成真跑：真反混淆、真 WASM 结构，并进 CI；skip != pass）
+
+- **webcrack/wabt（JS 反混淆 + WASM 检查线）的 gate 过去只断言「跑起来了」，且 CI 里没有任何作业装这两个
+  工具、于是永远 skip**——`js.deobfuscate` 只查 `code` 是字符串、`bytes>0`；`wasm.wat` 喂的是**空模块**
+  （只有 magic+version）只查含 `module`；`wasm.info`（wasm-objdump）与 `js.unpack_bundle` 根本没测。
+  现把 `tests/integration/test_web_re_gate.py` 的这几条做实：
+  - `js.deobfuscate`：先断言源码里**没有**明文 `H3adl3ss`（它藏在 `\x` 十六进制里），再断言反混淆输出里
+    `H3adl3ss` 与被数组间接藏起来的成员名 `charCodeAt`/`reduce` 都还原成了明文，且 `tool_failed` 不出现。
+  - `js.unpack_bundle`：真跑拆包、断言 `file_count>=1`、`output_dir` 落地——这条同时是上面那个修复的
+    **回归哨**：谁再把 `mkdir` 加回去，CI 这条就会红。
+  - `wasm.wat`：改用一枚 41 字节、手工汇编、**导出一个函数**的真实模块（等价 WAT 见测试内注释），断言 WAT 里
+    有 `(export "add"`、`i32.add`、`local.get`，而非只有模块头。
+  - 新增 `wasm.info`：对同一枚模块跑 wasm-objdump，断言按名字报出 `Export`/`Function` 段与 `add`。
+  本机装 webcrack 2.16.0 + wabt 实跑通过（4 passed，浏览器那条另有 gate 故 skip），无工具时四条都带明确原因
+  干净跳过。新增 CI 作业 `linux-web-jsre`（Ubuntu，3.11/3.12，装 Node 22 + 全局 webcrack + apt wabt）真跑
+  这条 gate——skip != pass：装上了就真跑，缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
