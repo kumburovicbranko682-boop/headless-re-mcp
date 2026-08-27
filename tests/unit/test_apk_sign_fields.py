@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import ast
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apktool.client import ApktoolClient, ApktoolError
+from headless_re_mcp.backends.apktool.client import _PASSWORD_ENV, ApktoolClient, ApktoolError
 from headless_re_mcp.tools.apk import build_apk_tools
+
+
+def _write_apk(path: Path) -> Path:
+    """A real (if tiny) zip: apksigner's input must be a zip APK, and the client
+    now refuses a non-zip before launching the signing JVM."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
+    return path
 
 
 def _tool_docstring(name: str) -> str:
@@ -45,8 +54,7 @@ def test_apk_sign_names_apk_not_signed_apk(
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"
     signer.write_text("x\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     keystore = tmp_path / "debug.keystore"
     keystore.write_bytes(b"ks")
     out = tmp_path / "signed.apk"
@@ -90,8 +98,7 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"
     signer.write_text("x\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     keystore = tmp_path / "release.keystore"
     keystore.write_bytes(b"ks")
     out = tmp_path / "signed.apk"
@@ -126,6 +133,57 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     assert "***" in verify_stderr
 
 
+def test_sign_keeps_the_keystore_password_off_the_command_line(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """SECURITY.md treats a signing password on any observable channel as a leak.
+
+    ``--ks-pass pass:<pw>`` used to put the password into apksigner's argv, and
+    argv is world-readable in the process table (``/proc/<pid>/cmdline`` on
+    Linux, process listings on Windows) for as long as the signing JVM runs.
+    apksigner reads ``env:NAME`` natively, so the password must travel in the
+    child's copied environment and appear in no argument of either the sign or
+    the verify invocation.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = _write_apk(tmp_path / "a.apk")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
+        calls.append((list(cmd), env))
+        if "verify" not in cmd:
+            out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    payload = client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+    assert payload["signed"] is True
+
+    assert len(calls) == 2
+    sign_cmd, sign_env = calls[0]
+    assert all(password not in arg for arg in sign_cmd)
+    # Both password sources point at the child-only variable that carries it.
+    assert sign_cmd.count(f"env:{_PASSWORD_ENV}") == 2
+    assert sign_env is not None
+    assert sign_env[_PASSWORD_ENV] == password
+    # verify needs no password: nothing secret in its argv, no injected env.
+    verify_cmd, verify_env = calls[1]
+    assert all(password not in arg for arg in verify_cmd)
+    assert verify_env is None
+
+
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -133,8 +191,7 @@ def test_apk_sign_does_not_claim_signed_when_verify_fails(
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"
     signer.write_text("x\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     keystore = tmp_path / "debug.keystore"
     keystore.write_bytes(b"ks")
     out = tmp_path / "signed.apk"

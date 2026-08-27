@@ -5,8 +5,11 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.session import InvalidStateTransition, SessionState
 
 
 def _write_verified_clr_pe(path: Path) -> None:
@@ -111,5 +114,88 @@ def test_unpack_plan_on_a_closed_session_is_refused(tmp_path: Path) -> None:
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_unpack_start_close_race_does_not_recreate_cancel_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close clears unpack state, but start recreated one cancel Event afterward.
+
+    One plan/close race leaves one entry forever. Repeating the race for unique
+    session ids therefore grows _unpack_cancel_events without the registry's
+    closed-session bound.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        original_plan = service.unpack_plan
+
+        def plan_then_close(*args: object, **kwargs: object) -> object:
+            planned = original_plan(*args, **kwargs)  # type: ignore[arg-type]
+            assert planned.ok, planned.error
+            closed = service.close_session(session_id)
+            assert closed.ok, closed.error
+            return planned
+
+        monkeypatch.setattr(service, "unpack_plan", plan_then_close)
+
+        result = service.unpack_start(session_id, use_die=False, execute_upx=False)
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert session_id not in service._unpack_cancel_events
+    finally:
+        service.close_all()
+
+
+def test_unpack_cancel_still_signals_a_failed_sessions_existing_latch(
+    tmp_path: Path,
+) -> None:
+    """A latch created while live must stay signallable after the session fails.
+
+    unpack orchestrations run CLI tools that outlive a backend failure; cancel
+    has to reach that in-flight run even though creating a new latch for a
+    failed session is refused.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        latch = service._reset_unpack_cancel(session_id)
+        service.registry.transition(session_id, SessionState.FAILED)
+
+        service._signal_unpack_cancel(session_id)
+
+        assert latch.is_set()
+
+        with pytest.raises(InvalidStateTransition):
+            service._reset_unpack_cancel(session_id)
     finally:
         service.close_all()

@@ -12,6 +12,7 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.dotnet.metadata_enum import (
     CAPABILITY,
     _coded_index_size,
+    _disassemble_il,
     _simple_index_size,
     enumerate_metadata,
 )
@@ -114,6 +115,37 @@ def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
     assert page.total == 0
     assert page.backend == "dotnet_metadata"
     assert page.claims_universal_unpack is False
+
+
+def test_il_branch_and_constant_operands_are_signed() -> None:
+    """A backward branch is a negative offset, not a four-billion one.
+
+    ldc.i4 and both branch widths carry signed operands in ECMA-335. Only the
+    short branches were decoded signed, so a long ``br`` to a target ten bytes
+    back printed as 4294967286 and a ``ldc.i4 -1`` as 4294967295 -- the value an
+    agent reads to follow a loop was its two's-complement bit pattern instead.
+    """
+    il = (
+        bytes([0x38])
+        + (-10).to_bytes(4, "little", signed=True)  # br -10 (long, backward)
+        + bytes([0x20])
+        + (-1).to_bytes(4, "little", signed=True)  # ldc.i4 -1
+        + bytes([0x2B])
+        + (-2).to_bytes(1, "little", signed=True)  # br.s -2 (short, was already signed)
+        + bytes([0x28])
+        + (0x0A000001).to_bytes(4, "little")  # call token stays unsigned
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    decoded = [(insn["mnemonic"], insn["operand"]) for insn in instructions]
+    assert decoded == [
+        ("br", -10),
+        ("ldc.i4", -1),
+        ("br.s", -2),
+        ("call", 0x0A000001),
+    ]
+    assert partial is False
 
 
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
