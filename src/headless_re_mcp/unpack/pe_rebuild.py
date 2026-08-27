@@ -151,10 +151,25 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional = file_header + 20
     if optional + optional_size > len(image):
         raise PeRebuildError("optional header is truncated")
+    if optional + 2 > len(image):
+        raise PeRebuildError("optional header magic is outside the image")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
+    # SizeOfOptionalHeader is the target's own number and only its *declared*
+    # length was checked above. The scalar fields and the data-directory table
+    # below are read at offsets fixed by the PE format, not by that field, so a
+    # hostile SizeOfOptionalHeader smaller than the real optional header lets the
+    # truncation guard pass while these reads run off the end of a crafted or
+    # short image -- raising struct.error, which is not the PeRebuildError (a
+    # ValueError) the callers translate into a clean invalid_pe/invalid_request:
+    # it escapes their except handlers and mints an internal_error incident for
+    # what is really malformed input. Require the image to actually contain the
+    # fixed optional-header fields, which end at NumberOfRvaAndSizes.
+    fixed_optional_end = optional + (112 if pe32_plus else 96)
+    if fixed_optional_end > len(image):
+        raise PeRebuildError("optional header is smaller than the fields the rebuild reads")
 
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
@@ -169,6 +184,11 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     dir_count_off = optional + (108 if pe32_plus else 92)
     dir_off = optional + (112 if pe32_plus else 96)
     dir_count = min(_u32(image, dir_count_off), 16)
+    # dir_off == fixed_optional_end is already inside the image, but the
+    # directory entries themselves extend NumberOfRvaAndSizes*8 further, and a
+    # hostile count with a short image would read past the end here.
+    if dir_off + dir_count * 8 > len(image):
+        raise PeRebuildError("data directory table is truncated")
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8

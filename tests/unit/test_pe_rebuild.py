@@ -269,6 +269,51 @@ def test_hostile_number_of_sections_is_refused_before_header_growth() -> None:
     assert str(MAX_SECTION_COUNT) in str(caught.value)
 
 
+def test_tiny_optional_header_size_fails_closed_not_struct_error() -> None:
+    """A SizeOfOptionalHeader too small for the fixed scalar reads must raise a
+    PeRebuildError (ValueError), not the struct.error that escapes callers."""
+    image = bytearray(0x5A)  # ends exactly at the 2-byte optional magic
+    pe_offset = 0x40
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    # SizeOfOptionalHeader = 2 so the truncation guard passes, yet the parser
+    # still reads AddressOfEntryPoint at optional+16 and beyond.
+    struct.pack_into("<HHIIIHH", image, file_header, 0x14C, 1, 0, 0, 0, 2, 0)
+    optional = file_header + 20
+    struct.pack_into("<H", image, optional, 0x10B)  # pe32 magic
+    with pytest.raises(PeRebuildError):
+        parse_runtime_headers(bytes(image))
+
+
+def test_truncated_data_directory_table_fails_closed_not_struct_error() -> None:
+    """A NumberOfRvaAndSizes whose table runs off the end must fail closed."""
+    length = 0x58 + 96  # room through NumberOfRvaAndSizes, none for the table
+    image = bytearray(length)
+    pe_offset = 0x40
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<HHIIIHH", image, file_header, 0x14C, 1, 0, 0, 0, 96, 0)
+    optional = file_header + 20
+    struct.pack_into("<H", image, optional, 0x10B)  # pe32 magic
+    struct.pack_into("<I", image, optional + 92, 16)  # NumberOfRvaAndSizes
+    with pytest.raises(PeRebuildError):
+        parse_runtime_headers(bytes(image))
+
+
+def test_reduced_directory_count_still_parses() -> None:
+    """The directory-table guard rejects a short image, not a small count."""
+    dump = bytearray(_make_runtime_dump())
+    pe_offset = struct.unpack_from("<I", dump, 0x3C)[0]
+    optional = pe_offset + 4 + 20
+    struct.pack_into("<I", dump, optional + 108, 2)  # pe32+ NumberOfRvaAndSizes
+    headers = parse_runtime_headers(bytes(dump))
+    assert len(headers["directories"]) == 2
+
+
 def test_write_rebuilt_pe_deletes_partial_when_publish_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

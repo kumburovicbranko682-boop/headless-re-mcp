@@ -91,6 +91,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（unpack.iat/pe.rebuild 对截断的可选头未 fail-closed、报成 internal_error）
+
+- `parse_runtime_headers` 之前只校验了 PE 头里**声明的** `SizeOfOptionalHeader` 长度，而随后的标量字段
+  与数据目录表按 PE 格式的**固定偏移**读取，与该声明值无关。一个恶意的 `SizeOfOptionalHeader` 小于真实
+  可选头时能骗过截断守卫，让这些定长读取越过一个精心构造或本就过短的镜像末尾——抛出 `struct.error`。
+  但那不是调用方翻译成干净 `invalid_pe` / `invalid_request` 的 `PeRebuildError`（一个 `ValueError`），
+  于是它逃出 except 处理、给本属畸形输入的东西记一条 `internal_error` 事故。现要求镜像确实容纳定长可选头
+  字段（PE32+ 到偏移 112、PE32 到 96，止于 `NumberOfRvaAndSizes`），并在数据目录表按 `NumberOfRvaAndSizes*8`
+  越界时同样以 `PeRebuildError` fail-closed，恶意/过短镜像统一得到干净的 invalid 而非 internal_error。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
