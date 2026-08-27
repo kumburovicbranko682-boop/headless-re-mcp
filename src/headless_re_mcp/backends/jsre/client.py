@@ -96,14 +96,33 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(
+    text: str,
+    key: str,
+    *,
+    include_bytes: bool,
+    spill_path: Path | None = None,
+) -> JsonObject:
     payload = text.encode("utf-8", errors="replace")
+    truncated = len(payload) > _MAX_INLINE
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
+        "truncated": truncated,
     }
     if include_bytes:
         result["bytes"] = len(payload)
+    # A truncated inline blob is a dead end: the caller gets the first 400 KB of
+    # a deobfuscated bundle or a WAT dump and no way to reach the rest, and a
+    # non-trivial module blows past that easily. When the output was cut, write
+    # the whole thing next to the other jsre artifacts and hand back its path so
+    # the full result stays retrievable (the same spill the web/proxy bodies do).
+    if truncated and spill_path is not None:
+        try:
+            spill_path.parent.mkdir(parents=True, exist_ok=True)
+            spill_path.write_bytes(payload)
+            result[f"{key}_path"] = str(spill_path)
+        except OSError as exc:
+            result[f"{key}_path_error"] = str(exc)
     return result
 
 
@@ -124,18 +143,22 @@ class JsClient:
             )
         return _require_existing_file(path, missing="input file not found")
 
-    def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def deobfuscate(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path)
         stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _bounded_output(stdout, "code", include_bytes=True, spill_path=spill_path)
 
-    def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def beautify(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
-        return self.deobfuscate(path, timeout=timeout)
+        return self.deobfuscate(path, timeout=timeout, spill_path=spill_path)
 
     def unpack_bundle(
         self,
@@ -208,7 +231,9 @@ class WasmClient:
             raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
         return _require_existing_file(path, missing="wasm file not found")
 
-    def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def wat(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
@@ -216,9 +241,11 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _bounded_output(stdout, "wat", include_bytes=True, spill_path=spill_path)
 
-    def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def info(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
         stdout, stderr, code = _run(
@@ -228,7 +255,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _bounded_output(stdout, "objdump", include_bytes=False, spill_path=spill_path)
 
 
 def _discover_webcrack() -> Path | None:

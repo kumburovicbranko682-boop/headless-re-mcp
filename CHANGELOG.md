@@ -311,6 +311,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
+  （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
+  几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分
+  （与早先修的 web/proxy 大响应体、wasm bytecode 同类）。现在只要输出被截断，就把**完整**结果落进 jsre 产物目录并回一个
+  `<key>_path`（`code_path` / `wat_path` / `objdump_path`），内联 `<key>` 仍是有界切片、`truncated` 为真——完整结果照旧
+  可取。落盘文件与 unpack 树同在 jsre 根下，因为这些工具按文件路径而非会话归档、留存走查看不到它们，所以每次落盘后按总
+  条目/字节给整个 jsre 目录设上限（保留最新、正好是这次刚写的那份）。活体门用真实 wabt：构造一个带大 data 段、WAT 约
+  600 KB 的合法 `.wasm`，断言 `wasm.wat` 置 `truncated`、`wat_path` 指向的文件逐字节等于报告长度且大于内联切片、内容确是本
+  模块的 WAT；另断言一个空模块不落盘（缺 wabt 时 skip≠pass）。单测把内联上限压低、直接驱动截断/不截断两路，校验落盘内容、
+  路径字段与短输出不落盘。
 - **能看见 APK 里的 .so 却拿不出来喂给 r2/Ghidra**。`apk.native_libs` 会列出每个打包的原生库，但现代
   Android 应用真正值钱的逻辑（加密、授权校验、反调试）都在这些原生代码里——而在此之前，把某个 `.so` 的字节
   取出来的唯一办法是 `apk.decode` 整包 apktool 解一遍（重、且会连资源一起铺开）。新增 `apk.extract_native_lib`：

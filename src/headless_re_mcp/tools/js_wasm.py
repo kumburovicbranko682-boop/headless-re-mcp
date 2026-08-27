@@ -28,8 +28,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Deobfuscate and unminify a JavaScript file via webcrack.
 
         Answers with code and bytes, plus truncated when the text was cut at
-        the buffer. An input over 16 MiB is refused as too_large rather than
-        handed to webcrack.
+        the buffer. When truncated, the full output is written to a file and
+        its path returned as code_path -- read that for the complete source
+        rather than treating the inline code as whole. An input over 16 MiB is
+        refused as too_large rather than handed to webcrack.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
@@ -40,8 +42,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return a readable, unminified form of a JavaScript file via webcrack.
 
         Same payload as js.deobfuscate: Answers with code and bytes, plus
-        truncated when the text was cut at the buffer. An input over 16 MiB
-        is refused as too_large rather than handed to webcrack.
+        truncated when the text was cut at the buffer, and code_path to the
+        full output when it was. An input over 16 MiB is refused as too_large
+        rather than handed to webcrack.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
@@ -70,8 +73,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
         Answers with wat and bytes, plus truncated when the text was cut at
-        the buffer. An input over 16 MiB is refused as too_large rather than
-        handed to wasm2wat.
+        the buffer. When truncated, the full WAT is written to a file and its
+        path returned as wat_path -- a real module's disassembly runs to many
+        megabytes, so read that rather than reading the inline wat as whole.
+        An input over 16 MiB is refused as too_large rather than handed to
+        wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -82,8 +88,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
         Answers with objdump holding that text, not a sections list, plus
-        truncated when the text was cut at the buffer. An input over 16 MiB
-        is refused as too_large rather than handed to wasm-objdump.
+        truncated when the text was cut at the buffer, and objdump_path to the
+        full dump when it was. An input over 16 MiB is refused as too_large
+        rather than handed to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 

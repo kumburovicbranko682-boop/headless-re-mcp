@@ -86,6 +86,84 @@ def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
     assert "Answers with wat" in doc
 
 
+def test_wasm_wat_spills_the_full_dump_when_the_inline_copy_is_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated inline WAT with no path is a dead end for a real module.
+
+    Force the inline cap low, hand a spill path, and assert the file on disk is
+    the *whole* wat2wat output (not the 400 KB slice), wat_path points at it,
+    and truncated is set -- so the complete disassembly is still reachable.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)\n" * 5000  # comfortably over the lowered cap
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "spill" / "big.wat"
+    monkeypatch.setattr(mod, "_MAX_INLINE", 64)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_path=spill)
+
+    assert payload["truncated"] is True
+    assert payload["wat_path"] == str(spill)
+    assert spill.read_text(encoding="utf-8") == body
+    # The inline copy is still the bounded slice, not the whole thing.
+    assert len(str(payload["wat"]).encode("utf-8")) <= 64
+    assert payload["bytes"] == len(body.encode("utf-8"))
+
+
+def test_wasm_wat_does_not_spill_when_the_output_fits(tmp_path: Path) -> None:
+    """A short conversion must not litter the artifact dir with a spill file."""
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "spill" / "small.wat"
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_path=spill)
+
+    assert payload["truncated"] is False
+    assert "wat_path" not in payload
+    assert not spill.exists()
+
+
+def test_js_deobfuscate_spills_the_full_source_when_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same dead-end for a deobfuscated bundle: expose code_path to the whole file."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "var a=1;\n" * 4000
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "spill" / "big.js"
+    monkeypatch.setattr(mod, "_MAX_INLINE", 100)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_path=spill)
+
+    assert payload["truncated"] is True
+    assert payload["code_path"] == str(spill)
+    assert spill.read_text(encoding="utf-8") == body
+
+
 def test_js_deobfuscate_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named code and never named the length field.
 
@@ -175,6 +253,10 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
+    assert "wat_path" in _tool_docstring("wasm.wat")
+    assert "code_path" in _tool_docstring("js.deobfuscate")
+    assert "code_path" in _tool_docstring("js.beautify")
+    assert "objdump_path" in _tool_docstring("wasm.info")
     assert "truncated" in _tool_docstring("wasm.info")
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
