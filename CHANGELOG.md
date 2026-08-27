@@ -50,8 +50,9 @@ androguard/jadx/apktool 因此只被断言「优雅降级不崩」，没有任�
 版本漂移（frida 17 那类破坏——某个 API/CLI 开关被改名或删除）藏身的盲区：只在对真 APK 跑时才
 在运行期炸，基于 fake 的单测一律照过。新增单个真 APK 夹具 `fixtures/android/fixture.apk`
 （由 `fixtures/android/src` 用 apktool 2.10.0 的内置 aapt2 编译：合法 AXML 清单 + 真 classes.dex，
-包名 `com.example.fixture`、`INTERNET` 权限、`MainActivity`，含 `main→decryptSecret` 调用边与可
-恢复字符串 `s3cr3t-flag-value`；`src/` 连同 apktool.yml/smali 一并入库以备重建），并据此加五条
+包名 `com.example.fixture`、`INTERNET` 权限、带 MAIN/LAUNCHER intent-filter 的 `MainActivity`
+（使 `get_main_activity()` 能解出启动活动），含 `main→decryptSecret` 调用边与可恢复字符串
+`s3cr3t-flag-value`；`src/` 连同 apktool.yml/smali 一并入库以备重建），并据此加五条
 gate（缺相应工具时明确 skip，skip≠pass）：
 
 - **DEX 分析**（`test_apk_dex_analysis_gate.py`）：经 `AnalysisService` 全栈跑
@@ -64,7 +65,10 @@ gate（缺相应工具时明确 skip，skip≠pass）：
 - **清单面**（`test_apk_manifest_gate.py`）：合成 gate 因清单非法 AXML 只能测不崩、从不校验任何
   解析值；本 gate 经全栈跑 `apk.open/manifest/permissions/components`，钉住真实解析出的
   包名 `com.example.fixture`、`versionName=1.0`、`min/target SDK=21/30`、`INTERNET` 权限与
-  `MainActivity` 活动，并验证未签名 APK 的 `certificates` 干净降级为 `v1_signed=False`。
+  `MainActivity` 活动，并验证未签名 APK 的 `certificates` 干净降级为 `v1_signed=False`。夹具的
+  `MainActivity` 带 MAIN/LAUNCHER intent-filter，故 `open`/`components` 的 `main_activity` 也被钉住
+  为 `com.example.fixture.MainActivity`——这条走的是 `get_main_activity()` 的 intent-filter 解析，
+  与活动枚举是两段不同的、随版本漂移的代码，且无启动活动时返回 null（此前一直是 null、从未被真跑到）。
 - **jadx 反编译**（`test_apk_jadx_decompile_gate.py`）：按 `config.py` 同款顺序发现 jadx
   （`HEADLESS_RE_JADX` 或 PATH），像 `test_m11_r2_live_gate` 那样直接驱动 `JadxClient` 端到端，
   钉住 `export_sources` 落出 `<out>/sources/com/example/fixture/MainActivity.java`、`--no-imports`

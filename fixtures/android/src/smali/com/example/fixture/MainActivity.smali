@@ -12,11 +12,18 @@
 # The one class carries a call edge (main -> decryptSecret) and a recoverable
 # string constant so every tool has something real to return:
 #   manifest    -> package com.example.fixture, INTERNET, activity MainActivity
+#   main_activity -> MainActivity carries a MAIN/LAUNCHER intent-filter, so
+#                    get_main_activity() resolves it (a distinct parse from the
+#                    activity enumeration, and null without a launcher)
 #   classes     -> Lcom/example/fixture/MainActivity; (external types filtered)
 #   methods     -> <init>, decryptSecret, main
 #   strings     -> includes "s3cr3t-flag-value"
 #   xrefs       -> decryptSecret's caller is MainActivity->main
 #   jadx        -> decompiles to sources/com/example/fixture/MainActivity.java
+#
+# fixtures/android/fixture-signed.apk is this same APK v1-signed with a throwaway
+# self-signed key (see test_apk_certificates_gate.py for the exact recipe), so the
+# certificate path can be gated against a real signature.
 #
 # Rebuild fixture.apk from this src/ tree with apktool 2.10.0 (bundles aapt2):
 #   java -jar apktool.jar b fixtures/android/src -o fixtures/android/fixture.apk

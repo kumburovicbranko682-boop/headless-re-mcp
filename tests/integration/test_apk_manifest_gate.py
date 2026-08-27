@@ -49,6 +49,10 @@ def test_apk_manifest_side_over_a_real_manifest() -> None:
         assert opened.data["min_sdk"] == "21"
         assert opened.data["target_sdk"] == "30"
         assert opened.data["permission_count"] == 1
+        # main_activity comes from get_main_activity(), which resolves the
+        # LAUNCHER intent-filter -- a distinct, version-sensitive parse from the
+        # activity enumeration below, and null unless a launcher is declared.
+        assert opened.data["main_activity"] == "com.example.fixture.MainActivity"
 
         # manifest: decoding AXML back to XML must surface the package and the
         # declared permission.
@@ -62,10 +66,12 @@ def test_apk_manifest_side_over_a_real_manifest() -> None:
         assert permissions.ok, permissions.error
         assert "android.permission.INTERNET" in permissions.data["permissions"]
 
-        # components: the declared activity is enumerated.
+        # components: the declared activity is enumerated, and the launcher
+        # activity is surfaced via the same intent-filter parse.
         components = service.apk_components(session_id)
         assert components.ok, components.error
         assert "com.example.fixture.MainActivity" in components.data["activities"]
+        assert components.data["main_activity"] == "com.example.fixture.MainActivity"
 
         # certificates: the fixture is unsigned, so this must degrade to a clean
         # empty result rather than raising.
