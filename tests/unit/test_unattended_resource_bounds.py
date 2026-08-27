@@ -4152,6 +4152,22 @@ class TestFridaModuleEnumerationCapsRpc:
         assert "return {modules: items, total: all.length}" in _ENUM_SCRIPT
         assert ".map(function (m)" not in _ENUM_SCRIPT
 
+    def test_memory_read_uses_nativepointer_not_the_removed_memory_helpers(self) -> None:
+        """frida 17 deleted Memory.readByteArray; the read must use ptr(...).
+
+        The old ``Memory.readByteArray`` form raised "TypeError: not a function"
+        on every modern frida, so memory_read was dead while modules/exports
+        (Process.* APIs) still worked. Pin the NativePointer form so an edit
+        cannot silently reintroduce the removed global even where frida is not
+        installed to catch it live.
+        """
+        from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
+
+        assert "ptr(address).readByteArray(size)" in _ENUM_SCRIPT
+        # Forbid the *call* form (open paren); the explanatory comment may still
+        # name the removed helper in prose.
+        assert "Memory.readByteArray(" not in _ENUM_SCRIPT
+
 
 class TestIsolationKillsWhatItStarted:
     """The isolation command is the step between samples on an unattended box.
