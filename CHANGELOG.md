@@ -71,6 +71,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
+
+- `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
+  可能退出 0 却留下一个零字节或被截断的文件（构建在创建产物后中止、磁盘写满）。APK 本质是 zip，
+  这类空/非 zip 产物其实是一次失败的重打包，原样报成功会把不可用文件送进 `apk.sign` / 安装，直到
+  签名那步才暴露。现要求产物非空且能通过 `zipfile.is_zipfile` 校验，否则在重打包这步就报
+  `backend_error`（附 `size` 与 stderr 摘录）。
+
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
