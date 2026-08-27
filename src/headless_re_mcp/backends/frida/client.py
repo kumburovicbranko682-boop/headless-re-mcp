@@ -117,7 +117,11 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // frida 17 removed the free Memory.readByteArray(); the NativePointer method
+    // has existed for far longer, so ptr(address).readByteArray() reads on both
+    // old and new runtimes. The free form left frida.read raising "not a
+    // function" against any frida >= 17 target.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
