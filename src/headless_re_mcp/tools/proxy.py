@@ -77,7 +77,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
+        headers, size). headers is a list of {name, value} pairs in wire order,
+        preserving repeats, so every Set-Cookie survives rather than being folded
+        into one comma-joined value. A body at most 200000 bytes is response.body; anything
         larger is response.body_path and there is no body key. There are no
         top-level headers or body fields. The request POST/PUT payload, when
         present, is on request.body / request.body_path the same way (a GET with

@@ -262,6 +262,34 @@ def _flow_get_full(monkeypatch: Any, tmp_path: Path, request: Any, response: Any
     return backend.flow_get("s", "f1", tmp_path)
 
 
+def test_proxy_flow_get_preserves_every_set_cookie(tmp_path: Path, monkeypatch: Any) -> None:
+    """dict(headers) folds repeats into one comma-joined value; Set-Cookie can't.
+
+    A response setting several cookies used to come back as a single mangled
+    string (and an Expires date's own comma made it ambiguous), losing exactly
+    the session/auth data flow.get exists to surface. Headers now come back as an
+    ordered list of {name, value}, so each Set-Cookie is its own entry.
+    """
+    from mitmproxy.http import Headers
+
+    resp_headers = Headers()
+    resp_headers.add("Set-Cookie", "sid=abc; Expires=Wed, 21 Oct 2025 07:28:00 GMT")
+    resp_headers.add("Set-Cookie", "token=xyz")
+    resp_headers.add("Content-Type", "text/html")
+    request = SimpleNamespace(method="GET", pretty_url="http://x/", headers={}, raw_content=b"")
+    response = SimpleNamespace(status_code=200, headers=resp_headers, raw_content=b"ok")
+    payload = _flow_get_full(monkeypatch, tmp_path, request, response)
+
+    headers = payload["response"]["headers"]
+    assert isinstance(headers, list)
+    cookies = [h["value"] for h in headers if h["name"].lower() == "set-cookie"]
+    assert cookies == [
+        "sid=abc; Expires=Wed, 21 Oct 2025 07:28:00 GMT",
+        "token=xyz",
+    ]
+    assert {"name": "Content-Type", "value": "text/html"} in headers
+
+
 def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
     """The POST payload -- the params traffic analysis is usually after -- was
     unreachable when only the response body came back."""

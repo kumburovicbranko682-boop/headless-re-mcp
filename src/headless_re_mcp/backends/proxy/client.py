@@ -623,16 +623,24 @@ class ProxyBackend:
                 "flow body was not retained",
                 flow_id=flow_id,
             )
+        from headless_re_mcp.backends.common.har import har_headers
+
         req = flow.request
         resp = flow.response
+        # A list of {name, value} in wire order, not dict(headers): mitmproxy
+        # folds repeated names into one comma-joined value, which for Set-Cookie
+        # is corruption -- RFC 6265 forbids comma-combining, and an Expires date
+        # is itself comma-bearing -- so a response setting several cookies came
+        # back as one mangled string. The list preserves every repeat (and order,
+        # itself a fingerprinting signal) and is bounded by har_headers.
         request: JsonObject = {
             "method": req.method,
             "url": req.pretty_url,
-            "headers": dict(req.headers),
+            "headers": har_headers(req.headers),
         }
         response: JsonObject = {
             "status": getattr(resp, "status_code", None),
-            "headers": dict(resp.headers) if resp else {},
+            "headers": har_headers(resp.headers) if resp else [],
         }
         # The request body carries the POST/PUT payload -- API params, tokens,
         # the thing traffic analysis is usually after. A response-only view left

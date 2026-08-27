@@ -218,6 +218,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`proxy.flow.get` 用 `dict(headers)` 把重复头折叠，Set-Cookie 被折损**。mitmproxy 的
+  `Headers` 是多值容器，`dict(...)` 会把同名头合并成一个逗号连接的值——对多数头（RFC 7230 允许逗号合并）
+  无妨，但对 `Set-Cookie` 是破坏：RFC 6265 明确禁止逗号合并，而 `Expires` 日期本身就带逗号，于是一个
+  下发多个 cookie 的响应回来变成一坨无法解析的字符串，恰好丢掉了 flow.get 最该暴露的会话/鉴权数据。
+  现在请求/响应 `headers` 改成按线序排列的 `{name, value}` 列表，逐条保留重复（顺序本身也是指纹信号），
+  并复用 `har_headers` 做数量/长度上限；每个 Set-Cookie 各占一条。属 pre-1.0 的输出形状变更（dict → list）。
 - **`proxy.export_har` 丢掉了它明明留着的请求/响应头**。导出只用 recorder 的摘要
   （method/url/status/content_type）建 entry，可 recorder 的 raw flow 里完整保留着请求头与响应头——
   Authorization/Cookie/Set-Cookie/Content-Type 这些正是把 HAR 拿去 DevTools 看 Headers 页时最想要的东西，
