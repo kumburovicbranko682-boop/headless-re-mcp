@@ -18,7 +18,12 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _ensure_repository,
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -211,11 +216,48 @@ class ProxyAnalysisMixin:
             _timeline_append(
                 self, session_id, "proxy.ca.install_android", "CA pushed to device", serial=serial
             )
-            return _success(data, session_id=session_id, backend="proxy")
+            result: Result[JsonObject] = _success(data, session_id=session_id, backend="proxy")
         except (ProxyError, AdbError) as exc:
-            return _failure(_as_rpc(exc), session_id=session_id)
+            result = _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
-            return _failure(exc, session_id=session_id)
+            result = _failure(exc, session_id=session_id)
+        self._audit_ca_install(session_id, serial, result)
+        return result
+
+    def _audit_ca_install(
+        self, session_id: str, serial: str, result: Result[JsonObject]
+    ) -> None:
+        """Record a proxy CA push to a device in the durable audit log, best-effort.
+
+        proxy.ca.install_android pushes the mitmproxy root certificate onto a
+        device over adb -- the same class of session-scoped device mutation as
+        frida.server.ensure, which adb-pushes and starts a frida-server binary,
+        and arguably more sensitive since a trusted CA is what lets the proxy
+        read the device's TLS. frida.server.ensure and the device.* mutations
+        already write a durable audit row that survives cross-session; this one
+        had only a session timeline entry, trimmed with the session, so the fact
+        that a MITM cert was pushed to a given serial did not outlive the session
+        the way its sibling frida push does. It runs inside a session, so like
+        the frida mutations it carries that session_id and keeps its timeline
+        entry too. Best-effort -- the cert is already on the device, so a failed
+        audit write must not fail the tool -- and it copies only the structural
+        pushed_to path, a fixed tmp location carrying no secret; the store redacts
+        regardless. A failed call is recorded with its error code.
+        """
+        if result.ok and isinstance(result.data, dict):
+            summary: JsonObject = {"pushed_to": result.data.get("pushed_to")}
+        else:
+            summary = {}
+            if result.error is not None:
+                summary["code"] = result.error.code
+        with suppress(Exception):
+            _ensure_repository(self).append_audit(
+                session_id=session_id,
+                action="proxy.ca.install_android",
+                params_summary={"serial": serial},
+                ok=result.ok,
+                result_summary=summary,
+            )
 
     def _proxy_wrap(
         self, session_id: str, op: str, /, *args: Any, **kwargs: Any

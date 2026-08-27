@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（proxy.ca.install_android 的 CA 推送补记持久 audit）
+
+- `proxy.ca.install_android` 通过 adb 把 mitmproxy 根证书推到设备上——与 `frida.server.ensure`
+  （同样经 adb 推送并启动 frida-server 二进制）属同一类会话内设备变更,且更敏感:一张被信任的 CA
+  正是代理能读取该设备 TLS 的前提。`frida.server.ensure` 与各 `device.*` 变更早已各落一条能挺过
+  会话时间线裁剪的持久 audit 行,而 CA 推送此前只有随会话裁剪的 timeline 条目,于是"某序列号的设备
+  被推入过 MITM 证书"这一事实无法像其兄弟 frida 推送那样跨会话留存。
+- 现让 `proxy.ca.install_android` 在保留原 timeline 条目的同时,补记一条会话内(带 session_id)的
+  持久 audit 行:成功记 `pushed_to`、失败记错误码,写 audit 失败绝不使工具失败(证书已在设备上)。
+  `tests/unit/test_proxy_ca_audit.py` 钉住这四点;`audit.list` docstring 与
+  `test_tool_surface_boundaries.py` 的记痕映射同步把它从 timeline 归为 audit。
+
 ### 加固（把五个非 PE 后端的"缺依赖即优雅降级"钉成契约）
 
 - 每个可选非 PE 后端在其依赖缺失时都必须降级为 `capability_unavailable`——一个 agent 能识别并绕开的

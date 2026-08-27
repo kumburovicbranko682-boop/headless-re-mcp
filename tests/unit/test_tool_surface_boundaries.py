@@ -54,8 +54,9 @@ _NON_PE_WRITE_TRACES: dict[str, tuple[str, str]] = {
     "frida.spawn": ("audit", "frida.spawn"),
     # JS line -- durable audit (keyed by file path, no session).
     "js.unpack_bundle": ("audit", "js.unpack_bundle"),
-    # Proxy line -- session timeline.
-    "proxy.ca.install_android": ("timeline", "proxy.ca.install_android"),
+    # Proxy line -- session timeline, except the CA push, which also writes a
+    # durable audit row (an adb device mutation, like frida.server.ensure).
+    "proxy.ca.install_android": ("audit", "proxy.ca.install_android"),
     "proxy.export_har": ("timeline", "proxy.export_har"),
     "proxy.replay": ("timeline", "proxy.replay"),
     "proxy.start": ("timeline", "proxy.start"),
