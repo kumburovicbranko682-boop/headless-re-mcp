@@ -24,10 +24,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BUILT_FIXTURE = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
 _COMMITTED_FIXTURE = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
 
-# A named, un-inlinable function so the native (ELF) gate can find it by name.
+# A named, un-inlinable function so the native (ELF) gate can find it by name,
+# a distinctive string literal for r2.strings, and a libc call so r2.imports has
+# a named import to recover. -O0 keeps re_mcp_triple from being inlined into main.
+_ELF_MARKER = "re_mcp_marker"
 _ELF_SOURCE = (
+    "#include <stdio.h>\n"
     "int re_mcp_triple(int x) { return x * 3 + 1; }\n"
-    "int main(void) { return re_mcp_triple(7); }\n"
+    "int main(void) {\n"
+    "  int v = re_mcp_triple(7);\n"
+    f'  printf("{_ELF_MARKER} %d\\n", v);\n'
+    "  return v;\n"
+    "}\n"
 )
 
 
@@ -147,6 +155,11 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     assert native.get("format") == "elf"
     assert native.get("bits") in {32, 64}
     assert isinstance(native.get("machine"), str) and native["machine"]
+    # The Architecture enum only models x86/x64, so on those hosts the session
+    # names the arch and every r2 payload must echo it; on a non-x86 host (an
+    # aarch64 runner) it is None and r2 simply carries no arch field. Deriving
+    # the expectation from the session keeps this gate host-agnostic.
+    expect_arch = session.get("architecture")
     session_id = str(session["id"])
     try:
         assert service.r2_open(session_id, timeout=60.0).ok
@@ -154,9 +167,11 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         funcs = service.r2_functions(session_id, timeout=60.0)
         assert funcs.ok and funcs.data is not None, funcs.error
         assert funcs.data.get("parsed") is True
+        assert funcs.data.get("architecture") == expect_arch, funcs.data.get("architecture")
         by_name = {item.get("name"): item for item in funcs.data.get("items", [])}
         assert "main" in by_name, sorted(by_name)
-        assert any("re_mcp_triple" in (name or "") for name in by_name), sorted(by_name)
+        triple = next((n for n in by_name if "re_mcp_triple" in (n or "")), None)
+        assert triple is not None, sorted(by_name)
 
         entry = int(by_name["main"]["offset"])
         dis = service.r2_disasm(session_id, entry, count=8, timeout=60.0)
@@ -164,6 +179,52 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         assert dis.data.get("parsed") is True
         assert dis.data.get("invalid_count") == 0, dis.data
         assert dis.data.get("items"), "main disassembled to nothing"
+
+        # The whole r2 read surface must work on a native target, not just
+        # functions/disasm, and every address it hands back must carry the
+        # architecture an agent needs to interpret it. On ELF r2 reports
+        # absolute vaddrs (no image base), so mapped means va, not rva.
+        strings = service.r2_strings(session_id, timeout=60.0)
+        assert strings.ok and strings.data is not None, strings.error
+        assert strings.data.get("parsed") is True
+        assert strings.data.get("architecture") == expect_arch
+        literals = strings.data.get("items") or []
+        marker = next((s for s in literals if _ELF_MARKER in (s.get("string") or "")), None)
+        assert marker is not None, [s.get("string") for s in literals]
+        _assert_mapped(marker.get("address"))
+        assert marker["address"].get("architecture") == expect_arch, marker
+
+        imports = service.r2_imports(session_id, timeout=60.0)
+        assert imports.ok and imports.data is not None, imports.error
+        assert imports.data.get("parsed") is True
+        assert imports.data.get("architecture") == expect_arch
+        import_names = {item.get("name") for item in imports.data.get("items", [])}
+        assert "printf" in import_names, sorted(n for n in import_names if n)
+
+        exports = service.r2_exports(session_id, timeout=60.0)
+        assert exports.ok and exports.data is not None, exports.error
+        assert exports.data.get("parsed") is True
+        exported = {item.get("name"): item for item in exports.data.get("items", [])}
+        # Exports name the raw symbol (re_mcp_triple); the function list flags it
+        # as sym.re_mcp_triple. Match on the substring so the prefix drift between
+        # r2's symbol and flag namespaces does not make the gate brittle.
+        exported_triple = next((n for n in exported if "re_mcp_triple" in (n or "")), None)
+        assert exported_triple is not None, sorted(n for n in exported if n)
+        _assert_mapped(exported[exported_triple].get("address"))
+
+        # xrefs must resolve on the native target too: main calls re_mcp_triple,
+        # so a "to" edge into the function has to come back with mapped endpoints.
+        target = int(exported[exported_triple]["address"]["va"])
+        xref = service.r2_xrefs(session_id, target, timeout=60.0)
+        assert xref.ok and xref.data is not None, xref.error
+        assert xref.data.get("parsed") is True
+        rows = xref.data.get("items") or []
+        assert any(row.get("direction") == "to" for row in rows), rows
+        for row in rows:
+            assert row.get("direction") in {"to", "from"}, row
+            _assert_mapped(row.get("from_address"))
+            _assert_mapped(row.get("to_address"))
+            assert row["to_address"].get("architecture") == expect_arch, row
     finally:
         service.close_session(session_id)
 
