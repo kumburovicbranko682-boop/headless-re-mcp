@@ -25,7 +25,18 @@ JsonObject = dict[str, Any]
 
 
 def _as_rpc(exc: ProxyError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # A proxy/adb timeout is transient -- mitmproxy that has not begun
+    # listening yet, or a replay that has not completed, often succeeds on a
+    # second try -- so mark it retryable, exactly as the jsre/de4dot/upx
+    # siblings report their tool timeouts. Neither error carries a retryable
+    # flag and XdbgRpcError defaults it to False, so a dropped flag turned a
+    # transient stall into a permanent failure for an agent that retries on it.
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 class ProxyAnalysisMixin:

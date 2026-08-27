@@ -101,7 +101,18 @@ def refuse_oversized_device_file(
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # An adb timeout is transient -- a device that stalled on one command
+    # often answers the next -- so mark it retryable, exactly as the
+    # jsre/de4dot/upx siblings report their tool timeouts. AdbError carries no
+    # retryable flag and XdbgRpcError defaults it to False, so a dropped flag
+    # turned every device stall into a permanent failure for an agent that
+    # retries on it.
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 class DeviceAnalysisMixin:

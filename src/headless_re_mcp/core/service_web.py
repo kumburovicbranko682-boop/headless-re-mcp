@@ -25,7 +25,18 @@ JsonObject = dict[str, Any]
 
 
 def _as_rpc(exc: WebError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # A browser timeout is transient -- the page may load on a second try --
+    # so mark it retryable, exactly as the jsre/de4dot/upx siblings report
+    # their tool timeouts. WebError carries no retryable flag and XdbgRpcError
+    # defaults it to False, so without deriving it here a CDP timeout reached
+    # the caller as a permanent failure and an agent that retries on the flag
+    # gave up on what a second navigation typically clears.
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 _ALLOWED_NAVIGATION_SCHEMES = frozenset({"http", "https", "data"})

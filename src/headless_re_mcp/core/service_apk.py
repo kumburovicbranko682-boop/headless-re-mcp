@@ -49,7 +49,19 @@ def _refuse_oversized_tree(path: Path, *, kind: str, error_type: type) -> None:
 
 
 def _as_rpc(exc: ApkError | JadxError | ApktoolError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # jadx/apktool run through run_bounded, which raises a "timeout" code when
+    # the JVM outruns its deadline; that is transient, so mark it retryable
+    # exactly as the jsre/de4dot/upx siblings report their tool timeouts.
+    # Neither JadxError nor ApktoolError carries a retryable flag and
+    # XdbgRpcError defaults it to False, so a dropped flag turned a decompile
+    # timeout into a permanent failure for an agent that retries on it.
+    # (ApkError is in-process androguard and never uses this code.)
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 class ApkAnalysisMixin:

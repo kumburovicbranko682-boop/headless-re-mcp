@@ -28,7 +28,18 @@ _MAX_AUTHORIZED = 64
 
 
 def _as_rpc(exc: FridaError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # A frida/adb timeout is transient -- a device that stalled on one probe
+    # often answers the next -- so mark it retryable, exactly as the
+    # jsre/de4dot/upx siblings report their tool timeouts. Neither FridaError
+    # nor AdbError carries a retryable flag and XdbgRpcError defaults it to
+    # False, so a dropped flag turned every device stall into a permanent
+    # failure for an agent that retries on it.
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 class FridaDeviceMixin:
