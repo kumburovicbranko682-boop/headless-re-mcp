@@ -473,11 +473,31 @@ def write_timeline_jsonl(state: UnpackSessionState, path: Path) -> str | None:
     return None
 
 
-def persist_state_snapshot(state: UnpackSessionState, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(path.suffix + ".partial")
-    partial.write_text(
-        json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    partial.replace(path)
+def persist_state_snapshot(state: UnpackSessionState, path: Path) -> str | None:
+    """Write the durable state snapshot. Reports a write failure, never raises.
+
+    This runs from the same step as ``write_timeline_jsonl`` and right after it,
+    and shares that function's rule for the same reason: the snapshot records an
+    unpack that has already happened, so a full volume, a read-only root, or a
+    Windows sharing violation here must not fail the operation it is only writing
+    down -- the caller would see ``internal_error`` (an unnamed ``OSError`` maps
+    there and mints an incident) for a dump that succeeded, with the in-memory
+    state advanced past what reached disk. Nothing reads this file back either;
+    an unpack session is bound to a live debuggee, so a restart has nothing to
+    resume into. The partial carries a unique suffix so a second writer -- or a
+    second process sharing the artifact root -- never replaces a file the first
+    still holds open.
+    """
+    partial = path.with_suffix(f"{path.suffix}.{uuid4().hex}.partial")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text(
+            json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        partial.replace(path)
+    except OSError as exc:
+        with suppress(OSError):
+            partial.unlink()
+        return f"{type(exc).__name__}: {exc}"
+    return None

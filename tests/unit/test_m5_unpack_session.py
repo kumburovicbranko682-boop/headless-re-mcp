@@ -50,6 +50,37 @@ def test_an_unwritable_timeline_copy_does_not_block_the_state_snapshot(
     assert saved["session_id"] == "abc123"
 
 
+def test_an_unwritable_state_snapshot_is_reported_not_raised(tmp_path: Path) -> None:
+    """The snapshot records an unpack that already happened, like its JSONL copy.
+
+    ``write_timeline_jsonl`` was hardened to report a write failure rather than
+    raise, but ``persist_state_snapshot`` ran on the next line and still raised:
+    a full volume or a read-only root turned a dump that had succeeded into an
+    ``internal_error`` with a minted incident, the exact failure the sibling was
+    fixed to avoid. It must fail the same soft way and leave no partial behind.
+    """
+    state = create_unpack_session("abc123", route="upx", timeout_seconds=60)
+
+    # A blocked parent fails before a partial is even written.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    assert persist_state_snapshot(state, blocked / "state.json") is not None
+
+    # A target that is a non-empty directory fails at the atomic replace, after
+    # the partial exists -- the path that must clean the partial up.
+    occupied = tmp_path / "state.json"
+    occupied.mkdir()
+    (occupied / "keep").write_text("child", encoding="utf-8")
+
+    failure = persist_state_snapshot(state, occupied)
+
+    assert failure is not None, "an unwritable snapshot must be reported, not raised"
+    assert occupied.is_dir(), "a failed replace must not clobber the target"
+    assert not list(tmp_path.glob("state.json.*.partial")), (
+        "a failed snapshot must not leave a stale partial behind"
+    )
+
+
 def _write_pe(path: Path) -> None:
     image = bytearray(0x400)
     pe_offset = 0x80
