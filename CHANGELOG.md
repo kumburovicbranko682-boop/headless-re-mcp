@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（hidden desktop 把没真正隐藏的窗口也报成已隐藏）
+
+- `hide_input_desktop_windows_for_pids` 过去对枚举到的每个 hwnd 都无条件追加进返回的
+  `hidden` 列表，不看 `SetWindowPos` 的返回值。可是窗口可能在枚举与实际隐藏之间被销毁，或
+  归属更高完整性级别的进程——UIPI 禁止低完整性调试器去动它。这类隐藏失败的窗口（尤其是那种
+  动不了的反调试对话框）恰恰是本守卫要防的输入桌面泄漏，把它报成"已隐藏"等于把活的泄漏藏起来。
+  现改为仅当 `SetWindowPos`（带 `SWP_HIDEWINDOW`，只有真把窗口置为隐藏态才返回非零）成功时才
+  记入 `hidden`；`ShowWindow` 返回的是之前的可见状态、不能判定成败，故仍对每个窗口都尝试
+  `ShowWindow` + `SetWindowPos`，只是不再拿它来判定结果。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
