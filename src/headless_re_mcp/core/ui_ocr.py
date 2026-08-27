@@ -187,7 +187,20 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    payload = json.loads(lines_out[-1])
+    # The worker prints its result as the last line, but its stdout is not a
+    # guaranteed-clean JSON channel: WinRT/pythonnet startup, a runtime warning,
+    # or any imported library can emit a stray line that lands last. Every other
+    # failure in this function is a structured backend_error; an unguarded parse
+    # here would instead let a JSONDecodeError escape as internal_error and mint
+    # an incident for a backend that merely returned malformed output.
+    try:
+        payload = json.loads(lines_out[-1])
+    except json.JSONDecodeError as exc:
+        raise UiPidBoundaryError(
+            "backend_error",
+            "Windows OCR returned unparseable output",
+            stdout=(completed.stdout or "")[:200],
+        ) from exc
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
     return payload
