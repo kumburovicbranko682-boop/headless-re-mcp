@@ -477,6 +477,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `(serial, local)`，`close_all` 时按记录拆除。
 - **设备截图 / pull 和 jsre unpack 目录不进产物表**。它们按 serial 或一次性 uuid 落盘，
   回收器看不见，目录随调用次数单调增长。写入后按条数和字节量淘汰最旧的，刚写入的那份保留。
+- **`js.unpack_bundle` 失败时只按棵数封顶，不管字节量**。淘汰有两套：成功路径跑
+  `prune_capped_dir`（按条数与 256 MB 字节双重封顶），而 `finally` 里另跑一个只数棵数的
+  `prune_jsre_unpack_dirs`。unpack 中途抛错时只有后者生效，于是反复的半途失败——每次都先写了
+  一部分再抛——能把 jsre 根目录顶过字节上限而棵数仍在限内。改为在 `finally` 里统一只跑
+  `prune_capped_dir`（它本就是为「不进产物表、回收器看不见」的目录设计的），成功与失败两条路
+  都保住两个上限；顺手删掉与 `JSRE_UNPACK_MAX_ENTRIES` 重复的 `prune_jsre_unpack_dirs` /
+  `_MAX_JSRE_UNPACK_DIRS`。
 - **Scylla / XVLKC / VMP dumper / de4dot / NETReactorSlayer 的 doctor 探针仍走 `subprocess.run`**。
   Scylla 在超时后把「启动过」当成可用，却不杀进程，GUI 探针会把窗口留在机器上；其余超时在
   Windows 上可能让 `communicate()` 永不返回。全部改走同一个有界执行器。
