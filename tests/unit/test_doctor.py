@@ -588,6 +588,73 @@ def test_playwright_probe_degrades_when_the_driver_cannot_answer(
     assert "chromium_executable" not in probe.details
 
 
+def _wabt_off_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force wabt resolution to come only from the configured setting.
+
+    _resolve_wabt_tool consults PATH as a fallback; a host with wabt installed
+    would otherwise defeat the partial/missing cases.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+
+    monkeypatch.setattr(jsre_client.shutil, "which", lambda name: None)
+
+
+def test_wabt_probe_is_missing_when_neither_binary_resolves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wabt_off_path(monkeypatch)
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=tmp_path / "absent")
+
+    probe = doctor_module.probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.MISSING
+
+
+def test_wabt_probe_reports_a_partial_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wasm2wat alone backs wasm.wat; wasm.info still needs wasm-objdump."""
+    _wabt_off_path(monkeypatch)
+    bindir = tmp_path / "wabt-bin"
+    bindir.mkdir()
+    (bindir / "wasm2wat").write_text("", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=bindir)
+
+    probe = doctor_module.probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "wasm-objdump is missing" in probe.summary
+    assert "wasm.info unavailable" in probe.summary
+    assert probe.details["missing_binaries"] == ["wasm-objdump"]
+    assert probe.remediation is not None
+
+
+def test_wabt_probe_accepts_a_bin_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic optional-tool probe reported MISSING for a directory setting.
+
+    WasmClient resolves wasm2wat/wasm-objdump out of a configured bin directory,
+    so doctor must recognise the same shape instead of only a file on PATH.
+    """
+    _wabt_off_path(monkeypatch)
+    bindir = tmp_path / "wabt-bin"
+    bindir.mkdir()
+    (bindir / "wasm2wat").write_text("", encoding="utf-8")
+    (bindir / "wasm-objdump").write_text("", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=bindir)
+
+    probe = doctor_module.probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.remediation is None
+    assert probe.details["wasm2wat"].endswith("wasm2wat")
+    assert probe.details["wasm-objdump"].endswith("wasm-objdump")
+
+
 def test_isolation_probe_blocks_on_elevated_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

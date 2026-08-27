@@ -210,7 +210,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",), runtime=("node",)),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_wabt(current),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1135,6 +1135,56 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+# wasm.wat needs wasm2wat; wasm.info needs wasm-objdump. Each backs a different
+# tool, so a partial wabt disables one while the other still works.
+_WABT_BINARIES: tuple[tuple[str, str], ...] = (
+    ("wasm2wat", "wasm.wat"),
+    ("wasm-objdump", "wasm.info"),
+)
+
+
+def probe_wabt(settings: Settings) -> Probe:
+    """Report wabt the way WasmClient actually resolves it.
+
+    The generic optional-tool probe understood only a single PATH command and a
+    file-valued setting, so it reported MISSING when wabt was configured as a bin
+    directory -- which ``WasmClient`` accepts -- and reported ready on wasm2wat
+    alone even when wasm-objdump, and therefore ``wasm.info``, was absent. Resolve
+    both binaries through the backend's own resolver so doctor and the backend
+    agree, and name any missing one instead of implying the whole tool works.
+    """
+    from headless_re_mcp.backends.jsre.client import _resolve_wabt_tool
+
+    configured = getattr(settings, "wabt", None)
+    resolved = {
+        binary: _resolve_wabt_tool(configured, binary) for binary, _tool in _WABT_BINARIES
+    }
+    if all(path is None for path in resolved.values()):
+        return Probe("wabt", ProbeStatus.MISSING, "Optional wabt tool is not installed")
+    detail: dict[str, Any] = {
+        binary: str(path) for binary, path in resolved.items() if path is not None
+    }
+    missing = [
+        (binary, tool) for binary, tool in _WABT_BINARIES if resolved[binary] is None
+    ]
+    if missing:
+        absent = ", ".join(binary for binary, _tool in missing)
+        disabled = ", ".join(tool for _binary, tool in missing)
+        return Probe(
+            "wabt",
+            ProbeStatus.DETECTED,
+            f"wabt detected, but {absent} is missing ({disabled} unavailable)",
+            {**detail, "missing_binaries": [binary for binary, _tool in missing]},
+            f"Install a complete wabt so {absent} is present.",
+        )
+    return Probe(
+        "wabt",
+        ProbeStatus.DETECTED,
+        "wabt detected (wasm2wat + wasm-objdump)",
+        detail,
     )
 
 

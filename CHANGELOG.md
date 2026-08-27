@@ -239,6 +239,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   summary 点明浏览器没装、details 带 `chromium_executable`、remediation 给出
   `python -m playwright install chromium`；问不出结果（驱动缺失/超时）就回落到原来的纯 `detected`，
   绝不臆测。
+- **doctor 的 wabt 探针与后端对「装没装」各执一词**。`WasmClient` 分别解析 `wasm2wat`（撑
+  `wasm.wat`）和 `wasm-objdump`（撑 `wasm.info`），且 `settings.wabt` 可指向单个可执行文件、也可
+  指向 wabt 的 bin 目录。可 doctor 走的是通用 `probe_optional_tool`，只认「单个 PATH 命令」加「文件值
+  的设置」，还只探 `wasm2wat` 一个：把 wabt 配成目录时它 `Path(dir).is_file()` 为假、`wasm2wat` 又不在
+  PATH，于是报 `missing`——而后端能从该目录解析出两个二进制、`wasm.*` 全都能跑；反过来只有 `wasm2wat`
+  没有 `wasm-objdump` 时，它又报纯 `detected`，掩盖了 `wasm.info` 其实会 `capability_unavailable`。现在
+  doctor 用后端同一个 `_resolve_wabt_tool` 分别解析两个二进制：都缺才 `missing`；缺一个则仍 `detected`
+  但点名缺的二进制与随之失效的工具（`wasm2wat`↔`wasm.wat`、`wasm-objdump`↔`wasm.info`）并给出补齐指引；
+  两个都在才报「wasm2wat + wasm-objdump」。目录式配置与部分安装从此如实呈现，doctor 与后端不再打架。
 - **`device.install` 读 APK 清单会被解压炸弹 OOM**。为了不引入 androguard，`_apk_package_name`
   用 `ZipFile.read("AndroidManifest.xml")[:65536]` 手搓解析——可 `read()` 会先把整个成员解压进内存
   再切片，一个把清单做成解压后上 GiB 的恶意 APK，能在切片之前就把进程撑爆；而 `install()` 正是拿
