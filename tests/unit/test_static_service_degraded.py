@@ -44,6 +44,7 @@ class _RecordingStaticWorker(FakeStaticWorker):
                 "static.bytes.patch",
                 "static.name.set",
                 "static.batch",
+                "static.disassemble",
             }
         )
 
@@ -74,6 +75,8 @@ class _RecordingStaticWorker(FakeStaticWorker):
                 "previous_name": "",
                 "ok": True,
             }
+        if command == "disassemble":
+            return {"address": int(values.get("address", 0)), "instructions": None, "ok": True}
         if command == "batch":
             assert self.batch_result is not None, "test must set batch_result first"
             return self.batch_result
@@ -123,6 +126,23 @@ def test_search_methods_forward_the_optional_start_and_end_window(tmp_path: Path
         params = _call_params(worker, command)
         assert params["start"] == 0x1000
         assert params["end"] == 0x2000
+
+
+def test_disassemble_without_an_instruction_list_is_returned_unchanged(
+    tmp_path: Path,
+) -> None:
+    """The oversized-spill path only applies to a list of instructions; a result
+
+    that carries no instruction list must pass through untouched, not spilled.
+    """
+    worker = _RecordingStaticWorker()
+    service, session_id = _service_with(worker, tmp_path)
+
+    result = service.static_disassemble(session_id, address=0x140001000, count=4)
+
+    assert result.ok and result.data is not None
+    assert result.data.get("instructions") is None
+    assert result.data.get("truncated") is not True
 
 
 def test_bytes_patch_forwards_a_base64_payload(tmp_path: Path) -> None:
