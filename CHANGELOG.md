@@ -878,6 +878,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`report.generate` 的「Recent actions」被截断却不声明**。报告对 findings 与 artifacts 都会
+  在超出上限时补一句「Showing X of Y」（`_note_if_partial`），唯独审计段漏了——而它恰恰是最容易
+  被截断的一段：findings 上限 500、artifacts 上限 100，审计默认只有 30，而一个持续跑的会话每调用
+  一次工具就写一条审计。于是一份对外留存的报告把「最近 30 条」显示成了「全部动作历史」，读报告的
+  人据此以为某个动作从未发生，其实只是没进这一页。审计段现在与另外两段一样调用 `_note_if_partial`
+  （`list_audit` 早已回 `total`），超出即注明「Showing X of Y actions」，未超出则不打扰。
 
 ### 新增（项目文档）
 
