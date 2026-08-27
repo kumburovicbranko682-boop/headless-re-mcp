@@ -268,6 +268,15 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        if mode == "decompile":
+            # The postScript records `function`/`entry` only when it found one
+            # containing the address; an address inside no function comes back
+            # with `decompiled` empty, which reads exactly like a function whose
+            # body decompiled to nothing. Surface `found` so a caller can tell
+            # "no function here" from "decompiled to nothing". The JSON crosses
+            # a foreign-interpreter boundary, so derive it here when the script
+            # did not emit it rather than trusting the field to be present.
+            payload.setdefault("found", bool(payload.get("function")))
         return payload
 
     def _run_headless(

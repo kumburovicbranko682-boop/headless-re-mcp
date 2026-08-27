@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend, WebError
+from headless_re_mcp.backends.web.client import (
+    _MAX_NAV_TIMEOUT_S,
+    _bound_nav_timeout,
+    _Runner,
+)
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -260,6 +266,80 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
+
+
+class _FakeNavPage:
+    """Records the timeout Playwright's goto would have received."""
+
+    def __init__(self) -> None:
+        self.url = "https://old/"
+        self.goto_timeouts: list[float] = []
+
+    def goto(self, url: str, timeout: float = 0.0, wait_until: str = "") -> None:
+        self.goto_timeouts.append(timeout)
+        self.url = url
+
+    def title(self) -> str:
+        return "Example"
+
+
+class TestWebNavTimeoutIsBounded:
+    """A caller navigation timeout is clamped at the backend boundary.
+
+    The web.open / web.navigate schema declares ``0 < timeout <= 120``, but the
+    agent transport invokes handlers straight from model arguments with no
+    schema enforcement. A non-positive timeout would reach
+    ``Future.result(timeout<=0)``, which returns at once and flips the runner to
+    ``_wedged`` -- so a single stray value used to brick a healthy live session
+    until web.close, unlike frida, which already rejects such timeouts.
+    """
+
+    def test_bound_nav_timeout_rejects_nonpositive_and_caps_the_rest(self) -> None:
+        assert _bound_nav_timeout(30.0) == 30.0
+        assert _bound_nav_timeout(10**9) == _MAX_NAV_TIMEOUT_S
+        for bad in (0.0, -1.0, -100.0):
+            with pytest.raises(WebError) as info:
+                _bound_nav_timeout(bad)
+            assert info.value.code == "invalid_params"
+
+    def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-nav-runner")
+        try:
+            page = _FakeNavPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            with pytest.raises(WebError) as info:
+                backend.navigate("s", "https://example/app", timeout=-100.0)
+            assert info.value.code == "invalid_params"
+            # The runner never saw the doomed wait, so the session is still usable.
+            assert runner.wedged is False
+            assert page.goto_timeouts == []
+
+            payload = backend.navigate("s", "https://example/app", timeout=30.0)
+            assert payload["url"] == "https://example/app"
+            assert runner.wedged is False
+        finally:
+            runner.shutdown()
+
+    def test_a_huge_navigate_timeout_is_capped_to_the_schema_max(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-nav-cap-runner")
+        try:
+            page = _FakeNavPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            backend.navigate("s", "https://example/app", timeout=10**9)
+            # goto receives milliseconds, capped at the schema ceiling.
+            assert page.goto_timeouts == [_MAX_NAV_TIMEOUT_S * 1000.0]
+        finally:
+            runner.shutdown()
 
 
 class _TrackingWebBackend:

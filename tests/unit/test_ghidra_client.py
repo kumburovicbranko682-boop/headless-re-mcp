@@ -209,6 +209,62 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     decompile = _tool_docstring("ghidra.decompile")
     assert "decompiled" in decompile
     assert "truncated" in decompile
+    assert "found" in decompile
+
+
+def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+
+
+def test_ghidra_decompile_reports_found_false_when_no_function_contains_the_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An address inside no function used to read as an empty function body.
+
+    ExportJson writes decompiled "" and no function key when getFunctionContaining
+    returns nothing. Without found, a caller cannot tell that from a function that
+    decompiled to nothing, and an unattended pass would treat the empty string as
+    the body.
+    """
+    _decompile_run(monkeypatch, '{"mode": "decompile", "decompiled": "", "truncated": false}')
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is False
+    assert payload["decompiled"] == ""
+
+
+def test_ghidra_decompile_reports_found_true_when_a_function_was_decompiled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["function"] == "main"
+
+
+def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A found flag emitted by the script is not overwritten by the derivation."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "found": true, "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
 
 
 def test_ghidra_refuses_an_oversized_export_json(
