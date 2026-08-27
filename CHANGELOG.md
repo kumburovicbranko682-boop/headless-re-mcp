@@ -955,6 +955,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   必须回出该类源码(含一个原样保留的标记串,选错文件或空读都伪造不出来,顺带钉住类名→路径映射)。gate 像
   服务一样从 settings/PATH 解析 jadx,缺 jadx 或缺 JDK 时干净 skip(skip≠pass)。已在 jadx 1.5.6 + JDK 21 实测
   通过,`sources/` 布局成立,故客户端无需改动。
+- **androguard 的 `apk.*` 面与 apktool decode 补上真实 live 覆盖**。`apk.open`/`classes`/`methods`/`strings`/
+  `xrefs` 的单测要么 mock 掉 androguard(monkeypatch `_parsed`)、要么只断言结构化降级,于是「androguard 4.x
+  API 漂了」这类问题抓不到——3→4 大改重塑了 `get_classes`/`is_external`/`get_xref_from`/`get_strings`,一旦
+  漂移,真实工具什么有用的都不吐,而整套单测照过;apktool decode 同理无 live 覆盖。新增一个极小的committed
+  APK 夹具(`fixtures/android/sample.apk`,1KB:单个 `com.example.gate.Sample`,其 `caller` 调 `callee`、后者
+  返回标记串 `APK_GATE_MARKER_STRING`),对它真跑两个后端:androguard 必须列出该类、其方法、标记串,并解出
+  caller→callee 的 xref;apktool 必须把它 decode 回一棵含该类的 manifest+smali 树。两个能力各自独立 skip
+  (skip≠pass)。夹具用 apktool 3.0.3 构建(`apktool b` 把 smali 汇成 `classes.dex`、经 aapt2 把 manifest 编成
+  二进制 AXML),可读的 smali/manifest 源一并committed 在旁。已在 androguard 4.1.4 + apktool 3.0.3(JDK 21)
+  实测通过,两面都解得出,故客户端无需改动。
 
 ### 变更（Android 后端清理）
 
