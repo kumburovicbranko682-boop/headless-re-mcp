@@ -992,3 +992,195 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+
+
+class _FakeVmClass:
+    def __init__(self, access: str) -> None:
+        self._access = access
+
+    def get_access_flags_string(self) -> str:
+        return self._access
+
+
+class _FakeHierClass:
+    """A ClassAnalysis carrying inheritance (extends/implements) and a shape."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        external: bool = False,
+        extends: str | None = None,
+        implements: list[str] | None = None,
+        methods: int = 0,
+        fields: int = 0,
+        access: str = "public",
+    ) -> None:
+        self.name = name
+        self._external = external
+        self.extends = extends
+        self.implements = implements or []
+        self._methods = list(range(methods))
+        self._fields = list(range(fields))
+        self._access = access
+
+    def is_external(self) -> bool:
+        return self._external
+
+    def get_vm_class(self) -> _FakeVmClass:
+        return _FakeVmClass(self._access)
+
+    def get_methods(self) -> list[int]:
+        return list(self._methods)
+
+    def get_fields(self) -> list[int]:
+        return list(self._fields)
+
+
+class _FakeHierParsed:
+    def __init__(self, classes: list[_FakeHierClass]) -> None:
+        self.analysis = self
+        self._classes = classes
+
+    def get_classes(self) -> list[_FakeHierClass]:
+        return self._classes
+
+
+def test_apk_class_info_reports_superclass_interfaces_access_and_counts(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The gap between apk.classes (names) and apk.methods (bodies): what a class is.
+
+    Measured: an internal class extending an Activity and implementing two
+    interfaces -> superclass and the two interface names come back in Lsmali/
+    form, is_external False, access echoed, method_count/field_count as counted.
+    interfaces is the SSL/worker map a reverse engineer navigates by.
+    """
+    client = ApkClient()
+    widget = _FakeHierClass(
+        "Lcom/example/Widget;",
+        extends="Landroid/app/Activity;",
+        implements=["Ljava/lang/Runnable;", "Landroid/view/View$OnClickListener;"],
+        methods=4,
+        fields=2,
+        access="public final",
+    )
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed([widget])
+    )
+    payload = client.class_info(tmp_path / "app.apk", "Lcom/example/Widget;")
+    assert payload["class_name"] == "Lcom/example/Widget;"
+    assert payload["is_external"] is False
+    assert payload["superclass"] == "Landroid/app/Activity;"
+    assert payload["interfaces"] == [
+        "Ljava/lang/Runnable;",
+        "Landroid/view/View$OnClickListener;",
+    ]
+    assert payload["access"] == "public final"
+    assert payload["method_count"] == 4
+    assert payload["field_count"] == 2
+    doc = _tool_docstring("apk.class_info")
+    for token in (
+        "superclass",
+        "interfaces",
+        "method_count",
+        "field_count",
+        "is_external",
+        "access",
+    ):
+        assert token in doc
+
+
+def test_apk_class_info_accepts_a_dotted_class_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A dotted class resolves to the same Lsmali/class the DEX stores."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeHierParsed(
+            [_FakeHierClass("Lcom/example/Widget;", extends="Ljava/lang/Object;")]
+        ),
+    )
+    payload = client.class_info(tmp_path / "app.apk", "com.example.Widget")
+    assert payload["class_name"] == "Lcom/example/Widget;"
+    assert payload["superclass"] == "Ljava/lang/Object;"
+
+
+def test_apk_class_info_no_interfaces_is_an_empty_list_not_omitted(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A class implementing nothing reports interfaces [] (a stated absence).
+
+    An omitted interfaces field would be ambiguous with "not analysed"; the
+    empty list says plainly the class implements no interface.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeHierParsed(
+            [_FakeHierClass("Lcom/example/Plain;", extends="Ljava/lang/Object;")]
+        ),
+    )
+    payload = client.class_info(tmp_path / "app.apk", "Lcom/example/Plain;")
+    assert payload["interfaces"] == []
+
+
+def test_apk_class_info_external_reference_omits_the_fabricated_hierarchy(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """For an external class only class_name/is_external come back, not a stub.
+
+    androguard fabricates a bare stub for a framework/library reference (a
+    default Object superclass, no body); the tool must not present that as real,
+    so superclass/interfaces/access/counts are omitted and is_external says why.
+    """
+    client = ApkClient()
+    external = _FakeHierClass(
+        "Landroidx/appcompat/app/AppCompatActivity;",
+        external=True,
+        extends="Ljava/lang/Object;",  # androguard's fabricated default
+        methods=99,
+    )
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed([external])
+    )
+    payload = client.class_info(
+        tmp_path / "app.apk", "Landroidx/appcompat/app/AppCompatActivity;"
+    )
+    assert payload["is_external"] is True
+    assert payload["class_name"] == "Landroidx/appcompat/app/AppCompatActivity;"
+    for field in ("superclass", "interfaces", "access", "method_count", "field_count"):
+        assert field not in payload
+
+
+def test_apk_class_info_unknown_class_is_not_found(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A class the DEX does not define is not_found, not an empty summary."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeHierParsed([_FakeHierClass("Lcom/example/Widget;")]),
+    )
+    with pytest.raises(ApkError) as info:
+        client.class_info(tmp_path / "app.apk", "Lcom/example/Ghost;")
+    assert info.value.code == "not_found"
+
+
+def test_apk_class_info_blank_class_name_is_invalid_params(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A blank class_name is rejected before any lookup."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeHierParsed([_FakeHierClass("Lcom/example/Widget;")]),
+    )
+    with pytest.raises(ApkError) as info:
+        client.class_info(tmp_path / "app.apk", "   ")
+    assert info.value.code == "invalid_params"

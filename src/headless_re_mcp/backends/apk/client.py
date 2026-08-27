@@ -936,6 +936,45 @@ class ApkClient:
             result["filtered"] = True
         return result
 
+    def class_info(self, path: Path, class_name: str) -> JsonObject:
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        found = next(
+            (
+                klass
+                for klass in parsed.analysis.get_classes()
+                if klass.name == target or klass.name == smali
+            ),
+            None,
+        )
+        if found is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        external = bool(found.is_external())
+        result: JsonObject = {"class_name": found.name, "is_external": external}
+        # Hierarchy and shape are only trustworthy for the app's own (internal)
+        # classes: androguard fabricates a bare stub for an external reference
+        # (superclass defaulted to Object, no real body), so reporting those
+        # would be misleading -- leave them off and let is_external say why.
+        if external:
+            return result
+        extends = getattr(found, "extends", None)
+        if extends:
+            result["superclass"] = str(extends)
+        implements = getattr(found, "implements", None) or []
+        result["interfaces"] = [str(iface) for iface in implements]
+        vm = None
+        with contextlib.suppress(Exception):
+            vm = found.get_vm_class()
+        if vm is not None:
+            with contextlib.suppress(Exception):
+                result["access"] = str(vm.get_access_flags_string())
+        result["method_count"] = sum(1 for _ in found.get_methods())
+        result["field_count"] = sum(1 for _ in found.get_fields())
+        return result
+
     def strings(
         self, path: Path, *, offset: int = 0, limit: int = 200, contains: str | None = None
     ) -> JsonObject:

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1445,6 +1445,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   工具面 276→**277**(159→**160** 只读,写不变)。单测(`test_wasm_imports_exports.py`):类型/可变性/整型初值、负 i32 初值(证带符号 LEB128 的符号扩展)、i64 超 2^32 与 f64 字面量、非有限浮点保 op 丢 value、索引在被导入全局之后偏移、
   `global.get` 初值报被引用索引、无 Global 段为空而非报错、段截断置 incomplete、无法解码的初值(0x00 非常量操作码)置 incomplete 且不臆造下一条起点、非模块硬报错、WasmClient 无 wabt 也能分页读盘且列表字段名为 globals、缺文件报 `not_found`。
   实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对手工装配、含两枚 i32 全局(一枚 const 初值 66560 即栈指针量级、一枚 mutable 初值 0)的模块读回各自的索引/类型/可变性与解码初值,初值 66560 为三字节 LEB128 故一并端到端验证带符号 LEB 解码。
+
+- **新增 `apk.class_info`:给出单个类的继承与形状——父类、实现的接口、访问标志、方法数与字段数。** `apk.classes` 只列类名、`apk.methods` 只列某类的方法,而「这个类*是什么*」——它继承谁、实现了哪些接口——没有一个工具结构化给出;
+  逆向一枚 APK 时,继承与接口正是导航图:`implements` 里出现 `Ljavax/net/ssl/X509TrustManager;` 就是自定义信任管理器(SSL 校验绕过的高发点)、`Ljava/lang/Runnable;` 就是后台线程,`superclass` 把一个被混淆的类系到它真正的父类
+  (某个 Activity/Service 子类、WebViewClient、Cipher 包装)。此前要拿到这些只能整类反编译成 Java 源码去读,昂贵且非结构化。新工具直接读 androguard `ClassAnalysis` 的 `extends`/`implements` 与类的访问标志,回
+  `class_name`(解析后的 Lsmali/名)、`is_external`、`superclass`(Lsuper/类;)、`interfaces`(实现的 Lsmali/名列表,实现零个接口则为 `[]` 而非省略——「明说没有」与「未分析」不混淆)、`access`(类访问标志串,如 "public final")、
+  `method_count`、`field_count`。**只有 app 自己的类才有真实类体**:对一个外部引用(不在 DEX 里定义的框架/库类),androguard 会造一个默认父类为 Object、无类体的空壳,故对 `is_external` 为真的类只回 `class_name` 与 `is_external`,
+  其余字段一律省略而非把伪造的空壳当真报出。类名沿用 DEX 存储的 Lsmali/形(与 `apk.classes` 一致),入参可给点分名或 Lsmali/名,DEX 未定义的类报 `not_found`、空类名报 `invalid_params`。工具面 277→**278**(160→**161** 只读,写不变)。
+  单测(`test_apk_fields.py`):父类/两个接口/访问标志/方法数/字段数全数读回、点分名解析到 Lsmali/名、无接口回 `[]`、外部引用只回 class_name/is_external 而略去伪造继承、未定义类报 not_found、空类名报 invalid_params。
+  实机测试(`test_m11_android_apk_live_gate.py`,走真实 `sample.apk`)读回 `Sample` 的父类为 `Ljava/lang/Object;`、接口为 `[]`、access 含 "public"、恰好 3 个方法(`<init>`/`callee`/`caller`)与 0 字段,点分名解析到 smali 名——
+  这条 4.x 面(`extends`/`implements`/访问标志)有别于既有的方法/xref 读取,故 androguard 在该处的漂移由本例兜住。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

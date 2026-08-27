@@ -203,6 +203,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.class_info")
+    def apk_class_info(session_id: str, class_name: str) -> dict[str, Any]:
+        """Summarise one class's inheritance and shape (dotted or Lsmali/form).
+
+        apk.classes lists class names and apk.methods lists a class's methods;
+        this fills the gap between them -- what a class *is*. Answers with
+        class_name (the resolved Lsmali/name), is_external, superclass (the
+        Lsuper/class; form), interfaces (the Lsmali/names it implements), access
+        (the class access-flags string, e.g. "public final"), method_count and
+        field_count. This is the inheritance map a reverse engineer navigates by:
+        interfaces names Ljavax/net/ssl/X509TrustManager; or Ljava/lang/Runnable;
+        so a custom trust manager or a background worker is found by what it
+        implements, and superclass ties an obfuscated class to its real parent
+        (an Activity/Service subclass, a WebViewClient, a Cipher wrapper). Only
+        the app's own classes carry a real body: for an external reference (a
+        framework/library class not defined in the DEX) the reply is just
+        class_name and is_external true -- superclass, interfaces, access and the
+        counts are omitted rather than reported from androguard's fabricated stub.
+        Names stay in Lsmali/form as the DEX stores them (matching apk.classes),
+        and interfaces is [] for a class that implements none. A class the DEX
+        does not define is not_found.
+        """
+        return _dump(analysis.apk_class_info(session_id, class_name))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

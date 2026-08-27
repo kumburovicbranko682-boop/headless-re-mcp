@@ -108,6 +108,21 @@ def test_m11_androguard_apk_surface() -> None:
     assert miss_methods["methods"] == []
     assert miss_methods["filtered"] is True
 
+    # class_info reads the class's inheritance and shape straight off androguard's
+    # ClassAnalysis (extends/implements/access-flags + method/field counts) -- a
+    # different 4.x surface than the method/xref reads above, so a drift in
+    # .extends or .implements is caught here. On this fixture Sample extends
+    # Object, implements nothing, is public, and has exactly its 3 methods
+    # (<init>/callee/caller) and no fields; dotted resolves to the smali name.
+    info = client.class_info(_APK, _CLASS)
+    assert info["class_name"] == "Lcom/example/gate/Sample;"
+    assert info["is_external"] is False
+    assert info["superclass"] == "Ljava/lang/Object;"
+    assert info["interfaces"] == []
+    assert "public" in info["access"]
+    assert info["method_count"] == 3
+    assert info["field_count"] == 0
+
     strings = client.strings(_APK)
     assert any(
         "APK_GATE_MARKER_STRING" in value for value in strings["strings"]
