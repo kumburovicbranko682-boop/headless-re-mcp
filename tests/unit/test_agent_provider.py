@@ -489,6 +489,29 @@ async def test_model_listing_stops_reading_an_oversized_response(
 
 
 @pytest.mark.asyncio
+async def test_model_listing_blames_a_deeply_nested_body_on_the_provider() -> None:
+    """The models body is remote and parsed by a bare json.loads.
+
+    20k '[' is a 20 KB body far under the 1 MiB models cap, so it downloads in
+    full and reaches json.loads -- whose C decoder recurses per bracket and
+    raises RecursionError, which the bare parse did not catch, so it escaped
+    list_models where the oversized-body path already raises a clean ValueError.
+    """
+    flood = b"[" * 20_000
+
+    def nested(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=flood)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(nested),
+    )
+
+    with pytest.raises(ValueError, match="models response is not JSON"):
+        await provider.list_models()
+
+
+@pytest.mark.asyncio
 async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path) -> None:
     """Every field in a chunk is type-checked; the chunk being JSON was assumed."""
 

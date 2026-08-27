@@ -244,6 +244,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   让它任意深。stdio 侧（`mcp/stdio_errors.py`）与 DIE 的 `_parse_json` 早已把
   `RecursionError` 纳入吞掉的集合，本次把这两处补齐为同一口径。新增两条回归
   （深嵌套 chunk、深嵌套工具参数各一），在旧的窄 except 下都以 `RecursionError` 失败。
+- 同一文件里 `list_models` 的 `json.loads(body)` 是同一威胁模型下**最后一处未设防**的
+  provider 响应解析：body 是远端 provider 的 `/models` 响应，函数已对其做字节封顶
+  （1 MiB）并对超限抛干净的 `ValueError`，却在解析这步裸调 `json.loads`——一个约
+  20 KB、远在上限内却嵌套两万层的 body 会抛 `RecursionError` 直接逃出，畸形 200 body
+  也会以裸 `JSONDecodeError` 逃出，二者经 `probe_models` 路由变成 `provider_probe_failed`
+  里含底层异常名的 502，而非该函数既有契约的干净 `ValueError`。现把这步也纳入
+  `(JSONDecodeError, RecursionError)` 捕获、统一转成指名 provider 的 `ValueError`。
+  新增回归：两万个 `[` 的 200 body 断言抛 `ValueError`，旧代码下以 `RecursionError` 失败。
 
 ### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
 

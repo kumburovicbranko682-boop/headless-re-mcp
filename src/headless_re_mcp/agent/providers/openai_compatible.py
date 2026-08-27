@@ -491,7 +491,15 @@ class OpenAICompatibleProvider:
                     raise ValueError(
                         f"provider models response exceeded {_MAX_MODELS_BODY_BYTES} bytes"
                     )
-            payload = json.loads(body)
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # Same threat model as the streaming chunks above: this is the
+                # remote provider's body. A deeply nested one (under the byte cap
+                # already enforced) raises RecursionError, not JSONDecodeError,
+                # out of the C decoder. Both are the provider's fault, and
+                # list_models already promises a clean ValueError for a bad body.
+                raise ValueError("provider models response is not JSON") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
