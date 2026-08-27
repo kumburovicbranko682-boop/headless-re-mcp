@@ -83,7 +83,9 @@ def vmp_like_section_ranges(
         executable = bool(chars & _IMAGE_SCN_MEM_EXECUTE)
         weird = (not known) and (executable or vmp_named or (0 < len(name) <= 4))
         if vmp_named or (weird and not known):
-            if known and not vmp_named:
+            # Unreachable: weird implies not known, so a known section can only
+            # enter this branch via vmp_named, and then the guard is false.
+            if known and not vmp_named:  # pragma: no cover
                 continue
             out.append((rva, size, name))
     return out
@@ -282,7 +284,8 @@ def _analyze_dump_data(
     if not code:
         best: tuple[int, int, str] | None = None
         for section in sections:
-            if not isinstance(section, dict):
+            # Unreachable: sections is built above by filtering to dicts only.
+            if not isinstance(section, dict):  # pragma: no cover
                 continue
             chars = int(section.get("characteristics") or 0)
             if not (chars & _IMAGE_SCN_MEM_EXECUTE):
