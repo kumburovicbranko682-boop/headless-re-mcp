@@ -99,6 +99,40 @@ def test_ghidra_preserves_operator_java_tool_options(
     assert opts.index("-Xmx2G") < opts.index("-Xmx8G")
 
 
+def test_ghidra_prefers_the_posix_launcher_over_the_windows_bat(tmp_path: Path) -> None:
+    """Ghidra ships both launchers; on Linux the .bat cannot be run.
+
+    ``analyzeHeadless`` (a POSIX shell script) and ``analyzeHeadless.bat`` sit
+    side by side in ``support/`` in every distribution. Probing the .bat first
+    found a real file and then failed to spawn it ("Permission denied") on
+    Linux, so the ghidra backend was unreachable there even with a correct home.
+    The launcher this OS can actually run must win.
+    """
+    support = tmp_path / "support"
+    support.mkdir()
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(tmp_path)
+
+    assert found is not None
+    if os.name == "nt":
+        assert found.name == "analyzeHeadless.bat"
+    else:
+        assert found.name == "analyzeHeadless"
+
+
+def test_ghidra_still_resolves_a_bat_only_home(tmp_path: Path) -> None:
+    """A Windows-only layout (only the .bat present) still resolves everywhere."""
+    support = tmp_path / "support"
+    support.mkdir()
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(tmp_path)
+
+    assert found is not None and found.name == "analyzeHeadless.bat"
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -230,8 +264,8 @@ def _tool_docstring(name: str) -> str:
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
-    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
-    or size, all 256 had entry and body_size. Looking for address after a
+    Measured against the export script: 256 of 5000 functions, 0 items had
+    address or size, all 256 had entry and body_size. Looking for address after a
     successful list reads as Ghidra finding no addresses. Symbols have type,
     not namespace. Xrefs are getReferencesTo only.
     """
@@ -274,7 +308,7 @@ def test_ghidra_decompile_reports_found_false_when_no_function_contains_the_addr
 ) -> None:
     """An address inside no function used to read as an empty function body.
 
-    ExportJson writes decompiled "" and no function key when getFunctionContaining
+    The export script writes decompiled "" and no function key when getFunctionContaining
     returns nothing. Without found, a caller cannot tell that from a function that
     decompiled to nothing, and an unattended pass would treat the empty string as
     the body.

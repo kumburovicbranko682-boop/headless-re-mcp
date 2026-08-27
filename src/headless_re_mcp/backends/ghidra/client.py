@@ -12,7 +12,11 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
-_EXPORT_SCRIPT = "ExportJson.py"
+# A Java GhidraScript, not Jython: Ghidra dropped its bundled Python interpreter
+# in 11.4, so a .py post-script no longer runs (analysis "succeeds" but the
+# script dies, leaving no JSON). Ghidra compiles this .java itself, on every
+# version, with no PyGhidra/Jep dependency.
+_EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
@@ -192,7 +196,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
-            raise GhidraError("backend_error", "ExportJson.py missing from package")
+            raise GhidraError("backend_error", "ExportJson.java missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
@@ -356,12 +360,17 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
+    # Ghidra ships both launchers side by side in every distribution:
+    # ``analyzeHeadless`` (a POSIX shell script) and ``analyzeHeadless.bat``
+    # (Windows). Probe the one this OS can actually run first. Checking the
+    # ``.bat`` first on Linux found a real file and then failed to launch it
+    # ("Permission denied: analyzeHeadless.bat"), because a Windows batch is not
+    # executable there -- so the whole ghidra backend was unreachable on Linux
+    # even with a correct HEADLESS_RE_GHIDRA_HOME.
+    posix = ("support/analyzeHeadless", "analyzeHeadless")
+    windows = ("support/analyzeHeadless.bat", "analyzeHeadless.bat")
+    order = (*windows, *posix) if os.name == "nt" else (*posix, *windows)
+    for rel in order:
         candidate = home / rel
         if candidate.is_file():
             return candidate
