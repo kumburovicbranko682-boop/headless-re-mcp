@@ -822,8 +822,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.export_sources` / `apk.decompile` 首次有真实 jadx 的端到端覆盖**。jadx 是用户自备的 CLI
   (需 JRE),故这条 gate 像 webcrack/wabt 一样未配置即 skip(skip≠pass);配了就用真 jadx 反编上面那个
   手工 DEX,断言:源码树列出该类、按简单类名取回的 Java 里出现方法名、jadx 从未产出的类回 `not_found`
-  而非崩溃或空源码。jadx 会把无包名的类丢进 `defpackage/`,所以点分路径 `Crackme.java` 在源码根不存在、
+  而非崩溃或空源码。  jadx 会把无包名的类丢进 `defpackage/`,所以点分路径 `Crackme.java` 在源码根不存在、
   正好命中客户端「同名唯一匹配」的回退分支——这条路径此前也没有集成覆盖。
+- **Frida live gate 改为可移植,不再在 Linux/macOS 上一律 skip**。它此前写死要 `gui_fixture.exe`
+  这个 PE 夹具、并断言模块里有 `kernel32.dll`/`ntdll.dll`,还被 conftest 的 `_WINDOWS_ONLY_MODULES`
+  强制在非 Windows 上跳过——于是 frida 这条可移植后端在 Linux 上从没被真正验证过。现在 POSIX 上直接
+  attach 一个睡眠中的 Python 解释器(任何进程都会载入 C 运行时),断言同一套契约:未授权 pid 回
+  `permission_denied`、attach 成功、模块枚举里能找到 `libc.so`/`ld` 这类系统库、该库导出非空、`noop`
+  模板能加载;并从 `_WINDOWS_ONLY_MODULES` 移除该文件。frida 缺失或 OS 禁止本地 attach
+  (Linux 的 ptrace_scope、macOS 未签名解释器)时诚实 skip(skip≠pass),Windows 路径与断言不变。
 
 ### 变更（Android 后端清理）
 
