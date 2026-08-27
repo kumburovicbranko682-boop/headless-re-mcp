@@ -6,12 +6,33 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-_SECRET_KEY = re.compile(
-    r"(?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|token|secret"
-    r"|password|passwd|credential|providerApiKeys)",
-    re.I,
+# The one list of what a secret-bearing key name looks like. The structured
+# redactor below matches these against dict keys; the incident-log scrubber in
+# ``error_boundary.py`` imports this same tuple to build its inline
+# ``key[:=]value`` patterns. The two were maintained by hand in both files and
+# drifted -- ``authorization`` (outside the Bearer form) and ``providerApiKeys``
+# were masked here but reached the incident log in the clear -- so the fragments
+# are shared, not merely commented as equal. Kept to plain words plus the
+# ``[_-]?`` separator shorthand: the alignment test derives concrete key names
+# from these fragments and fails on anything it cannot derive.
+SECRET_KEY_KEYWORDS: tuple[str, ...] = (
+    r"api[_-]?key",
+    r"private[_-]?key",
+    r"access[_-]?key",
+    r"authorization",
+    r"token",
+    r"secret",
+    r"password",
+    r"passwd",
+    r"credential",
+    r"providerApiKeys",
 )
-_BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+
+_SECRET_KEY = re.compile("(?:" + "|".join(SECRET_KEY_KEYWORDS) + ")", re.I)
+# A bearer credential is one opaque token, so it can be recognised -- and
+# masked -- wherever it appears in free text, key or no key. Shared with the
+# incident-log scrubber for the same no-drift reason as the keywords.
+BEARER_VALUE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 MAX_DEPTH = 250
 
 
@@ -49,7 +70,7 @@ def redact(value: Any, *, mask: str = "***REDACTED***", _depth: int = 0) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [redact(item, mask=mask, _depth=_depth + 1) for item in value]
     if isinstance(value, str):
-        return _BEARER.sub(f"Bearer {mask}", value)
+        return BEARER_VALUE.sub(f"Bearer {mask}", value)
     return value
 
 

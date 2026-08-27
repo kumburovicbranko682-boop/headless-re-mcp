@@ -71,6 +71,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+- 结构化脱敏器（`redaction.py`，按 dict 键名遮蔽）与事故日志的内联脱敏器
+  （`error_boundary.py`，遮蔽异常消息里的 `key[:=]value`）各自手维护一份关键字表并已漂移：
+  内联表少了 `authorization`（只覆盖 `Authorization: Bearer`，漏掉 `Basic`/`Digest` 与裸
+  `authorization=token`）与 `providerApiKeys`，还漏掉没有键名前缀、单独出现的 `Bearer <token>`。
+  这些值在 payload 里会被结构化脱敏遮蔽，但同一个值一旦落进异常消息，就经由事故日志、HTTP 500
+  响应体、CLI stderr 三条更高暴露面的通道明文流出。现把关键字抽成 `redaction.py` 里唯一的
+  `SECRET_KEY_KEYWORDS`，两处都从它构建正则（不再手抄）；内联正则在分隔符后识别
+  `Basic`/`Bearer`/`Digest` 方案词并只遮蔽其后的凭据（保留方案词，避免只吃掉方案词、凭据反而留下），
+  `_redact_text` 末尾再跑共享的 `BEARER_VALUE` 兜住裸 `Bearer` 令牌。严格的 `[:=]` 边界保留，
+  `tokenized=false` 一类诊断仍可读。新增按 `SECRET_KEY_KEYWORDS` 参数化的测试逐条走查——在
+  redaction 里加关键字即自动被内联脱敏覆盖，不再靠人记得同步矩阵——外加 `Basic`、裸
+  `authorization`、裸 `Bearer` 的专项断言。
+
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
 - `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
