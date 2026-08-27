@@ -65,3 +65,50 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+class _UnsortedApk:
+    """A manifest whose activities exceed the cap in a non-alphabetical order.
+
+    androguard yields components in manifest declaration order, so a capped view
+    that keeps the first cap declarations and sorts only those is a sorted slice
+    of an arbitrary subset, not the alphabetically-first cap.
+    """
+
+    def get_activities(self) -> list[str]:
+        return ["c.Z", "c.M", "c.A", "c.B", "c.K", "c.C"]
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return []
+
+    def get_providers(self) -> list[str]:
+        return []
+
+    def get_main_activity(self) -> str:
+        return "c.A"
+
+
+def test_apk_components_capped_list_is_the_alphabetical_prefix() -> None:
+    """A capped component list must be the alphabetically-first cap, deterministically.
+
+    The shared cap helper used to keep the first cap names in manifest order and
+    sort only those, so a large app's activity list was a sorted view of whichever
+    activities were declared first. Force a non-alphabetical declaration order,
+    cap to three, and require the alphabetical prefix with an honest has_more.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatched = mod.ApkClient()
+    monkeypatched._apk = lambda _path: _UnsortedApk()  # type: ignore[method-assign]
+    monkeypatched_cap = 3
+    original = mod._MAX_COMPONENT_NAMES
+    mod._MAX_COMPONENT_NAMES = monkeypatched_cap
+    try:
+        payload = monkeypatched.components(Path("dummy.apk"))
+    finally:
+        mod._MAX_COMPONENT_NAMES = original
+    assert payload["activities"] == ["c.A", "c.B", "c.C"]
+    assert payload["has_more"] is True

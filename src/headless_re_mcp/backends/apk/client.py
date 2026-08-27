@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import heapq
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -38,15 +39,18 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    """Return the alphabetically-first ``limit`` names and whether more existed.
+
+    The ranking has to span the whole input, not the first ``limit`` items. The
+    old code kept the first ``limit`` names in source order and sorted only those,
+    so once the set was larger than the cap the result was a sorted view of an
+    arbitrary subset -- androguard yields permissions and components in
+    manifest/dex order, not alphabetical -- that shifted with that order yet
+    looked authoritative. A bounded heap ranks every name while holding ``limit``.
+    """
+    all_names = [str(item) for item in values or []]
+    page = heapq.nsmallest(max(0, int(limit)), all_names)
+    return page, len(all_names) > len(page)
 
 
 def _scheme_flag(apk: Any, method: str) -> bool:
