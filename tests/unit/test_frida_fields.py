@@ -76,6 +76,7 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert payload["total"] == 25
     assert len(payload["modules"]) == 10
     assert payload["has_more"] is True
+    assert payload["truncated"] is False
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
 
@@ -515,3 +516,206 @@ def test_add_remote_device_reuses_a_device_already_registered() -> None:
     assert first["id"] == "10.0.0.1:27042"
     assert second["id"] == "10.0.0.1:27042"
     assert client._frida.manager.added == 0
+
+
+class _HugeModuleExports:
+    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
+        del limit
+        return [
+            {"name": "n" * 9000, "base": "0x1", "size": 1, "path": "p" * 9000},
+            {"name": "libc.so", "base": "0x2", "size": 2, "path": "/system/lib/libc.so"},
+        ]
+
+
+class _HugeModuleScript:
+    exports_sync = _HugeModuleExports()
+
+    def load(self) -> None:
+        return None
+
+
+class _HugeModuleSession:
+    def create_script(self, source: str) -> _HugeModuleScript:
+        del source
+        return _HugeModuleScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _HugeModuleFrida:
+    def attach(self, pid: int) -> _HugeModuleSession:
+        del pid
+        return _HugeModuleSession()
+
+
+def test_frida_modules_clips_a_hostile_name_and_path_and_flags_it() -> None:
+    """The module list is count-capped, but each row is target-controlled.
+
+    A rooted process can load a module from a pathological path or under a
+    huge name. Measured: a 9 KiB name and path are each clipped to the
+    per-value byte cap, the reply sets truncated, and a normal module beside
+    them is returned untouched.
+    """
+    from headless_re_mcp.backends.frida.client import _MAX_VALUE_BYTES
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _HugeModuleFrida()
+    payload = client.modules(1, allowed_pid=1, limit=10)
+    assert payload["truncated"] is True
+    assert len(payload["modules"][0]["name"].encode("utf-8")) == _MAX_VALUE_BYTES
+    assert len(payload["modules"][0]["path"].encode("utf-8")) == _MAX_VALUE_BYTES
+    assert payload["modules"][1]["name"] == "libc.so"
+    assert payload["modules"][1]["path"] == "/system/lib/libc.so"
+    assert "truncated" in _tool_docstring("frida.modules")
+
+
+class _HugeExportApi:
+    def exports(self, name: str, count: int) -> dict[str, Any]:
+        del count
+        return {
+            "found": True,
+            "module": name,
+            "base": "0x1",
+            "exports": [
+                {"name": "s" * 9000, "address": "0x2", "type": "function"},
+                {"name": "malloc", "address": "0x3", "type": "function"},
+            ],
+        }
+
+
+class _HugeExportScript:
+    exports_sync = _HugeExportApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _HugeExportSession:
+    def create_script(self, source: str) -> _HugeExportScript:
+        del source
+        return _HugeExportScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _HugeExportFrida:
+    def attach(self, pid: int) -> _HugeExportSession:
+        del pid
+        return _HugeExportSession()
+
+
+def test_frida_exports_clips_a_hostile_symbol_name_and_flags_it() -> None:
+    """A mangled or crafted symbol name can be arbitrarily long.
+
+    Measured: a 9 KiB export name is clipped to the per-value byte cap, the
+    reply sets truncated, and a real symbol beside it is returned intact.
+    """
+    from headless_re_mcp.backends.frida.client import _MAX_VALUE_BYTES
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _HugeExportFrida()
+    payload = client.exports(1, "libc.so", allowed_pid=1, limit=10)
+    assert payload["truncated"] is True
+    names = [entry["name"] for entry in payload["exports"]]
+    assert any(len(name.encode("utf-8")) == _MAX_VALUE_BYTES for name in names)
+    assert "malloc" in names
+    assert "truncated" in _tool_docstring("frida.exports")
+
+
+class _HugeApp:
+    def __init__(self, identifier: str, name: str) -> None:
+        self.identifier = identifier
+        self.name = name
+        self.pid = 0
+
+
+class _HugeAppDevice:
+    def enumerate_applications(self) -> list[_HugeApp]:
+        return [
+            _HugeApp("i" * 9000, "N" * 9000),
+            _HugeApp("com.example.app", "Example"),
+        ]
+
+
+def test_frida_applications_clips_a_hostile_identifier_and_flags_it() -> None:
+    """pm-visible app metadata is device-controlled, so a name can be huge.
+
+    Measured: a 9 KiB identifier and name are each clipped to the per-value
+    byte cap, the reply sets truncated, and a real app beside them is intact.
+    """
+    from headless_re_mcp.backends.frida.client import _MAX_VALUE_BYTES
+
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _HugeAppDevice()  # type: ignore[method-assign]
+    payload = client.applications("usb", limit=10)
+    assert payload["truncated"] is True
+    assert len(payload["applications"][0]["identifier"].encode("utf-8")) == _MAX_VALUE_BYTES
+    assert len(payload["applications"][0]["name"].encode("utf-8")) == _MAX_VALUE_BYTES
+    assert payload["applications"][1]["identifier"] == "com.example.app"
+    assert "truncated" in _tool_docstring("frida.applications")
+
+
+class _HugeJavaApi:
+    def classes(self, name_filter: str, count: int) -> list[str]:
+        del name_filter, count
+        return ["c" * 9000, "com.example.Foo"]
+
+    def methods(self, class_name: str, count: int) -> list[str]:
+        del class_name, count
+        return ["m" * 9000, "int foo()"]
+
+
+class _HugeJavaScript:
+    exports_sync = _HugeJavaApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _HugeJavaSession:
+    def create_script(self, source: str) -> _HugeJavaScript:
+        del source
+        return _HugeJavaScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _HugeJavaDevice:
+    def attach(self, pid: int) -> _HugeJavaSession:
+        del pid
+        return _HugeJavaSession()
+
+
+def test_frida_java_enumeration_clips_hostile_names_and_flags_them() -> None:
+    """An obfuscated app can register a class with a pathological name.
+
+    Both the class list and the method list carry raw strings from the
+    target. Measured: a 9 KiB class name and a 9 KiB method signature are
+    each clipped to the per-value byte cap, both replies set truncated, and
+    the real class/method beside them is returned intact.
+    """
+    from headless_re_mcp.backends.frida.client import _MAX_VALUE_BYTES
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _HugeJavaDevice()  # type: ignore[method-assign]
+
+    classes = client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", limit=10)
+    assert classes["truncated"] is True
+    assert any(len(name.encode("utf-8")) == _MAX_VALUE_BYTES for name in classes["classes"])
+    assert "com.example.Foo" in classes["classes"]
+    assert "truncated" in _tool_docstring("frida.java.classes")
+
+    methods = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert methods["truncated"] is True
+    assert any(len(sig.encode("utf-8")) == _MAX_VALUE_BYTES for sig in methods["methods"])
+    assert "int foo()" in methods["methods"]
+    assert "truncated" in _tool_docstring("frida.java.methods")

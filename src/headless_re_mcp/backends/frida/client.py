@@ -178,6 +178,37 @@ def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
     return items, False
 
 
+# Module paths, symbol names, Java class names and method signatures all come
+# from the target. The enumerations are count-capped, but each row is
+# target-controlled: an obfuscated app can register a class with a pathological
+# name, a rooted process can load a module from a very long path, and a mangled
+# C++ symbol runs long on its own. The lists cap how many rows come back; this
+# caps how big any one row can be, so a direct MCP caller (no agent-side result
+# cap) cannot be handed a single multi-megabyte string. A real name is well
+# under this; anything larger is clipped and the reply says so.
+_MAX_VALUE_BYTES = 4096
+
+
+def _clip(value: str, *, limit: int = _MAX_VALUE_BYTES) -> tuple[str, bool]:
+    """Bound one target-controlled string, returning it and whether it was cut."""
+    payload = value.encode("utf-8", errors="replace")
+    if len(payload) <= limit:
+        return value, False
+    return payload[:limit].decode("utf-8", errors="ignore"), True
+
+
+def _clip_list(values: Iterable[Any]) -> tuple[list[str], bool]:
+    """Clip every entry of a target-controlled string list to the per-value cap."""
+    out: list[str] = []
+    truncated = False
+    for value in values:
+        clipped, cut = _clip(str(value))
+        if cut:
+            truncated = True
+        out.append(clipped)
+    return out, truncated
+
+
 class FridaError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
         super().__init__(message)
@@ -329,21 +360,29 @@ class FridaClient:
             else:
                 held = list(raw or [])
                 total = len(held)
-            items = [
-                {
-                    "name": str(item.get("name", "")),
-                    "base": str(item.get("base", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "path": str(item.get("path", "")),
-                }
-                for item in held[:capped]
-                if isinstance(item, dict)
-            ]
+            items = []
+            truncated = False
+            for item in held[:capped]:
+                if not isinstance(item, dict):
+                    continue
+                name, name_cut = _clip(str(item.get("name", "")))
+                path, path_cut = _clip(str(item.get("path", "")))
+                if name_cut or path_cut:
+                    truncated = True
+                items.append(
+                    {
+                        "name": name,
+                        "base": str(item.get("base", "")),
+                        "size": int(item.get("size", 0) or 0),
+                        "path": path,
+                    }
+                )
             return {
                 "modules": items,
                 "count": len(items),
                 "total": total,
                 "has_more": total > len(items),
+                "truncated": truncated,
             }
         finally:
             with contextlib.suppress(Exception):
@@ -370,12 +409,16 @@ class FridaClient:
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)
             items = []
+            truncated = False
             for item in page:
                 if not isinstance(item, dict):
                     continue
+                name, name_cut = _clip(str(item.get("name", "")))
+                if name_cut:
+                    truncated = True
                 items.append(
                     {
-                        "name": str(item.get("name", "")),
+                        "name": name,
                         "address": str(item.get("address", "")),
                         "type": str(item.get("type", "")),
                     }
@@ -387,6 +430,7 @@ class FridaClient:
                 "exports": items,
                 "count": len(items),
                 "has_more": has_more,
+                "truncated": truncated,
             }
         finally:
             with contextlib.suppress(Exception):
@@ -548,19 +592,26 @@ class FridaClient:
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
-        items = [
-            {
-                "identifier": str(app.identifier),
-                "name": str(app.name),
-                "pid": int(getattr(app, "pid", 0) or 0),
-            }
-            for app in apps[:capped]
-        ]
+        items = []
+        truncated = False
+        for app in apps[:capped]:
+            identifier, id_cut = _clip(str(app.identifier))
+            name, name_cut = _clip(str(app.name))
+            if id_cut or name_cut:
+                truncated = True
+            items.append(
+                {
+                    "identifier": identifier,
+                    "name": name,
+                    "pid": int(getattr(app, "pid", 0) or 0),
+                }
+            )
         return {
             "applications": items,
             "count": len(items),
             "total": len(apps),
             "has_more": len(apps) > capped,
+            "truncated": truncated,
         }
 
     def spawn(
@@ -656,18 +707,26 @@ class FridaClient:
                     values, has_more = _page(
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
-                    return {"classes": values, "count": len(values), "has_more": has_more}
+                    clipped, truncated = _clip_list(values)
+                    return {
+                        "classes": clipped,
+                        "count": len(clipped),
+                        "has_more": has_more,
+                        "truncated": truncated,
+                    }
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
                     values, has_more = _page(
                         script.exports_sync.methods(class_name, capped + 1), capped
                     )
+                    clipped, truncated = _clip_list(values)
                     return {
                         "class_name": class_name,
-                        "methods": values,
-                        "count": len(values),
+                        "methods": clipped,
+                        "count": len(clipped),
                         "has_more": has_more,
+                        "truncated": truncated,
                     }
                 raise FridaError("invalid_params", "mode must be classes or methods")
             finally:

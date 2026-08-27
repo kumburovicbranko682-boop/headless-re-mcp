@@ -37,8 +37,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List modules in the session debuggee via a short-lived Frida probe.
 
         Answers with modules (name, base, size, path), count for this page,
-        total, and has_more so a page that filled the limit is not read as
-        the whole list. Limited to the debuggee pid.
+        total, has_more so a page that filled the limit is not read as the
+        whole list, and truncated when a target-controlled name or path was
+        clipped to its byte cap. Limited to the debuggee pid.
         """
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
@@ -51,8 +52,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List exports of one named module in the session debuggee via a Frida probe.
 
         Answers with found, module, base, and exports (name, address, type),
-        plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        plus count, has_more so a page that filled the limit is not read as
+        the whole export table, and truncated when a target-controlled symbol
+        name was clipped to its byte cap. Limited to the debuggee pid.
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
@@ -130,9 +132,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List installed applications on the session's connected device.
 
-        Answers with applications (identifier, name, pid), count, total, and
+        Answers with applications (identifier, name, pid), count, total,
         has_more so a page that filled the limit is not read as the whole
-        device. The list field is applications, not apps or packages.
+        device, and truncated when a device-controlled identifier or name was
+        clipped to its byte cap. The list field is applications, not apps or
+        packages.
         """
         return _dump(analysis.frida_applications(session_id, limit=limit))
 
@@ -154,8 +158,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
-        Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        Answers with classes, count, has_more so a page that filled the limit
+        is not read as every loaded class, and truncated when a target-controlled
+        class name was clipped to its byte cap.
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -170,8 +175,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
-        Answers with methods, class_name, count, and has_more so a page that
-        filled the limit is not read as every declared method.
+        Answers with methods, class_name, count, has_more so a page that
+        filled the limit is not read as every declared method, and truncated
+        when a target-controlled method signature was clipped to its byte cap.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
