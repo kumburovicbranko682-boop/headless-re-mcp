@@ -3,7 +3,9 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    # TEMPORARY, drop before merge: lets full CI validate the fixture-build
+    # step on this branch, since no PR exists to fire the pull_request run.
+    branches: [main, master, cursor/build-fixtures-in-quality-ci-275f]
   pull_request:
 
 concurrency:
