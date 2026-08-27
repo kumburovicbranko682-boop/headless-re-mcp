@@ -73,3 +73,30 @@ def test_invalid_base64_body_reports_an_error_rather_than_lying(
 
     assert "body_error" in payload
     assert "body_path" not in payload
+
+
+def test_invalid_base64_body_keeps_the_documented_body_shape(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The base64-decode-failure path must carry the same keys as every other path.
+
+    web.network.get's contract (and its docstring) promises body,
+    base64_encoded and body_truncated stay present even when body_error is set,
+    and the CDP-no-body path already returns them. The invalid-base64 path used
+    to return only {**entry, body_error}, so a caller that reads result["body"]
+    -- as every success path and the sibling error path let it -- hit a missing
+    key on exactly this failure. Assert the shape is uniform: empty body, not
+    base64, not truncated, plus the error.
+    """
+    backend = _backend_returning(
+        monkeypatch,
+        {"body": "aaaaa", "base64Encoded": True},
+    )
+
+    payload = backend.network_get("s", "r1", tmp_path)
+
+    assert payload["body"] == ""
+    assert payload["base64_encoded"] is False
+    assert payload["body_truncated"] is False
+    assert "body_error" in payload
+    assert "body_path" not in payload

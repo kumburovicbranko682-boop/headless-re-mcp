@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 非法 base64 分支补齐 body/base64_encoded/body_truncated，回包形状统一）
+
+- `web.network.get` 的工具契约(文档串)明说:即便置了 `body_error`,`body`、`base64_encoded`、
+  `body_truncated` 三个字段也照样在场——CDP 取不到响应体(重定向、缓存已逐出)的那条错误分支
+  正是这么回的。但当 CDP 声称响应体是 base64、解码却失败(截断/长度非法的 base64)时,那条分支
+  只回了 `{**entry, body_error}`,`entry` 是请求摘要、并不含 `body`,于是**唯独**这条失败路径
+  漏掉了 `body` / `base64_encoded` / `body_truncated`。后果:所有成功路径与兄弟错误分支都让调用方
+  安全地读 `result["body"]`,偏偏碰上非法 base64 体时 `result["body"]` 抛 `KeyError`。现让这条
+  分支与 CDP-无体分支回同一形状(`body=""`、`base64_encoded=False`、`body_truncated=False`,外加
+  `body_error`),`network_get` 四条返回路径(CDP 错误 / 非法 base64 / 文本成功 / 二进制成功)一律带
+  齐这三个字段。`test_web_network_get_binary.py` 新增 `..._keeps_the_documented_body_shape`:以桩
+  CDP 回 `{"body":"aaaaa","base64Encoded":True}`(4n+1 长度必然解码失败)触发该分支,断言
+  `body==""`、`base64_encoded is False`、`body_truncated is False` 且无 `body_path`;去掉修复后该测试
+  以 `KeyError: 'body'` 失败,正是调用方会撞上的那个缺键。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
