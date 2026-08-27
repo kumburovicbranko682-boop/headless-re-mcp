@@ -54,7 +54,36 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "objdump" in payload
     assert payload["objdump"] == text
     assert "sections" not in payload
+    # bytes reports the full length so a truncated dump is distinguishable from
+    # a short one, in parity with wasm.wat / js.deobfuscate.
+    assert payload["bytes"] == len(text.encode("utf-8"))
+    assert payload["truncated"] is False
     assert "Answers with objdump" in _tool_docstring("wasm.info")
+
+
+def test_wasm_info_reports_full_bytes_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clipped objdump must still say how much there was, like its siblings."""
+    from headless_re_mcp.backends.jsre import client as mod
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "s" * 100
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).info(module)
+
+    assert payload["truncated"] is True
+    assert payload["bytes"] == 100
+    assert len(str(payload["objdump"]).encode("utf-8")) <= 10
 
 
 def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
@@ -176,6 +205,7 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+    assert "bytes" in _tool_docstring("wasm.info")
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
