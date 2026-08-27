@@ -44,6 +44,38 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _dn_text(value: Any) -> str:
+    """A readable, deterministic distinguished-name string for a certificate.
+
+    androguard hands back ``asn1crypto.x509.Name`` objects whose ``str()`` is a
+    repr carrying a live object id and a bytes-DER dump --
+    ``<asn1crypto.x509.Name 140300673974496 b'0710\\x0b...'>`` -- which is both
+    unreadable and *different on every run* (the id is a memory address), so a
+    caller comparing signers, or an agent reading the subject, got noise. Prefer
+    ``human_friendly`` ("Common Name: ..., Organization: ..."), then the parsed
+    ``native`` mapping; a value that is already a plain string (older androguard
+    builds, or a test double) is returned as-is. An object repr is never
+    returned, so a memory address can never leak into the payload.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        human = value.human_friendly
+    except Exception:  # noqa: BLE001 - the name object's surface varies by version
+        human = None
+    if isinstance(human, str) and human:
+        return human
+    try:
+        native = value.native
+    except Exception:  # noqa: BLE001
+        native = None
+    if isinstance(native, dict) and native:
+        return ", ".join(f"{key}={val}" for key, val in native.items())
+    return ""
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -270,8 +302,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _dn_text(getattr(cert, "subject", "")),
+                        "issuer": _dn_text(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")

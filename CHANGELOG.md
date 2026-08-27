@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.certificates 的 subject/issuer 返回对象 repr（含内存地址），而非可读 DN）
+
+- `apk.certificates` 对每张证书取 `str(cert.subject)` / `str(cert.issuer)`。androguard 交回的是
+  `asn1crypto.x509.Name` 对象，其 `str()` 是带**活对象 id 与 DER 字节转储**的 repr——
+  `<asn1crypto.x509.Name 140300673974496 b'0710\x0b...'>`。既不可读，那个 id 还是内存地址，
+  **每次运行都不同**：想比对签名者、或读 subject 的 agent 拿到的是噪声而非
+  `CN=Android Debug, O=Android, C=US`。用真实 apksigner 签的 APK 复现确认。
+- 新增 `_dn_text`：优先 `human_friendly`（“Common Name: …, Organization: …”），退而取解析后的
+  `native` 映射；本就是普通字符串（旧版 androguard 或测试替身）原样返回。绝不返回对象 repr，
+  内存地址无从泄漏。`serial` / `sha256` 不变。
+- 单测用忠实模仿 asn1crypto Name 的替身（其 `str()` 就带内存地址 repr、并暴露 `human_friendly`）
+  把契约钉死——原先用普通字符串当 subject 的替身正因如此从未发现真 bug。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
