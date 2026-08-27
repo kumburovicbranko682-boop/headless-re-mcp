@@ -37,11 +37,12 @@ class _FakeString:
 
 
 class _FakeParsed:
-    def __init__(self) -> None:
+    def __init__(self, values: list[str] | None = None) -> None:
         self.analysis = self
+        self._values = values if values is not None else [f"s{index}" for index in range(25)]
 
     def get_strings(self) -> list[_FakeString]:
-        return [_FakeString(f"s{index}") for index in range(25)]
+        return [_FakeString(value) for value in self._values]
 
 
 def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
@@ -65,3 +66,33 @@ def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
     doc = _tool_docstring("apk.strings")
     assert "Answers with strings" in doc
     assert "has_more" in doc
+
+
+def test_apk_strings_flags_a_value_cut_to_the_length_cap() -> None:
+    """A string longer than the per-value cap must not read as the whole string.
+
+    strings() cuts each value to _MAX_STRING_LEN before it lands in the set; a
+    cut value used to be returned with no signal, so a caller read a 2000-char
+    prefix as the complete constant. values_truncated says the page holds a cut
+    value, and the note says the shown value is a prefix.
+    """
+    from headless_re_mcp.backends.apk import client as apk_client
+
+    long_value = "A" * (apk_client._MAX_STRING_LEN + 500)
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed(["short", long_value])  # type: ignore[method-assign]
+    payload = client.strings(Path("dummy.apk"), offset=0, limit=10)
+    assert payload["values_truncated"] is True
+    assert "prefix" in payload["note"]
+    # The value is present but cut to the cap, never longer.
+    cut = next(value for value in payload["strings"] if value.startswith("A"))
+    assert len(cut) == apk_client._MAX_STRING_LEN
+
+
+def test_apk_strings_does_not_flag_when_every_value_fits() -> None:
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed(["alpha", "beta", "gamma"])  # type: ignore[method-assign]
+    payload = client.strings(Path("dummy.apk"), offset=0, limit=10)
+    assert payload["values_truncated"] is False
+    assert "note" not in payload
+    assert payload["strings"] == ["alpha", "beta", "gamma"]

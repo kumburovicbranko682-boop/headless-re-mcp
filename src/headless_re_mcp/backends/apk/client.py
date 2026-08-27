@@ -399,23 +399,41 @@ class ApkClient:
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
+        # Each value is cut to _MAX_STRING_LEN before it lands in the set. That
+        # cut was silent: a 2000-char value read as the whole string, and two
+        # distinct values sharing that prefix collapsed into one. Record which
+        # stored forms came from an over-length original so the page can say the
+        # value shown is a prefix rather than passing a cut string off as whole.
+        truncated_forms: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
             if len(seen) >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            raw = str(item.get_value())
+            cut = raw[:_MAX_STRING_LEN]
+            seen.add(cut)
+            if len(raw) > _MAX_STRING_LEN:
+                truncated_forms.add(cut)
         values = sorted(seen)
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
         window = values[start : start + cap]
-        return {
+        values_truncated = any(value in truncated_forms for value in window)
+        result: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+            "values_truncated": values_truncated,
         }
+        if values_truncated:
+            result["note"] = (
+                f"one or more returned strings were cut to {_MAX_STRING_LEN} characters; "
+                "the value shown is a prefix, not the whole string"
+            )
+        return result
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
