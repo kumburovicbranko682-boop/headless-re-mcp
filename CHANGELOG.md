@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（frida.server.ensure 在后端也校验 port 范围，不再只依赖会被非 MCP 传输绕过的 schema）
+
+- `frida.server.ensure` 的 `port` 在工具 schema 里已声明 `ge=1, le=65535`,但 agent / OpenAI-bridge 传输直接调用
+  handler、跳过这层 pydantic 校验——只有 MCP 路径会跑它(与 `apk._clamp_page`、`web._bound_nav_timeout` 记录的
+  同一现象)。后端 `ensure_frida_server` 过去只用 regex 校验 `remote_path` / `bind_host`,却直接信任 `port`,把它
+  插进 `su -c '... -l {bind_host}:{int(port)} ...'` 启动行。于是来自非 MCP 调用方的越界端口会变成一次晦涩的
+  frida-server 绑定失败,而不是它应得的 `invalid_params`。
+- 现在后端像 `proxy.start`、forward-spec 解析器一样自校验 port:越界端口在解析设备、构造 su 启动行之前即以
+  `invalid_params` 拒掉(与已前置于 `_device` 的 remote_path / bind_host / server_binary 校验并列)。
+- `tests/unit/test_frida_server_bind_host.py` 新增参数化用例(四种越界端口):端口在 `_device` 被调用前即以
+  `invalid_params` 拒掉(记录式 resolver 保持空)。
+
 ### 加固（proxy.start 在能力检查之前先校验 port，畸形端口不再被 capability_unavailable 盖过）
 
 - `proxy.start` 过去先 `_check_available()`(mitmproxy 是否安装)再校验 `port` 是否落在 1..65535。于是在没装

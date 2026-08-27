@@ -118,3 +118,34 @@ def test_cheap_local_inputs_are_validated_before_resolving_the_device(
     assert missing_binary.value.code == "not_found"
 
     assert resolved == [], "a bad local input reached _device before validation"
+
+
+@pytest.mark.parametrize("bad_port", [0, -1, 65536, 999999])
+def test_an_out_of_range_port_is_refused_before_resolving_the_device(
+    monkeypatch: Any, bad_port: int
+) -> None:
+    """An out-of-range port fails as invalid_params before _device and the launch.
+
+    The frida.server.ensure schema bounds port to 1..65535, but the agent and
+    OpenAI-bridge transports call the handler directly and skip that pydantic
+    check -- only the MCP path runs it. The backend used to trust the value and
+    interpolate it straight into `su -c '... -l host:port ...'`, so an
+    out-of-range port from a non-MCP caller became an opaque frida-server bind
+    failure. It now re-validates like proxy.start: a bad port is refused up
+    front, before the device is resolved (recording resolver stays empty) and
+    long before the su launch line is built.
+    """
+    resolved: list[str] = []
+
+    def _recording_device(serial: str) -> object:
+        resolved.append(serial)
+        return object()
+
+    backend = AdbBackend()
+    monkeypatch.setattr(backend, "_device", _recording_device)
+
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", port=bad_port)
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details["port"] == bad_port
+    assert resolved == [], "an out-of-range port reached _device"

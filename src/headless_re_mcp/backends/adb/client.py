@@ -844,6 +844,14 @@ class AdbBackend:
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
+        # The tool schema bounds port to 1..65535, but the agent / OpenAI-bridge
+        # transports call the handler directly and skip that pydantic check --
+        # only the MCP path runs it. Re-validate here, like proxy.start and the
+        # forward-spec parser, so an out-of-range port fails as invalid_params
+        # rather than being interpolated into the `su -c '... -l host:port ...'`
+        # launch line and surfacing as an opaque frida-server bind failure.
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise AdbError("invalid_params", "port must be 1..65535", port=port)
         local_path: Path | None = None
         if server_binary:
             local_path = Path(server_binary).expanduser()
