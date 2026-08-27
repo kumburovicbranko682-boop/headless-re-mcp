@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（并发保存配置会静默丢键）
+
+- `update_config_values` 是整文件的读-改-写，而它的写入方在 web 进程里确实会并发：
+  agent 工具线程里的 `workspace.mode_set` 写 `workspace_profile`，请求线程里的控制台
+  审批策略写 `agent_*` 三键，设置页再从别的线程写工具路径。不加序列化时，两次在飞的
+  合并各自读到缺少对方键的快照，后落盘的 `os.replace` 把先写的键整个抹掉——某个设置
+  静默回退，任何日志里都没有痕迹（该测试文件自己的 docstring 早写着「合并丢失无关键
+  会静默弄丢别人的 IDA 路径」，并发正是它发生的方式）。现以进程内写锁序列化读-改-写；
+  原子替换保证文件始终完整，锁保证它不缺键。跨进程写者（setup 期间的 stdio MCP 进程）
+  仍是后写胜，属接受的边角：常规写入方都在 web 进程内。回归测试用两个线程各写 25 个
+  一次性键，修复前必然丢键、修复后全数存活。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
