@@ -169,6 +169,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.frames")
+    def web_frames(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Enumerate the page's frame tree with each frame's URL and origin.
+
+        Answers with frames (index, parent, url, origin, name, is_main), count,
+        total, offset, and has_more so a page that filled the limit is not read
+        as the whole tree. parent is the parent frame's index, null for the main
+        frame; index and parent are absolute positions in the full list, stable
+        across pages. origin is the security tuple storage and cookies key on,
+        "" for an opaque about:blank/data:/srcdoc frame. Unlike web.dom.snapshot,
+        which sees only the top document, this lists cross-origin iframes too.
+        There is no children, tree or frameId field.
+        """
+        return _dump(analysis.web_frames(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

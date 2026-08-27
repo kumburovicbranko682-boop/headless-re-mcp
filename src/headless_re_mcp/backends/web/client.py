@@ -25,6 +25,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
@@ -41,6 +42,10 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A page nests at most a few dozen frames in practice; 1000 bounds a pathological
+# ad/tracker tree without dropping any real hierarchy, and keeps the flat list
+# from growing unbounded when a page spins frames in a loop.
+_MAX_FRAMES = 1000
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +89,25 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _frame_origin(url: str) -> str:
+    """Best-effort web origin (scheme://host[:port]) of a frame URL.
+
+    The security boundary storage/cookies are keyed on is the origin, so a caller
+    can tell same-origin frames from third-party ones at a glance. about:blank,
+    data: and srcdoc frames are opaque origins with no tuple, reported as ""; a
+    malformed URL is treated the same rather than raising.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if parts.scheme in {"http", "https", "ws", "wss", "ftp"} and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    if parts.scheme == "file":
+        return "file://"
+    return ""
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -781,6 +805,73 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def frames(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Enumerate the page's frame tree with each frame's URL and origin.
+
+        web.dom.snapshot serializes only the top document; a cross-origin iframe
+        (a payment form, an embedded OAuth flow, an ad/tracker) is a black box in
+        that HTML, and nothing in the surface listed the frames or their origins.
+        This reads Playwright's frame graph directly -- no page script -- so it
+        works across origins the page itself cannot script into. Each frame is a
+        flat row with an index and the parent's index (null for the main frame),
+        so the tree is reconstructable while paging stays simple; those indices
+        are absolute positions in the full collected list, stable across pages.
+        origin is the security tuple storage/cookies key on ("" for an opaque
+        about:blank/data:/srcdoc frame). name is the frame element's name/id.
+        """
+        handle = self._get(session_id)
+
+        def work() -> list[JsonObject]:
+            page = handle.page
+            try:
+                raw = list(page.frames or [])
+                main = page.main_frame
+            except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                raise WebError("backend_error", f"cannot read frames: {exc}") from exc
+            collected = raw[:_MAX_FRAMES]
+            # Identity map over the *collected* slice: a parent past the cap is
+            # reported as null rather than pointing outside the returned list.
+            position = {id(frame): i for i, frame in enumerate(collected)}
+            rows: list[JsonObject] = []
+            for i, frame in enumerate(collected):
+                try:
+                    url = frame.url
+                except Exception:  # noqa: BLE001 - a detached frame can raise on read
+                    url = ""
+                try:
+                    name = frame.name
+                except Exception:  # noqa: BLE001
+                    name = ""
+                try:
+                    parent = frame.parent_frame
+                except Exception:  # noqa: BLE001
+                    parent = None
+                parent_index = position.get(id(parent)) if parent is not None else None
+                bounded_url = _bounded_metadata(url, _MAX_URL_BYTES)[0]
+                rows.append(
+                    {
+                        "index": i,
+                        "parent": parent_index,
+                        "url": bounded_url,
+                        "origin": _frame_origin(bounded_url),
+                        "name": _bounded_metadata(name, _MAX_METADATA_BYTES)[0],
+                        "is_main": frame is main,
+                    }
+                )
+            return rows
+
+        rows = self._runner(handle).call(work)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_FRAMES))
+        window = rows[start : start + cap]
+        return {
+            "frames": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
