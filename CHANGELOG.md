@@ -324,6 +324,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - `web.console` 的抓取此前只断言调用回 ok、从不看内容。inspect Gate 现轮询到页面 load 期
   `console.log('gate-ready')` 被录进来才算过——`Runtime.enable` 在导航前完成故不漏,证明
   `Runtime.consoleAPICalled`→录制器这条链真的把控制台消息收下,而非空列表也能蒙混。
+- **`mcp doctor` 探测首次有活体 Gate**(`test_doctor_gate.py`):`run_doctor` 探的是真机,但其探测逻辑
+  (模块名、命令候选、平台门)此前只被打桩单测覆盖——一处漂移(改错二进制候选名、写错模块名)就会让
+  doctor 把已装后端误报 `missing`。新 Gate 跑真探测,对**本机确实装了的**每个后端断言 doctor 不报
+  `missing`(frida/androguard/adbutils/playwright/mitmproxy 走模块探测,radare2/adb/jadx/apktool/
+  apksigner/webcrack/wabt/java 走 PATH 探测);没装的不断言,故裸机诚实、CI 镜像里(全装)则穷尽。
+  自校准:一个可选后端都没有时 skip(而非静默绿)。另钉平台门诚实:Linux 上 Windows-only 项报
+  `unsupported_on_platform` 而非 `missing`/`blocked`。
 - **frida 动态注入线首次有活体 Gate**(`test_frida_live_gate.py`):此前所有 frida 测试都打桩运行时,
   attach/枚举/读内存整条路径从没对真实进程跑过——而现代 frida 移除了 `Memory` 全局、读内存被迫改走
   `NativePointer.readByteArray`,恰恰无人活体验证。新 Gate 起一个本地子进程、`attach`(设备 `local`)、
