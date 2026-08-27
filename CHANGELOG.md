@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida 本地读取 RPC 无外层超时）
+
+- `frida.modules` / `frida.exports` / `frida.memory_read` 只给 attach 上了超时（经 `_attach_local`），
+  随后的 `script.load()` 与同步 `exports_sync.*` RPC 却在 worker 线程上无界执行。目标若在加载脚
+  本或枚举时卡死（超大模块表、`Memory.readByteArray` 触发缺页）就会把那个 worker 永久占住——正
+  是设备侧操作（`java_enumerate` / `hook_template_device`）早已用 `_run_deadline` 挡掉的挂起。新增
+  共享的 `_run_local_script` 把 attach、load 与 RPC 收进同一个 `work()`、共用一个截止时间，超时即
+  detach 掉探针；三个方法新增与设备侧同默认值的关键字 `timeout`。`tests/unit/test_frida_fields.py`
+  钉住卡死的读取会在截止时间内 detach 并抛 `timeout`。
+
 ### 修复（APK 分页读取未夹紧 offset/limit）
 
 - `apk.classes` / `apk.methods` / `apk.strings` 直接用 `names[offset:offset+limit]` 切片，未像姊妹
