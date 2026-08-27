@@ -117,6 +117,57 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def _first_container_char(text: str) -> str | None:
+    """The first ``[`` or ``{`` in the text, or None. Marks the payload shape.
+
+    parse_r2_json scans for the first value it can decode. On a list command
+    whose output was cut mid-array that value is element 0 (a ``{``), so the
+    dict branch would fire and swallow the whole listing. Knowing the payload
+    opened with ``[`` lets the caller route a half array to prefix recovery
+    instead.
+    """
+    for char in text:
+        if char in "[{":
+            return char
+    return None
+
+
+def _recover_array_prefix(text: str) -> list[Any]:
+    """Decode the complete leading elements of a top-level JSON array.
+
+    r2 -q0 output is cut at the byte cap in R2Client.run, which can land in the
+    middle of an aflj / izj / iij / iEj / axj array. json cannot load a half
+    array at all, so the elements that did arrive whole were lost. Decode from
+    just after the opening ``[`` one value at a time, stopping at the closing
+    bracket, the first element that did not arrive complete, or the item cap --
+    whichever comes first -- so a truncated listing still yields a bounded,
+    valid prefix. Each ``[`` is tried in turn (a leading banner can carry its
+    own bracket) and the first that yields rows wins.
+    """
+    decoder = json.JSONDecoder()
+    length = len(text)
+    search = 0
+    while True:
+        start = text.find("[", search)
+        if start < 0:
+            return []
+        items: list[Any] = []
+        index = start + 1
+        while len(items) < _MAX_ITEMS:
+            while index < length and text[index] in " \t\r\n,":
+                index += 1
+            if index >= length or text[index] == "]":
+                break
+            try:
+                value, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                break
+            items.append(value)
+        if items:
+            return items
+        search = start + 1
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -160,31 +211,12 @@ def enrich_r2_payload(
             out["address"] = mapped
             out["address_va"] = request_address
 
-    items: list[JsonObject] = []
     if isinstance(parsed, list):
         available = len(parsed)
-        for entry in parsed[:_MAX_ITEMS]:
-            if not isinstance(entry, dict):
-                continue
-            item = dict(entry)
-            va = _item_va(
-                entry,
-                ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
-            )
-            mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
-            if mapped is not None:
-                item["address"] = mapped
-            # Named endpoints for xrefs
-            for edge_key in ("from", "to"):
-                edge_va = _item_va(entry, (edge_key,))
-                edge_mapped = address_dict(
-                    edge_va, module=module, image_base=image_base, architecture=arch
-                )
-                if edge_mapped is not None:
-                    item[f"{edge_key}_address"] = edge_mapped
-            items.append(item)
-        out["items"] = items
-        out["count"] = len(items)
+        out["items"] = _map_items(
+            parsed[:_MAX_ITEMS], module=module, image_base=image_base, arch=arch
+        )
+        out["count"] = len(out["items"])
         if available > _MAX_ITEMS:
             # Said out loud, like the raw-output cut beside it. A list that
             # stopped at the cap looks exactly like a list that ended, and a
@@ -193,6 +225,23 @@ def enrich_r2_payload(
             out["items_total"] = available
             out["items_limit"] = _MAX_ITEMS
         out["parsed"] = True
+    elif _first_container_char(raw) == "[":
+        # The payload opened as an array but did not load as one: R2Client.run
+        # cut the output at the byte cap mid-list. json returns nothing for a
+        # half array, and parse_r2_json's first decodable value is element 0 (a
+        # dict), so the old dict branch reported parsed with a bogus info object
+        # and no items -- the entire listing vanished on any binary whose aflj /
+        # izj output ran past a megabyte. Recover the elements that arrived
+        # whole as a bounded prefix. items_total is left off: the true count is
+        # unknown because the tail never arrived (raw's own truncated flag says
+        # the bytes were cut).
+        out["items"] = _map_items(
+            _recover_array_prefix(raw), module=module, image_base=image_base, arch=arch
+        )
+        out["count"] = len(out["items"])
+        out["items_truncated"] = True
+        out["items_limit"] = _MAX_ITEMS
+        out["parsed"] = True
     elif isinstance(parsed, dict):
         out["info"] = parsed
         out["parsed"] = True
@@ -200,3 +249,32 @@ def enrich_r2_payload(
         out["parsed"] = False
     out["commands"] = commands
     return out
+
+
+def _map_items(
+    entries: list[Any],
+    *,
+    module: str,
+    image_base: int | None,
+    arch: Architecture | None,
+) -> list[JsonObject]:
+    """Attach unified Address fields to each object row, skipping non-objects."""
+    items: list[JsonObject] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        va = _item_va(entry, ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"))
+        mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
+        if mapped is not None:
+            item["address"] = mapped
+        # Named endpoints for xrefs
+        for edge_key in ("from", "to"):
+            edge_va = _item_va(entry, (edge_key,))
+            edge_mapped = address_dict(
+                edge_va, module=module, image_base=image_base, architecture=arch
+            )
+            if edge_mapped is not None:
+                item[f"{edge_key}_address"] = edge_mapped
+        items.append(item)
+    return items
