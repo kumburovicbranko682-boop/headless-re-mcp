@@ -1014,6 +1014,22 @@ def wait_for_window(
             f"timeout must be > 0 and <= {_MAX_WAIT_SECONDS}",
             timeout=timeout,
         )
+    # Same gate as timeout, and for the same reason: poll_interval is the other
+    # duration a caller controls, but only the MCP schema bounded it (le=5.0).
+    # A ui.drive wait step or an agent-path ui.wait reached the sleep below
+    # unchecked, and one step asking for poll_interval=1e9 parked the service
+    # thread for decades while the validated timeout said one second. The
+    # comparison also throws out inf and NaN, which both slip past a clamp.
+    if (
+        isinstance(poll_interval, bool)
+        or not isinstance(poll_interval, (int, float))
+        or not 0 < float(poll_interval) <= _MAX_WAIT_SECONDS
+    ):
+        raise UiPidBoundaryError(
+            "invalid_params",
+            f"poll_interval must be > 0 and <= {_MAX_WAIT_SECONDS}",
+            poll_interval=poll_interval,
+        )
     deadline = time.monotonic() + float(timeout)
     last_error: str | None = None
     while time.monotonic() < deadline:
@@ -1035,7 +1051,12 @@ def wait_for_window(
             if exc.code not in {"not_found", "ambiguous"}:
                 raise
             last_error = exc.message
-            time.sleep(max(0.05, float(poll_interval)))
+            # Never sleep past the deadline: a poll_interval larger than the
+            # time left turned "wait one second" into "wait one interval",
+            # overshooting the validated timeout by up to _MAX_WAIT_SECONDS.
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(max(0.05, float(poll_interval)), remaining))
     raise UiPidBoundaryError(
         "timeout",
         "timed out waiting for window",
