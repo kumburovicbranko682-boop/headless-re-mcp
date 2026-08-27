@@ -37,8 +37,7 @@ from headless_re_mcp.backends.web import WebBackend, WebError
 # Embedded so the capture test needs no wabt; the disassembly test asserts
 # wasm2wat recovers exactly this export and opcode from these bytes.
 _WASM_MODULE = bytes.fromhex(
-    "0061736d0100000001070160027f7f017f"
-    "030201000707010361646400000a09010700200020016a0b"
+    "0061736d0100000001070160027f7f017f030201000707010361646400000a09010700200020016a0b"
 )
 
 # The page fetches the module, instantiates it and logs add(5, 7), so a console
@@ -135,9 +134,7 @@ def test_web_backend_captures_wasm_module_and_binary_body(tmp_path: Path) -> Non
             # network_get must decode the base64 binary body and spill the real
             # bytes: the artifact must be the exact module the server sent.
             requests = backend.network_list("wasm", limit=100)["requests"]
-            wasm_req = next(
-                (r for r in requests if "add.wasm" in str(r.get("url"))), None
-            )
+            wasm_req = next((r for r in requests if "add.wasm" in str(r.get("url"))), None)
             assert wasm_req is not None, "the module request was not recorded"
             body = backend.network_get("wasm", str(wasm_req["requestId"]), tmp_path)
             assert body.get("base64_encoded") is True
