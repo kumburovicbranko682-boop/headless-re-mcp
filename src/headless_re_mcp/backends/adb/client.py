@@ -377,24 +377,32 @@ class AdbBackend:
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
+            state = _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S)
+            # Each of these is a single getprop, and getprop values are
+            # device-controlled: a rooted device can setprop ro.product.model
+            # to a multi-megabyte string. properties() already clips its values;
+            # info() read the same surface and did not, so bound it the same way.
+            truncated = False
+            values: dict[str, str] = {}
+            for field, prop in (
+                ("model", "ro.product.model"),
+                ("device", "ro.product.device"),
+                ("sdk", "ro.build.version.sdk"),
+                ("release", "ro.build.version.release"),
+                ("abi", "ro.product.cpu.abi"),
+            ):
+                raw = _device_shell(
+                    dev, f"getprop {prop}", timeout=_ADB_PROBE_TIMEOUT_S
+                ).strip()
+                value, cut = _clip_value(raw)
+                if cut:
+                    truncated = True
+                values[field] = value
             return {
                 "serial": _check_serial(serial),
-                "state": _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S),
-                "model": _device_shell(
-                    dev, "getprop ro.product.model", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "device": _device_shell(
-                    dev, "getprop ro.product.device", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "sdk": _device_shell(
-                    dev, "getprop ro.build.version.sdk", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "release": _device_shell(
-                    dev, "getprop ro.build.version.release", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "abi": _device_shell(
-                    dev, "getprop ro.product.cpu.abi", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
+                "state": state,
+                **values,
+                "truncated": truncated,
             }
         except AdbError:
             raise

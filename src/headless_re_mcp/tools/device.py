@@ -53,8 +53,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_info(serial: str) -> dict[str, Any]:
         """Return model, SDK, release, and ABI for one device serial.
 
-        Answers with serial, state, model, device, sdk, release and abi.
-        There is no SDK, ABI, android_version or version field.
+        Answers with serial, state, model, device, sdk, release, abi and
+        truncated when a device-controlled getprop value was clipped to its
+        byte cap. There is no SDK, ABI, android_version or version field.
         """
         return _dump(analysis.device_info(serial))
 
