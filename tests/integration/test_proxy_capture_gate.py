@@ -16,6 +16,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -62,17 +63,19 @@ def _get_through_proxy(proxy_port: int, url: str) -> bytes:
     handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
     opener = urllib.request.build_opener(handler)
     with opener.open(url, timeout=15) as response:
-        return response.read()
+        return bytes(response.read())
 
 
-def _wait_for_flows(backend: ProxyBackend, session: str, at_least: int) -> list[dict]:
+def _wait_for_flows(backend: ProxyBackend, session: str, at_least: int) -> list[dict[str, Any]]:
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         listing = backend.flows(session)
-        if listing["count"] >= at_least:
-            return listing["flows"]
+        count = listing["count"]
+        assert isinstance(count, int)
+        if count >= at_least:
+            return list(listing["flows"])
         time.sleep(0.1)
-    return backend.flows(session)["flows"]
+    return list(backend.flows(session)["flows"])
 
 
 @pytest.mark.integration

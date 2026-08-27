@@ -111,6 +111,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   并缓存下载；只收集 Ghidra 一个 Gate 文件，因此无需装 Web/Android/抓包后端。Ghidra 版本固定为本地
   实测通过的 12.1.3。
 
+### 新增（抓包实测 Gate：一条真流量经代理捕获、取回、导出 HAR、重放）
+
+- 拦截那条线此前只有生命周期 Gate（`test_proxy_lifecycle_gate.py`：起/停/端口占用/释放），**从未有一个
+  字节真正穿过代理**——于是 `_FlowRecorder.response` 记录钩子，以及 `proxy.flows` / `proxy.flow_get` /
+  `proxy.export_har` / `proxy.replay` 这几条读取与重放路径，都只有拿假 flow 对象打桩的单元覆盖，真机上
+  是否真能记下并取回一条流从未被验证过（正是当初藏住 `js.unpack_bundle` bug 的那类「只 mock、没真跑」缺口）。
+  新增 `tests/integration/test_proxy_capture_gate.py`：用 stdlib `http.server` 在本机起一个回定长 body 的
+  源站，`ProxyBackend` 起真代理，再用 `urllib` 的 `ProxyHandler` 把一条 HTTP GET 经代理打到源站（明文 HTTP
+  正向代理，无需 CA 证书），然后断言——`flows()` 记下该流且 URL/method/status 对得上、`flow_get()` 把小 body
+  内联取回且字节一致、`export_har()` 落一份含该 URL 的 HAR。第二条用例验重放：`replay.client` 会拷贝该 flow
+  （新 id）再打一次，故断言 `replayed=True` 且随后必然出现第二条流，证明重放真打到了源站、而非只是命令返回。
+  未装 mitmproxy 时如实 skip，skip != pass。CI 的 `gates` job 已装 mitmproxy 故真机执行；本机 mitmproxy
+  12.2.3 上两用例均过。
+
 ### 新增（WASM 反汇编 Gate 用真实模块，并补上 wasm-objdump 那条从未被实测的路径）
 
 - Web 反混淆那条线的 WASM 侧此前只对「magic+version、无任何 section」的空模块跑 `wasm2wat`，只断言输出里
