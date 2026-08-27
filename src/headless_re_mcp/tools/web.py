@@ -166,8 +166,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title, html and bytes (the full document size),
+        plus truncated when the inlined html is only a prefix. A document
+        past the inline buffer is written whole to an artifact and html_path
+        points at it (open with artifacts.read); html then holds just the
+        prefix, so a truncated snapshot is never mistaken for the whole page.
+        There is no content, dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
