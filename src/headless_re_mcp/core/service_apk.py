@@ -366,6 +366,7 @@ class ApkAnalysisMixin:
         keystore: str = "",
         keystore_password: str = "",
         key_alias: str = "",
+        key_password: str = "",
         timeout: float = 300.0,
     ) -> Result[JsonObject]:
         try:
@@ -396,6 +397,7 @@ class ApkAnalysisMixin:
                 keystore=keystore_path,
                 keystore_password=keystore_password,
                 key_alias=key_alias,
+                key_password=key_password,
                 timeout=timeout,
             )
             try:
