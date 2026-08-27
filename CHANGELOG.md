@@ -62,6 +62,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「无 addon/无 master/循环已关是 no-op」「teardown 里先停 server 再拆循环」,真机 `test_proxy_lifecycle_gate`
   对真实进程复核起停与端口回收。
 
+### 修复（Web 工作台 smoke Gate 与实际 UI 脱节）
+
+- **`test_browser_agent_workbench_smoke` 长期红/挂,已无法守护 Web 工作台**:它把浏览器硬编码成
+  `C:\Program Files\...\chrome.exe`,凡是没有该文件的机器(含 Linux CI 与自带 Playwright Chromium
+  的机器)都变成红 Gate 而非诚实 skip;断言仍停在英文旧文案(`你想逆向什么？`、`Agent analysis`、
+  `Message`/`Send`/`Provider & setup`/`Approve once`),监控台早已中文化后全部选不中。现改为
+  `_launch_smoke_browser` 优先用跨平台 `channel="chrome"`、回落到 Playwright 自带 Chromium、两者都起
+  不来才 `pytest.skip`(缺浏览器是缺后端不是回归,skip 不等于 pass);断言全部对齐现行中文 UI
+  (`开始一段分析`/`新对话`/`消息`/`发送`/`设置`/`模型与设置`/`批准一次`/`拒绝`)。
+- 顺带修正三处会假绿或误红的判定:审核流原先被默认 autonomy 放行(加壳 PE 分析自动批准 `state_change`,
+  `workflow.cancel` 会被静默执行、跳过本 Gate 要验的批准卡),现用空的 `agent_auto_approve_effects`/
+  `agent_auto_approve_tools` 强制 fail-closed 让危险工具真正弹卡;文本断言限定在 `.transcript` 内,
+  避免选到 Inspector 事件页里隐藏的原始 payload 节点;设置弹窗保存后不再自动关闭,改为断言保存提示
+  再显式点关闭。reload 后运行不带选中线程恢复,最终助手文本只在流式期出现、不落 transcript,故改为
+  断言批准卡消失(决策已受理)加 SSE 从保存游标 `after=` 重连。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
