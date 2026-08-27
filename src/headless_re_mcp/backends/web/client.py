@@ -14,6 +14,7 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import queue
 import threading
@@ -146,6 +147,61 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_bytes(
+    raw: bytes,
+    *,
+    artifact_dir: Path,
+    filename: str,
+    kind: str,
+) -> tuple[str, Path | None, bool]:
+    """Inline a base64 head, spill the raw bytes, or refuse at the capture cap.
+
+    The binary sibling of :func:`_spill_text` for a body CDP delivered
+    base64-encoded. Two things go wrong if such a body is treated as text: the
+    cap is measured against the base64 string, which is ~33% larger than the
+    payload, so a response that fits on disk is refused as ``too_large``; and the
+    spilled artifact holds base64 text in a ``.bin`` file, so a captured .wasm or
+    image is not the real bytes a downstream tool (``wasm.wat``, a viewer) can
+    use. Here the cap is measured against the decoded size and the spill is the
+    raw bytes. The inline preview stays base64 -- valid JSON and decodable -- but
+    covers only a whole-triplet head prefix so it never exceeds the inline cap.
+    Returns ``(inline_base64, spill_path_or_none, truncated)``.
+    """
+    size = len(raw)
+    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=size,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    if size <= _MAX_INLINE_BODY:
+        return base64.b64encode(raw).decode("ascii"), None, False
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(raw)
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    # Encode a whole number of source triplets so the preview decodes cleanly and
+    # its base64 length stays within the inline cap (base64 grows by 4/3).
+    head = raw[: (_MAX_INLINE_BODY // 4) * 3]
+    return base64.b64encode(head).decode("ascii"), out, True
 
 
 class _Runner:
@@ -544,12 +600,30 @@ class WebBackend:
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
-        inline, spill, cut = _spill_text(
-            body,
-            artifact_dir=artifact_dir,
-            filename=f"body-{uuid4().hex}.bin",
-            kind="response body",
-        )
+        filename = f"body-{uuid4().hex}.bin"
+        raw: bytes | None = None
+        if base64_encoded:
+            try:
+                raw = base64.b64decode(body, validate=False)
+            except ValueError:
+                # CDP always sends well-formed base64 for a binary body; if it
+                # somehow does not, fall back to spilling the string as text
+                # rather than dropping the capture.
+                raw = None
+        if raw is not None:
+            inline, spill, cut = _spill_bytes(
+                raw,
+                artifact_dir=artifact_dir,
+                filename=filename,
+                kind="response body",
+            )
+        else:
+            inline, spill, cut = _spill_text(
+                body,
+                artifact_dir=artifact_dir,
+                filename=filename,
+                kind="response body",
+            )
         result = dict(entry)
         result["body"] = inline
         result["body_truncated"] = cut
