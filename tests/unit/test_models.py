@@ -3,12 +3,30 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from headless_re_mcp.core.models import Address, Architecture, Result, RpcError
+from headless_re_mcp.core.models import (
+    Address,
+    Architecture,
+    ModuleSelector,
+    Result,
+    RpcError,
+)
 
 
 def test_address_resolves_module_rva() -> None:
     address = Address(module="fixture.exe", rva=0x123, architecture=Architecture.X64)
     assert address.resolve(0x140000000) == 0x140000123
+
+
+def test_address_resolve_returns_a_va_directly() -> None:
+    # A VA is already absolute, so resolve never needs a module base.
+    assert Address(va=0x401000).resolve() == 0x401000
+    assert Address(va=0x401000).resolve(module_base=0xDEAD) == 0x401000
+
+
+def test_address_resolve_needs_a_base_for_an_rva() -> None:
+    address = Address(module="fixture.exe", rva=0x1000)
+    with pytest.raises(ValueError, match="module_base is required"):
+        address.resolve()
 
 
 def test_address_requires_a_coordinate() -> None:
@@ -19,6 +37,24 @@ def test_address_requires_a_coordinate() -> None:
 def test_address_requires_module_for_rva() -> None:
     with pytest.raises(ValidationError):
         Address(rva=1)
+
+
+def test_module_selector_requires_at_least_one_locator() -> None:
+    with pytest.raises(ValidationError, match="requires base, path, or name"):
+        ModuleSelector()
+
+
+def test_module_selector_leaves_an_absent_text_field_as_none() -> None:
+    # base identifies the module; an explicitly-null path passes through the
+    # nonblank validator as None rather than tripping the blank check.
+    selector = ModuleSelector(base=0x400000, path=None)
+    assert selector.base == 0x400000
+    assert selector.path is None
+
+
+def test_module_selector_refuses_blank_text() -> None:
+    with pytest.raises(ValidationError, match="must not be blank"):
+        ModuleSelector(name="   ")
 
 
 def test_result_envelope_rejects_error_on_success() -> None:
