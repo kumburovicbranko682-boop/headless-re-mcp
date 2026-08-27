@@ -296,8 +296,12 @@ def _capture_process(
             break
         sleep(min(0.05, remaining))
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+    # A single shared budget keeps cleanup bounded: joining each reader for two
+    # full seconds would let a grandchild that inherited (and still holds open)
+    # a pipe extend the caller's deadline by seconds, one stream at a time.
+    drain_deadline = monotonic() + 2.0
+    stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+    stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     # A clean upx exit can still leave a wrapper's detached helper behind;
     # sweep survivors so a successful call never leaks a process.
     from headless_re_mcp.core.process_tree import terminate_leftover_process_tree

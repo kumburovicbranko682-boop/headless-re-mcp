@@ -469,9 +469,14 @@ def _capture_process(
                 _terminate_process(process)
                 returncode = process.poll()
         stop_monitor.set()
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
-        monitor_thread.join(timeout=1.0)
+        # A single shared budget keeps cleanup bounded: joining each of the
+        # three threads for a full second would let a grandchild that inherited
+        # (and still holds open) a pipe extend the caller's deadline by seconds,
+        # one thread at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        monitor_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         # A clean exit can still leave the GUI wrapper's detached helper
         # behind; sweep survivors so a successful call never leaks a process.
         from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
