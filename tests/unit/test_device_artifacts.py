@@ -125,3 +125,60 @@ def test_a_device_file_within_the_byte_cap_is_kept(tmp_path: Path) -> None:
     path.write_bytes(b"x" * 512)
     assert refuse_oversized_device_file(path, limit=1024) is None
     assert path.is_file()
+
+
+def _shrink_device_byte_cap(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    """Drop the oversized-capture limit for the duration of one test.
+
+    device_screenshot/device_pull call refuse_oversized_device_file(out) with
+    no explicit limit, so it uses the module cap (64 MiB). Rather than write a
+    64 MiB file, lower that default -- it lives in the function's keyword-only
+    defaults dict, which monkeypatch.setitem restores after the test -- so the
+    256 KiB the harness writes trips the real check through the real call site.
+    """
+    kwdefaults = refuse_oversized_device_file.__kwdefaults__
+    assert kwdefaults is not None and "limit" in kwdefaults
+    monkeypatch.setitem(kwdefaults, "limit", limit)
+
+
+def test_device_screenshot_over_the_byte_cap_is_deleted_and_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The service must honor the oversized check, not just define it.
+
+    refuse_oversized_device_file is unit-tested in isolation, but nothing proved
+    device_screenshot actually calls it and returns its refusal: a regression
+    that dropped the check would leave the ok envelope pointing at a file too
+    big to open, and the direct test of the helper would still pass. Drive the
+    real call site with the harness writing 256 KiB against a 1 KiB cap.
+    """
+    _shrink_device_byte_cap(monkeypatch, 1024)
+    harness = _Harness(tmp_path)
+
+    result = harness.device_screenshot("emulator-5554")
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "output_too_large"
+    directory = tmp_path / "device"
+    assert list(directory.iterdir()) == [], (
+        "the oversized capture must be deleted, not left on disk"
+    )
+
+
+def test_device_pull_over_the_byte_cap_is_deleted_and_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pull path has its own copy of the oversized-capture branch (a pulled
+    file is the higher-risk one: the remote path, not a fixed screenshot, sets
+    the size), so it is pinned separately from screenshot."""
+    _shrink_device_byte_cap(monkeypatch, 1024)
+    harness = _Harness(tmp_path)
+
+    result = harness.device_pull("emulator-5554", "/sdcard/big.bin")
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "output_too_large"
+    directory = tmp_path / "device"
+    assert list(directory.iterdir()) == []
