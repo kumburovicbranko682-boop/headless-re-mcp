@@ -583,10 +583,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - HAR entry 从占位向真数据补齐：`request.queryString` 现由 URL 直接解析（`parse_qsl`
   保留重复键与空值，上限 256 个参数防单条膨胀），HAR 查看器的「Query String Parameters」
   面板因此不再空白，也不必依赖消费端自己再切一遍 URL。`proxy` 侧还在 `response()` 落表时
-  记下解码后的响应体字节数（此时 flow 尚未因保留额度被丢体，故 body 被省略的 flow 也留得住
-  这个数），导出时填进 HAR 的 `content.size` 与 `response.bodySize`，取代 `-1`；该数值同时
-  作为 `response_size` 出现在 `proxy.flows` 每行（无响应体记 0）。`web` 侧采集阶段拿不到响应体
-  长度，仍如实以 `-1` 占位。
+  记下响应体的**传输字节数**（`raw_content` 的长度，此时 flow 尚未因保留额度被丢体，故 body
+  被省略的 flow 也留得住这个数）：mitmproxy 的 `content` 属性一读就解压，为了报个数去解压不可信
+  的 body（gzip 炸弹能撑到几个 GB）不可取，因此这里只量传输字节——对 HAR 规范的 `bodySize`（raw）
+  精确，对 `content.size`（decoded）在压缩响应上偏小，文档已点明。导出时填进 HAR 的 `content.size`
+  与 `response.bodySize`，取代 `-1`；该数值同时作为 `response_size` 出现在 `proxy.flows` 每行
+  （无响应体记 0）。`web` 侧采集阶段拿不到响应体长度，仍如实以 `-1` 占位。
 
 ### 新增（工作方向）
 
