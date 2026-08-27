@@ -48,6 +48,9 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         assert native["format"] == "elf"
         assert native["bits"] in (32, 64)
         assert native["arch"]
+        # The stdlib reader also answers the triage questions before r2 runs.
+        assert native["linking"] in {"dynamic", "static"}
+        assert isinstance(native["pie"], bool)
         session_id = str(session["id"])
 
         opened = service.r2_open(session_id, timeout=60.0)

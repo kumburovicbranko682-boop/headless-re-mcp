@@ -67,6 +67,62 @@ def _java_class() -> bytes:
     return b"\xca\xfe\xba\xbe" + (0).to_bytes(2, "big") + (52).to_bytes(2, "big") + b"\x00" * 8
 
 
+def _phdr64(p_type: int, p_offset: int = 0, p_filesz: int = 0) -> bytes:
+    entry = bytearray(56)
+    entry[0:4] = p_type.to_bytes(4, "little")
+    entry[8:16] = p_offset.to_bytes(8, "little")
+    entry[32:40] = p_filesz.to_bytes(8, "little")
+    return bytes(entry)
+
+
+def _shdr64(sh_type: int) -> bytes:
+    entry = bytearray(64)
+    entry[4:8] = sh_type.to_bytes(4, "little")
+    return bytes(entry)
+
+
+def _ehdr64(e_type: int, *, phoff: int, phnum: int, shoff: int, shnum: int) -> bytes:
+    ehdr = bytearray(64)
+    ehdr[0:4] = b"\x7fELF"
+    ehdr[4], ehdr[5], ehdr[6] = 2, 1, 1  # 64-bit, little-endian, version 1
+    ehdr[16:18] = e_type.to_bytes(2, "little")
+    ehdr[18:20] = (62).to_bytes(2, "little")  # x86-64
+    ehdr[32:40] = phoff.to_bytes(8, "little")
+    ehdr[40:48] = shoff.to_bytes(8, "little")
+    ehdr[54:56] = (56).to_bytes(2, "little")  # e_phentsize
+    ehdr[56:58] = phnum.to_bytes(2, "little")
+    ehdr[58:60] = (64).to_bytes(2, "little")  # e_shentsize
+    ehdr[60:62] = shnum.to_bytes(2, "little")
+    return bytes(ehdr)
+
+
+def _elf64_dynamic_pie() -> bytes:
+    interp = b"/lib64/ld.so.1\x00"
+    # DT_FLAGS_1 carrying DF_1_PIE, then DT_NULL to end the array.
+    dyn = (
+        (0x6FFFFFFB).to_bytes(8, "little")
+        + (0x08000000).to_bytes(8, "little")
+        + (0).to_bytes(8, "little")
+        + (0).to_bytes(8, "little")
+    )
+    ph_off = 64
+    blob_off = ph_off + 56 * 2
+    interp_off = blob_off
+    dyn_off = interp_off + len(interp)
+    program = _phdr64(3, interp_off, len(interp)) + _phdr64(2, dyn_off, len(dyn))
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
+    return ehdr + program + interp + dyn
+
+
+def _elf64_static_with_symtab() -> bytes:
+    ph_off = 64
+    sh_off = ph_off + 56  # one program header
+    program = _phdr64(1)  # PT_LOAD, no dynamic/interp -> static
+    sections = _shdr64(0) + _shdr64(2)  # SHT_NULL + SHT_SYMTAB -> not stripped
+    ehdr = _ehdr64(2, phoff=ph_off, phnum=1, shoff=sh_off, shnum=2)  # ET_EXEC
+    return ehdr + program + sections
+
+
 def _write(tmp_path: Path, name: str, data: bytes) -> Path:
     path = tmp_path / name
     path.write_bytes(data)
@@ -105,6 +161,55 @@ def test_elf32_big_endian_arm_facts(tmp_path: Path) -> None:
     assert facts["endianness"] == "big"
     assert facts["type"] == "dyn"
     assert facts["arch"] == "arm"
+    # A header-only ELF has no program/section tables to read, so the triage
+    # facts stay absent rather than being guessed.
+    assert "linking" not in facts
+    assert "stripped" not in facts
+
+
+def test_dynamic_pie_facts_from_program_headers(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_pie())
+    facts = describe_native(path)["native"]
+    assert facts["type"] == "dyn"
+    assert facts["linking"] == "dynamic"
+    assert facts["pie"] is True  # DT_FLAGS_1 carries DF_1_PIE
+    assert facts["interpreter"] == "/lib64/ld.so.1"
+
+
+def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
+    facts = describe_native(path)["native"]
+    assert facts["type"] == "exec"
+    assert facts["linking"] == "static"  # PT_LOAD only, no PT_DYNAMIC
+    assert facts["pie"] is False
+    assert "interpreter" not in facts
+    assert facts["stripped"] is False  # a SHT_SYMTAB section is present
+
+
+def test_real_elf_pie_versus_shared_object() -> None:
+    """A PIE executable and a shared object are both ET_DYN with an interpreter.
+
+    Only the DF_1_PIE dynamic flag tells them apart, so this pins the reader to
+    real system binaries: /bin/ls (a PIE executable) must read pie=True while
+    libc.so.6 (a shared object) must read pie=False.
+    """
+    ls = Path("/bin/ls")
+    # Target libc.so.6 (the real ELF), never libc.so (often a text ld script).
+    libc_candidates = [
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        *glob.glob("/lib/*/libc.so.6"),
+        *glob.glob("/usr/lib/*/libc.so.6"),
+    ]
+    libc = next((Path(p) for p in libc_candidates if Path(p).is_file()), None)
+    if not ls.is_file() or libc is None:
+        pytest.skip("need /bin/ls and libc to contrast pie vs shared (skip != pass)")
+    ls_facts = describe_native(ls.resolve())["native"]
+    libc_facts = describe_native(libc.resolve())["native"]
+    assert ls_facts["pie"] is True
+    assert ls_facts["linking"] == "dynamic"
+    assert ls_facts["interpreter"].startswith("/lib")
+    assert libc_facts["pie"] is False
+    assert libc_facts["linking"] == "dynamic"
 
 
 def test_macho_thin_facts(tmp_path: Path) -> None:

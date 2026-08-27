@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -390,6 +391,16 @@ _MACHO_FAT_MAGIC = b"\xca\xfe\xba\xbe"
 # Java .class files (whose 0xCAFEBABE is followed by a version >= 45).
 _NATIVE_MAX_FAT_ARCHS = 20
 _NATIVE_HEADER_BYTES = 4096
+_ELF_MAX_PHNUM = 1024
+_ELF_MAX_SHNUM = 4096
+_ELF_MAX_DYN = 4096
+_ELF_MAX_INTERP = 4096
+_PT_DYNAMIC = 2
+_PT_INTERP = 3
+_SHT_SYMTAB = 2
+_DT_NULL = 0
+_DT_FLAGS_1 = 0x6FFFFFFB
+_DF_1_PIE = 0x08000000
 _ELF_TYPES = {1: "rel", 2: "exec", 3: "dyn", 4: "core"}
 _ELF_MACHINES = {
     2: "sparc",
@@ -1618,33 +1629,166 @@ def describe_native(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as stream:
             head = stream.read(_NATIVE_HEADER_BYTES)
+            if head.startswith(b"\x7fELF"):
+                return {"native": _elf_facts(head, stream)}
+            magic = head[:4]
+            if magic in _MACHO_THIN_MAGICS:
+                return {"native": _macho_thin_facts(head, magic)}
+            if magic == _MACHO_FAT_MAGIC:
+                facts = _macho_fat_facts(head)
+                return {"native": facts} if facts else {}
     except OSError:
         return {}
-    if head.startswith(b"\x7fELF"):
-        return {"native": _elf_facts(head)}
-    magic = head[:4]
-    if magic in _MACHO_THIN_MAGICS:
-        return {"native": _macho_thin_facts(head, magic)}
-    if magic == _MACHO_FAT_MAGIC:
-        facts = _macho_fat_facts(head)
-        return {"native": facts} if facts else {}
     return {}
 
 
-def _elf_facts(head: bytes) -> dict[str, Any]:
+def _elf_facts(head: bytes, stream: BinaryIO) -> dict[str, Any]:
     facts: dict[str, Any] = {"format": "elf"}
     if len(head) < 20:
         return facts
-    facts["bits"] = {1: 32, 2: 64}.get(head[4])
+    bits = {1: 32, 2: 64}.get(head[4])
+    facts["bits"] = bits
     order: str | None = {1: "little", 2: "big"}.get(head[5])
     facts["endianness"] = order
-    if order is None:
+    if order is None or bits is None:
         return facts
     e_type = int.from_bytes(head[16:18], order)  # type: ignore[arg-type]
     e_machine = int.from_bytes(head[18:20], order)  # type: ignore[arg-type]
     facts["type"] = _ELF_TYPES.get(e_type, f"type_{e_type}")
     facts["arch"] = _ELF_MACHINES.get(e_machine, f"machine_{e_machine}")
+    # The triage questions -- dynamically or statically linked, position
+    # independent, stripped, which interpreter -- live in the program and
+    # section headers. Read them best-effort: any hiccup leaves the base facts
+    # above untouched rather than failing the whole read.
+    with contextlib.suppress(OSError, ValueError):
+        _elf_layout_facts(facts, head, stream, order, bits, e_type)
     return facts
+
+
+def _elf_layout_facts(
+    facts: dict[str, Any], head: bytes, stream: BinaryIO, order: str, bits: int, e_type: int
+) -> None:
+    if bits == 64:
+        phoff = int.from_bytes(head[0x20:0x28], order)  # type: ignore[arg-type]
+        phentsize = int.from_bytes(head[0x36:0x38], order)  # type: ignore[arg-type]
+        phnum = int.from_bytes(head[0x38:0x3A], order)  # type: ignore[arg-type]
+        shoff = int.from_bytes(head[0x28:0x30], order)  # type: ignore[arg-type]
+        shentsize = int.from_bytes(head[0x3A:0x3C], order)  # type: ignore[arg-type]
+        shnum = int.from_bytes(head[0x3C:0x3E], order)  # type: ignore[arg-type]
+    else:
+        phoff = int.from_bytes(head[0x1C:0x20], order)  # type: ignore[arg-type]
+        phentsize = int.from_bytes(head[0x2A:0x2C], order)  # type: ignore[arg-type]
+        phnum = int.from_bytes(head[0x2C:0x2E], order)  # type: ignore[arg-type]
+        shoff = int.from_bytes(head[0x20:0x24], order)  # type: ignore[arg-type]
+        shentsize = int.from_bytes(head[0x2E:0x30], order)  # type: ignore[arg-type]
+        shnum = int.from_bytes(head[0x30:0x32], order)  # type: ignore[arg-type]
+    program = _elf_program_headers(stream, order, bits, phoff, phentsize, phnum)
+    if program is not None:
+        facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
+        if program["has_dynamic"]:
+            pie = _elf_dynamic_pie(stream, order, bits, program["dyn_off"], program["dyn_sz"])
+        else:
+            pie = False
+        if pie is not None:
+            facts["pie"] = pie
+        if program["interp"] is not None:
+            facts["interpreter"] = program["interp"]
+    stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
+    if stripped is not None:
+        facts["stripped"] = stripped
+
+
+def _elf_program_headers(
+    stream: BinaryIO, order: str, bits: int, phoff: int, phentsize: int, phnum: int
+) -> dict[str, Any] | None:
+    if phoff <= 0 or phnum <= 0 or phnum > _ELF_MAX_PHNUM:
+        return None
+    want = 56 if bits == 64 else 32
+    entsize = max(phentsize, want)
+    stream.seek(phoff)
+    table = stream.read(entsize * phnum)
+    has_interp = has_dynamic = False
+    interp: str | None = None
+    dyn_off = dyn_sz = 0
+    for i in range(phnum):
+        entry = table[i * entsize : i * entsize + want]
+        if len(entry) < want:
+            break
+        p_type = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
+        if bits == 64:
+            p_offset = int.from_bytes(entry[8:16], order)  # type: ignore[arg-type]
+            p_filesz = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
+        else:
+            p_offset = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
+            p_filesz = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+        if p_type == _PT_DYNAMIC:
+            has_dynamic = True
+            dyn_off, dyn_sz = p_offset, p_filesz
+        elif p_type == _PT_INTERP and 0 < p_filesz <= _ELF_MAX_INTERP and p_offset > 0:
+            has_interp = True
+            stream.seek(p_offset)
+            interp = stream.read(p_filesz).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+    return {
+        "has_interp": has_interp,
+        "has_dynamic": has_dynamic,
+        "interp": interp,
+        "dyn_off": dyn_off,
+        "dyn_sz": dyn_sz,
+    }
+
+
+def _elf_dynamic_pie(
+    stream: BinaryIO, order: str, bits: int, dyn_off: int, dyn_sz: int
+) -> bool | None:
+    """True/False from DT_FLAGS_1's DF_1_PIE bit; None if the segment is unreadable.
+
+    This is what separates a position-independent executable from an ordinary
+    shared object: both are ET_DYN and both may carry an interpreter, but only
+    the PIE marks DF_1_PIE.
+    """
+    if dyn_off <= 0 or dyn_sz <= 0:
+        return None
+    entsize = 16 if bits == 64 else 8
+    vsize = entsize // 2
+    count = min(dyn_sz // entsize, _ELF_MAX_DYN)
+    if count <= 0:
+        return None
+    stream.seek(dyn_off)
+    table = stream.read(entsize * count)
+    for i in range(count):
+        entry = table[i * entsize : (i + 1) * entsize]
+        if len(entry) < entsize:
+            break
+        tag = int.from_bytes(entry[0:vsize], order)  # type: ignore[arg-type]
+        val = int.from_bytes(entry[vsize:entsize], order)  # type: ignore[arg-type]
+        if tag == _DT_NULL:
+            break
+        if tag == _DT_FLAGS_1:
+            return bool(val & _DF_1_PIE)
+    return False
+
+
+def _elf_is_stripped(
+    stream: BinaryIO, order: str, bits: int, shoff: int, shentsize: int, shnum: int
+) -> bool | None:
+    """True when no SHT_SYMTAB section remains; None when there is no section table.
+
+    A dynamically linked binary keeps .dynsym for the loader, so stripping is
+    specifically the absence of the full .symtab, not of all symbol tables.
+    """
+    if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
+        return None
+    want = 64 if bits == 64 else 40
+    entsize = max(shentsize, want)
+    stream.seek(shoff)
+    table = stream.read(entsize * shnum)
+    for i in range(shnum):
+        entry = table[i * entsize : i * entsize + 8]
+        if len(entry) < 8:
+            break
+        if int.from_bytes(entry[4:8], order) == _SHT_SYMTAB:  # type: ignore[arg-type]
+            return False
+    return True
 
 
 def _macho_thin_facts(head: bytes, magic: bytes) -> dict[str, Any]:
