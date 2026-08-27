@@ -117,7 +117,12 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // Read through the NativePointer method, not the legacy Memory.read* free
+    // functions: frida 17 removed those globals, so the old form raised
+    // "TypeError: not a function" and frida.memory.read failed on every modern
+    // runtime. The pointer method has existed since frida 12, so this works on
+    // the whole >=16.5 range the android extra pins.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
