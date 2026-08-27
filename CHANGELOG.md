@@ -56,6 +56,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   从不碰 `-o`），这条 `-o` 路径无任何现场覆盖，故长期没被发现。修复：解包命令加 `-f`（覆盖已存在目录，
   对新目录也接受）；并新增 `test_js_unpack_bundle_when_webcrack_present` 真跑 webcrack 解包、断言
   `file_count>=1` 与 `output_dir`——去掉 `-f` 该 gate 即以原始报错失败（已验证），是真正的回归护栏。
+- 加强 Android 现场 gate 的 `apk.open` 断言：`test_android_re_gate.py` 过去只断言
+  `isinstance(opened.ok, bool)`——恒真，连把 androguard 解析异常泄漏成 `internal_error`（带错误边界
+  incident）的崩溃也照样过。合成夹具的 manifest 故意不是合法 AXML，androguard 的 `APK()` 必然抛错；
+  现断言这被结构化呈现（装了 androguard 时是 `backend_error`，即 client 对“failed to parse APK”的包装；
+  没装时是 `capability_unavailable`），且 `error.code != internal_error`、details 里无 `incident_id`——
+  坏 manifest 是调用方的数据，不是适配器 bug。实测装了 androguard 时返回 `backend_error`、无 incident。
 - 新增 `.github/linux-gates-constraints.txt` 并在工作流以 `pip install -c` 应用：把 pip 解析的 RE
   后端（frida、androguard、adbutils、mitmproxy、playwright）钉到本 gate 验证过的确切版本，避免定时跑
   时悄悄拉到改了后端 API 的上游新版（正是 frida 17 删掉 `Memory.readByteArray` 那类漂移）。只钉叶子

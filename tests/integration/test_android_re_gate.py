@@ -50,11 +50,20 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # The synthetic manifest is deliberately not valid AXML, so androguard's
+        # APK() parse raises. The contract under test is that this surfaces
+        # *structurally* -- backend_error when androguard is present (it wraps the
+        # parse failure at client.py's "failed to parse APK"), or
+        # capability_unavailable when it is absent -- and never leaks the parse
+        # exception as an internal_error carrying an error-boundary incident. The
+        # old assertion (isinstance(opened.ok, bool)) was a tautology that a raw
+        # crash remapped to internal_error would have passed just as happily; a
+        # malformed manifest is the caller's data, not an adapter bug.
         opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        assert opened.ok is False
+        assert opened.error is not None
+        assert opened.error.code in {"backend_error", "capability_unavailable"}, opened.error.code
+        assert "incident_id" not in (opened.error.details or {})
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
