@@ -107,7 +107,7 @@ def test_reopening_the_same_session_id_after_close_works() -> None:
 
 
 @pytest.mark.integration
-def test_a_browser_survives_being_driven_from_other_threads() -> None:
+def test_a_browser_survives_being_driven_from_other_threads(tmp_path: Any) -> None:
     """Tool calls arrive on a worker pool, not on the thread that opened it.
 
     Playwright's sync API is thread-affine, so before every call was funnelled
@@ -125,9 +125,9 @@ def test_a_browser_survives_being_driven_from_other_threads() -> None:
                 pytest.skip("chromium could not launch — Gate not run (skip != pass)")
 
             # Same thread as the caller, then three pool threads, then back.
-            assert backend.dom_snapshot("life-3")["title"] == "lifecycle"
+            assert backend.dom_snapshot("life-3", tmp_path)["title"] == "lifecycle"
             for _ in range(3):
-                snapshot = pool.submit(backend.dom_snapshot, "life-3").result()
+                snapshot = pool.submit(backend.dom_snapshot, "life-3", tmp_path).result()
                 assert snapshot["title"] == "lifecycle"
                 assert pool.submit(backend.navigate, "life-3", _BLANK).result()["url"]
             assert pool.submit(backend.close, "life-3").result()["closed"] is True

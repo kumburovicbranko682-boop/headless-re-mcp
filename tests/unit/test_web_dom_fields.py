@@ -49,18 +49,21 @@ class _Page:
 
 def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
     monkeypatch: Any,
+    tmp_path: Path,
 ) -> None:
     """The catalog said HTML and never named the payload.
 
     Measured: truncated True, html 200000 chars (the cap), no content, dom
     or body field. Looking for those after a successful call reads as a
     missing document, and a 200000-char string with no truncated flag
-    reads as the whole page.
+    reads as the whole page. A document over the inline buffer now spills:
+    html holds the prefix, html_path points at the whole thing, and bytes
+    is the full size -- so the cut prefix is never read as the whole page.
     """
     backend = WebBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=_Page()))
     monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
-    payload = backend.dom_snapshot("s")
+    payload = backend.dom_snapshot("s", tmp_path)
     assert "content" not in payload
     assert "dom" not in payload
     assert "body" not in payload
@@ -68,6 +71,11 @@ def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
     assert payload["url"] == "https://example/app"
     assert payload["title"] == "Example"
     assert len(payload["html"]) == _MAX_INLINE_BODY
+    assert payload["bytes"] == _MAX_INLINE_BODY + 50
+    spilled = Path(payload["html_path"])
+    assert spilled.parent == tmp_path
+    assert len(spilled.read_text(encoding="utf-8")) == _MAX_INLINE_BODY + 50
     doc = _tool_docstring("web.dom.snapshot")
     assert "html" in doc
     assert "truncated" in doc
+    assert "html_path" in doc
