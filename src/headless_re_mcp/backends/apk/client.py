@@ -22,6 +22,10 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# native (JNI) methods are a small fraction of a DEX even in a heavy app, but a
+# hostile or generated one could declare a great many; cap the scan so the JNI
+# listing cannot be turned into an unbounded walk of every method.
+_MAX_NATIVE_METHODS_COLLECT = 5000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -34,6 +38,11 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_NATIVE_METHODS_PAGE = 1000
+
+# DEX access flag for a native (JNI) method; androguard maps 0x100 -> "native"
+# in ACCESS_FLAGS, so the flag string is the stable way to spot one.
+_ACC_NATIVE = 0x100
 
 
 class ApkError(RuntimeError):
@@ -71,6 +80,33 @@ def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     start = max(0, int(offset))
     cap = max(1, min(int(limit), max_limit))
     return start, cap
+
+
+def _is_native_method(method: Any) -> bool:
+    """Whether a DEX method carries the ``native`` (JNI) access flag.
+
+    Prefer the flag string androguard exposes on the analysis object; fall back
+    to the underlying ``EncodedMethod`` integer flags. Either can be absent on
+    odd or synthetic inputs, so a lookup that fails is treated as "not native"
+    rather than aborting the whole scan on one malformed method.
+    """
+    getter = getattr(method, "get_access_flags_string", None)
+    if callable(getter):
+        try:
+            flags = getter()
+        except Exception:  # noqa: BLE001 - one bad method must not stop the scan
+            flags = None
+        if isinstance(flags, str) and "native" in flags.split():
+            return True
+    enc_getter = getattr(method, "get_method", None)
+    enc = enc_getter() if callable(enc_getter) else None
+    flag_int = getattr(enc, "get_access_flags", None)
+    if callable(flag_int):
+        try:
+            return bool(int(flag_int() or 0) & _ACC_NATIVE)
+        except Exception:  # noqa: BLE001 - see above
+            return False
+    return False
 
 
 class _ParsedApk:
@@ -393,6 +429,37 @@ class ApkClient:
             "total": len(methods),
             "offset": start,
             "has_more": start + len(window) < len(methods),
+            "scan_capped": scan_more,
+        }
+
+    def native_methods(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        parsed = self._parsed(path)
+        collected: list[JsonObject] = []
+        scan_more = False
+        for method in parsed.analysis.get_methods():
+            if method.is_external():
+                continue
+            if not _is_native_method(method):
+                continue
+            if len(collected) >= _MAX_NATIVE_METHODS_COLLECT:
+                scan_more = True
+                break
+            collected.append(
+                {
+                    "class": str(getattr(method, "class_name", "")),
+                    "method": str(getattr(method, "name", "")),
+                    "descriptor": str(getattr(method, "descriptor", "")),
+                }
+            )
+        collected.sort(key=lambda item: (item["class"], item["method"], item["descriptor"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_NATIVE_METHODS_PAGE)
+        window = collected[start : start + cap]
+        return {
+            "methods": window,
+            "count": len(window),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(window) < len(collected),
             "scan_capped": scan_more,
         }
 

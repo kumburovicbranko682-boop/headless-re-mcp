@@ -116,6 +116,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.native_methods")
+    def apk_native_methods(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List DEX methods declared native (the JNI boundary) across the whole app.
+
+        Scans every internal method for the native access flag and returns the
+        ones that bridge to a native library -- exactly the entry points to look
+        for in the .so files that apk.native_libs lists. Answers with methods
+        (class in Lsmali/form, method, descriptor), count, total, offset, and
+        has_more so a page that filled the limit is not read as the whole list.
+        total is the number collected, capped at 5000; scan_capped is true when
+        more native methods may exist. has_more only means a larger offset still
+        has collected rows. An empty methods list with total 0 means the app
+        declares no native methods, not that the scan failed.
+        """
+        return _dump(analysis.apk_native_methods(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
