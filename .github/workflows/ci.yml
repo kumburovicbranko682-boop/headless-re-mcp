@@ -152,6 +152,53 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apk-sign:
+    # apksigner + keytool are JRE/SDK tools with no emulator or device, so the
+    # APK signing gate runs on a hosted runner. The signing client scrubs
+    # keystore passwords from apksigner's stderr; nothing here launched the real
+    # apksigner, so the debug path shipped scrubbing its own public password
+    # ("android") and mangling every "com.android.apksig..." frame into
+    # "com.***.apksig..." noise. This job signs with the real apksigner and
+    # asserts the failure diagnostic stays readable. skip != pass: with the
+    # tools present the gate runs for real and only skips if they are absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: Install apksigner (Android build-tools)
+        run: |
+          BUILD_TOOLS=build-tools_r34-linux
+          curl -fsSL -o /tmp/bt.zip \
+            "https://dl.google.com/android/repository/${BUILD_TOOLS}.zip"
+          mkdir -p "$HOME/android-build-tools"
+          unzip -oq /tmp/bt.zip -d "$HOME/android-build-tools"
+          APKSIGNER="$HOME/android-build-tools/android-14/apksigner"
+          "$APKSIGNER" --version
+          echo "HEADLESS_RE_APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+
+      - name: APK sign gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_apk_sign_gate.py -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

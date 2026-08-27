@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.sign 用调试密钥库失败时，把 apksigner 诊断刷成 `com.***.apksig` 乱码）
+
+- `ApktoolClient.sign` 失败时会从 apksigner 的 stderr 里脱敏密钥库密码，防止密码进入错误
+  详情——这是对的。但脱敏是无条件的 `stderr.replace(password, "***")`，而走**调试密钥库**
+  路径（未传 `keystore`）时密码就是 Android 公开的固定常量 `android`。它同时又是 apksigner
+  自身诊断里每一帧 `com.android.apksig...` 的子串，于是一条本可读的报错
+  （“Failed to determine APK's minimum supported platform version”，位于
+  `com.android.apksig.apk.ApkUtils...`）被刷成 `com.***.apksig...` 乱码——保护了一个 Google
+  早已公开、根本不是秘密的密码，却毁掉了排障信息。实测 apksigner（build-tools r34）确认单次
+  失败里 `com.android.apksig` 被替换 12 处。
+- 新增 `_scrub_secret(text, secret, *, is_public)`：只脱敏**调用方提供的**秘密密码，公开的
+  调试密码原样保留。`sign` 计算 `password_is_public = using_debug and password == _DEBUG_PASSWORD`，
+  两条失败路径（sign 与 verify）都据此脱敏。豁免只认调试路径，不认字面量：若调用方自带密钥库
+  且密码恰好是 `android`，那是他们的秘密，照旧脱敏。
+- 钉死：单测覆盖两向——调试路径的公开密码与 `com.android.apksig` 诊断保持完整、自定义密钥库的
+  秘密（含恰为 `android` 的情形）仍被刷成 `***`。新增真跑 apksigner 的活体门
+  `tests/integration/test_apk_sign_gate.py`：用真实 apksigner 签一个非法 APK 触发真实
+  `com.android.apksig` 报错并断言其不被刷花——正是当初漏掉、才让此 bug 存活的那条端到端路径。
+  新增 `linux-apk-sign` CI job（装 JDK + build-tools）在每次 push 上真跑该门（skip != pass）。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
