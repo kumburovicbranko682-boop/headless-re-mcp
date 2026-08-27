@@ -233,6 +233,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
+### 修复（深嵌套的 provider JSON 绕过既有的错误归类）
+
+- `openai_compatible` 流式解析里两处 `json.loads` 只捕获 `JSONDecodeError` 再转成指名
+  provider 的 `ValueError`（「stream chunk that is not JSON」/「invalid tool arguments」），
+  但两万个不闭合的 `[`（远在 SSE 行上限与 4 MiB 工具参数装配上限之内）会让 C 解码器
+  递归到 `RecursionError`——它不是 `JSONDecodeError`，于是绕过这层归类，从流式生成器
+  一路抛到 orchestrator 的 `BaseException` 兜底，变成一条含 incident 号的 opaque
+  内部错误。工具参数这条尤其值得堵：**参数文本是模型写的**，被样本注入的一轮就能
+  让它任意深。stdio 侧（`mcp/stdio_errors.py`）与 DIE 的 `_parse_json` 早已把
+  `RecursionError` 纳入吞掉的集合，本次把这两处补齐为同一口径。新增两条回归
+  （深嵌套 chunk、深嵌套工具参数各一），在旧的窄 except 下都以 `RecursionError` 失败。
+
 ### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
 
 - `scan_pe` 的 `_read_pe_bytes` 过去以 `stream.read(max_file_size + 1)` 一次性把整份输入读进
