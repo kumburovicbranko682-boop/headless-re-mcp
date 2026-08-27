@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dynamic.memory.read/write` 的大小上限在 agent 传输路径上形同虚设）
+
+- `dynamic.memory.read`（`size` le=2 MiB）与 `dynamic.memory.write`（`data` max_length=4 MiB）
+  的上限只在 MCP 服务器路径靠 pydantic Field 兑现；agent 传输是从模型参数直接调用 handler
+  （`CommandCatalog.invoke -> spec.handler`），且 memory.read 没有 read_events 那样的客户端校验包装，
+  于是 agent 递来的超大 `size`/`data` 一路越过所有上限：worker 照读那么多目标内存、拼出十六进制回包，
+  再被 8 MiB 响应帧拒成一个语焉不详的 `rpc_protocol_error`——而超大读取此刻早已发生。现在 service 层
+  按工具 schema 的同一上限（读 2 MiB、写 4 MiB 十六进制）当场以 `invalid_request` 拒绝，与
+  `DynamicInspectMixin` 里每个同类各自校验边界的做法一致。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
