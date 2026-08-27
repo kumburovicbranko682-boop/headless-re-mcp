@@ -11,19 +11,27 @@ This gate closes that hole without an Android SDK. It hand-encodes a valid
 binary ``AndroidManifest.xml`` (the AOSP ``ResXMLTree`` chunk format: an XML
 resource header, a UTF-16 string pool, a resource-map that binds the framework
 attribute names to their resource IDs, and the namespace/element/attribute
-chunks) and zips it into an APK with two native ABIs. Then it drives the real
-tool surface (``apk.open`` / ``apk.manifest`` / ``apk.permissions`` /
-``apk.components`` / ``apk.native_libs``) and asserts the decoded values, not
-merely that a call returned. The DEX-analysis tools (classes/methods/strings)
-need a real ``classes.dex`` and are out of scope here.
+chunks) *and* a valid ``classes.dex`` (a header with the mandatory Adler32
+checksum, a map_list, and the string/type/proto/method/class tables plus one
+method whose bytecode loads a marker string), then zips both into an APK with
+two native ABIs. It drives the real tool surface and asserts the decoded values,
+not merely that a call returned:
+
+  * manifest half -- ``apk.open`` / ``apk.manifest`` / ``apk.permissions`` /
+    ``apk.components`` / ``apk.native_libs``;
+  * DEX half -- ``apk.classes`` finds the internal class, ``apk.methods`` lists
+    its method with the right descriptor and access, and ``apk.strings`` returns
+    the marker constant the method loads.
 
 skip != pass: with androguard absent the gate skips loudly.
 """
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -43,6 +51,11 @@ _TARGET_SDK = 33
 _PERMISSION = "android.permission.INTERNET"
 _ACTIVITY = "com.gate.sample.MainActivity"
 _ABIS = ("arm64-v8a", "x86_64")
+
+# What the hand-built classes.dex carries, asserted by the DEX-half tests.
+_DEX_CLASS = "Lcom/gate/sample/Gate;"
+_DEX_METHOD = "gateSecret"
+_DEX_STRING = "gate-secret-marker"
 
 _ANDROID_URI = "http://schemas.android.com/apk/res/android"
 # Framework attribute name -> resource id. androguard resolves an android:*
@@ -237,12 +250,147 @@ def _build_manifest_axml() -> bytes:
     return header + payload
 
 
+# --- classes.dex ------------------------------------------------------------
+# A minimal but valid DEX (format 035): one public class with one direct method
+# whose bytecode is ``const-string v0, "gate-secret-marker"; return-void``. That
+# is enough for androguard to enumerate the class, list the method and surface
+# the string, which is what the DEX-half tools read. String indices are explicit
+# throughout, so the tables need not be sorted for androguard to resolve them.
+_DEX_STRINGS = [
+    _DEX_CLASS,  # 0: the class descriptor
+    "Ljava/lang/Object;",  # 1: superclass
+    "V",  # 2: void, reused as the proto shorty
+    _DEX_STRING,  # 3: the constant the method loads
+    _DEX_METHOD,  # 4: the method name
+]
+_DEX_TYPES = [0, 1, 2]  # type index -> string index
+_T_CLASS, _T_OBJECT, _T_VOID = range(3)
+
+
+def _uleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | 0x80 if value else byte)
+        if not value:
+            return bytes(out)
+
+
+def _align4(buf: bytearray) -> None:
+    while len(buf) % 4:
+        buf.append(0)
+
+
+def _build_classes_dex() -> bytes:
+    header_size = 0x70
+    body = bytearray()
+
+    string_ids_off = header_size
+    body += b"\x00" * (4 * len(_DEX_STRINGS))  # patched once data is placed
+
+    _align4(body)
+    type_ids_off = header_size + len(body)
+    for string_index in _DEX_TYPES:
+        body += struct.pack("<I", string_index)
+
+    _align4(body)
+    proto_ids_off = header_size + len(body)
+    body += struct.pack("<III", 2, _T_VOID, 0)  # shorty "V", return void, no params
+
+    _align4(body)
+    method_ids_off = header_size + len(body)
+    body += struct.pack("<HHI", _T_CLASS, 0, 4)  # class, proto 0, name "gateSecret"
+
+    _align4(body)
+    code_off = header_size + len(body)
+    insns = struct.pack("<BBH", 0x1A, 0x00, 3)  # const-string v0, string@3
+    insns += struct.pack("<BB", 0x0E, 0x00)  # return-void
+    body += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns) // 2)
+    body += insns
+
+    _align4(body)
+    class_data_off = header_size + len(body)
+    body += _uleb128(0)  # static fields
+    body += _uleb128(0)  # instance fields
+    body += _uleb128(1)  # direct methods
+    body += _uleb128(0)  # virtual methods
+    body += _uleb128(0)  # first method_idx_diff
+    body += _uleb128(0x9)  # access: public | static
+    body += _uleb128(code_off)
+
+    _align4(body)
+    class_defs_off = header_size + len(body)
+    body += struct.pack(
+        "<IIIIIIII",
+        _T_CLASS,  # class_idx
+        0x1,  # access: public
+        _T_OBJECT,  # superclass_idx
+        0,  # interfaces_off
+        0xFFFFFFFF,  # source_file_idx: NO_INDEX
+        0,  # annotations_off
+        class_data_off,
+        0,  # static_values_off
+    )
+
+    string_data_offsets: list[int] = []
+    for text in _DEX_STRINGS:
+        string_data_offsets.append(header_size + len(body))
+        body += _uleb128(len(text))
+        body += text.encode("utf-8")  # MUTF-8 == UTF-8 for ASCII
+        body += b"\x00"
+    for i, off in enumerate(string_data_offsets):
+        pos = string_ids_off - header_size + 4 * i
+        body[pos : pos + 4] = struct.pack("<I", off)
+
+    _align4(body)
+    map_off = header_size + len(body)
+    map_items = [
+        (0x0000, 1, 0),
+        (0x0001, len(_DEX_STRINGS), string_ids_off),
+        (0x0002, len(_DEX_TYPES), type_ids_off),
+        (0x0003, 1, proto_ids_off),
+        (0x0005, 1, method_ids_off),
+        (0x0006, 1, class_defs_off),
+        (0x2000, 1, class_data_off),
+        (0x2001, 1, code_off),
+        (0x2002, len(_DEX_STRINGS), string_data_offsets[0]),
+        (0x1000, 1, map_off),
+    ]
+    body += struct.pack("<I", len(map_items))
+    for type_code, size, off in map_items:
+        body += struct.pack("<HHII", type_code, 0, size, off)
+
+    file_size = header_size + len(body)
+    header = bytearray()
+    header += b"dex\n035\x00"
+    header += b"\x00" * 4  # checksum (Adler32), patched below
+    header += b"\x00" * 20  # signature (SHA-1), patched below
+    header += struct.pack("<I", file_size)
+    header += struct.pack("<I", header_size)
+    header += struct.pack("<I", 0x12345678)  # little-endian tag
+    header += struct.pack("<II", 0, 0)  # link
+    header += struct.pack("<I", map_off)
+    header += struct.pack("<II", len(_DEX_STRINGS), string_ids_off)
+    header += struct.pack("<II", len(_DEX_TYPES), type_ids_off)
+    header += struct.pack("<II", 1, proto_ids_off)
+    header += struct.pack("<II", 0, 0)  # field ids
+    header += struct.pack("<II", 1, method_ids_off)
+    header += struct.pack("<II", 1, class_defs_off)
+    header += struct.pack("<II", file_size - code_off, code_off)  # data section
+
+    dex = bytearray(header + body)
+    dex[12:32] = hashlib.sha1(bytes(dex[32:])).digest()
+    dex[8:12] = struct.pack("<I", zlib.adler32(bytes(dex[12:])) & 0xFFFFFFFF)
+    return bytes(dex)
+
+
 def _build_valid_apk(path: Path) -> Path:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AndroidManifest.xml", _build_manifest_axml())
+        archive.writestr("classes.dex", _build_classes_dex())
         for abi in _ABIS:
             archive.writestr(f"lib/{abi}/libgate.so", b"\x7fELF" + b"\x00" * 60)
-        archive.writestr("classes.dex", b"dex\n035\x00" + b"\x00" * 60)
         archive.writestr("resources.arsc", b"\x02\x00\x0c\x00" + b"\x00" * 8)
     return path
 
@@ -328,5 +476,71 @@ def test_androguard_enumerates_permissions_components_and_libs(tmp_path: Path) -
         assert libs.ok, libs.error
         assert libs.data["abis"] == list(_ABIS)
         assert libs.data["count"] == len(_ABIS)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_androguard_analyzes_the_dex_classes_methods_and_strings(tmp_path: Path) -> None:
+    if not _androguard_available():
+        pytest.skip("androguard not installed — Android static Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "gate.apk")
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+    )
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        # apk.classes runs the full DEX analysis; the internal class must appear
+        # (framework types like Object are external and filtered out).
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert classes.data["classes"] == [_DEX_CLASS]
+
+        # apk.methods must decode the one method with its real descriptor/access.
+        methods = service.apk_methods(session_id, _DEX_CLASS)
+        assert methods.ok, methods.error
+        names = {m["name"] for m in methods.data["methods"]}
+        assert _DEX_METHOD in names
+        method = next(m for m in methods.data["methods"] if m["name"] == _DEX_METHOD)
+        assert method["descriptor"] == "()V"
+        assert "static" in method["access"]
+
+        # apk.strings must surface the constant the method loads.
+        strings = service.apk_strings(session_id)
+        assert strings.ok, strings.error
+        assert _DEX_STRING in strings.data["strings"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_methods_rejects_an_unknown_class(tmp_path: Path) -> None:
+    """A class the DEX does not define must be a clean not_found, not a crash."""
+    if not _androguard_available():
+        pytest.skip("androguard not installed — Android static Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "gate.apk")
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+    )
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        session_id = created.data["session"]["id"]
+        missing = service.apk_methods(session_id, "Lcom/gate/sample/DoesNotExist;")
+        assert missing.ok is False
+        assert missing.error is not None
+        assert missing.error.code == "not_found"
     finally:
         service.close_all()
