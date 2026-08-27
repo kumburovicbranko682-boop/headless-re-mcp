@@ -69,6 +69,49 @@ def _origin_site() -> Iterator[str]:
         server.server_close()
 
 
+class _CountingOriginServer(ThreadingHTTPServer):
+    """Loopback origin that counts the GETs it actually served.
+
+    Replay is only proven if the origin sees the request a *second* time, so the
+    server -- not the client -- has to be the witness.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.hits = 0
+        self.hits_lock = threading.Lock()
+
+
+class _CountingHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        server = self.server
+        assert isinstance(server, _CountingOriginServer)
+        with server.hits_lock:
+            server.hits += 1
+        body = _ORIGIN_MARKER.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _counting_origin() -> Iterator[_CountingOriginServer]:
+    server = _CountingOriginServer(("127.0.0.1", 0), _CountingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
 def _poll(fn: Callable[[], Any], predicate: Callable[[Any], bool], *, tries: int = 40) -> Any:
     result = fn()
     for _ in range(tries):
@@ -142,6 +185,69 @@ def test_proxy_flow_get_on_an_unknown_id_is_a_clean_not_found() -> None:
     try:
         with pytest.raises(ProxyError) as info:
             backend.flow_get("missing-flow", "no-such-flow", Path("/tmp"))
+        assert info.value.code == "not_found", info.value.code
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_replay_resends_a_captured_flow_to_its_origin() -> None:
+    """proxy.replay must actually re-issue a captured request to its origin.
+
+    Capturing a flow and replaying it is the line's active capability (as
+    opposed to passive recording), and nothing proved the replayed request ever
+    left the proxy. A counting origin is the witness: route one GET through the
+    proxy (origin sees it once), replay the captured flow, and assert the origin
+    is hit a second time and a second flow is recorded. skip != pass without
+    mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("replay", host="127.0.0.1", port=proxy_port)
+    try:
+        with _counting_origin() as origin:
+            host, port = origin.server_address
+            target = f"http://{host}:{port}/hi"
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            with opener.open(target, timeout=15.0) as response:
+                response.read()
+            assert origin.hits == 1, origin.hits
+
+            listing = _poll(
+                lambda: backend.flows("replay", limit=100),
+                lambda r: any(str(f.get("url", "")).endswith("/hi") for f in r["flows"]),
+            )
+            hits = [f for f in listing["flows"] if str(f.get("url", "")).endswith("/hi")]
+            assert hits, listing["flows"]
+
+            result = backend.replay("replay", str(hits[0]["id"]))
+            assert result["replayed"] is True, result
+
+            # The origin -- not the client -- must witness the re-issued request.
+            resent = _poll(lambda: origin.hits, lambda n: n >= 2)
+            assert resent >= 2, resent
+            total = _poll(
+                lambda: backend.flows("replay", limit=100)["total"], lambda n: n >= 2
+            )
+            assert total >= 2, total
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_replay_on_an_unknown_id_is_a_clean_not_found() -> None:
+    """Replaying a flow that was never captured must be a structured miss."""
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("replay-missing", host="127.0.0.1", port=port)
+    try:
+        with pytest.raises(ProxyError) as info:
+            backend.replay("replay-missing", "no-such-flow")
         assert info.value.code == "not_found", info.value.code
     finally:
         backend.close_all()
