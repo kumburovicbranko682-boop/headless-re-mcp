@@ -144,6 +144,105 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # The non-PE lines (Android, Web, proxy) ship integration Gates that drive
+  # real open-source tools -- androguard, jadx, apktool, Playwright/Chromium,
+  # webcrack, wabt, mitmproxy -- against committed fixtures. The unit jobs never
+  # run tests/integration, so those Gates otherwise only ever execute on a
+  # developer's machine and silently rot when a backend's CLI or API drifts.
+  # This job installs that toolchain on Linux and runs exactly the Gates it can
+  # satisfy hermetically (no device, no proprietary backend), turning "skips on
+  # a bare runner" into an enforced check. The PE Gates are left out on purpose:
+  # they need IDA/Ghidra/x64dbg/WinDbg, which no hosted runner has.
+  linux-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Pinned so a silently-yanked "latest" cannot turn the Gate green by
+      # making a tool absent (absent tool => skip, and skip reads like pass).
+      JADX_VERSION: "1.5.3"
+      APKTOOL_VERSION: "2.9.3"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # jadx and apktool need a JRE; the ubuntu-latest image already ships one
+      # on PATH, and the "Verify the toolchain" step fails loudly if that ever
+      # stops being true, so no setup-java action is pinned here.
+
+      - name: Install package with the non-PE extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install JS/WASM tools (webcrack, wabt)
+        run: |
+          npm install -g webcrack
+          sudo apt-get update
+          sudo apt-get install -y wabt
+
+      - name: Install Android CLI tools (jadx, apktool)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/tools/bin" "$HOME/tools/jadx"
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          unzip -q -o /tmp/jadx.zip -d "$HOME/tools/jadx"
+          ln -sf "$HOME/tools/jadx/bin/jadx" "$HOME/tools/bin/jadx"
+          curl -fsSL -o "$HOME/tools/bin/apktool.jar" \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          printf '#!/usr/bin/env bash\nexec java -jar "%s/apktool.jar" "$@"\n' "$HOME/tools/bin" \
+            > "$HOME/tools/bin/apktool"
+          chmod +x "$HOME/tools/bin/apktool"
+          echo "$HOME/tools/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the toolchain wired up
+        # A Gate that skips because its tool is missing looks identical to a
+        # Gate that passed. This step fails loudly if anything this job promised
+        # to provide is not actually runnable, so a broken install cannot hide
+        # behind a green "skipped" Gate.
+        run: |
+          set -euo pipefail
+          jadx --version
+          apktool --version
+          webcrack --version
+          wasm2wat --version
+          python - <<'PY'
+          import importlib
+          for name in ("androguard", "mitmproxy", "playwright"):
+              importlib.import_module(name)
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as pw:
+              assert pw.chromium.executable_path, "chromium not installed"
+          print("toolchain OK")
+          PY
+
+      - name: Non-PE integration Gates
+        # Explicit file list, not "-m integration": the marker also covers the
+        # PE Gates that need proprietary backends. These are the lines this job
+        # can satisfy end to end. -rs surfaces every remaining skip reason so a
+        # newly-dormant Gate is visible in the log rather than silently green.
+        timeout-minutes: 20
+        run: |
+          python -m pytest \
+            tests/integration/test_android_re_gate.py \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_web_cdp_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_proxy_capture_gate.py \
+            tests/integration/test_agent_browser_smoke.py \
+            -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
