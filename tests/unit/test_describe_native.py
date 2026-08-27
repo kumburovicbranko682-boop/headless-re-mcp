@@ -55,6 +55,36 @@ def _macho64_le() -> bytes:
     )
 
 
+def _macho64_full(filetype: int, flags: int, load_cmds: bytes = b"", ncmds: int = 0) -> bytes:
+    # 64-bit little-endian mach_header_64 followed by its load commands.
+    return (
+        b"\xcf\xfa\xed\xfe"
+        + (0x01000007).to_bytes(4, "little")  # cputype x86_64
+        + (0).to_bytes(4, "little")  # cpusubtype
+        + filetype.to_bytes(4, "little")
+        + ncmds.to_bytes(4, "little")
+        + len(load_cmds).to_bytes(4, "little")  # sizeofcmds
+        + flags.to_bytes(4, "little")
+        + (0).to_bytes(4, "little")  # reserved
+        + load_cmds
+    )
+
+
+def _lc_load_dylib(name: str) -> bytes:
+    raw = name.encode() + b"\x00"
+    total = (24 + len(raw) + 3) & ~3  # dylib_command struct is 24 bytes, then the name
+    cmd = bytearray(total)
+    cmd[0:4] = (0x0C).to_bytes(4, "little")  # LC_LOAD_DYLIB
+    cmd[4:8] = total.to_bytes(4, "little")  # cmdsize
+    cmd[8:12] = (24).to_bytes(4, "little")  # name offset
+    cmd[24 : 24 + len(raw)] = raw
+    return bytes(cmd)
+
+
+def _lc_uuid() -> bytes:
+    return (0x1B).to_bytes(4, "little") + (24).to_bytes(4, "little") + b"\x00" * 16
+
+
 def _macho_fat(*cputypes: int) -> bytes:
     header = b"\xca\xfe\xba\xbe" + len(cputypes).to_bytes(4, "big")
     for cputype in cputypes:
@@ -222,6 +252,40 @@ def test_macho_thin_facts(tmp_path: Path) -> None:
         "arch": "x86-64",
         "type": "execute",
     }
+
+
+def test_macho_pie_executable_lists_its_dylibs(tmp_path: Path) -> None:
+    dylib = "/usr/lib/libSystem.B.dylib"
+    data = _macho64_full(
+        filetype=2,  # MH_EXECUTE
+        flags=0x00200000 | 0x4,  # MH_PIE | MH_DYLDLINK
+        load_cmds=_lc_load_dylib(dylib),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["type"] == "execute"
+    assert facts["pie"] is True
+    assert facts["linking"] == "dynamic"
+    assert facts["dylibs"] == [dylib]
+
+
+def test_macho_dylib_is_dynamic_but_not_pie(tmp_path: Path) -> None:
+    # A .dylib is position-independent by nature but does not set MH_PIE, so it
+    # reads pie=False -- the same contract as an ELF shared object.
+    data = _macho64_full(filetype=6, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)  # MH_DYLIB
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["type"] == "dylib"
+    assert facts["pie"] is False
+    assert facts["linking"] == "dynamic"
+    assert facts["dylibs"] == []  # a load command is present, but none are dylibs
+
+
+def test_macho_static_executable_has_no_dylibs(tmp_path: Path) -> None:
+    data = _macho64_full(filetype=2, flags=0, load_cmds=b"", ncmds=0)
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["pie"] is False
+    assert facts["linking"] == "static"
+    assert "dylibs" not in facts
 
 
 def test_macho_universal_lists_slices(tmp_path: Path) -> None:

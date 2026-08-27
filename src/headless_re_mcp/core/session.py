@@ -422,6 +422,11 @@ _MACHO_CPU = {
     0x0100000C: "arm64",
     0x01000012: "ppc64",
 }
+_MH_PIE = 0x00200000
+_MH_DYLDLINK = 0x00000004
+_LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, reexport
+_MACHO_MAX_LOAD_CMDS = 4096
+_MACHO_MAX_DYLIBS = 64
 _MACHO_FILETYPES = {
     1: "object",
     2: "execute",
@@ -1799,7 +1804,47 @@ def _macho_thin_facts(head: bytes, magic: bytes) -> dict[str, Any]:
         filetype = int.from_bytes(head[12:16], order)  # type: ignore[arg-type]
         facts["arch"] = _MACHO_CPU.get(cputype, f"cpu_{cputype}")
         facts["type"] = _MACHO_FILETYPES.get(filetype, f"type_{filetype}")
+    # The header flags and load commands answer the same triage questions the
+    # ELF reader does: position independence, dynamic linking, and which shared
+    # libraries the image pulls in. The mach_header flags sit at offset 24 in
+    # both the 32- and 64-bit layouts.
+    if len(head) >= 28:
+        ncmds = int.from_bytes(head[16:20], order)  # type: ignore[arg-type]
+        flags = int.from_bytes(head[24:28], order)  # type: ignore[arg-type]
+        facts["pie"] = bool(flags & _MH_PIE)
+        facts["linking"] = "dynamic" if flags & _MH_DYLDLINK else "static"
+        dylibs = _macho_dylibs(head, order, 32 if bits == 64 else 28, ncmds)
+        if dylibs is not None:
+            facts["dylibs"] = dylibs
     return facts
+
+
+def _macho_dylibs(head: bytes, order: str, offset: int, ncmds: int) -> list[str] | None:
+    """Shared-library names from LC_LOAD_DYLIB / weak / reexport load commands.
+
+    Bounded by the command count and the header window already read; a command
+    whose body runs past that window stops enumeration rather than seeking on.
+    """
+    if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
+        return None
+    names: list[str] = []
+    pos = offset
+    for _ in range(ncmds):
+        if pos + 8 > len(head):
+            break
+        cmd = int.from_bytes(head[pos : pos + 4], order)  # type: ignore[arg-type]
+        cmdsize = int.from_bytes(head[pos + 4 : pos + 8], order)  # type: ignore[arg-type]
+        if cmdsize < 8 or pos + cmdsize > len(head):
+            break
+        if cmd in _LC_DYLIB_CMDS:
+            name_off = int.from_bytes(head[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            if 8 <= name_off < cmdsize and len(names) < _MACHO_MAX_DYLIBS:
+                raw = head[pos + name_off : pos + cmdsize]
+                name = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                if name:
+                    names.append(name)
+        pos += cmdsize
+    return names
 
 
 def _macho_fat_facts(head: bytes) -> dict[str, Any]:
