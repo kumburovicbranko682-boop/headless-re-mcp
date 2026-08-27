@@ -42,6 +42,33 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+# DumpMaster ships addons that exist to run the mitmdump *command*, not to serve
+# an embedded proxy, and two of them break a threaded embedding on cold start:
+#   * errorcheck calls sys.exit() as soon as anything is logged at ERROR during
+#     startup -- it is meant to end the mitmdump process on a bad flag.
+#   * readfilestdin / keepserving exist to read flows from a "-r rfile" and keep
+#     the CLI alive afterwards; their async running() hooks read ctx.options.rfile
+#     and, on a cold start, race option registration and log
+#     "Addon error: No such option: rfile".
+# errorcheck then turns that benign race into sys.exit(1), which surfaced here as
+# an intermittent (~7% of starts) "mitmproxy failed to start: 1" or a port that
+# never got released. This backend owns the proxy lifecycle and never reads a
+# flow file, so none of these belong; dropping them removes both the error source
+# and the process-killing reaction.
+_CLI_ONLY_ADDONS: tuple[str, ...] = ("errorcheck", "readfilestdin", "readfile", "keepserving")
+
+
+def _strip_cli_only_addons(master: Any) -> None:
+    manager = getattr(master, "addons", None)
+    if manager is None:
+        return
+    for name in _CLI_ONLY_ADDONS:
+        with contextlib.suppress(Exception):
+            existing = manager.get(name)
+            if existing is not None:
+                manager.remove(existing)
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -337,6 +364,7 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            _strip_cli_only_addons(master)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
