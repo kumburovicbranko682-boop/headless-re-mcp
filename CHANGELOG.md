@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（审批策略持久化失败后进程仍按新策略放行）
+
+- `PUT /api/agent/autonomy`（模式切换与逐条授予/撤销两个分支）和审批路由的「记住这次批准」
+  （`_remember_approval`）都是先把新策略赋给活的 `orchestrator.autonomy`，再 `_persist_autonomy()`
+  写用户配置。`update_config_values` 会因配置目录不可写/磁盘满抛 `OSError`、因 config.json 被
+  手改坏抛 `ValueError`——两者都逃逸成不透明 500，但**内存里的策略已经生效**。最危险的组合：
+  用户把「需要审批」切到「完全放行」，持久化失败，前端收到 500 把开关显示回滚到「需要审批」并
+  弹横幅——用户以为写操作仍要人工批准，而服务端此刻起自动放行每一个写工具，直到重启。反向
+  切换则是服务端已回到需审批、界面还显示完全放行。现改为**先持久化、成功后才应用**：失败时
+  返回带明确 `autonomy_persist_failed:` 前缀的 500 且无任何副作用，前端的显示回滚从此是对的。
+- 「记住这次批准」还有一层：审批决定本身已成功且不可重发（重试会 409 already decided），过去
+  持久化失败让整个请求变 500，把成功的批准藏在错误后面。现该次要步骤失败时仍返回 200 + 决定
+  结果，附 `remember_error` 说明授权没记住（fail-closed：更宽的授权既没持久化也没进内存），
+  前端 `if (result.policy)` 的既有判断自然跳过模式刷新。
+- 新增两条路由直测：令 `update_config_values` 抛错后，PUT 模式切换与 add_tools 授予均返回
+  `autonomy_persist_failed` 500 且随后的 GET 仍是 request 模式、无可自动执行的写工具；批准带
+  `remember=tool` 时返回 200 + `remember_error`、批准生效、`dynamic.open` 未被授予。修复前两条
+  用例都以 `OSError` 逃逸失败（且策略已在内存生效）。相关 117 条测试、ruff、mypy 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
