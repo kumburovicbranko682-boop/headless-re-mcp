@@ -66,8 +66,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List activities, services, receivers, and providers.
 
         Answers with activities, services, receivers, providers,
-        main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        main_activity, has_more, and a per-type totals map so a list that
+        filled the cap is not read as every component. The totals report how
+        many of each kind the manifest declares, so the single has_more (an OR
+        across the four lists) does not leave a caller guessing which one was
+        truncated. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 

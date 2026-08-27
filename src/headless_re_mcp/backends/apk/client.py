@@ -289,16 +289,34 @@ class ApkClient:
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
-        services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
-        receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
-        providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        # Materialised once, so the full length is known for totals below and the
+        # same list is handed to _cap_names -- androguard already parsed the
+        # manifest into these lists, so this is a shallow copy, not a second walk.
+        activities_all = list(apk.get_activities() or [])
+        services_all = list(apk.get_services() or [])
+        receivers_all = list(apk.get_receivers() or [])
+        providers_all = list(apk.get_providers() or [])
+        activities, a_more = _cap_names(activities_all, _MAX_COMPONENT_NAMES)
+        services, s_more = _cap_names(services_all, _MAX_COMPONENT_NAMES)
+        receivers, r_more = _cap_names(receivers_all, _MAX_COMPONENT_NAMES)
+        providers, p_more = _cap_names(providers_all, _MAX_COMPONENT_NAMES)
         return {
             "activities": activities,
             "services": services,
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
+            # One has_more across four independent lists cannot say which of them
+            # filled the 256-name cap or by how much, and a big app really can
+            # declare more than 256 activities. Per-type totals let a caller read
+            # totals["activities"] against len(activities) to see exactly that,
+            # the way classes/methods/strings already report a scalar total.
+            "totals": {
+                "activities": len(activities_all),
+                "services": len(services_all),
+                "receivers": len(receivers_all),
+                "providers": len(providers_all),
+            },
             "has_more": a_more or s_more or r_more or p_more,
         }
 
