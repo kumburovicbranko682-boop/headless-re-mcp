@@ -43,6 +43,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 修复（ScyllaHide 的 UTF-16 ini 让隐身状态/设置崩溃而非走回退）
+
+- `read_current_section` / `_load_or_seed` 读 `scylla_hide.ini` 时先按 UTF-8、失败再回退 UTF-16——
+  这个回退正是为 ScyllaHide 在 Windows 上写出的**带 BOM 的 UTF-16** ini 准备的。但
+  `configparser.read` 只吞 `OSError`，把带 BOM 的 UTF-16 当 UTF-8 读会抛 `UnicodeDecodeError`
+  （属 `ValueError`，不是 `OSError`），于是异常越过 `except OSError` 直接上抛，回退分支从未执行：
+  `dynamic.stealth.status`（经 `inspect_layout`）与 `dynamic.stealth.set` / `dynamic.launch`
+  应用 profile（经 `apply_profile` → `_load_or_seed`）在恰恰需要该回退的 Windows 装机上崩溃。现改为
+  一次性读入字节、在此处选择编码（`utf-8-sig` 再 `utf-16`），把配置解析器永远能读的文本交给它；
+  `utf-8-sig` 顺带剥掉会把 `[SETTINGS]` 段头藏在前导字节后的 UTF-8 BOM。新增三条回归：带 BOM 的
+  UTF-16 ini 能读出 `CurrentProfile`、带 BOM 的 UTF-8 ini 同样能读、以及对已存在的 UTF-16 ini 执行
+  `apply_profile` 不再崩溃并正确改写。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /

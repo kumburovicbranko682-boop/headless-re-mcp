@@ -248,17 +248,8 @@ def inspect_layout(layout: StealthLayout | None) -> JsonObject:
 
 def read_current_section(ini_path: Path) -> str | None:
     parser = _parser()
-    try:
-        read = parser.read(ini_path, encoding="utf-8")
-    except OSError:
+    if not _read_ini(parser, ini_path):
         return None
-    if not read:
-        try:
-            read = parser.read(ini_path, encoding="utf-16")
-        except OSError:
-            return None
-        if not read:
-            return None
     if not parser.has_section("SETTINGS"):
         return None
     value = parser.get("SETTINGS", "CurrentProfile", fallback="").strip()
@@ -368,6 +359,35 @@ def _parser() -> configparser.ConfigParser:
     return parser
 
 
+def _read_ini(parser: configparser.ConfigParser, ini_path: Path) -> bool:
+    """Load ``ini_path`` into ``parser``, honouring the UTF-16 ScyllaHide writes.
+
+    ScyllaHide's own scylla_hide.ini is UTF-16 with a BOM on Windows, which is
+    the whole reason these callers meant to fall back to that encoding.
+    ``configparser.read`` only swallows ``OSError``, though, so decoding that
+    file as UTF-8 raised ``UnicodeDecodeError`` straight past the ``except
+    OSError`` guard and never reached the utf-16 attempt -- turning the one file
+    the fallback existed for into a crash in stealth status and profile
+    application. Read the bytes once and pick the encoding here, where a wrong
+    first guess is recoverable, then hand configparser text it can always parse.
+    ``utf-8-sig`` also strips a UTF-8 BOM that would otherwise hide the
+    ``[SETTINGS]`` section header behind a leading byte. Returns True when a file
+    was read.
+    """
+    try:
+        raw = ini_path.read_bytes()
+    except OSError:
+        return False
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        parser.read_string(text, source=str(ini_path))
+        return True
+    return False
+
+
 def _seed_parser() -> configparser.ConfigParser:
     parser = _parser()
     parser.read_string(_DEFAULT_INI)
@@ -378,9 +398,7 @@ def _seed_parser() -> configparser.ConfigParser:
 def _load_or_seed(ini_path: Path) -> configparser.ConfigParser:
     parser = _parser()
     if ini_path.is_file():
-        loaded = parser.read(ini_path, encoding="utf-8")
-        if not loaded:
-            parser.read(ini_path, encoding="utf-16")
+        _read_ini(parser, ini_path)
     if not parser.has_section("SETTINGS"):
         seeded = _seed_parser()
         for section in seeded.sections():
