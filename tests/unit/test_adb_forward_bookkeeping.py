@@ -26,14 +26,23 @@ from headless_re_mcp.backends.adb.client import _MAX_FORWARDS, AdbBackend, AdbEr
 class _ForwardDev:
     """A device that records forwards/removes and can be told to fail."""
 
-    def __init__(self, *, forward_fails: bool = False, remove_fails: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        forward_fails: bool = False,
+        forward_adb_error: bool = False,
+        remove_fails: bool = False,
+    ) -> None:
         self._forward_fails = forward_fails
+        self._forward_adb_error = forward_adb_error
         self._remove_fails = remove_fails
         self.forwarded: list[tuple[str, str]] = []
         self.removed: list[str] = []
 
     def forward(self, local: str, remote: str, timeout: float | None = None) -> None:
         del timeout
+        if self._forward_adb_error:
+            raise AdbError("timeout", "adb timed out binding the forward")
         if self._forward_fails:
             raise RuntimeError("adb refused the bind")
         self.forwarded.append((local, remote))
@@ -75,6 +84,23 @@ def test_a_failed_forward_does_not_leak_the_reserved_slot() -> None:
     with pytest.raises(AdbError) as caught:
         backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
     assert caught.value.code == "backend_error"
+    assert backend._forwards == []
+
+
+def test_a_forward_that_fails_as_an_adberror_releases_the_slot_and_keeps_the_code() -> None:
+    """An AdbError from the bind (a timeout) is re-raised as-is, slot released.
+
+    The backend_error path maps a raw exception; this is the other branch --
+    the device already handed back a classified AdbError, so it must be
+    re-raised unchanged (its code preserved, not flattened to backend_error)
+    while the reserved slot is still rolled back, exactly like the plain-failure
+    case. Otherwise a classified timeout would both lose its code and leak.
+    """
+    dev = _ForwardDev(forward_adb_error=True)
+    backend = _backend_returning(dev)
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    assert caught.value.code == "timeout"
     assert backend._forwards == []
 
 

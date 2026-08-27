@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 ensure_frida_server 的 root push/launch 降级诚实与 forward 已分类错误的回滚，不依赖 adbutils）
+
+- `ensure_frida_server` 是最高权限的设备变更(以 su 推送并启动 frida-server),但其 push/launch/verify\
+  分支此前只有“已在运行”短路与“启动了但 ps 看不到”两条被钉住。新增 `test_adb_frida_server_ensure.py`\
+  以注入的假设备与真实临时二进制补齐其余降级路径:确认可见的启动同时上报 `running` 与是否 `pushed`;\
+  push 失败(原始异常)映射为 `backend_error` 且绝不进入 su 启动;push 交回已分类的 `AdbError`(如\
+  `timeout`)时原样上抛、保留 code;su 启动本身抛错(su 提示阻塞/超时)时不谎报 `running` True,而是回读\
+  真实 ps 结果并附 `verify manually` 备注。`forward` 侧补一条对称用例:设备直接交回 `AdbError`(如\
+  `timeout`)时,预留的转发槽仍被回滚且 code 不被压平成 `backend_error`——此前只测了原始异常映射一支。\
+  adb/client.py 覆盖率由 80% 升至约 82%(其余未覆盖行为需真实 adbutils 的 socket 路径)。(纯测试补充,无行为变更。)
+
 ### 测试（钉住 proxy.flow.get / proxy.replay 的 fail-closed 守卫，不依赖 mitmproxy）
 
 - `flow_get` 与 `replay` 都先从抓包环里解析一条 flow,且都必须在其不存在时精确失败:未知或已被淘汰的 id\
