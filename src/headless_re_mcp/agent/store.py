@@ -506,10 +506,19 @@ class AgentStore:
         return run
 
     def _trim_terminal_runs(self, con: sqlite3.Connection, thread_id: str) -> None:
-        """Drop the oldest finished runs on a live thread; in-flight runs stay.
+        """Keep the most-recently-finished runs on a live thread; in-flight stay.
 
         Finished-thread collection never sees a thread that still has a mission,
         so every completed run on that thread used to stay forever.
+
+        Ordered by ``updated_at`` -- when the run reached its terminal state --
+        rather than ``created_at``. The two agree when runs finish in the order
+        they were created, but not when an *older* run finishes after newer ones
+        already have: by creation time that older run is the oldest terminal row
+        and this trim would delete it, yet it is the very run ``transition``
+        just wrote and is about to read back, so its ``assert run is not None``
+        would fire. Keyed on finish time the just-finished run is the newest and
+        is always kept, and the retained count stays exactly ``keep``.
         """
         keep = max(1, int(self.retained_terminal_runs_per_thread))
         done = tuple(status.value for status in TERMINAL_RUN_STATUSES)
@@ -518,7 +527,7 @@ class AgentStore:
             "DELETE FROM runs WHERE id IN ("
             "  SELECT id FROM runs WHERE thread_id=? AND status IN ("
             f"    {placeholders}"
-            "  ) ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+            "  ) ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?"
             ")",
             (thread_id, *done, keep),
         )
@@ -934,11 +943,21 @@ class AgentStore:
         )
 
     def _trim_terminal_missions(self, con: sqlite3.Connection, thread_id: str) -> None:
-        """Drop the oldest finished missions on a live thread; queued work stays.
+        """Keep the most-recently-finished missions on a live thread; queued stay.
 
         Finished-thread collection never sees a thread that still has a
         pending or running mission, so every completed mission on that
         thread used to stay forever.
+
+        Ordered by ``updated_at`` -- when the mission reached its terminal
+        state -- rather than ``created_at``, for the same reason as
+        ``_trim_terminal_runs``: completing an *older* mission after newer ones
+        already finished makes it the oldest terminal row by creation time, so
+        a created_at trim would delete the mission ``set_mission_status`` /
+        ``cancel_mission`` just wrote and is about to read back, and its
+        ``assert mission is not None`` would crash. Keyed on finish time the
+        just-finished mission is newest and always kept, at an unchanged
+        retained count.
         """
         keep = max(1, int(self.retained_terminal_missions_per_thread))
         done = tuple(status.value for status in TERMINAL_MISSION_STATUSES)
@@ -947,7 +966,7 @@ class AgentStore:
             "DELETE FROM missions WHERE id IN ("
             "  SELECT id FROM missions WHERE thread_id=? AND status IN ("
             f"    {placeholders}"
-            "  ) ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?"
+            "  ) ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?"
             ")",
             (thread_id, *done, keep),
         )

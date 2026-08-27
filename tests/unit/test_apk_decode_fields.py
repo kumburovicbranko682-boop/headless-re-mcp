@@ -11,6 +11,14 @@ from headless_re_mcp.backends.apktool.client import ApktoolClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
+def _write_apk(path: Path) -> Path:
+    """A real (if tiny) zip: apktool's input must be a zip, and the client now
+    refuses a non-zip before launching the JVM."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
+    return path
+
+
 def _tool_docstring(name: str) -> str:
     source = Path(build_apk_tools.__code__.co_filename).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -42,11 +50,7 @@ def test_apk_decode_names_decoded_dir_not_output(
     """
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("@echo off\n", encoding="utf-8")
-    # A readable zip, not two magic bytes: decode now checks the declared
-    # expansion before running apktool, and an unreadable archive is refused.
-    apk = tmp_path / "a.apk"
-    with zipfile.ZipFile(apk, "w") as archive:
-        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+    apk = _write_apk(tmp_path / "a.apk")
     out = tmp_path / "decoded"
     out.mkdir()
     (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")

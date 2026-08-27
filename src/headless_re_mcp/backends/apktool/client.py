@@ -1,26 +1,41 @@
 """apktool decode/build and apksigner re-signing as bounded subprocesses.
 
 Both CLIs need a JRE and are user-provided, so a missing tool degrades to
-``capability_unavailable`` instead of blocking readiness. Keystore passwords are
-never copied into error details: a failed sign reports the tool's stderr with
-the password argument withheld.
+``capability_unavailable`` instead of blocking readiness. Keystore passwords
+never reach an observable channel: the password travels to apksigner in an
+environment variable (its native ``env:`` source) rather than on argv -- a
+command line is world-readable in the process table for as long as the signing
+JVM runs -- and a failed sign scrubs the password from stderr before it enters
+error details.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# apk.decode / repack / sign all declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# The child-only variable both --ks-pass and --key-pass read via env:NAME.
+# Deliberately not HEADLESS_RE_*: that prefix is the operator config namespace,
+# and this is not a knob -- it exists only in the signer's copied environment.
+_PASSWORD_ENV = "APKSIGNER_KS_PASS"
 
 
 class ApktoolError(RuntimeError):
@@ -31,9 +46,35 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
+def _require_apk_zip(apk: Path) -> None:
+    """Refuse a non-zip APK before launching the JVM.
+
+    apktool ``d`` and apksigner both require a zip-format APK; handed anything
+    else -- a truncated download, a path pointing at the wrong file, or a build
+    output that slipped past its own check -- they still start a JVM and only
+    then fail with an opaque Java error, after paying that startup cost and
+    reporting a parameter mistake as a backend failure. ``zipfile.is_zipfile``
+    reads only the archive's tail (it does not decompress, so the check itself
+    has no zip-bomb exposure) and turns that cryptic failure into a precise
+    ``invalid_params`` up front -- the same fail-fast shape as ``build``
+    validating its own output is a real zip and the wasm tools checking the
+    ``\\0asm`` magic before launching wabt.
+    """
+    if not zipfile.is_zipfile(apk):
+        raise ApktoolError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(apk),
+        )
+
+
 def _run(
     cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
 ) -> tuple[str, str, int]:
+    try:
+        timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+    except InvalidTimeout as exc:
+        raise ApktoolError("invalid_params", str(exc)) from exc
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
@@ -81,6 +122,7 @@ class ApktoolClient:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         # apktool inflates the archive onto disk with only the timeout as a
         # bound; a central directory declaring petabytes fills the disk for
         # minutes before that fires. Refuse the bomb before the JVM starts.
@@ -133,9 +175,22 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        # apktool can exit 0 yet leave a truncated or empty file (a build that
+        # aborted after creating the output, a full disk). An APK is a zip, so a
+        # zero-byte or non-zip result is a failed rebuild -- reporting it as a
+        # rebuilt apk would send an unusable file into apk.sign/install.
+        size = out_apk.stat().st_size
+        if size == 0 or not zipfile.is_zipfile(out_apk):
+            raise ApktoolError(
+                "backend_error",
+                "apktool build produced an empty or invalid apk",
+                exit_code=code,
+                size=size,
+                stderr=stderr[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }
@@ -157,6 +212,7 @@ class ApktoolClient:
             )
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
         if not store.is_file():
             raise ApktoolError(
@@ -173,19 +229,12 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
-        # Hand the password to apksigner through the environment, not argv. A
-        # command line is world-readable on Linux via /proc/<pid>/cmdline for
-        # the life of the process, so ``--ks-pass pass:<secret>`` leaks the
-        # keystore password to any local user -- the same class of leak the
-        # stderr scrubbing below already guards against, and which SECURITY.md
-        # treats as a vulnerability. ``env:`` reads the value from an
-        # environment variable (/proc/<pid>/environ is owner-only), so the argv
-        # names only the variable.
-        ks_pass_var = "HEADLESS_RE_KS_PASS"
-        key_pass_var = "HEADLESS_RE_KEY_PASS"
-        child_env = dict(os.environ)
-        child_env[ks_pass_var] = password
-        child_env[key_pass_var] = password
+        # pass:<password> would put the secret on argv, and argv is readable by
+        # every local process (/proc/<pid>/cmdline, Windows process listings)
+        # for as long as the signing JVM runs. apksigner reads env:NAME
+        # natively, and the copied environment is visible only to the child.
+        sign_env = dict(os.environ)
+        sign_env[_PASSWORD_ENV] = password
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -193,20 +242,21 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"env:{ks_pass_var}",
+                f"env:{_PASSWORD_ENV}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"env:{key_pass_var}",
+                f"env:{_PASSWORD_ENV}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
-            env=child_env,
+            env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
-            # stderr can echo the argument vector, so scrub the password if present.
+            # argv no longer carries the password, but keep scrubbing stderr as
+            # defense in depth: the tool's own diagnostics must never leak it.
             scrubbed = stderr.replace(password, "***") if password else stderr
             raise ApktoolError(
                 "backend_error",

@@ -6,7 +6,14 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, _MAX_PAGE, ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import (
+    _MAX_CLASSES_PAGE,
+    _MAX_MANIFEST_CHARS,
+    ApkClient,
+    ApkError,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -323,7 +330,7 @@ def test_apk_classes_clamps_a_hostile_page_the_way_the_web_readers_do(
     the opposite of the small page asked for. A negative offset also indexed
     from the tail and misreported has_more. Pin all three: a negative limit
     yields one row (not the whole list), a negative offset starts at zero, and
-    a huge limit is capped at _MAX_PAGE with the echoed offset reflecting what
+    a huge limit is capped at _MAX_CLASSES_PAGE with the echoed offset reflecting what
     was actually used.
     """
     classes = [_FakeClass(f"L{index:05d};") for index in range(1500)]
@@ -341,7 +348,7 @@ def test_apk_classes_clamps_a_hostile_page_the_way_the_web_readers_do(
     assert negative_offset["count"] == 10
 
     huge_limit = client.classes(apk, offset=0, limit=100_000)
-    assert huge_limit["count"] == _MAX_PAGE
+    assert huge_limit["count"] == _MAX_CLASSES_PAGE
     assert huge_limit["has_more"] is True
 
 
@@ -363,3 +370,28 @@ def test_apk_methods_and_strings_clamp_a_negative_limit_too(
     monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeStringsParsed(25))
     strings = client.strings(apk, offset=0, limit=-1)
     assert strings["count"] == 1  # not 24
+
+
+class _PackagelessApk:
+    def get_package(self) -> None:
+        return None
+
+
+def test_apk_open_rejects_a_zip_with_no_package_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said opened; a zip that is not an APK answered opened True.
+
+    Measured: get_package() returning None still answered
+    {opened: True, package: None}, so an unattended agent treated a plain
+    zip as an opened package. An empty package is now a backend error.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _PackagelessApk())
+    with pytest.raises(ApkError) as caught:
+        client.open(tmp_path / "not-an.apk")
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "failed to read package name"
+    assert caught.value.details["opened"] is False
+    doc = _tool_docstring("apk.open")
+    assert "backend error" in doc

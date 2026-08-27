@@ -313,3 +313,82 @@ def test_wasm_wat_refuses_an_oversized_input(
     assert caught.value.details.get("size") == 2048
     assert launched == []
     assert "too_large" in _tool_docstring("wasm.wat")
+
+
+def test_looks_like_wasm_recognizes_the_magic(tmp_path: Path) -> None:
+    from headless_re_mcp.backends.jsre.client import _looks_like_wasm
+
+    good = tmp_path / "m.wasm"
+    good.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    bad = tmp_path / "n.wasm"
+    bad.write_bytes(b"MZ\x90\x00 not a module")
+    short = tmp_path / "s.wasm"
+    short.write_bytes(b"\x00as")
+    assert _looks_like_wasm(good) is True
+    assert _looks_like_wasm(bad) is False
+    assert _looks_like_wasm(short) is False
+
+
+def test_wasm_wat_refuses_a_non_wasm_file(tmp_path: Path) -> None:
+    """wat used to hand any file to wasm2wat; a non-module is now caught first.
+
+    Without the magic check a mistargeted path (a PE, a text file, a captured
+    HTML response) launches wasm2wat only to fail cryptically; the child ran
+    for nothing. The check turns that into a precise invalid_params.
+    """
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"(module)", b"")
+
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "not.wasm"
+    module.write_bytes(b"MZ this is a PE, not a wasm module")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).wat(module)
+
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+def test_wasm_info_refuses_a_non_wasm_file(tmp_path: Path) -> None:
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"", b"")
+
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "not.wasm"
+    module.write_bytes(b"\x7fELF and definitely not wasm")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).info(module)
+
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+def test_wasm_wat_accepts_a_real_module(tmp_path: Path) -> None:
+    """The magic check must not block a genuine module reaching wasm2wat."""
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"(module)", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module)
+    assert payload["wat"] == "(module)"

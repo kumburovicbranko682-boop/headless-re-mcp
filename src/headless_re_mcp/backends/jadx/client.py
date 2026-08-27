@@ -13,11 +13,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
+# apk.decompile / export_sources both declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
@@ -52,6 +59,25 @@ class JadxError(RuntimeError):
         self.details = details
 
 
+def _note_partial_decompile(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
+    """Say when jadx exited non-zero but still wrote a source tree.
+
+    jadx routinely exits non-zero on a per-class decompile failure while still
+    emitting a usable tree for everything else, so ``_run`` keeps the output
+    rather than failing (it only raises when nothing landed on disk). But the
+    reply then looked exactly like a clean run, so a caller had no way to tell
+    "jadx decompiled the whole APK" from "jadx choked on some classes and these
+    are the ones that survived". ``tool_failed`` is distinct from the source
+    ``truncated`` flag: it means jadx itself reported failure, so the tree may
+    be missing classes for a reason we cannot see here.
+    """
+    if code != 0:
+        result["exit_code"] = code
+        result["tool_failed"] = True
+        result["stderr"] = stderr[:_MAX_STDERR]
+    return result
+
+
 class JadxClient:
     def __init__(self, executable: Path | None = None) -> None:
         self.executable = executable
@@ -69,7 +95,7 @@ class JadxClient:
         no_imports: bool = False,
     ) -> JsonObject:
         """Decompile the whole APK into ``out_dir`` and summarise the tree."""
-        self._run(
+        _, stderr, code = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
             out_dir,
@@ -79,13 +105,14 @@ class JadxClient:
         java_files, java_file_count, has_more = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
         }
+        return _note_partial_decompile(result, code=code, stderr=stderr)
 
     def decompile(
         self,
@@ -99,7 +126,7 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        self.export_sources(apk, out_dir, timeout=timeout)
+        export = self.export_sources(apk, out_dir, timeout=timeout)
         rel = _class_to_java_path(target)
         output_root = out_dir.expanduser().resolve()
         sources = (output_root / "sources").resolve()
@@ -139,12 +166,19 @@ class JadxClient:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
         source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
-        return {
+        result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source,
             "truncated": truncated,
         }
+        # The named class may have decompiled cleanly even when jadx choked on
+        # others; carry the whole-run verdict so a partial tree is not read as
+        # a complete one.
+        for key in ("exit_code", "tool_failed", "stderr"):
+            if key in export:
+                result[key] = export[key]
+        return result
 
     def _run(
         self,
@@ -154,6 +188,10 @@ class JadxClient:
         *,
         timeout: float,
     ) -> tuple[str, str, int]:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise JadxError("invalid_params", str(exc)) from exc
         if not self.available or self.executable is None:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
