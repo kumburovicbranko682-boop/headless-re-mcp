@@ -132,6 +132,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.string_search")
+    def apk_string_search(
+        session_id: str,
+        query: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Find DEX string constants containing query.
+
+        Completes the search family with apk.class_search and apk.method_search:
+        apk.strings returns the whole pool, so hunting a term ("password",
+        "http", "-----BEGIN", a domain) means paging all of it. Keeps only the
+        constants containing query (case-insensitive substring, not a regex),
+        deduped and sorted. Distinct from apk.secrets (fixed credential shapes)
+        and apk.urls (endpoints). Answers with strings, query, count, total,
+        offset, and has_more; total is the match count capped at 5000, with
+        scan_capped when more may exist. has_more only means a larger offset
+        still has collected rows.
+        """
+        return _dump(
+            analysis.apk_string_search(session_id, query, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

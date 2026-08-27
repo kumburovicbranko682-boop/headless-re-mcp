@@ -417,6 +417,49 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def search_strings(
+        self, path: Path, query: str, *, offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        """Find DEX string constants containing query.
+
+        Completes the search family alongside apk.class_search and
+        apk.method_search: apk.strings returns the whole pool, so hunting for a
+        term ("password", "http", "-----BEGIN", a domain) means paging all of it
+        and grepping. This scans the same pool and keeps only the constants that
+        contain query (case-insensitive substring, not a regex), deduped and
+        sorted for stable paging. Distinct from apk.secrets (fixed credential
+        shapes) and apk.urls (endpoints). Only the DEX pool is scanned, not
+        resources.arsc or native libraries; total is the match count, capped at
+        5000 with scan_capped when more may exist.
+        """
+        parsed = self._parsed(path)
+        needle = query.strip()
+        if not needle:
+            raise ApkError("invalid_params", "query is required")
+        lowered = needle.lower()
+        seen: set[str] = set()
+        scan_more = False
+        for item in parsed.analysis.get_strings():
+            value = str(item.get_value())
+            if lowered not in value.lower():
+                continue
+            if len(seen) >= _MAX_STRINGS_COLLECT:
+                scan_more = True
+                break
+            seen.add(value[:_MAX_STRING_LEN])
+        values = sorted(seen)
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
+        window = values[start : start + cap]
+        return {
+            "query": needle,
+            "strings": window,
+            "count": len(window),
+            "total": len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
+            "scan_capped": scan_more,
+        }
+
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
