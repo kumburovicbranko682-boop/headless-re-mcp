@@ -44,6 +44,26 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+async def _stop_server_instances(master: Any) -> None:
+    """Close the proxyserver's listening sockets after ``run()`` unwinds.
+
+    mitmproxy's ``Proxyserver`` addon has no ``done()`` hook, so setting
+    ``should_exit`` ends ``Master.run()`` without ever stopping the server
+    instances; the CLI tools get away with that because process exit closes
+    the sockets. Embedded in a long-lived process nothing exits: stop()
+    reported success while the OS kept the port bound to a listener whose
+    loop was about to close, and no later capture could bind it again.
+    """
+    addons = getattr(master, "addons", None)
+    proxyserver = addons.get("proxyserver") if addons is not None else None
+    servers = getattr(proxyserver, "servers", None)
+    if servers is None:
+        return
+    stops = [instance.stop() for instance in servers]
+    if stops:
+        await asyncio.gather(*stops, return_exceptions=True)
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -347,6 +367,12 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
+            # Stop the listeners before unwinding the loop: cancelling tasks
+            # does not close an asyncio server, and mitmproxy's own shutdown
+            # leaves the instances running (see _stop_server_instances).
+            if loop is not None and self._master is not None:
+                with contextlib.suppress(Exception):
+                    loop.run_until_complete(_stop_server_instances(self._master))
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
