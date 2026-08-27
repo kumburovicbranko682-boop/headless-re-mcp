@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import zipfile
 from collections import deque
@@ -9,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -966,12 +968,15 @@ def describe_web_asset(path: Path) -> dict[str, Any]:
     """Tool-free identity facts for a local web asset, dispatched by kind.
 
     A ``.wasm`` module gets its section facts; a ``.js``/``.mjs``/``.cjs`` script
-    gets its size and source-map facts. Anything else (a ``.html`` page, a
-    ``.har`` capture) has no tool-free reader yet and returns ``{}``.
+    gets its size and source-map facts; a ``.har`` capture gets its traffic
+    shape. Anything else (a ``.html`` page) has no tool-free reader yet and
+    returns ``{}``.
     """
     suffix = path.suffix.lower()
     if suffix in _JS_SUFFIXES:
         return describe_js(path)
+    if suffix == ".har":
+        return describe_har(path)
     return describe_wasm(path)
 
 
@@ -1017,6 +1022,103 @@ def describe_js(path: Path) -> dict[str, Any]:
             "max_line_length": max_line_length,
             "source_map": source_map,
             "source_map_inline": source_map_inline,
+            "truncated": truncated,
+        }
+    }
+
+
+_HAR_MAX_BYTES = 64 * 1024 * 1024
+_HAR_MAX_ENTRIES = 200_000
+# Distinct hosts are a strong "what did this capture touch" fact; list a bounded
+# sample and always report the true count alongside it.
+_HAR_MAX_HOSTS = 64
+
+
+def describe_har(path: Path) -> dict[str, Any]:
+    """Cheap, stdlib-only facts about an HTTP Archive (HAR) capture (no mitmproxy).
+
+    A ``.har`` is the JSON transcript a proxy or browser writes, and reading its
+    shape -- how many requests, which methods and hosts, the status mix, whether
+    it carried WebSocket traffic, and which tool recorded it -- is the first pass
+    over a captured session. It is plain JSON, so this needs no proxy running.
+
+    Fail-closed and bounded: a file over 64 MiB, one that is not valid HAR JSON,
+    or a malformed entry is skipped rather than raising, so a session opens over
+    any ``.har`` a user points at.
+    """
+    if path.suffix.lower() != ".har":
+        return {}
+    try:
+        size = path.stat().st_size
+        if size > _HAR_MAX_BYTES:
+            return {}
+        with path.open("rb") as handle:
+            raw = handle.read(_HAR_MAX_BYTES + 1)
+    except OSError:
+        return {}
+    if len(raw) > _HAR_MAX_BYTES:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    log = doc.get("log") if isinstance(doc, dict) else None
+    if not isinstance(log, dict):
+        return {}
+    entries = log.get("entries")
+    if not isinstance(entries, list):
+        return {}
+
+    creator = None
+    if isinstance(log.get("creator"), dict):
+        name = log["creator"].get("name")
+        creator = name if isinstance(name, str) else None
+    pages = log.get("pages")
+    page_count = len(pages) if isinstance(pages, list) else 0
+
+    methods: dict[str, int] = {}
+    hosts: set[str] = set()
+    status_classes: dict[str, int] = {}
+    has_websocket = False
+    total_response_bytes = 0
+    truncated = len(entries) > _HAR_MAX_ENTRIES
+    for entry in entries[:_HAR_MAX_ENTRIES]:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request")
+        if isinstance(request, dict):
+            method = request.get("method")
+            if isinstance(method, str) and method:
+                methods[method.upper()] = methods.get(method.upper(), 0) + 1
+            url = request.get("url")
+            if isinstance(url, str):
+                host = urlsplit(url).hostname
+                if host:
+                    hosts.add(host)
+        response = entry.get("response")
+        if isinstance(response, dict):
+            status = response.get("status")
+            if isinstance(status, int) and 100 <= status <= 599:
+                status_classes[f"{status // 100}xx"] = (
+                    status_classes.get(f"{status // 100}xx", 0) + 1
+                )
+            content = response.get("content")
+            if isinstance(content, dict) and isinstance(content.get("size"), int):
+                total_response_bytes += max(content["size"], 0)
+        ws = entry.get("_webSocketMessages")
+        if isinstance(ws, list) and ws:
+            has_websocket = True
+    return {
+        "har": {
+            "entry_count": len(entries),
+            "page_count": page_count,
+            "creator": creator,
+            "methods": dict(sorted(methods.items())),
+            "host_count": len(hosts),
+            "hosts": sorted(hosts)[:_HAR_MAX_HOSTS],
+            "status_classes": dict(sorted(status_classes.items())),
+            "has_websocket": has_websocket,
+            "total_response_bytes": total_response_bytes,
             "truncated": truncated,
         }
     }
