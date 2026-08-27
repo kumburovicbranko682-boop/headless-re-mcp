@@ -123,6 +123,25 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_skips_a_bracketed_banner_before_the_array() -> None:
+    """r2 -q0 leads its output with brackets that are not the payload.
+
+    The scan tries json.raw_decode at *every* '[' or '{', not just the first,
+    because r2 prints its interactive prompt '[0x00000000]>' and log tags like
+    '[WARN]' ahead of the JSON. A first-bracket parse would start inside the
+    prompt, fail, and (with rfind or a give-up) miss the real array. The decode
+    at those leading brackets must fail quietly and the scan continue to the
+    root list -- the opcode-bracket test above never exercises that skip, because
+    there the very first bracket is already the valid array.
+    """
+    array = json.dumps([{"offset": 0x401000, "name": "main"}])
+    raw = "[0x00000000]> \n[WARN] partial analysis\n" + array
+    parsed = parse_r2_json(raw)
+    assert isinstance(parsed, list)
+    assert len(parsed) == 1
+    assert parsed[0]["name"] == "main"
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,
@@ -171,6 +190,140 @@ def test_enrich_disasm_request_address(tmp_path: Path) -> None:
     assert enriched["address"]["rva"] == 0x1000
     assert enriched["address_va"] == 0x140001000
     assert enriched["items"][0]["address"]["module"] == binary.name
+
+
+def test_enrich_surfaces_a_json_object_as_info(tmp_path: Path) -> None:
+    """Some r2 commands (ij, iSj) answer with an object, not an array.
+
+    The list branch fills items/count; an object has no rows to map, so it is
+    carried verbatim under 'info' with parsed True and no items. A caller must
+    not read count/items for such a payload, and a break that dropped the dict
+    branch would report parsed False for a perfectly good answer.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    info = {"core": {"type": "PE32+"}, "bin": {"arch": "x86", "bits": 64}}
+    enriched = enrich_r2_payload({"raw": json.dumps(info), "commands": ["ij"]}, binary=binary)
+    assert enriched["parsed"] is True
+    assert enriched["info"] == info
+    assert "items" not in enriched
+    assert "count" not in enriched
+
+
+def test_enrich_maps_addresses_given_as_hex_strings(tmp_path: Path) -> None:
+    """r2 emits some address fields as strings ('0x401000'), not integers.
+
+    _item_va takes an int directly and parses a string with int(x, 0), so a
+    hex-string offset still maps to an Address. A key whose string is not a
+    number is skipped so a later, valid key can still supply the address --
+    without that, one unparsable field would drop the whole row's address.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"offset": "0x140001000", "name": "hex-offset"},
+            {"offset": "n/a", "vaddr": 0x140002000, "name": "fallback-key"},
+        ]
+    )
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aflj"]}, binary=binary)
+    items = enriched["items"]
+    assert items[0]["address"]["va"] == 0x140001000
+    assert items[0]["address"]["rva"] == 0x1000
+    # 'offset' was unparsable ('n/a'), so the address came from the next key.
+    assert items[1]["address"]["va"] == 0x140002000
+    assert items[1]["address"]["rva"] == 0x2000
+
+
+def test_enrich_drops_non_dict_rows_and_keeps_rows_without_an_address(tmp_path: Path) -> None:
+    """A parsed array can carry noise and rows with no recognised address.
+
+    A non-dict element is dropped entirely; a dict with no address key is kept
+    as an item but without an 'address' field, because losing the row would hide
+    data the caller can still read by name. count reflects the surviving dicts.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            "a bare string",
+            42,
+            {"name": "no-address-here", "size": 8},
+            {"offset": 0x140001000, "name": "has-address"},
+        ]
+    )
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aflj"]}, binary=binary)
+    items = enriched["items"]
+    assert enriched["count"] == 2
+    assert [it["name"] for it in items] == ["no-address-here", "has-address"]
+    assert "address" not in items[0]
+    assert items[1]["address"]["va"] == 0x140001000
+
+
+def test_enrich_flags_when_the_item_list_is_capped(tmp_path: Path) -> None:
+    """A list cut at the item cap must say so, like the raw-output cut does.
+
+    enrich keeps at most _MAX_ITEMS rows; past that a caller enumerating xrefs
+    or functions would read a capped list as a complete one and conclude 'these
+    are all of them'. The payload flags items_truncated with the true total and
+    the limit, mirroring the raw truncation flag the sibling path already sets --
+    and count/len stay pinned to the cap so the flag cannot drift from reality.
+    """
+    from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS
+
+    binary = _minimal_pe(tmp_path, x64=True)
+    total = _MAX_ITEMS + 5
+    raw = json.dumps([{"offset": 0x140000000 + index * 4} for index in range(total)])
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["axj"]}, binary=binary)
+    assert enriched["count"] == _MAX_ITEMS
+    assert len(enriched["items"]) == _MAX_ITEMS
+    assert enriched["items_truncated"] is True
+    assert enriched["items_total"] == total
+    assert enriched["items_limit"] == _MAX_ITEMS
+
+
+def test_pe_preferred_base_degrades_on_a_malformed_or_unknown_header(tmp_path: Path) -> None:
+    """pe_preferred_base runs for every r2 payload, including non-PE targets.
+
+    r2 on Linux analyses ELF and raw blobs too, so this parser must never raise
+    or misreport on a header it does not recognise. Each case degrades to a
+    documented fallback rather than a guess: an unknown optional-header magic, a
+    truncated optional header, and a wrong PE signature yield no architecture
+    and no base, while a valid magic whose ImageBase is zero still names the
+    architecture but reports no base (there is no positive load address to map
+    RVAs against).
+    """
+
+    def _pe(
+        *,
+        magic: int = 0x20B,
+        image_base: int = 0x140000000,
+        optional_size: int = 0xF0,
+        pe_sig: bytes = b"PE\0\0",
+    ) -> Path:
+        data = bytearray(0x200)
+        data[0:2] = b"MZ"
+        po = 0x80
+        data[0x3C:0x40] = po.to_bytes(4, "little")
+        data[po : po + 4] = pe_sig
+        data[po + 20 : po + 22] = optional_size.to_bytes(2, "little")
+        oo = po + 24
+        data[oo : oo + 2] = magic.to_bytes(2, "little")
+        if magic == 0x20B:
+            data[oo + 24 : oo + 32] = image_base.to_bytes(8, "little")
+        else:
+            data[oo + 28 : oo + 32] = (image_base & 0xFFFFFFFF).to_bytes(4, "little")
+        out = tmp_path / f"pe-{magic:x}-{image_base:x}-{optional_size:x}-{pe_sig.hex()}.bin"
+        out.write_bytes(bytes(data))
+        return out
+
+    # A sane header still parses, so the negative cases below are meaningful.
+    assert pe_preferred_base(_pe()) == (Architecture.X64, 0x140000000)
+    # Unknown optional-header magic: no architecture, no base.
+    assert pe_preferred_base(_pe(magic=0x999)) == (None, None)
+    # Optional header too short to hold the ImageBase field.
+    assert pe_preferred_base(_pe(optional_size=32)) == (None, None)
+    # MZ present but the PE signature is wrong -- not a PE after all.
+    assert pe_preferred_base(_pe(pe_sig=b"XX\0\0")) == (None, None)
+    # Valid magic, but ImageBase is zero: architecture known, base unknown.
+    assert pe_preferred_base(_pe(image_base=0)) == (Architecture.X64, None)
 
 
 def test_r2_open_only_asks_for_identity(
