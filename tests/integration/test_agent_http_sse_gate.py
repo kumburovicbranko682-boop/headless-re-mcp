@@ -71,8 +71,11 @@ class _FakeOpenAI:
     several independent runs each begin with a tool call.
     """
 
-    def __init__(self, binary: str) -> None:
+    def __init__(
+        self, binary: str, *, final_text: str = "Sample opened. Analysis complete."
+    ) -> None:
         self.binary = binary
+        self.final_text = final_text
         self.calls = 0
         self._lock = threading.Lock()
         server_self = self
@@ -130,7 +133,7 @@ class _FakeOpenAI:
                                 "choices": [
                                     {
                                         "index": 0,
-                                        "delta": {"content": "Sample opened. Analysis complete."},
+                                        "delta": {"content": server_self.final_text},
                                         "finish_reason": None,
                                     }
                                 ]
@@ -454,3 +457,74 @@ def test_agent_write_parks_for_human_approval_over_http(tmp_path: Path) -> None:
             assert http.get(f"/api/agent/runs/{rejected_run}").json()["run"]["status"] == "rejected"
             # Still exactly the one session the approved run opened.
             assert len(http.get("/api/sessions").json()["data"]["sessions"]) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.headless
+def test_mission_queued_over_http_runs_unattended_to_completion(tmp_path: Path) -> None:
+    """The serve-web process itself carries a queued mission to completion.
+
+    The in-process scheduler gate drives ``tick()`` by hand; what it cannot see
+    is the deployment wiring -- the scheduler loop the serve-web lifespan is
+    supposed to start on the server's own event loop. Here nothing outside the
+    server acts after the ``POST /api/agent/missions``: the loop claims the
+    pending mission on its own cadence, the real provider calls the fake model,
+    the streamed tool call opens a real session, and the marker-led final reply
+    completes the mission -- all observed purely through the HTTP mission API.
+    """
+    assert _PE_FIXTURE.is_file()
+    marker_reply = "MISSION_COMPLETE - the sample is open and bound as PE."
+    with _FakeOpenAI(str(_PE_FIXTURE), final_text=marker_reply) as fake:
+        provider_base_url = f"http://127.0.0.1:{fake.port}"
+        with (
+            _serve_web(tmp_path, provider_base_url) as base_url,
+            httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {_TOKEN}"}) as http,
+        ):
+            # The lifespan really started the scheduler loop.
+            listing = http.get("/api/agent/missions").json()
+            assert listing["scheduler_running"] is True
+
+            created = http.post(
+                "/api/agent/missions",
+                json={
+                    "objective": "Open the committed PE sample and confirm the bind.",
+                    "max_runs": 3,
+                },
+            )
+            assert created.status_code == 201, created.text
+            mission = created.json()["mission"]
+            assert mission["status"] == "pending"
+            mission_id = mission["id"]
+
+            # Hands off from here: only observe until the scheduler finishes it.
+            deadline = time.monotonic() + 45.0
+            while True:
+                mission = http.get(f"/api/agent/missions/{mission_id}").json()["mission"]
+                if mission["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                assert time.monotonic() < deadline, f"mission stuck: {mission}"
+                time.sleep(0.25)
+            assert mission["status"] == "completed", mission
+            assert mission["runs_used"] == 1
+            assert mission["error"] is None
+
+            # The run the scheduler started is terminal and did the real work.
+            run = http.get(f"/api/agent/runs/{mission['last_run_id']}").json()["run"]
+            assert run["status"] == "completed"
+            history = http.get(f"/api/agent/runs/{mission['last_run_id']}/events/history").json()[
+                "events"
+            ]
+            assert any(
+                event["type"] == "tool.completed"
+                and event["data"]["name"] == "session.create"
+                and event["data"].get("ok")
+                for event in history
+            )
+
+            # Real effect: the mission's run opened the one PE session.
+            sessions = http.get("/api/sessions").json()["data"]["sessions"]
+            assert len(sessions) == 1 and sessions[0]["target"] == "pe"
+
+            # And the ops surface the operator would check answers honestly.
+            watchdog = http.get("/api/agent/watchdog").json()
+            assert watchdog["ok"] is True and "policy" in watchdog

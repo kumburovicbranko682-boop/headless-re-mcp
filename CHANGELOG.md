@@ -41,6 +41,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (并可读回),写工具真挂起(run 状态 `awaiting_approval`,SSE 发出带 `args_sha256` 的
   `approval.required`);`POST .../approve` 后工具才执行、run 完成、会话真开出来;另一个 run
   `POST .../reject` 则以 `run.rejected` 终止且不再多开会话——批准先于执行,拒绝即无副作用。
+- 同一 Gate 第三条钉住无人值守部署接线:进程内调度器 gate 手动驱动 `tick()`,看不到 serve-web
+  lifespan 是否真在服务器事件循环上启动了调度循环。此处 `POST /api/agent/missions` 之后测试
+  不再出手:循环按自身节拍认领 pending 任务、真 provider 调假模型、流式工具调用开出真会话、
+  以 `MISSION_COMPLETE` 开头的最终回复判定完成——全程只经 HTTP 任务 API 观察
+  (`scheduler_running=true`、状态 pending→completed、`runs_used=1`、run 事件史含
+  `tool.completed(session.create, ok)`、`/api/sessions` 确有该会话、watchdog 端点如实应答)。
 
 ### 新增（监控台工作台）
 
