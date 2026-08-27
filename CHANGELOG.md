@@ -149,6 +149,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（device.connect 不再把"连上但未就绪"的设备谎报为可用）
+
+- `device.connect` 过去只回 `endpoint`/`result`/`connected`。adb 在 TCP 传输一建立就回
+  "connected to host:port",但设备此刻可能仍是 `offline` 或 `unauthorized`——还在开机,或 adb
+  的 RSA 授权没点——会拒掉之后的每一条命令。只看 `connected=true` 就读成"已就绪",无人值守的
+  调用方于是立刻对一台只会报错的设备发 `info`/`screenshot`/`install`。现在连上后补一次有界、
+  best-effort 的传输状态探测,回 `state` 与 `ready`(仅当 `state=='device'` 为真);非 `device`
+  时附 `note`,点明它在就绪前会拒命令。探测被 `_ADB_PROBE_TIMEOUT_S` 封顶且吞掉一切异常:探测失
+  败或 adb server 卡住只是不回 `state`,绝不把一次真实连接翻转成失败信封。这一层与既有的
+  "拒绝的 TCP 连接是失败信封、而非 connected=false"正交——信封成功仍以 `connected`(传输层)为
+  准,`ready` 只做就绪性披露,与 `device.list` 早已强调的 offline/unauthorized 区分同构。回归测试
+  覆盖 offline/unauthorized/device/无探测/探测抛错/被拒六种情形。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
