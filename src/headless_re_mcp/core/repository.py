@@ -840,8 +840,12 @@ class InMemoryAnalysisRepository:
         entries.sort(key=lambda item: (str(item["kind"]), str(item["key"])))
         total = len(entries)
         page = entries[offset : offset + limit]
+        # kinds is the breakdown of the whole matching set, not this page. It
+        # sits next to total, so counting only the page made it under-report
+        # every kind whenever has_more was true -- a caller reading kinds to
+        # size the session's findings saw the page's slice as the whole tally.
         kinds: dict[str, int] = {}
-        for item in page:
+        for item in entries:
             name = str(item["kind"])
             kinds[name] = kinds.get(name, 0) + 1
         return {

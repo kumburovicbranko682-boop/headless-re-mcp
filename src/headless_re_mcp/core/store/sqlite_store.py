@@ -623,6 +623,11 @@ class SessionStore:
                     " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
                     (session_id, kind, limit, offset),
                 ).fetchall()
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? AND kind=? GROUP BY kind",
+                    (session_id, kind),
+                ).fetchall()
             else:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM knowledge WHERE session_id=?",
@@ -633,16 +638,22 @@ class SessionStore:
                     " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? GROUP BY kind",
+                    (session_id,),
+                ).fetchall()
+        # kinds is the breakdown of the whole matching set, not this page: it
+        # is a GROUP BY over every matching row, so it stays consistent with
+        # total instead of counting only the rows this page happened to carry.
+        kinds: dict[str, int] = {str(r["kind"]): int(r["c"]) for r in kind_rows}
         entries: list[JsonObject] = []
-        kinds: dict[str, int] = {}
         for row in rows:
             item = dict(row)
             raw = item.get("value")
             if isinstance(raw, str):
                 with suppress(json.JSONDecodeError):
                     item["value"] = json.loads(raw)
-            name = str(item["kind"])
-            kinds[name] = kinds.get(name, 0) + 1
             entries.append(item)
         return {
             "session_id": session_id,
