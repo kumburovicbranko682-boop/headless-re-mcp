@@ -237,6 +237,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.script.source` 对 WASM 脚本只回空源码，丢掉模块字节）
+
+- **`web.wasm_list` 能把活页里的 WebAssembly 模块列出来（CDP `Debugger.scriptParsed` 报
+  `scriptLanguage=WebAssembly`），但对同一个 `wasm://` 脚本调 `web.script.source` 却回空。**
+  现代 Chromium 上 `Debugger.getScriptSource` 对 wasm 脚本返回的 `scriptSource` 是空串，真正的
+  模块以 base64 放在同一响应的 `bytecode` 字段里；后端只读 `scriptSource`,于是「在活页里找到
+  WASM → 再看它」这条工作流的最后一步对每个 wasm 脚本都静默回空（`bytes=0`、`source=""`）。
+  这正是版本漂移只在对真浏览器跑时才炸、fake 单测一律照过的盲区。现当 `scriptSource` 为空而
+  `bytecode` 在场时，解码该 base64、把真实 `.wasm` 模块字节落盘（与 `network.get` 的二进制路径
+  同款），回 `language="webassembly"` 与指向 `.wasm` 制品的 `source_path`,调用方即可把它交给
+  `wasm.wat` / `wasm.info` 反汇编；旧版 CDP 仍回 WAT 文本时走原文本路径不变。
+- 两层测试：`test_web_script_source_wasm.py` 以一个 `{"scriptSource":"","bytecode":<真模块 base64>}`
+  的 CDP 桩钉住落盘的是解码后的真模块字节（magic `\x00asm`、`language=webassembly`、`.wasm` 后缀），
+  并钉住普通 JS 脚本仍走文本路径不受影响（无需浏览器）；`test_web_wasm_source_gate.py` 则起本地
+  页面真的 `WebAssembly.instantiate` 一个模块，经真 CDP 浏览器验 `wasm_list` 列出它、`script.source`
+  取回真字节，装了 wabt 时再经 `wasm.wat` 反汇编出 `i32.add`。Chromium 实测通过；缺 Playwright/Chromium
+  时明确 skip（skip≠pass）。
+
 ### 修复（`web.network.get` 取不到响应体时仍保持形状）
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP

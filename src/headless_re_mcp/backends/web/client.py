@@ -721,6 +721,39 @@ class WebBackend:
         source = resp.get("scriptSource", "")
         if not isinstance(source, str):
             source = str(source)
+        # A WebAssembly script has no text source under modern CDP: for a
+        # wasm:// script getScriptSource returns an empty scriptSource plus a
+        # ``bytecode`` field carrying the base64 module. Reading only
+        # scriptSource silently returned an empty result for every wasm script
+        # web.wasm_list surfaces -- the last step of the "find WASM in a live
+        # page, then inspect it" workflow yielded nothing. Spill the real module
+        # bytes (like the binary network_get path) so the caller can hand them
+        # to wasm.wat / wasm.info. Guarded on ``not source`` so an older CDP that
+        # still returns WAT text keeps taking the text path below.
+        bytecode = resp.get("bytecode")
+        if not source and isinstance(bytecode, str) and bytecode:
+            try:
+                raw = base64.b64decode(bytecode, validate=False)
+            except (ValueError, binascii.Error) as exc:
+                raise WebError(
+                    "backend_error",
+                    f"wasm bytecode was not valid base64: {exc}",
+                    script_id=script_id,
+                ) from exc
+            spill_path = _spill_bytes(
+                raw,
+                artifact_dir=artifact_dir,
+                filename=f"script-{uuid4().hex}.wasm",
+                kind="script source",
+            )
+            return {
+                "scriptId": script_id,
+                "bytes": len(raw),
+                "source": "",
+                "truncated": False,
+                "language": "webassembly",
+                "source_path": str(spill_path),
+            }
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
