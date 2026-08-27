@@ -9,6 +9,7 @@ startup is defensive and a missing module degrades to ``capability_unavailable``
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import logging
@@ -31,6 +32,11 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Longest inline body string flow_get returns before spilling to a file. Kept
+# under the 256 KiB tool result cap: a base64 body is 4/3 the raw size, so this
+# ceiling on the *encoded* string (not the raw bytes) is what keeps a binary
+# body from inflating the envelope past the cap.
+_MAX_INLINE_BODY = 200_000
 _OMITTED_BODY = object()
 
 # mitmproxy keeps its addon context in process-global module attributes:
@@ -591,13 +597,30 @@ class ProxyBackend:
                 "size": len(body),
             },
         }
-        if len(body) > 200_000:
+        # Decode the body honestly. A response body is often text (JSON, HTML),
+        # but just as often binary -- an image, protobuf, or a payload mitmproxy
+        # did not decompress. utf-8 with errors="replace" used to hand a binary
+        # body back as mojibake that read like real content with no sign it had
+        # been mangled, so a caller could not tell a corrupt decode from a
+        # genuine one. Try a strict decode; on failure base64 the exact bytes and
+        # flag it (matching web.network_get's base64_encoded) so the body is
+        # recoverable and the caller knows it is not text.
+        base64_encoded = False
+        try:
+            inline = body.decode("utf-8")
+        except UnicodeDecodeError:
+            inline = base64.b64encode(body).decode("ascii")
+            base64_encoded = True
+        if len(inline) > _MAX_INLINE_BODY:
+            # Too large to inline -- spill the raw bytes so the caller reads the
+            # exact body from disk rather than a truncated or re-encoded one.
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)
             result["response"]["body_path"] = str(out)
         else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+            result["response"]["body"] = inline
+            result["response"]["base64_encoded"] = base64_encoded
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

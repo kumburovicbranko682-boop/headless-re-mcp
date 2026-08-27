@@ -73,9 +73,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        headers, size). A text body is response.body with response.base64_encoded
+        false; a binary body is base64 in response.body with base64_encoded true,
+        so it is recoverable and not silently mangled into mojibake. A body whose
+        inline form would exceed 200000 chars is response.body_path with no body
+        key. There are no top-level headers or body fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

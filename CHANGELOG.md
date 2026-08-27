@@ -1022,6 +1022,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   在子进程非零退出时补 `tool_failed`/`exit_code`/`stderr`(输出照常返回),与 jadx 的语义对齐。WASM live gate 里原本就写着
   「干净模块不得带 `tool_failed`」的断言此前是空的(键根本不存在),现在这条断言真正生效;另加单测用 mock 的 `_run` 钉住
   四个入口的部分退出与干净路径(不需真 webcrack/wabt)。
+- **`proxy.flow.get` 把二进制响应体解成乱码,还装作是正文**。它对不大于 200000 字节的 body 一律
+  `body.decode("utf-8", errors="replace")`——对文本(JSON/HTML)没问题,但响应体同样常是二进制(图片、protobuf、
+  mitmproxy 没解压的载荷),`errors="replace"` 会把这些字节替换成 `�` 后当作 `response.body` 回出:读起来像真正文、
+  却没有任何标记说明它已被改写,agent 分不清「这是被 replace 毁掉的解码」还是「这就是原始内容」,且原始字节不可恢复。
+  兄弟工具 `web.network.get` 早已用 `base64_encoded` 标记把 CDP 回的二进制体如实标出,`proxy.flow.get` 却没有。现改为
+  先做**严格** utf-8 解码:成功即照旧回文本、`base64_encoded` 为 false;失败(即二进制)则把原始字节 base64 后放进
+  `response.body`、`base64_encoded` 置 true,body 可解回精确字节、调用方也知道它不是文本(与 `web.network.get` 对齐)。
+  阈值从「原始 200000 字节」改成「内联串 200000 字符」并卡在 256KiB 工具结果上限之内——base64 体积是原始的 4/3,若按
+  原始字节判定,近 200KB 的二进制体 base64 后约 267KB 会顶破结果上限;超过内联上限者(文本或二进制皆然)照旧把**原始
+  字节**落盘到 `response.body_path`(读回精确 body,不是截断或再编码的)。文本体行为完全不变(200001 全 `x` 仍走落盘,
+  proxy live gate 里 `mitm-capture-ok` 仍原样回文本)。新增单测钉住二进制体 base64 可解回原字节、文本体 `base64_encoded`
+  为 false(不需 mitmproxy);proxy live gate 的真实抓包读回照常通过(mitmproxy 12.2.3)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

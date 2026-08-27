@@ -161,6 +161,59 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     assert "response" in doc
 
 
+def test_proxy_flow_get_base64s_a_binary_body_and_leaves_text_alone(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A binary response body must be recoverable, not mojibake.
+
+    Measured: a body of raw bytes that is not valid UTF-8 comes back with
+    response.base64_encoded True and response.body that decodes back to the
+    exact bytes; a text body comes back with base64_encoded False and the text
+    verbatim. utf-8/errors=replace used to return corrupted bytes
+    indistinguishable from a clean decode, so a caller could not tell a mangled
+    body from a real one.
+    """
+    import base64 as _b64
+
+    binary = bytes(range(256))  # 0x80.. is not valid UTF-8
+
+    def _flow(raw: bytes) -> Any:
+        request = SimpleNamespace(
+            method="GET", pretty_url="http://x/1", headers={"accept": "*/*"}
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "application/octet-stream"}, raw_content=raw
+        )
+        return SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def __init__(self, raw: bytes) -> None:
+            self._flow = _flow(raw)
+
+        def raw(self, flow_id: str) -> Any:
+            return self._flow
+
+    backend = ProxyBackend()
+
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder(binary))
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["response"]["base64_encoded"] is True
+    assert "body_path" not in payload["response"]
+    assert _b64.b64decode(payload["response"]["body"]) == binary
+    assert payload["response"]["size"] == len(binary)
+
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder(b"plain text"))
+    )
+    text_payload = backend.flow_get("s", "f1", tmp_path)
+    assert text_payload["response"]["base64_encoded"] is False
+    assert text_payload["response"]["body"] == "plain text"
+    doc = _tool_docstring("proxy.flow.get")
+    assert "base64_encoded" in doc
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 
