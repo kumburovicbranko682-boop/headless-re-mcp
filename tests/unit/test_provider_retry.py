@@ -81,6 +81,49 @@ def test_transport_faults_are_recognised_without_importing_the_http_client() -> 
     assert is_retryable(ValueError("model does not exist")) is False
 
 
+def test_transport_errors_are_retryable_by_type_not_by_message_wording() -> None:
+    """A network fault is retryable whatever words its message happens to use.
+
+    The classifier matched substrings, so ``ReadError`` / ``WriteError`` were
+    read as permanent and ``RemoteProtocolError`` was retried only when its
+    message happened to contain "disconnected". Every ``TransportError`` subclass
+    is a transient network fault a pre-first-token replay clears, except the two
+    client-side ones -- so match the hierarchy by class name (no HTTP client
+    import) and use messages here that carry none of the transient markers.
+    """
+
+    class TransportError(Exception):
+        pass
+
+    class NetworkError(TransportError):
+        pass
+
+    class ReadError(NetworkError):
+        pass
+
+    class WriteError(NetworkError):
+        pass
+
+    class ProtocolError(TransportError):
+        pass
+
+    class RemoteProtocolError(ProtocolError):
+        pass
+
+    class LocalProtocolError(ProtocolError):
+        pass
+
+    class UnsupportedProtocol(TransportError):
+        pass
+
+    assert is_retryable(ReadError("stream broke")) is True
+    assert is_retryable(WriteError("stream broke")) is True
+    assert is_retryable(RemoteProtocolError("illegal chunk header")) is True
+    # Client-side protocol faults never improve on replay.
+    assert is_retryable(LocalProtocolError("we built a bad request")) is False
+    assert is_retryable(UnsupportedProtocol("base_url has no scheme")) is False
+
+
 @pytest.mark.asyncio
 async def test_a_rate_limit_is_retried_and_then_succeeds() -> None:
     inner = ScriptedProvider([HttpError(429), HttpError(503)])
