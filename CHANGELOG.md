@@ -43,6 +43,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（web：补上 screenshot 与 script_source 两条真机没跑过的路径）
+
+- **`web.screenshot` 与 `web.script_source` 此前没有任何真机 gate。** Web RE gate 跑了
+  `web.scripts/console/dom_snapshot`，但两条版本敏感路径无人真跑：`web.screenshot`（Playwright
+  `page.screenshot`）与 `web.script_source`（CDP `Debugger.getScriptSource`）；且 `web.scripts`
+  只被断言「是个 list」，取某个脚本真实源码这步一旦坏掉，现有测试一律照过、只在对真浏览器跑时才
+  运行期炸。新增 `test_web_screenshot_scriptsource_gate.py`：开一个带已知内联脚本的 data: 页，经
+  `AnalysisService` 全栈截图并校验磁盘上真落了 PNG（`\x89PNG` 魔数、size>0），再遍历解析出的脚本逐个
+  取源码直到命中内联标记，证明 `getScriptSource` 返回的是真字节（而非仅仅枚举出脚本）。chromium 起不来
+  时明确 skip（skip≠pass）。实测：Playwright 1.x + 现代 chromium 上截图 4.5 KB PNG、内联脚本源码
+  逐字取回。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
