@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+frida 插桩线首次有了真实执行覆盖，并借此修掉一个只有真跑才暴露的 bug。frida 可附着到
+本机进程（正是后端为本机 PE 调试对象服务时走的那条路：`FridaClient.attach` 等都经
+`frida.attach` 走本地 device），但此前所有 frida 测试只断言缺 frida 时优雅降级，从没真正
+附着过——于是 `memory_read` 的脚本用了 `Memory.readByteArray`（现代 frida 的 GumJS 已移除，
+调用即 "not a function"）这条死路径一直没被发现。改用 `ptr(address).readByteArray(size)`。
+新增 `tests/integration/test_frida_local_live_gate.py`：起一个本机进程，真跑通用（非 Java）
+操作——attach、枚举模块、枚举某模块导出、读模块基址内存（必须是 ELF magic `7f454c46`），
+并验证 attach 只允许会话调试对象的 pid。Java hook 模板需要 ART 运行时，不在本 gate 范围。
+新增 `linux-frida` CI job：装 frida、放开 `ptrace_scope`、跑该 gate 并解析 junitxml，frida
+已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

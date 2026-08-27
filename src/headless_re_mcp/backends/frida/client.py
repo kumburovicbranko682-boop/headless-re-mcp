@@ -117,7 +117,11 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // ptr(addr).readByteArray, not Memory.readByteArray: the static Memory.read*
+    // helpers were removed from frida's GumJS (they throw "not a function" on
+    // frida 16/17), so the only memory-read path here failed on any current
+    // frida. The NativePointer method is the supported API.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
