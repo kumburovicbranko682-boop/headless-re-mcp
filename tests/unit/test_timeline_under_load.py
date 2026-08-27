@@ -18,6 +18,7 @@ import pytest
 
 import headless_re_mcp.core.store.timeline as timeline_module
 from headless_re_mcp.core.store.timeline import (
+    _dropped_sidecar,
     append_session_timeline,
     list_session_timeline,
     session_timeline_path,
@@ -342,8 +343,19 @@ def test_appends_that_trim_at_the_same_time_do_not_fail_each_other(
     assert path.stat().st_size <= 4096 + 4096, "the cap must still hold under contention"
     listed = list_session_timeline(path, limit=256)
     assert listed["total"] > 0, "the log must still be readable"
-    strays = [item.name for item in path.parent.iterdir() if item.name != path.name]
+    # The .dropped counter is a durable companion, not scratch; only the
+    # per-trim .partial temp files would be leftovers to catch here.
+    sidecar = _dropped_sidecar(path).name
+    strays = [
+        item.name
+        for item in path.parent.iterdir()
+        if item.name not in {path.name, sidecar}
+    ]
     assert strays == [], f"trimming left scratch files behind: {strays}"
+    # Heavy contention forced many trims, so the loss is real and disclosed:
+    # dropped_total accounts for the entries the cap removed rather than letting
+    # the survivors pass for the whole history.
+    assert listed["dropped_total"] > 0
 
 
 def test_closing_a_session_that_is_not_there_does_not_invent_one(tmp_path: Path) -> None:

@@ -158,6 +158,10 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
         "session.created",
         "contract.event",
     ]
+    # Both repository shapes report loss the same way: nothing has been trimmed
+    # here, so total is the whole history and dropped_total is zero.
+    assert timeline["total"] == 2
+    assert timeline["dropped_total"] == 0
 
     repository.append_audit(
         session_id=session_id,
@@ -341,6 +345,42 @@ def test_inmemory_trim_forgets_the_dropped_session_timeline(tmp_path: Path) -> N
 
     assert repository.list_timeline("closed-0")["total"] == 0
     assert repository.list_timeline("closed-4")["total"] >= 1
+
+
+def test_inmemory_timeline_reports_entries_the_cap_dropped(tmp_path: Path) -> None:
+    """A per-session cap that drops old marks must say it did.
+
+    list_timeline reports total as the surviving count; without dropped_total a
+    session that wrote far more than the cap reads as if the cap were its whole
+    history. Keep three, write ten, and the six that fell off are disclosed.
+    """
+    repository = InMemoryAnalysisRepository(tmp_path)
+    repository.retained_timeline_per_session = 4  # session.created + 3 events
+    sid = "session-noisy"
+    repository.note_session_created(
+        "t.exe",
+        Result(
+            ok=True,
+            data={
+                "session": {
+                    "id": sid,
+                    "binary": "t.exe",
+                    "sha256": "",
+                    "architecture": "x86_64",
+                    "state": "created",
+                }
+            },
+        ),
+    )
+    for index in range(9):
+        repository.append_timeline(sid, "step", f"mark {index}", n=index)
+
+    listed = repository.list_timeline(sid)
+    # 1 creation + 9 steps = 10 entries; the cap keeps the newest 4.
+    assert listed["total"] == 4
+    assert listed["dropped_total"] == 6
+    # The surviving window is the newest marks, and the oldest kept says so.
+    assert [item["event"] for item in listed["events"]][0] == "step"
 
 
 def test_sqlite_trim_skips_a_traversing_session_id_instead_of_failing_the_close(
