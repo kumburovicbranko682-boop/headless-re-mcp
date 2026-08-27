@@ -80,6 +80,26 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
             for row in cast(list[dict[str, Any]], strings.data["items"])
         ), "string table came back with no readable entries"
 
+        # A dynamically linked ELF pulls symbols from libc, so imports must come
+        # back named; exports cover the reverse direction of the symbol table.
+        imports = service.r2_imports(session_id, timeout=60.0)
+        assert imports.ok, imports.error
+        assert imports.data["parsed"] is True
+        assert imports.data["count"] >= 1
+        assert any(
+            str(row.get("name") or "").strip()
+            for row in cast(list[dict[str, Any]], imports.data["items"])
+        ), "import table came back with no named entries"
+
+        exports = service.r2_exports(session_id, timeout=60.0)
+        assert exports.ok, exports.error
+        assert exports.data["parsed"] is True
+        assert exports.data["count"] >= 1
+        assert any(
+            str(row.get("name") or "").strip()
+            for row in cast(list[dict[str, Any]], exports.data["items"])
+        ), "export table came back with no named entries"
+
         disasm = service.r2_disasm(session_id, target_va, count=4, timeout=60.0)
         assert disasm.ok, disasm.error
         assert disasm.data["parsed"] is True
@@ -87,5 +107,12 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         assert ops, "disasm returned no instructions at the function entry"
         assert str(ops[0].get("opcode") or ops[0].get("disasm") or "").strip()
         assert int(ops[0]["address"]["va"]) == target_va
+
+        # xrefs may find no callers for a given address, but the request address
+        # must round-trip through the mapping layer unchanged.
+        xrefs = service.r2_xrefs(session_id, target_va, timeout=60.0)
+        assert xrefs.ok, xrefs.error
+        assert int(xrefs.data["address_va"]) == target_va
+        assert int(xrefs.data["address"]["va"]) == target_va
     finally:
         service.close_all()
