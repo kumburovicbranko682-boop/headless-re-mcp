@@ -199,3 +199,50 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-web-jsre:
+    # webcrack (Node) and wabt are JS/WASM CLIs with no browser requirement, so
+    # the JS-deobfuscation, bundle-unpack, and WASM gates run on a hosted
+    # runner. Without this job nothing launches the real webcrack, so
+    # js.deobfuscate and js.unpack_bundle are never proven end to end -- which
+    # is exactly how js.unpack_bundle shipped broken (it pre-created webcrack's
+    # -o directory, which webcrack refuses, so every unpack failed). skip !=
+    # pass: with the tools present the gate runs for real and only skips if they
+    # are absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: Install webcrack and wabt
+        run: |
+          npm install -g webcrack
+          webcrack --version
+          sudo apt-get update -qq
+          sudo apt-get install -y wabt
+          wasm2wat --version
+
+      - name: JS / WASM gate
+        timeout-minutes: 10
+        run: |
+          python -m pytest \
+            tests/integration/test_web_re_gate.py \
+            -q -rs --tb=short --timeout=300 \
+            -k "webcrack or wabt or deobfuscate or unpack or wasm"

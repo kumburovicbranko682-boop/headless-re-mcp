@@ -73,12 +73,48 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
         pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
     assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    # The secret is hidden in the fixture as \x escapes, so it is absent from
+    # the source text; a real deobfuscation must materialise it.
+    assert "H3adl3ss" not in _JS_FIXTURE.read_text(encoding="utf-8")
     service = AnalysisService()
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # The rotated string array and \x escapes must be resolved: the hidden
+        # string and the members reached only through the array come back plain.
+        assert "H3adl3ss" in code, "webcrack did not resolve the hidden string"
+        assert "charCodeAt" in code
+        assert "reduce" in code
+        assert "tool_failed" not in result.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    """webcrack actually splits a bundle to disk -- the mkdir regression guard.
+
+    The client used to pre-create webcrack's -o directory, which webcrack
+    refuses ("output directory already exists"), so every unpack failed and no
+    file was ever written. Nothing here mocks the tool: a real webcrack must
+    create the fresh output directory and emit at least one file, or this goes
+    red. If the pre-creation is ever restored, this fails immediately.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1, "webcrack wrote no files"
+        assert "tool_failed" not in result.data, result.data.get("stderr")
+        out_dir = Path(result.data["output_dir"])
+        assert out_dir.is_dir()
+        assert any(out_dir.iterdir()), "output directory is empty"
     finally:
         service.close_all()
 

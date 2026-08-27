@@ -24,6 +24,33 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`js.unpack_bundle` 每次必败：客户端先建了 webcrack 拒绝的输出目录）
+
+- **`js.unpack_bundle`（webcrack 拆包线）过去每一次调用都失败**——报 `webcrack unpack failed`、
+  stderr 是 `output directory already exists`。根因：webcrack 的 `-o` 目录由它自己创建（连缺失的父目录
+  也一并建），只要目标**已存在**就直接中止（**哪怕是空目录**）；而 `JsClient.unpack_bundle` 在启动
+  webcrack 之前先跑了 `out_dir.mkdir(parents=True, exist_ok=True)`，正好把那个目录建出来，于是 webcrack
+  必然中止、拆包能力从来没成功过。现改成只确保**父目录**存在、把目标目录交给 webcrack 自己建；重用路径上
+  遗留的**空**目录会被清掉好让重试成功，但**非空**目录保持原样交给 webcrack 拒绝，绝不静默覆盖分析师
+  已放进去的文件。真机用 webcrack 2.16.0 核对：`js.unpack_bundle` 现在稳定返回 `file_count>=1`、落出
+  `deobfuscated.js`、无 `tool_failed`，全新目录／空目录重试／非空目录保留三种情形都对。新增
+  `tests/unit/test_jsre_unpack_outdir.py`（四条：全新路径是回归哨、空目录清理、非空目录保留、非空且无可列
+  文件则硬报错）；`tests/unit/test_jsre_unpack_dirs.py` 的假 `_run` 相应改为自己 `mkdir`，贴合「webcrack
+  自建目录」的新契约。
+
+### 测试（把 JS 反混淆/拆包 live gate 做成真跑，并进 CI；skip != pass）
+
+- **`tests/integration/test_web_re_gate.py` 过去只验 `js.deobfuscate`「跑起来了」（`code` 是字符串、
+  `bytes>0`），且根本没有 `js.unpack_bundle` 这条——于是那个「每次必败」的拆包 bug 无人拦截**。现把
+  deobfuscate 断言做实：先断言源码里**没有**明文 `H3adl3ss`（它藏在 `\x` 十六进制里），再断言反混淆
+  输出里 `H3adl3ss` 与只能经字符串数组间接拿到的 `charCodeAt`/`reduce` 都还原成明文、且不出现
+  `tool_failed`；并**新增** `test_js_unpack_bundle_when_webcrack_present`：不 mock 任何东西，真跑 webcrack
+  把夹具拆到全新目录、断言 `file_count>=1`、`output_dir` 落地、无 `tool_failed`——谁再把 `mkdir` 加回去，
+  这条立刻红。
+- 新增 CI 作业 `linux-web-jsre`（Ubuntu，3.11/3.12，装 Node 22 + 全局 webcrack + apt wabt）真跑这条 gate
+  的 JS/WASM 部分——skip != pass：装上了就真跑，缺了才显式跳过。此前 main 的 CI 没有任何作业装 webcrack，
+  这条线永远 skip，正是拆包 bug 得以带病上线的原因。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
