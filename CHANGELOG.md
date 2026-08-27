@@ -1040,6 +1040,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`web.wasm.list` 的 WASM 过滤由「混合脚本环」直测固定**：`web.wasm.list` 与 `web.scripts`
+  是同一个后端方法，唯一区别是前者硬传 `wasm_only=True`、后者默认 `False`；后端按
+  `language == "webassembly"`（大小写不敏感）在分页*之前*筛选，故 `total`/`has_more` 描述的是
+  WASM 子集而非整个环。此前 `test_web_scripts_fields.py` 的两个句柄都是同质的（`web.scripts`
+  全 JS、`web.wasm.list` 全 WASM），过滤器在两边都是空操作——把 `wasm_only` 分支整个删掉、
+  或筛错字段，那套测试照绿，而 `web.wasm.list` 会悄悄开始回吐页面上的每个 JS 脚本。新增用
+  JS/WASM 混合、且 `language` 三种大小写拼写的环钉住区分：`wasm_only` 下只回 WASM 行、不含任何
+  JS；`total` 是过滤后的计数（证明先筛后切，越过 WASM 计数的窗口为空而非漏出 JS）；并直测服务
+  接线——`web.wasm.list` 必须给后端传 `wasm_only=True`、`web.scripts` 传 `False`。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
