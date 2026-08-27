@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`js.unpack_bundle` 分页 offset 边界对齐）
+
+- `js.unpack_bundle` 是最后一个 offset 不带 `Field(ge=0)` 的分页工具:兄弟们
+  (`apk.classes`/`methods`/`strings`、`web.network.list`、`web.scripts`、`web.wasm.list`、
+  `proxy.flows`)都在 schema 里声明 offset 最小为 0,唯独它对外只暴露一个普通整数。后端用
+  `max(0, offset)` 兜底不会崩,但对外契约与其余不一致——照 schema 行事的客户端会以为
+  `offset=-1` 合法。现补上 `Field(ge=0)`,与 `test_apk_offset_schema` 同款新增边界回归测试。
+  (`core.py` 的 `list_sessions`/静态函数分页 offset 也尚缺此约束,属 PE/core 面,留待另议。)
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
