@@ -91,6 +91,11 @@ def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     dumped = listed[0].dump()
     assert isinstance(dumped.get("created_ms"), int)
     assert dumped["created_ms"] > 0
+    # The count is scoped to the thread's own runs, so it matches each thread's
+    # small, untruncated window and does not bleed across threads.
+    assert store.count_thread_events(thread.id) == len(listed)
+    assert store.count_thread_events(other.id) == len(store.list_thread_events(other.id))
+    assert store.count_thread_events(other.id) < store.count_thread_events(thread.id)
 
 
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
@@ -177,6 +182,11 @@ def test_the_message_window_keeps_the_recent_end_of_a_long_thread(tmp_path: Path
     assert window[-1].content == "message 620", "the newest message must be present"
     assert window[0].content == "message 121", "the window slides, oldest first"
     assert [m.content for m in window] == [f"message {i}" for i in range(121, 621)]
+    # The window is 500 of the 620 the thread retains. count_messages is what
+    # lets a reader tell the tail of a long thread from a whole short one, so
+    # the thread view can say it is not showing everything.
+    assert store.count_messages(thread.id) == 620
+    assert store.count_messages(thread.id) > len(window)
 
 
 def test_a_message_written_now_is_visible_on_an_already_long_thread(tmp_path: Path) -> None:
@@ -207,6 +217,9 @@ def test_a_short_thread_is_returned_whole(tmp_path: Path) -> None:
 
     assert [m.content for m in store.list_messages(thread.id)] == ["m0", "m1", "m2", "m3", "m4"]
     assert [m.content for m in store.list_messages(thread.id, limit=2)] == ["m3", "m4"]
+    # Below the window nothing is dropped, so the count equals what the view
+    # shows and the view has nothing to disclose.
+    assert store.count_messages(thread.id) == 5
 
 def test_opening_the_database_does_not_disturb_a_running_service(tmp_path: Path) -> None:
     """Reading the state of a live service must not be what stops it.

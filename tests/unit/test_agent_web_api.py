@@ -55,7 +55,14 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         store.append_event(run.id, "llm.started", {"round": 1})
         fetched = client.get(f"/api/agent/threads/{thread_id}", headers=headers)
         assert fetched.status_code == 200
-        assert any(event["type"] == "llm.started" for event in fetched.json()["events"])
+        body = fetched.json()
+        assert any(event["type"] == "llm.started" for event in body["events"])
+        # A short thread is shown whole, and the view says so rather than
+        # leaving a reader to guess whether more exists.
+        assert body["messages_total"] == len(body["messages"])
+        assert body["messages_truncated"] is False
+        assert body["events_total"] == len(body["events"])
+        assert body["events_truncated"] is False
         removed = client.delete(f"/api/agent/threads/{thread_id}", headers=headers)
         assert removed.status_code == 200
         assert client.get(f"/api/agent/threads/{thread_id}", headers=headers).status_code == 404
@@ -89,6 +96,42 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         client.cookies.clear()
         assert client.get("/api/agent/threads").status_code == 401
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_thread_view_says_when_it_shows_only_the_recent_window(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """The thread view is a most-recent window; a partial one must say so.
+
+    list_messages returns the tail that fits its count and byte budgets, so a
+    long thread hands back its latest turns with the earliest dropped. Without
+    a total and a truncated flag that tail reads as the whole conversation --
+    the same misread the report sections were fixed to avoid.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        created = client.post("/api/agent/threads", headers=headers, json={"title": "long"})
+        thread_id = created.json()["thread"]["id"]
+        store = app.state.agent_store
+        # Squeeze the read window to its floor and write past it, so the window
+        # returns fewer messages than the thread retains without needing to
+        # insert hundreds. The write-time retention bounds are far larger, so
+        # every message written here is still counted.
+        store.message_page_max_bytes = 1024
+        for index in range(5):
+            store.add_message(thread_id, "user", f"{index}:" + "x" * 400)
+
+        body = client.get(f"/api/agent/threads/{thread_id}", headers=headers).json()
+
+        assert body["messages_total"] == 5
+        assert len(body["messages"]) < 5
+        assert body["messages_truncated"] is True
+        # The window keeps the newest end, so the last message is present.
+        assert body["messages"][-1]["content"].startswith("4:")
 
 
 def test_agent_message_limits_are_client_errors_not_incidents(
