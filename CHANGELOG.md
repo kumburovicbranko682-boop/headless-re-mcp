@@ -859,6 +859,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   接受(实测已验证 `main→helper` 的 CALL 边能被正确解析)。`run()` 拆出 `_exec()` 以便一次 xrefs 里
   跑两趟分析而各自独立解析(空的一侧保持空列表,不被另一侧输出吞掉)。
   `tests/integration/test_m11_r2_live_gate.py` 新增对真实 CALL 边的断言钉住。
+- **Ghidra 在 Linux/macOS 上选错启动器,装对了也一个工具都跑不起来**。Ghidra 发行版里
+  `support/analyzeHeadless`(Unix 脚本)与 `support/analyzeHeadless.bat`(Windows 批处理)并排都在,
+  而 `_find_analyze_headless` 把 `.bat` 排在最前——POSIX 上永远选中不可执行的批处理,spawn 即
+  `PermissionError`,`ghidra.analyze`/`functions`/`decompile`/`symbols`/`xrefs` 全军覆没。现按本 OS
+  排序(Windows 先 `.bat`,其余先 Unix 脚本),只有单个启动器时仍回退到另一个(假 home 的单测夹具
+  不受影响)。新增单测钉住两个 OS 的选择;新增可移植 live gate
+  `tests/integration/test_m11_ghidra_live_gate.py`:POSIX 现编小 ELF、经
+  `HEADLESS_RE_GHIDRA_HOME` 跑真实 headless 导入+分析,断言选中 Unix 启动器、输出含成功报告、
+  `-deleteProject` 未留下 `.gpr`/`.rep`;未配置 Ghidra/缺编译器时 skip(skip≠pass)。已在 Linux 对
+  真实 Ghidra 12.1.3 验证通过。另注:Ghidra 11.3+ 移除 Jython 改用 PyGhidra,`ExportJson.py`
+  (`@runtime Jython`)在其上会报「Ghidra was not started with PyGhidra」——functions/decompile 等
+  导出工具需 Jython 时代的 Ghidra(≤11.2)或后续迁移 PyGhidra,gate 因此钉的是与版本无关的
+  导入+分析主链路。
 
 ### 变更（Android 后端清理）
 
