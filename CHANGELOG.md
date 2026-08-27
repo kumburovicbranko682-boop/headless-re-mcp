@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`web.network.get` 遇到非法 base64 正文时返回残缺形状，读 `body` 直接 KeyError）
+
+- **`web.network.get` 的两条错误路径此前形状不一致**：`Network.getResponseBody` 取不到正文那条
+  （重定向、正文已被 CDP 缓存清掉）特意补齐了 `body`/`base64_encoded`/`body_truncated`（还有专门的
+  单测钉住），好让调用方读 `result["body"]` 不会撞上缺键；但**正文被标为 base64 却解不出来**那条
+  （`base64.b64decode` 抛 `binascii.Error`）只返回了请求元数据加一个 `body_error`——`body`、
+  `base64_encoded`、`body_truncated` 三个键全都没有，于是同一个方法的这条分支上，读 `result["body"]`
+  会直接 `KeyError`，正是姊妹分支花力气防的那种崩。现让这条分支返回**同样完整**的形状（`body=""`、
+  `base64_encoded=False`、`body_truncated=False`，外加说明原因的 `body_error`，且不写盘、无 `body_path`）。
+  既有 `test_invalid_base64_body_reports_an_error_rather_than_lying` 之前只验了 `body_error` 在、
+  `body_path` 不在，正好漏过这处缺键；现收紧为断言完整形状与保留的请求元数据，把两条错误路径钉在一起，
+  防止再次漂移。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
