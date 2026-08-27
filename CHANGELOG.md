@@ -154,6 +154,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力,使 `attach(pid, allowed_pid=other)` 与 `modules(pid, allowed_pid=other)` 在未授权时给出
   一致的 `permission_denied`;至此四个 frida 守卫(`attach` / `_require` / `_authorize` 及 hook
   模板名校验)统一为"先校验调用方输入形状、再判授权、最后探测能力"的确定性契约。
+- ADB 调用方输入校验统一提到 adbutils 探测之前:每个带 serial 的操作都走 `_device`,而它此前先
+  `_client`(adbutils 导入探测)再 `_check_serial`,导致畸形 serial 在没装 adbutils 的机器上被报成
+  `capability_unavailable`、装了才报 `invalid_params`——随环境漂移。`connect`(端口/endpoint)、
+  `ensure_frida_server`(`remote_path`)同形。现 serial / 端口 / endpoint / remote_path 等形状校验
+  都在能力探测之前,畸形请求在任何机器上都确定地报 `invalid_params`;合法 serial 而本机没装 adbutils
+  仍按预期报 `capability_unavailable`。(内部 shell 注入面另经审计:唯一把调用方输入拼进 shell 字符串的
+  `ensure_frida_server` 的 `remote_path` 受 `^/[\w./\-]+$` 约束——不含引号/空格/元字符,且包在
+  `su -c '...'` 单引号里——其余标识符一律走 `_check_serial`/`_check_package` 白名单并以列表参数传入。)
 
 ### 新增（会话目标类型）
 

@@ -306,9 +306,15 @@ class AdbBackend:
             raise AdbError("backend_error", f"cannot reach adb server: {exc}") from exc
 
     def _device(self, serial: str) -> Any:
+        # Validate the serial before probing for adbutils: a malformed serial is
+        # the caller's mistake regardless of environment, so it earns a
+        # deterministic invalid_params on every host rather than
+        # capability_unavailable wherever adbutils is merely absent. Every
+        # serial-taking operation routes through here, so this fixes them all.
+        checked = _check_serial(serial)
         client = self._client(socket_timeout=_ADB_TRANSPORT_TIMEOUT_S)
         try:
-            dev = client.device(serial=_check_serial(serial))
+            dev = client.device(serial=checked)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -345,11 +351,14 @@ class AdbBackend:
         return {"devices": page, "count": len(page), "has_more": has_more}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
-        client = self._client()
+        # Validate the endpoint before probing for adbutils, so a bad port or host
+        # is a deterministic invalid_params everywhere rather than
+        # capability_unavailable where adbutils is absent.
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise AdbError("invalid_params", "port must be 1..65535", port=port)
         endpoint = f"{host}:{port}"
         _check_serial(endpoint)
+        client = self._client()
         try:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
@@ -686,9 +695,11 @@ class AdbBackend:
         nothing. Requires root (su) on the device; failures surface as
         structured errors rather than exceptions.
         """
-        dev = self._device(serial)
+        # Validate remote_path before touching the device/adbutils, so a
+        # malformed path is invalid_params on every host.
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
+        dev = self._device(serial)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
