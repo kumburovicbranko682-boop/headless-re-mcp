@@ -10,6 +10,7 @@ from typing import Any
 
 from headless_re_mcp.backends.web.client import (
     _MAX_METADATA_BYTES,
+    _MAX_REDIRECTS,
     _MAX_URL_BYTES,
     WebBackend,
 )
@@ -173,6 +174,103 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES
     assert script["metadata_truncated"] is True
+
+
+class _CapturingCdp:
+    """Records CDP handlers so a test can drive them directly."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, method: str) -> None:
+        del method
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+def _wired_capture() -> tuple[_CapturingCdp, _FakeHandle]:
+    cdp = _CapturingCdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    return cdp, handle
+
+
+def test_web_capture_preserves_the_redirect_chain_instead_of_collapsing_it() -> None:
+    """A redirected request must keep its 30x hops, not just the final URL.
+
+    Measured: /login -302-> /sso -301-> /app, final 200. CDP reuses one
+    requestId, so overwriting the entry each hop leaves only /app at status
+    200 -- the two redirects that make up an auth flow vanish. The entry now
+    carries redirects with each hop's status and url, in order.
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r1", "request": {"url": "https://a.test/login", "method": "GET"},
+         "type": "Document"}
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r1", "request": {"url": "https://a.test/sso", "method": "GET"},
+         "type": "Document",
+         "redirectResponse": {"url": "https://a.test/login", "status": 302}}
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r1", "request": {"url": "https://a.test/app", "method": "GET"},
+         "type": "Document",
+         "redirectResponse": {"url": "https://a.test/sso", "status": 301}}
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "r1", "response": {"status": 200, "mimeType": "text/html"}}
+    )
+    entry = handle.requests["r1"]
+    assert entry["url"] == "https://a.test/app"
+    assert entry["status"] == 200
+    assert entry["redirects"] == [
+        {"status": 302, "url": "https://a.test/login"},
+        {"status": 301, "url": "https://a.test/sso"},
+    ]
+    assert "redirects_truncated" not in entry
+    doc = _tool_docstring("web.network.list")
+    assert "redirects" in doc
+
+
+def test_web_capture_leaves_no_redirects_field_on_a_direct_request() -> None:
+    """A request that never redirected must not sprout an empty redirects list.
+
+    Measured: a single requestWillBeSent with no redirectResponse -> the entry
+    has no redirects key, so its absence cleanly means "went straight there".
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r2", "request": {"url": "https://a.test/x", "method": "GET"},
+         "type": "XHR"}
+    )
+    assert "redirects" not in handle.requests["r2"]
+
+
+def test_web_capture_caps_a_redirect_loop_and_flags_it() -> None:
+    """A redirect loop must be bounded, and the truncation must be disclosed.
+
+    Measured: more hops than the cap -> redirects holds exactly _MAX_REDIRECTS
+    (the earliest hops), and redirects_truncated is True so the chain is not
+    read as complete.
+    """
+    cdp, handle = _wired_capture()
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r3", "request": {"url": "https://a.test/0", "method": "GET"},
+         "type": "Document"}
+    )
+    for index in range(1, _MAX_REDIRECTS + 10):
+        cdp.handlers["Network.requestWillBeSent"](
+            {"requestId": "r3",
+             "request": {"url": f"https://a.test/{index}", "method": "GET"},
+             "type": "Document",
+             "redirectResponse": {"url": f"https://a.test/{index - 1}", "status": 302}}
+        )
+    entry = handle.requests["r3"]
+    assert len(entry["redirects"]) == _MAX_REDIRECTS
+    assert entry["redirects_truncated"] is True
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

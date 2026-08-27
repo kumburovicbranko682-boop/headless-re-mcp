@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.list` 保留重定向链,不再塌成最终 URL）
+
+- CDP 的重定向复用同一个 `requestId`:每跳一次 302/301,`Network.requestWillBeSent`
+  会带着 `redirectResponse`(刚刚返回 3xx 的那一跳)再次触发,`request.url` 指向新目标。
+  抓包的 `on_request` 过去每次都直接覆盖旧条目,于是一条 `/login → /sso → /app` 的链只
+  剩下终点 `/app`(配 on_response 填上的最终 200)——中间那串 30x 全部消失,而这正是
+  一个鉴权/OAuth 流程最想看的部分。调用方看 `web.network.list` 只见一条请求,既数不出
+  真实发生了几跳,也拿不到各跳的 `Location` 目标。现把重定向跳按顺序累积进条目的
+  `redirects`(每项 `status` 与 `url`),终点条目因此仍能显示它从哪里来;链被浏览器尚未
+  掐断的循环撑爆时截到 `_MAX_REDIRECTS` 跳并置 `redirects_truncated`。未发生重定向的请求
+  不带 `redirects` 键(缺席即"直达")。文档串同步说明,并新增三条直测:三跳链按序保留、
+  直达请求无 `redirects` 键、超限循环截断且置标志。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
