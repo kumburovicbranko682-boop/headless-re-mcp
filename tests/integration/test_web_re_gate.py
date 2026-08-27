@@ -17,6 +17,7 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
+_BUNDLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "webpack_bundle.js"
 _WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "sample_module.wasm"
 
 _DATA_URL = (
@@ -80,6 +81,30 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         assert result.ok, result.error
         assert isinstance(result.data["code"], str)
         assert result.data["bytes"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_splits_a_webpack_bundle_when_webcrack_present() -> None:
+    """webcrack extracts the fixture's modules into separate files.
+
+    Distinct from deobfuscate: this drives the unpack path that writes a tree
+    and pages the listing. It also guards a real defect -- the client created
+    the output dir and webcrack aborts on an existing one without -f, so every
+    unpack failed until that flag was added, and only a live webcrack catches
+    it (the unit tests mock the run).
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — bundle unpack gate not run (skip != pass)")
+    assert _BUNDLE_FIXTURE.is_file(), f"fixture missing: {_BUNDLE_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_BUNDLE_FIXTURE))
+        assert result.ok, result.error
+        # A 3-module webpack bundle splits into at least a couple of files.
+        assert result.data["file_count"] >= 2, result.data
+        assert any(str(name).endswith(".js") for name in result.data["files"]), result.data
     finally:
         service.close_all()
 
