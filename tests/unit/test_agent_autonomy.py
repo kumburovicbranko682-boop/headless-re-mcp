@@ -296,6 +296,138 @@ def test_the_packed_analysis_denylist_stays_pinned_to_the_real_catalog() -> None
     assert set(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS) == file_writes - _EXCLUDED_AUTO_FILE_WRITES
 
 
+# The unattended state-change surface. Unlike file writes, which the preset
+# gates through a catalog-pinned denylist, the packed preset grants the whole
+# ``state_change`` effect class at once (see PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS),
+# so a newly added state-changing agent tool joins this set the moment it lands
+# and runs unattended with no other signal. This pin is that signal: when it
+# fails, a state-changing tool was added or renamed, and the change is the
+# moment to confirm the tool is safe to run without a human -- or to keep it
+# behind approval by denying it (agent_never_auto_approve, which outranks every
+# grant in AutonomyPolicy.decide). It intentionally covers device/proxy
+# mutations (device.install, device.uninstall, device.push,
+# proxy.ca.install_android) that persist on a real device, so their auto-grant
+# is a reviewed decision rather than an accident of not carrying FILE_WRITE.
+_PINNED_AUTO_APPROVE_STATE_CHANGES = frozenset(
+    {
+        "breakpoints.condition.set",
+        "breakpoints.hardware.remove",
+        "breakpoints.hardware.set",
+        "breakpoints.memory.remove",
+        "breakpoints.memory.set",
+        "device.connect",
+        "device.force_stop",
+        "device.forward",
+        "device.install",
+        "device.launch",
+        "device.push",
+        "device.uninstall",
+        "dynamic.analyze_function",
+        "dynamic.attach",
+        "dynamic.breakpoint.remove",
+        "dynamic.breakpoint.set",
+        "dynamic.launch",
+        "dynamic.memory.write",
+        "dynamic.open",
+        "dynamic.pause",
+        "dynamic.registers.write",
+        "dynamic.resume",
+        "dynamic.step_into",
+        "dynamic.step_over",
+        "dynamic.stop",
+        "dynamic.trace_api_arguments",
+        "dynamic.wait",
+        "frida.attach",
+        "frida.device.connect",
+        "frida.hook.template",
+        "frida.server.ensure",
+        "frida.spawn",
+        "knowledge.record",
+        "memory.protection",
+        "proxy.ca.install_android",
+        "proxy.replay",
+        "proxy.start",
+        "proxy.stop",
+        "r2.open",
+        "session.close",
+        "session.recover",
+        "threads.context.write",
+        "ui.click",
+        "ui.click_at",
+        "ui.drive_to_breakpoint",
+        "ui.drive_to_event",
+        "ui.invoke",
+        "ui.key",
+        "ui.text.set",
+        "ui.wait",
+        "ui.window.close",
+        "unpack.score_oep",
+        "web.close",
+        "web.navigate",
+        "web.open",
+        "windbg.attach",
+        "windbg.open_dump",
+        "workflow.breakpoint.disable",
+        "workflow.breakpoint.put",
+        "workflow.breakpoint.remove",
+        "workflow.cancel",
+        "workflow.events.consume",
+        "workflow.module.refresh",
+        "workflow.module.track",
+        "workflow.module.untrack",
+        "workflow.navigate_to_breakpoint",
+        "workflow.navigate_to_event",
+        "workflow.reset",
+        "workspace.mode.set",
+    }
+)
+
+
+def test_the_unattended_state_change_surface_stays_pinned_to_the_catalog() -> None:
+    """The packed preset auto-approves the whole state_change class; pin it.
+
+    The file-write surface is pinned above against a denylist, but the preset
+    grants ``state_change`` wholesale, so nothing catches a state-changing tool
+    that is added or renamed -- it rides the grant into unattended execution
+    silently. Assert the set of state_change-only agent tools the preset
+    auto-approves equals the reviewed pin, computed two independent ways so a
+    drift in either the catalog or the policy surfaces here for a human.
+    """
+    from headless_re_mcp.agent.autonomy import (
+        PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS,
+        PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
+    )
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+    agent_specs = {
+        spec.name: spec for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
+    }
+
+    # Structural: a tool whose only effect is state_change.
+    structural = {
+        name
+        for name, spec in agent_specs.items()
+        if spec.effects == frozenset({ToolEffect.STATE_CHANGE})
+    }
+    assert structural == _PINNED_AUTO_APPROVE_STATE_CHANGES
+
+    # Behavioural: the packed preset actually auto-approves exactly those, and
+    # names the state_change grant as the reason, so a new grant path that let a
+    # non-baseline tool through would not masquerade as this one.
+    policy = AutonomyPolicy(
+        auto_approve_effects=frozenset(
+            ToolEffect(value) for value in PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS
+        ),
+        auto_approve_tools=frozenset(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS),
+    )
+    approved_by_effect = {
+        name
+        for name, spec in agent_specs.items()
+        if policy.decide(spec).reason == "allowlisted_effects:state_change"
+    }
+    assert approved_by_effect == _PINNED_AUTO_APPROVE_STATE_CHANGES
+
+
 def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> None:
     """Applied to the real specs: no denylisted write auto-runs, stealth does."""
     from headless_re_mcp.agent.autonomy import (
