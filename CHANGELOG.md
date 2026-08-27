@@ -57,7 +57,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   - MethodSemantics（0x18）把 Method 列当成 MethodDefOrRef 编码索引，实为简单 MethodDef 索引。
   - File（0x26）把 HashValue 列当成 Implementation 编码索引，实为 Blob 索引。
   - MethodSpec（0x2B）与 GenericParamConstraint（0x2C）两张表的布局写反了。
-- 新增 `tests/unit/test_dotnet_metadata_table_sizes.py`（6 项），每项都挑选能让“错误公式”与“正确公式”取值分叉的行数，因此对旧代码为红：直接固化上述五张表的 ECMA 行长，并端到端验证 AssemblyRef 之后 ManifestResource 的起点与资源解码正确。
+- 新增 `tests/unit/test_dotnet_metadata_table_sizes.py`（8 项）：五张表的行长断言各自挑选能让“错误公式”与“正确公式”取值分叉的行数，因此对旧代码为红；并端到端验证 AssemblyRef 之后 ManifestResource 的起点与资源解码正确。另加一条跨表正向用例（Module→TypeDef→Field→MethodDef→MemberRef），按独立列出的 ECMA 行长铺好字节再读回 name/token/rva——此前套件只在空表上跑过，这些行内列偏移与 `_table_start` 累加从未被真实行数据覆盖过。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

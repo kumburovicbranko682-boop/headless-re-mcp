@@ -138,3 +138,98 @@ def test_method_spec_and_generic_param_constraint_are_not_swapped() -> None:
     ctx = _ctx({0x0A: 40000, 0x2A: 100})
     assert _table_row_size(ctx, 0x2B) == 6
     assert _table_row_size(ctx, 0x2C) == 4
+
+
+# --------------------------------------------------------------------------- #
+# Positive-path walk across several tables. The existing suite only ever
+# enumerated an *empty* tables stream, so the row column offsets and the
+# offset accumulation in _table_start went unexercised on real rows. This pins
+# them: names, tokens and RVAs are read back from bytes placed at ECMA offsets
+# that are stated here independently of the code under test.
+# --------------------------------------------------------------------------- #
+
+# Row sizes for a small assembly with 2-byte #Strings/#GUID/#Blob heaps.
+_ROW_SIZE = {
+    0x00: 2 + 2 + 2 + 2 + 2,  # Module: Generation + Name + 3x GUID
+    0x02: 4 + 2 + 2 + 2 + 2 + 2,  # TypeDef: Flags + Name + Namespace + Extends + Field + Method
+    0x04: 2 + 2 + 2,  # Field: Flags + Name + Signature
+    0x06: 4 + 2 + 2 + 2 + 2 + 2,  # MethodDef: RVA + ImplFlags + Flags + Name + Signature + Param
+    0x0A: 2 + 2 + 2,  # MemberRef: Class + Name + Signature
+}
+
+
+def _build_multi_table_context() -> _MetaCtx:
+    row_counts = {0x00: 1, 0x02: 2, 0x04: 2, 0x06: 2, 0x0A: 1}
+    order = (0x00, 0x02, 0x04, 0x06, 0x0A)
+    start: dict[int, int] = {}
+    cursor = 0
+    for table in order:
+        start[table] = cursor
+        cursor += _ROW_SIZE[table] * row_counts[table]
+
+    strings = bytearray(b"\x00")  # index 0 is the empty string
+
+    def intern(name: str) -> int:
+        index = len(strings)
+        strings.extend(name.encode("ascii") + b"\x00")
+        return index
+
+    labels = ("TypeOne", "TypeTwo", "NsA", "NsB", "fA", "fB", "mX", "mY", "Ref")
+    names = {label: intern(label) for label in labels}
+
+    buf = bytearray(cursor)
+
+    def put16(at: int, value: int) -> None:
+        buf[at : at + 2] = value.to_bytes(2, "little")
+
+    def put32(at: int, value: int) -> None:
+        buf[at : at + 4] = value.to_bytes(4, "little")
+
+    for row, (name, namespace) in enumerate((("TypeOne", "NsA"), ("TypeTwo", "NsB"))):
+        at = start[0x02] + row * _ROW_SIZE[0x02]
+        put16(at + 4, names[name])  # Name follows the 4-byte Flags
+        put16(at + 6, names[namespace])  # Namespace follows Name
+    for row, name in enumerate(("fA", "fB")):
+        at = start[0x04] + row * _ROW_SIZE[0x04]
+        put16(at + 2, names[name])  # Name follows the 2-byte Flags
+    for row, (name, rva) in enumerate((("mX", 0x2000), ("mY", 0x2100))):
+        at = start[0x06] + row * _ROW_SIZE[0x06]
+        put32(at, rva)  # RVA is the first column
+        put16(at + 8, names[name])  # Name follows RVA + ImplFlags + Flags
+    at = start[0x0A]
+    put16(at + 2, names["Ref"])  # Name follows the 2-byte Class coded index
+
+    return _ctx(row_counts, tables=bytes(buf), strings=bytes(strings))
+
+
+def test_row_sizes_match_the_independently_stated_layout() -> None:
+    ctx = _build_multi_table_context()
+    for table, expected in _ROW_SIZE.items():
+        assert _table_row_size(ctx, table) == expected
+
+
+def test_multi_table_walk_reads_names_tokens_and_rvas() -> None:
+    from headless_re_mcp.dotnet.metadata_enum import (
+        _iter_fields,
+        _iter_memberrefs,
+        _iter_methoddefs,
+        _iter_typedefs,
+    )
+
+    ctx = _build_multi_table_context()
+
+    assert [(d["token"], d["name"], d["namespace"]) for d in _iter_typedefs(ctx)] == [
+        (0x02000001, "TypeOne", "NsA"),
+        (0x02000002, "TypeTwo", "NsB"),
+    ]
+    assert [(d["token"], d["name"]) for d in _iter_fields(ctx)] == [
+        (0x04000001, "fA"),
+        (0x04000002, "fB"),
+    ]
+    assert [(d["token"], d["name"], d["rva"]) for d in _iter_methoddefs(ctx)] == [
+        (0x06000001, "mX", 0x2000),
+        (0x06000002, "mY", 0x2100),
+    ]
+    assert [(d["token"], d["name"]) for d in _iter_memberrefs(ctx)] == [
+        (0x0A000001, "Ref"),
+    ]
