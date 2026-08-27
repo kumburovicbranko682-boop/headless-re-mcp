@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import base64
 import http.server
 import socketserver
 import threading
@@ -77,6 +78,40 @@ def _wait_for_request(
                     return entry
         time.sleep(0.1)
     return None
+
+
+# A minimal but valid WebAssembly module exporting f() -> i32 returning 42.
+# Hand-built so the gate needs no wabt to produce it; the browser compiles it,
+# which is what makes Debugger.scriptParsed fire with a WebAssembly language so
+# web.wasm_list has something real to report.
+_WASM_MODULE = (
+    b"\x00asm\x01\x00\x00\x00"  # magic + version
+    b"\x01\x05\x01\x60\x00\x01\x7f"  # type section: () -> i32
+    b"\x03\x02\x01\x00"  # function section: func 0 has type 0
+    b"\x07\x05\x01\x01f\x00\x00"  # export section: "f" -> func 0
+    b"\x0a\x06\x01\x04\x00\x41\x2a\x0b"  # code section: i32.const 42; end
+)
+
+
+def _wasm_page() -> str:
+    encoded = base64.b64encode(_WASM_MODULE).decode("ascii")
+    return (
+        "data:text/html,"
+        "<html><head><title>wasm-gate</title><script>"
+        f"const b=Uint8Array.from(atob('{encoded}'),c=>c.charCodeAt(0));"
+        "WebAssembly.instantiate(b).then(m=>console.log('wasm-ready',m.instance.exports.f()));"
+        "</script></head><body>wasm</body></html>"
+    )
+
+
+def _wait_for_console(service: AnalysisService, session_id: str, needle: str) -> bool:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        console = service.web_console(session_id)
+        if console.ok and any(needle in item["text"] for item in console.data["console"]):
+            return True
+        time.sleep(0.1)
+    return False
 
 _DATA_URL = (
     "data:text/html,"
@@ -190,6 +225,63 @@ def test_web_cdp_captures_network_and_exports_a_body_and_har(local_site: str) ->
             assert shot.ok, shot.error
             assert shot.data["size"] > 0
             assert Path(shot.data["path"]).is_file()
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_lists_a_live_webassembly_module() -> None:
+    """WASM discovery is the CDP half of the Web-RE WASM story, untested live.
+
+    web.wasm_list is web.scripts filtered to WebAssembly, fed by the debugger's
+    scriptParsed events. A page that compiles a real module is the only way that
+    filter ever sees a WebAssembly entry, so this drives it end to end: the
+    module must be reported, the wasm-only view must actually narrow the full
+    script list, and the console proves the module was genuinely instantiable
+    rather than merely parsed.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web WASM Gate not run (skip != pass)")
+    service = AnalysisService()
+    try:
+        created = service.create_session(_wasm_page(), target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # scriptParsed for the module fires once Chromium compiles it, which
+            # is asynchronous, so poll rather than reading once and racing it.
+            wasm: dict[str, Any] | None = None
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                listing = service.web_wasm_list(session_id)
+                if listing.ok and listing.data["scripts"]:
+                    wasm = listing.data
+                    break
+                time.sleep(0.1)
+            assert wasm is not None, "the WebAssembly module was never reported"
+            assert wasm["total"] >= 1
+            for entry in wasm["scripts"]:
+                assert entry["language"] == "WebAssembly"
+                assert entry["url"].startswith("wasm://")
+
+            # The wasm-only view must be a strict subset: the page also parsed
+            # the JavaScript that instantiated the module.
+            everything = service.web_scripts(session_id)
+            assert everything.ok, everything.error
+            assert everything.data["total"] > wasm["total"]
+
+            assert _wait_for_console(service, session_id, "wasm-ready 42"), (
+                "the module never instantiated — wasm_list reported a dead script"
+            )
         finally:
             service.web_close(session_id)
     finally:
