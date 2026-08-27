@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -38,10 +39,14 @@ def _write_pe(
     architecture: Architecture = Architecture.X64,
     preferred_base: int = 0x180000000,
     image_size: int = 0x5000,
+    magic: int | None = None,
+    optional_size: int | None = None,
 ) -> None:
     machine = 0x014C if architecture == Architecture.X86 else 0x8664
-    magic = 0x10B if architecture == Architecture.X86 else 0x20B
-    optional_size = 0xE0 if architecture == Architecture.X86 else 0xF0
+    if magic is None:
+        magic = 0x10B if architecture == Architecture.X86 else 0x20B
+    if optional_size is None:
+        optional_size = 0xE0 if architecture == Architecture.X86 else 0xF0
     image = bytearray(0x200)
     image[:2] = b"MZ"
     image[0x3C:0x40] = (0x80).to_bytes(4, "little")
@@ -363,3 +368,262 @@ def test_rebased_module_mapping_rejects_unavailable_file_and_bounds(
     with pytest.raises(AddressSyncError) as bounds_error:
         mapping.translate("runtime", runtime_base + 0x5000)
     assert bounds_error.value.code == "address_out_of_range"
+
+
+def _rebased(
+    module: Path,
+    *,
+    size: int = 0x5000,
+    metadata: dict[str, object] | None = None,
+    selector: ModuleSelector | None = None,
+) -> object:
+    base = 0x7FF800000000
+    return build_rebased_module_mapping(
+        _modules({"base": base, "size": size, "name": module.name, "path": str(module)}),
+        metadata if metadata is not None else _runtime_metadata(),
+        selector if selector is not None else ModuleSelector(base=base),
+    )
+
+
+@pytest.mark.parametrize("bad", [-1, True])
+def test_translate_rejects_a_non_integer_or_negative_address(bad: int) -> None:
+    """translate guards the address before any range math.
+
+    The value arrives from a tool argument. A negative number, or a bool
+    (an int subclass that is never an address), must be refused with
+    ``invalid_address`` rather than flowing into the base/size comparison as a
+    real offset and quietly translating to something.
+    """
+    mapping = build_main_module_mapping(
+        _session(),
+        {"image_base": 0x140000000},
+        _modules(
+            {
+                "base": 0x180000000,
+                "size": 0x5000,
+                "name": "fixture.exe",
+                "path": r"C:\sample\fixtures\fixture.exe",
+            }
+        ),
+        _runtime_metadata(),
+    )
+    with pytest.raises(AddressSyncError) as exc_info:
+        mapping.translate("static", bad)
+    assert exc_info.value.code == "invalid_address"
+
+
+@pytest.mark.parametrize("architecture", [None, "sparc", 64])
+def test_runtime_metadata_architecture_must_be_a_known_string(architecture: object) -> None:
+    """x64dbg metadata is untrusted; a missing or unknown arch fails cleanly.
+
+    ``_runtime_architecture`` is the first gate in the build. A non-string
+    (metadata omitted the field) and a string that is not a supported
+    ``Architecture`` (a debugger reporting an arch this tool does not map) both
+    surface ``runtime_metadata_invalid`` instead of a raw TypeError/ValueError.
+    """
+    with pytest.raises(AddressSyncError) as exc_info:
+        build_main_module_mapping(
+            _session(),
+            {"image_base": 0x140000000},
+            _modules(),
+            {"architecture": architecture},
+        )
+    assert exc_info.value.code == "runtime_metadata_invalid"
+
+
+def test_main_module_mapping_rejects_ambiguous_path() -> None:
+    """Two runtime modules sharing the session path cannot identify the main one.
+
+    The name-ambiguity case has its own test; this is the earlier, stricter
+    path branch of ``_select_main_module``, which must refuse rather than pick
+    one of two modules loaded from the same file.
+    """
+    same = r"C:\sample\fixtures\fixture.exe"
+    with pytest.raises(AddressSyncError) as exc_info:
+        build_main_module_mapping(
+            _session(),
+            {"image_base": 0x140000000},
+            _modules(
+                {"base": 0x180000000, "size": 0x5000, "name": "fixture.exe", "path": same},
+                {"base": 0x190000000, "size": 0x5000, "name": "fixture.exe", "path": same},
+            ),
+            _runtime_metadata(),
+        )
+    assert exc_info.value.code == "module_ambiguous"
+
+
+def test_runtime_module_entry_requires_a_name_or_path() -> None:
+    """A module row that is all whitespace carries no usable identity.
+
+    The malformed-snapshot suite covers wrong types; this is the both-blank
+    branch, where name and path strip to empty and the entry must be rejected
+    instead of becoming a nameless, pathless module.
+    """
+    with pytest.raises(AddressSyncError) as exc_info:
+        RuntimeModuleCatalog.from_result(
+            _modules({"base": 0x1000, "size": 0x1000, "name": "   ", "path": "  "})
+        )
+    assert exc_info.value.code == "module_list_invalid"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not", "an", "object"],
+        {"modules": "not-a-list", "count": 0},
+    ],
+)
+def test_catalog_rejects_a_result_that_is_not_a_module_object(payload: object) -> None:
+    """The x64dbg result shape itself is validated before its rows.
+
+    A reply that is not an object, or whose ``modules`` is not an array, is the
+    outermost hostile-input branch and must read as ``module_list_invalid``
+    rather than an AttributeError on ``.get`` or iterating a string.
+    """
+    with pytest.raises(AddressSyncError) as exc_info:
+        RuntimeModuleCatalog.from_result(payload)
+    assert exc_info.value.code == "module_list_invalid"
+
+
+def test_catalog_select_reports_not_found_and_identity_mismatch() -> None:
+    """Explicit selection fails loudly on no match and on a partial match.
+
+    ``select`` first filters by the primary key (here, base). No match is
+    ``module_not_found``. A single match that then violates a second constraint
+    the caller also supplied (a name that does not fit) is
+    ``module_identity_mismatch`` -- the caller asked for a specific module and
+    must not be handed a different one that merely shared the base.
+    """
+    catalog = RuntimeModuleCatalog.from_result(
+        _modules({"base": 0x180000000, "size": 0x5000, "name": "a.dll", "path": r"C:\x\a.dll"})
+    )
+    with pytest.raises(AddressSyncError) as not_found:
+        catalog.select(ModuleSelector(base=0xDEAD0000))
+    assert not_found.value.code == "module_not_found"
+
+    with pytest.raises(AddressSyncError) as name_mismatch:
+        catalog.select(ModuleSelector(base=0x180000000, name="other.dll"))
+    assert name_mismatch.value.code == "module_identity_mismatch"
+
+    with pytest.raises(AddressSyncError) as path_mismatch:
+        catalog.select(ModuleSelector(base=0x180000000, path=r"C:\wrong\a.dll"))
+    assert path_mismatch.value.code == "module_identity_mismatch"
+
+
+def test_rebased_mapping_rejects_a_non_pe_file(tmp_path: Path) -> None:
+    """The selected module's file on disk is parsed and must be a real PE.
+
+    ``_read_pe_image_layout`` reads the preferred base straight out of the
+    optional header, so a file that is not a PE (or one the architecture probe
+    rejects) must fail with ``module_file_invalid`` rather than letting the
+    OSError/ValueError escape as an internal error.
+    """
+    module = tmp_path / "junk.dll"
+    module.write_bytes(b"not a pe file at all" * 8)
+    with pytest.raises(AddressSyncError) as exc_info:
+        _rebased(module)
+    assert exc_info.value.code == "module_file_invalid"
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        pytest.param(lambda p: _write_pe(p, optional_size=40), id="truncated-optional-header"),
+        pytest.param(lambda p: _write_pe(p, magic=0x10B), id="magic-mismatch"),
+        pytest.param(lambda p: _write_pe(p, preferred_base=0), id="zero-image-base"),
+    ],
+)
+def test_rebased_mapping_rejects_a_broken_optional_header(
+    tmp_path: Path,
+    prepare: Callable[[Path], None],
+) -> None:
+    """A PE whose optional header is short, mismatched, or zero-based is refused.
+
+    Each of these is a distinct guard in ``_read_pe_image_layout`` reading a
+    possibly-corrupt file: a header cut off before ImageBase, a magic that does
+    not agree with the detected architecture, and a nonsensical zero image
+    base. All must surface ``module_file_invalid`` rather than compute a bogus
+    rebase from garbage bytes.
+    """
+    module = tmp_path / "broken.dll"
+    prepare(module)
+    with pytest.raises(AddressSyncError) as exc_info:
+        _rebased(module)
+    assert exc_info.value.code == "module_file_invalid"
+
+
+def test_resolve_runtime_module_path_strips_the_nt_object_prefix(tmp_path: Path) -> None:
+    """An x64dbg ``\\??\\`` device path still resolves to the real file.
+
+    x64dbg reports module paths in NT object form. The resolver strips the
+    ``\\??\\`` prefix before touching the filesystem; without that the file
+    lookup would miss and a valid module would read as unavailable.
+    """
+    module = tmp_path / "real.dll"
+    _write_pe(module)
+    base = 0x7FF800000000
+    mapping = build_rebased_module_mapping(
+        _modules(
+            {"base": base, "size": 0x5000, "name": "real.dll", "path": "\\??\\" + str(module)}
+        ),
+        _runtime_metadata(),
+        ModuleSelector(base=base),
+    )
+    assert mapping.identity.path == str(module.resolve())
+
+
+def test_resolve_runtime_module_path_rejects_empty_and_non_file(tmp_path: Path) -> None:
+    """A blank path, or one that resolves to a directory, is not a module file.
+
+    Both land on ``module_file_unavailable``: a whitespace-only path reports no
+    file at all, and a path that resolves but is a directory is rejected by the
+    ``is_file`` check rather than being opened as a PE.
+    """
+    base = 0x7FF800000000
+    with pytest.raises(AddressSyncError) as empty:
+        build_rebased_module_mapping(
+            _modules({"base": base, "size": 0x5000, "name": "x.dll", "path": "   "}),
+            _runtime_metadata(),
+            ModuleSelector(base=base),
+        )
+    assert empty.value.code == "module_file_unavailable"
+
+    directory = tmp_path / "moddir"
+    directory.mkdir()
+    with pytest.raises(AddressSyncError) as not_file:
+        build_rebased_module_mapping(
+            _modules({"base": base, "size": 0x5000, "name": "moddir", "path": str(directory)}),
+            _runtime_metadata(),
+            ModuleSelector(base=base),
+        )
+    assert not_file.value.code == "module_file_unavailable"
+
+
+def test_catalog_and_rebased_mapping_serialise_their_public_shape(tmp_path: Path) -> None:
+    """to_dict is the wire contract the JSON envelope hands to callers.
+
+    The catalog and the rebased mapping serialise to fixed shapes downstream
+    consumers read; pin the keys and the computed ``rebase_delta`` so a field
+    rename or a delta sign flip cannot slip through unnoticed.
+    """
+    module = tmp_path / "real.dll"
+    _write_pe(module, preferred_base=0x180000000, image_size=0x5000)
+    base = 0x7FF800000000
+    catalog = RuntimeModuleCatalog.from_result(
+        _modules({"base": base, "size": 0x5000, "name": "real.dll", "path": str(module)})
+    )
+    assert catalog.to_dict() == {
+        "modules": [{"base": base, "size": 0x5000, "name": "real.dll", "path": str(module)}],
+        "count": 1,
+    }
+
+    mapping = build_rebased_module_mapping(
+        _modules({"base": base, "size": 0x5000, "name": "real.dll", "path": str(module)}),
+        _runtime_metadata(),
+        ModuleSelector(base=base),
+    )
+    payload = mapping.to_dict()
+    assert set(payload) == {"module", "match_basis", "rebase_delta", "preferred", "runtime"}
+    assert payload["rebase_delta"] == base - 0x180000000
+    assert payload["preferred"]["base"] == 0x180000000
+    assert payload["runtime"]["base"] == base
