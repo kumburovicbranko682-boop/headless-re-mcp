@@ -20,7 +20,9 @@ every DevTools surface can be checked against real traffic:
                          (and shown to have actually executed), and ``wasm_only``
                          is proven to be a real filter, not a passthrough.
 * ``web.screenshot``  -- a non-empty PNG is written and registered.
-* ``web.har_export``  -- the captured flows serialize to a HAR referencing them.
+* ``web.har_export``  -- the captured flows serialize to a HAR that references
+                         them *and* carries every mandatory HAR 1.2 member, so a
+                         strict consumer (DevTools import, har-validator) loads it.
 * ``artifacts.*``     -- the screenshot and HAR register as artifacts and read
                          back, byte-for-byte, through list/describe/read -- the
                          loop an unattended agent uses to fetch what it captured.
@@ -354,6 +356,10 @@ def test_web_dynamic_network_capture_and_har(_service: AnalysisService) -> None:
         parsed = json.loads(har_text)
         urls = {e["request"]["url"] for e in parsed["log"]["entries"]}
         assert url + "app.js" in urls, sorted(urls)
+        # ...and the live export is spec-complete, not just non-empty: a missing
+        # mandatory 1.2 member makes a strict consumer reject the whole file, so
+        # prove the artifact an analyst actually opens would load.
+        _assert_har_1_2(parsed)
 
 
 def test_web_dynamic_retrieves_a_binary_response_body(_service: AnalysisService) -> None:
@@ -554,6 +560,53 @@ def test_web_captures_round_trip_through_the_artifact_store(_service: AnalysisSe
         missing = _service.artifacts_describe("deadbeef" * 4)
         assert not missing.ok and missing.error is not None, missing
         assert missing.error.code == "not_found", missing.error
+
+
+def _assert_har_1_2(parsed: dict[str, Any]) -> None:
+    """Every entry carries the HAR 1.2 members a strict consumer requires.
+
+    The shared serializer exists so both the web and proxy exports load in the
+    tools an analyst actually opens a HAR in (Chrome DevTools "Import HAR",
+    har-validator); those reject the whole file when a mandatory member is
+    absent. This checks the *live* export really carries them, not merely that
+    the unit-tested serializer can.
+    """
+    log = parsed["log"]
+    assert log.get("version") == "1.2", log.get("version")
+    creator = log.get("creator", {})
+    assert creator.get("name") and creator.get("version"), creator
+    entries = log.get("entries")
+    assert entries, parsed
+    for entry in entries:
+        for key in ("startedDateTime", "time", "request", "response", "cache", "timings"):
+            assert key in entry, (key, sorted(entry))
+        for key in (
+            "method",
+            "url",
+            "httpVersion",
+            "cookies",
+            "headers",
+            "queryString",
+            "headersSize",
+            "bodySize",
+        ):
+            assert key in entry["request"], (key, sorted(entry["request"]))
+        for key in (
+            "status",
+            "statusText",
+            "httpVersion",
+            "cookies",
+            "headers",
+            "content",
+            "redirectURL",
+            "headersSize",
+            "bodySize",
+        ):
+            assert key in entry["response"], (key, sorted(entry["response"]))
+        for key in ("size", "mimeType"):
+            assert key in entry["response"]["content"], (key, sorted(entry["response"]["content"]))
+        for key in ("send", "wait", "receive"):
+            assert key in entry["timings"], (key, sorted(entry["timings"]))
 
 
 def _read_capture(payload: dict[str, Any]) -> str:

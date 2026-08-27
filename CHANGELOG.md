@@ -572,6 +572,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 再加一例证明 `web.navigate`：从已开的 `/` 导航到同源第二页，断言 URL/标题/状态都换成新页
   且活 DOM 确为第二页（首页 marker 已消失）；随后导航到一个返回 404 的路径，断言状态如实为
   404——覆盖后端“4xx 主文档正常 resolve、必须把状态透出”的分支，杜绝错误页伪装成命中。
+- 网络/HAR 那一例再加固：不再只断言导出的 HAR 非空并含 `app.js`，而是逐条校验**活导出**
+  确实带齐 HAR 1.2 的强制成员（`log.version`/`creator`、每条 entry 的 `startedDateTime`/
+  `time`/`request`/`response`/`cache`/`timings`，以及 request/response/content/timings 各自的
+  必填字段）——共享序列化器存在的意义就是让 web 与 proxy 的导出能被 Chrome DevTools 导入、
+  被 har-validator 接受，此前只有单测证明序列化器本身、没有证明真流量导出的产物可被严格消费者加载。
 - 再加一例走 `web.network.get` 的二进制正文分支：源站以 `application/octet-stream` 提供
   0x00..0xFF 全字节（非 UTF-8）的 `/blob.bin`，页内 `fetch` 取回并经 console 报出 256 字节
   （证明确实取全了才回读）。断言 `web.network.get` 回 `base64_encoded=true`、`body` 为空且
