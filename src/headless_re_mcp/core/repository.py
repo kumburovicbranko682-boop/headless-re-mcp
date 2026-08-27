@@ -400,6 +400,10 @@ class InMemoryAnalysisRepository:
         self._artifacts: dict[str, JsonObject] = {}
         self._timeline: dict[str, list[JsonObject]] = {}
         self._audit: list[JsonObject] = []
+        # Rows the row cap has dropped from the single global audit log, so
+        # list_audit can report loss the way the SQLite store's meta counter
+        # does rather than passing the survivors off as the whole history.
+        self._audit_dropped = 0
         self._knowledge: dict[tuple[str, str, str], JsonObject] = {}
 
     @contextmanager
@@ -743,6 +747,7 @@ class InMemoryAnalysisRepository:
             )
             keep = max(1, int(AUDIT_RETAINED_ROWS))
             if len(self._audit) > keep:
+                self._audit_dropped += len(self._audit) - keep
                 self._audit = self._audit[-keep:]
 
     def list_audit(
@@ -768,6 +773,7 @@ class InMemoryAnalysisRepository:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(page) < total,
+            "dropped_total": self._audit_dropped,
         }
 
     def record_knowledge(
