@@ -23,11 +23,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.open")
     def apk_open(session_id: str) -> dict[str, Any]:
-        """Parse an APK session's identity.
+        """Parse an APK session's identity and application-level security flags.
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
-        native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        native_abis, main_activity, permission_count, opened, and security --
+        an object with debuggable, allow_backup, uses_cleartext_traffic and
+        network_security_config (whether a custom config is shipped). An absent
+        manifest attribute reports the platform default the app runs with
+        (debuggable off, allow_backup on, cleartext allowed below API 28). There
+        is no version, sdk or abis field.
         """
         return _dump(analysis.apk_open(session_id))
 

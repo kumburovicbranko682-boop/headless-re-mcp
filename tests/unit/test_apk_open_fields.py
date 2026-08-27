@@ -72,7 +72,57 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     assert "abis" not in payload
     assert payload["version_name"] == "1.0"
     assert payload["native_abis"] == ["arm64-v8a"]
+    # No get_attribute_value on the fake -> security degrades to defaults, and
+    # target_sdk 33 (>=28) means cleartext is denied by default.
+    assert payload["security"] == {
+        "debuggable": False,
+        "allow_backup": True,
+        "uses_cleartext_traffic": False,
+        "network_security_config": False,
+    }
     doc = _tool_docstring("apk.open")
     assert "Answers with package" in doc
     assert "version_name" in doc
     assert "native_abis" in doc
+
+
+class _SecureApk(_FakeApk):
+    def __init__(self, attrs: dict[str, str], target: str = "33") -> None:
+        self._attrs = attrs
+        self._target = target
+
+    def get_target_sdk_version(self) -> str:
+        return self._target
+
+    def get_attribute_value(self, tag: str, attribute: str) -> str | None:
+        assert tag == "application"
+        return self._attrs.get(attribute)
+
+
+def test_apk_open_reports_explicit_security_flags() -> None:
+    """A debuggable, backup-enabled app with a custom NSC is a triage finding.
+
+    Measured: explicit manifest attributes win over defaults, and a legacy
+    target (< 28) allows cleartext by default when the attribute is absent.
+    """
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _SecureApk(  # type: ignore[method-assign]
+        {
+            "debuggable": "true",
+            "allowBackup": "false",
+            "networkSecurityConfig": "@xml/network_security_config",
+        },
+        target="26",
+    )
+    payload = client.open(Path("dummy.apk"))
+    assert payload["security"] == {
+        "debuggable": True,
+        "allow_backup": False,
+        # No usesCleartextTraffic attribute, target 26 (< 28) -> allowed default.
+        "uses_cleartext_traffic": True,
+        "network_security_config": True,
+    }
+    doc = _tool_docstring("apk.open")
+    assert "security" in doc
+    assert "debuggable" in doc

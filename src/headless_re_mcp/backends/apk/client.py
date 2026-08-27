@@ -343,6 +343,48 @@ class ApkClient:
                     if name.startswith("lib/") and len(name.split("/")) >= 3
                 }
             ),
+            "security": self._security_flags(apk),
+        }
+
+    def _security_flags(self, apk: Any) -> JsonObject:
+        """Application-level manifest flags that drive first-pass triage.
+
+        These live on the single ``<application>`` tag, so unlike per-component
+        lookups they read reliably by attribute name (no relative-name mismatch).
+        Absent attributes fall back to the platform default, which is the value
+        the app actually runs with: debuggable defaults off, allowBackup on, and
+        cleartext traffic is allowed below API 28 and denied at or above it. Each
+        is read defensively so a missing accessor never breaks apk.open.
+        """
+        def attr(name: str) -> str | None:
+            getter = getattr(apk, "get_attribute_value", None)
+            if not callable(getter):
+                return None
+            try:
+                value = getter("application", name)
+            except Exception:  # noqa: BLE001
+                return None
+            return None if value is None else str(value)
+
+        def as_bool(raw: str | None, default: bool) -> bool:
+            if raw is None:
+                return default
+            return str(raw).strip().lower() == "true"
+
+        try:
+            target = int(apk.get_target_sdk_version() or 0)
+        except (TypeError, ValueError):
+            target = 0
+        # Google flipped the cleartext default to off at API 28; below that (or
+        # when the target is unknown) plaintext HTTP is allowed by default.
+        cleartext_default = target < 28
+        return {
+            "debuggable": as_bool(attr("debuggable"), False),
+            "allow_backup": as_bool(attr("allowBackup"), True),
+            "uses_cleartext_traffic": as_bool(attr("usesCleartextTraffic"), cleartext_default),
+            # Whether the app ships a custom Network Security Config (which can
+            # re-enable cleartext or pin/trust CAs); presence alone is the signal.
+            "network_security_config": bool(attr("networkSecurityConfig")),
         }
 
     def manifest(self, path: Path, *, spill_dir: Path | None = None) -> JsonObject:
