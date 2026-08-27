@@ -35,6 +35,12 @@ _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
+# Enough of AndroidManifest.xml to recover the package attribute. Read as a
+# bounded stream, never with ``ZipFile.read`` + slice: an APK is attacker
+# supplied, and ``read`` decompresses the whole member into memory before the
+# slice runs, so a manifest that inflates to gigabytes is an OOM the cap was
+# supposed to prevent (the same growth race the PE scanner guards against).
+_MANIFEST_SCAN_BYTES = 64 * 1024
 # adbutils shell/sync calls otherwise wait forever when the device stalls.
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
@@ -184,8 +190,11 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with zipfile.ZipFile(path) as archive, archive.open("AndroidManifest.xml") as entry:
+            # read(n) decompresses only enough of the member to yield n bytes,
+            # so a decompression-bomb manifest cannot force an unbounded
+            # allocation the way ZipFile.read(name) would.
+            data = entry.read(_MANIFEST_SCAN_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:

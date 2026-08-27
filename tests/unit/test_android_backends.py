@@ -12,7 +12,14 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    _MANIFEST_SCAN_BYTES,
+    AdbBackend,
+    AdbError,
+    _apk_package_name,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -77,6 +84,60 @@ class TestAdbArgumentValidation:
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
+
+
+class TestApkPackageNameIsBounded:
+    """``_apk_package_name`` runs on an attacker-supplied APK before install.
+
+    It must derive the package id from a bounded prefix of AndroidManifest.xml,
+    never by decompressing the whole member: an APK can ship a manifest that
+    inflates to gigabytes, which is the growth-race OOM the PE scanner already
+    guards against.
+    """
+
+    @staticmethod
+    def _apk_with_manifest(path: Path, manifest: bytes) -> Path:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", manifest)
+        return path
+
+    def test_extracts_the_package_from_a_plain_text_manifest(self, tmp_path: Path) -> None:
+        apk = self._apk_with_manifest(
+            tmp_path / "app.apk",
+            b'<manifest package="com.example.app" versionCode="1"/>',
+        )
+        assert _apk_package_name(apk) == "com.example.app"
+
+    def test_reads_a_bomb_manifest_without_decompressing_it_whole(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 32 MB manifest that compresses to nothing must not be read whole.
+
+        The package attribute sits in the first bytes, so a bounded stream
+        read recovers it. ``ZipFile.read(name)`` — the API that would inflate
+        the entire member first — is made to fail, so a result at all proves
+        the bounded ``open()`` path is the one in use.
+        """
+        head = b'<manifest package="com.example.head">'
+        manifest = head + b"A" * (32 * 1024 * 1024)
+        apk = self._apk_with_manifest(tmp_path / "bomb.apk", manifest)
+
+        def forbid_whole_member_read(*_args: Any, **_kwargs: Any) -> bytes:
+            raise AssertionError("must not decompress the whole manifest member")
+
+        monkeypatch.setattr(zipfile.ZipFile, "read", forbid_whole_member_read)
+        assert _apk_package_name(apk) == "com.example.head"
+
+    def test_ignores_a_package_attribute_past_the_scan_window(self, tmp_path: Path) -> None:
+        """A package id only beyond the cap is not seen, proving the read stops.
+
+        The scanned prefix holds no ``package=`` and no dotted identifier, so a
+        manifest that hides its real package id past the window resolves to
+        None rather than smuggling an out-of-window value into the install path.
+        """
+        manifest = b"A" * (_MANIFEST_SCAN_BYTES * 2) + b'package="com.example.beyond"'
+        apk = self._apk_with_manifest(tmp_path / "past.apk", manifest)
+        assert _apk_package_name(apk) is None
 
 
 class TestFridaTargetAuthorization:
