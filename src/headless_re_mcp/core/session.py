@@ -589,6 +589,11 @@ _AXML_ATTR_BY_RES_ID = {
     # analogue of the native checksec facts.
     0x0101000F: "debuggable",
     0x01010272: "testOnly",
+    # Two more <application> posture flags: whether app data is exposed to
+    # `adb backup` and whether plaintext HTTP is permitted -- both first-order
+    # mobile-pentest findings, both read the same way debuggable is.
+    0x01010280: "allowBackup",
+    0x010104EC: "usesCleartextTraffic",
 }
 # The intent-filter markers that make an <activity> the app's launcher -- its
 # entry point, the Android analogue of an ELF's e_entry or a .NET entry token.
@@ -1116,6 +1121,8 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     permissions: list[str] = []
     debuggable: bool | None = None
     test_only: bool | None = None
+    allow_backup: bool | None = None
+    uses_cleartext: bool | None = None
     # Launcher (entry-point) detection is a small state machine over the flat
     # element walk: remember the current <activity>'s name, and whether the
     # intent-filter currently open has declared both MAIN and LAUNCHER. Both in
@@ -1156,6 +1163,10 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                     debuggable = _axml_bool(attrs, "debuggable")
                 if test_only is None:
                     test_only = _axml_bool(attrs, "testOnly")
+                if allow_backup is None:
+                    allow_backup = _axml_bool(attrs, "allowBackup")
+                if uses_cleartext is None:
+                    uses_cleartext = _axml_bool(attrs, "usesCleartextTraffic")
             elif name in ("activity", "activity-alias"):
                 # A new activity subtree: its own android:name is the launchable
                 # component (for an alias too -- that is what gets launched).
@@ -1190,6 +1201,10 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         facts["debuggable"] = debuggable
     if test_only is not None:
         facts["test_only"] = test_only
+    if allow_backup is not None:
+        facts["allow_backup"] = allow_backup
+    if uses_cleartext is not None:
+        facts["uses_cleartext_traffic"] = uses_cleartext
     return facts
 
 

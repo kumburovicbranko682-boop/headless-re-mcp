@@ -135,9 +135,10 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
 
     ``app_attrs`` are ``(name_index, data_type, data)`` triples for the
     <application> element. A boolean flag (data_type 0x12) can be placed by name
-    -- index 5 is ``debuggable``, 6 is ``testOnly`` -- or, with name index 0 (the
-    empty string) whose resource-map slot carries the debuggable id, by resource
-    id, exactly how aapt2 leaves a stripped android:* attribute.
+    -- index 5 is ``debuggable``, 6 ``testOnly``, 7 ``allowBackup``, 8
+    ``usesCleartextTraffic`` -- or, with name index 0 (the empty string) whose
+    resource-map slot carries the debuggable id, by resource id, exactly how
+    aapt2 leaves a stripped android:* attribute.
     """
     strings = [
         "",  # 0: stripped-name slot; its resource-map entry names debuggable
@@ -147,6 +148,8 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
         "com.example.flags",  # 4
         "debuggable",  # 5
         "testOnly",  # 6
+        "allowBackup",  # 7
+        "usesCleartextTraffic",  # 8
     ]
     data = bytearray()
     offsets: list[int] = []
@@ -162,7 +165,7 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
         strings_start, 0,
     )
     pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
-    res_ids = [0x0101000F, 0, 0, 0, 0, 0, 0]  # index 0 resolves to android:debuggable
+    res_ids = [0x0101000F, 0, 0, 0, 0, 0, 0, 0, 0]  # index 0 resolves to android:debuggable
     resmap = struct.pack("<HHI", 0x0180, 8, 8 + 4 * len(res_ids))
     resmap += b"".join(struct.pack("<I", rid) for rid in res_ids)
 
@@ -305,6 +308,10 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["debuggable"] is True
         # testOnly is not declared, so the fact is omitted rather than guessed.
         assert "test_only" not in manifest
+        # The other declared posture flags -- one false, one true, so a wrong
+        # constant cannot satisfy both; the apktool gate cross-checks them too.
+        assert manifest["allow_backup"] is False
+        assert manifest["uses_cleartext_traffic"] is True
         # The launchable activity (entry point) -- the <activity> whose
         # intent-filter carries MAIN + LAUNCHER; the apktool gate cross-checks
         # this same component against apktool's own decode.
@@ -354,13 +361,27 @@ class TestManifestFactsWithoutAndroguard:
         assert "test_only" not in manifest
 
     def test_security_flags_absent_when_application_declares_none(self, tmp_path: Path) -> None:
-        # An <application> that declares neither flag leaves both facts out,
-        # rather than inventing a version-dependent default.
+        # An <application> that declares no flag leaves every fact out,
+        # rather than inventing version-dependent defaults.
         manifest = describe_apk(
             self._apk_with_manifest(tmp_path, "none.apk", _axml_flag_manifest([]))
         )["apk"]["manifest"]
         assert "debuggable" not in manifest
         assert "test_only" not in manifest
+        assert "allow_backup" not in manifest
+        assert "uses_cleartext_traffic" not in manifest
+
+    def test_reads_allow_backup_and_cleartext_by_name(self, tmp_path: Path) -> None:
+        # allowBackup=true, usesCleartextTraffic=false -- the opposite pairing
+        # from the committed fixture, so both flags prove they carry their own
+        # value rather than echoing a neighbour's.
+        manifest_bytes = _axml_flag_manifest([(7, 0x12, 0xFFFFFFFF), (8, 0x12, 0)])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "backup.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["allow_backup"] is True
+        assert manifest["uses_cleartext_traffic"] is False
+        assert "debuggable" not in manifest
 
     def test_launcher_activity_from_a_main_launcher_intent_filter(self, tmp_path: Path) -> None:
         # The entry point: the <activity> whose intent-filter declares both

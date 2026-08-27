@@ -141,9 +141,17 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
         assert reader_flags["debuggable"] is True
         assert reader_flags["launcher_activity"] == "com.example.headless.MainActivity"
         manifest_xml = _apktool_manifest_text(settings.apktool, _FIXTURE, tmp_path)
-        apktool_debuggable = re.search(r'android:debuggable="(true|false)"', manifest_xml)
-        assert apktool_debuggable, manifest_xml
-        assert (apktool_debuggable.group(1) == "true") is reader_flags["debuggable"]
+        # Every declared posture flag, checked value for value against
+        # apktool's text rendering -- the fixture declares one of each
+        # polarity, so a stuck-at-true reader cannot pass.
+        for attr, fact in (
+            ("debuggable", "debuggable"),
+            ("allowBackup", "allow_backup"),
+            ("usesCleartextTraffic", "uses_cleartext_traffic"),
+        ):
+            apktool_flag = re.search(rf'android:{attr}="(true|false)"', manifest_xml)
+            assert apktool_flag, (attr, manifest_xml)
+            assert (apktool_flag.group(1) == "true") is reader_flags[fact], attr
         # The launcher activity apktool reports -- the <activity> whose
         # intent-filter carries MAIN + LAUNCHER -- must be the same component
         # the tool-free reader named.

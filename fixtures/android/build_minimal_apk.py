@@ -64,6 +64,8 @@ ATTR_RES_IDS = {
     "name": 0x01010003,
     "label": 0x01010001,
     "debuggable": 0x0101000F,
+    "allowBackup": 0x01010280,
+    "usesCleartextTraffic": 0x010104EC,
 }
 ATTR_NAMES = list(ATTR_RES_IDS)
 
@@ -217,9 +219,13 @@ def build_manifest() -> bytes:
     body += _end_element(pool, "uses-permission")
     body += _start_element(pool, "application", [
         Attr(ANDROID_NS, "label", "Headless"),
-        # A declared security-posture flag the stdlib AXML reader surfaces and
-        # the apktool gate cross-checks against apktool's decoded manifest.
+        # Declared security-posture flags the stdlib AXML reader surfaces and
+        # the apktool gate cross-checks against apktool's decoded manifest:
+        # a debuggable, cleartext-permitting build whose data is shielded from
+        # `adb backup` -- one true, one false, so both encodings are exercised.
         Attr(ANDROID_NS, "debuggable", True, is_bool=True),
+        Attr(ANDROID_NS, "allowBackup", False, is_bool=True),
+        Attr(ANDROID_NS, "usesCleartextTraffic", True, is_bool=True),
     ])
     body += _start_element(pool, "activity", [Attr(ANDROID_NS, "name", MAIN_ACTIVITY)])
     body += _start_element(pool, "intent-filter", [])
