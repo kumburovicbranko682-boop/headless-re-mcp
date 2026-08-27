@@ -146,6 +146,17 @@ class ApktoolClient:
         timeout: float = 300.0,
     ) -> JsonObject:
         """Sign an APK, defaulting to the standard Android debug keystore."""
+        # A custom keystore must carry its own password and alias -- that is a
+        # property of the request, judged before the capability gate and before
+        # the keystore file is even resolved. Left after the gate, a host without
+        # apksigner answered capability_unavailable for a request that was also
+        # missing its credentials: one bad input, two verdicts. The debug
+        # keystore (keystore is None) supplies both defaults, so it is untouched.
+        if keystore is not None and (not keystore_password or not key_alias):
+            raise ApktoolError(
+                "invalid_params",
+                "keystore_password and key_alias are required for a custom keystore",
+            )
         if not self.signer_available or self.apksigner is None:
             raise ApktoolError(
                 "capability_unavailable", "apksigner is not configured (needs a JRE)"

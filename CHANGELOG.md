@@ -62,6 +62,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（apk.sign 自定义 keystore 缺凭据在 apksigner 能力门之前就回 invalid_params）
+
+- `apk.sign` 暴露 `keystore`/`keystore_password`/`key_alias`：服务层把非空 `keystore` 串（过路径安全后）
+  当作自定义 keystore 传给客户端，而"自定义 keystore 必须自带密码与别名"这条规则的校验一直放在
+  `signer_available` 能力门**之后**。于是没配 apksigner 的机器上，一个带自定义 keystore 却漏了密码/别名的
+  请求得到的是 `capability_unavailable` 而非 `invalid_params`——同一个坏输入，配了 apksigner 的机器判
+  `invalid_params`、没配的机器判 `capability_unavailable`，把"请求本身缺凭据"这件事藏在了"本机没装工具"
+  后面。现把这条规则前移到能力门之前、keystore 文件解析之前：`keystore is not None` 且密码或别名为空即回
+  `invalid_params`；debug keystore（`keystore is None`）自带默认密码/别名，完全不受影响；apksigner 调用点
+  原有的 `if not password or not alias` 作为贴着 argv 构造的纵深防御保留。这条与 `ghidra.xrefs/decompile`
+  的空 address 一样是**经 MCP 工具面可达**的：调用方确实能传自定义 keystore 却漏填凭据。与 `proxy.start`
+  的 port、`frida.server.ensure` 的 port、`apk.methods/xrefs` 的必填名同属"输入先于门"的一致处理。回归钉住：
+  apksigner 未配置时，缺密码/缺别名/两者皆缺的自定义 keystore 都回 `invalid_params` 且从不解析 keystore
+  文件；而凭据齐全的请求仍照常在能力门回 `capability_unavailable`——只挪了输入校验，没把真实能力缺口误判成
+  输入错误。
+
 ### 修复（ghidra.xrefs/decompile 的必填 address 空值在分析之前就回 invalid_params）
 
 - `ghidra.xrefs`/`decompile` 的 `address` 是必填参数、驱动整趟导出，但工具签名是无 `min_length` 的

@@ -201,3 +201,52 @@ def test_apk_sign_does_not_claim_signed_when_verify_fails(
         )
     assert caught.value.code == "backend_error"
     assert "not signed" in caught.value.message
+
+
+@pytest.mark.parametrize(
+    ("password", "alias"),
+    [("", "release"), ("pw", ""), ("", "")],
+)
+def test_a_custom_keystore_without_credentials_is_invalid_params_before_the_gate(
+    tmp_path: Path, password: str, alias: str
+) -> None:
+    """Missing custom-keystore credentials must not hide behind capability_unavailable.
+
+    apk.sign exposes keystore/keystore_password/key_alias, and a non-empty
+    keystore string reaches the client as a custom keystore. The credentials are
+    a property of the request, so a host without apksigner configured must still
+    call such a request invalid_params rather than capability_unavailable -- one
+    bad input, one verdict. The keystore file is never even resolved.
+    """
+    client = ApktoolClient(apktool=None, apksigner=None)
+    assert client.signer_available is False
+    with pytest.raises(ApktoolError) as info:
+        client.sign(
+            tmp_path / "a.apk",
+            tmp_path / "signed.apk",
+            keystore=tmp_path / "release.jks",
+            keystore_password=password,
+            key_alias=alias,
+        )
+    assert info.value.code == "invalid_params"
+
+
+def test_a_well_formed_custom_sign_still_hits_the_capability_gate(
+    tmp_path: Path,
+) -> None:
+    """Only the credential check moved; a complete request still gates on apksigner.
+
+    With password and alias present the pre-gate check passes, so an unconfigured
+    apksigner is reported as capability_unavailable exactly as before -- the fix
+    did not turn a genuine capability gap into an input error.
+    """
+    client = ApktoolClient(apktool=None, apksigner=None)
+    with pytest.raises(ApktoolError) as info:
+        client.sign(
+            tmp_path / "a.apk",
+            tmp_path / "signed.apk",
+            keystore=tmp_path / "release.jks",
+            keystore_password="pw",
+            key_alias="release",
+        )
+    assert info.value.code == "capability_unavailable"
