@@ -169,7 +169,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the current page HTML, URL, and title.
 
         Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        cut at the buffer. html is the top document only: child_frames counts
+        the top-level iframe/frame elements whose separate document content is
+        not included, so a page that renders inside a frame is not misread as
+        having almost no DOM. There is no content, dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
