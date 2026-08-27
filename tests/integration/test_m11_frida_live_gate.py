@@ -86,20 +86,29 @@ def test_m11_frida_live_attach_modules_exports() -> None:
         assert any(isinstance(m.get("name"), str) and m["name"] for m in mods["modules"])
 
         wanted = {name.lower() for name in system_modules}
-        sys_mod = next(
-            (
-                str(m["name"])
-                for m in mods["modules"]
-                if str(m.get("name", "")).lower() in wanted
-            ),
+        sys_module = next(
+            (m for m in mods["modules"] if str(m.get("name", "")).lower() in wanted),
             None,
         )
-        if sys_mod is None:
+        if sys_module is None:
             pytest.fail(f"expected one of {sorted(system_modules)} among frida modules")
+        sys_mod = str(sys_module["name"])
         exports = client.exports(proc.pid, sys_mod, allowed_pid=proc.pid, limit=16)
         assert exports.get("found") is True
         assert exports.get("count", 0) >= 1
         assert isinstance(exports.get("exports"), list)
+
+        # A module's base maps its image header, so a short read there returns
+        # the real magic bytes of the target's memory -- ELF on POSIX, MZ on
+        # Windows. This exercises the memory_read path against a known address.
+        base = int(str(sys_module.get("base") or "0"), 0)
+        if base > 0:
+            read = client.memory_read(proc.pid, base, 16, allowed_pid=proc.pid)
+            assert read.get("encoding") == "hex"
+            data = bytes.fromhex(str(read.get("data", "")))
+            assert len(data) == 16
+            magic = b"MZ" if os.name == "nt" else b"\x7fELF"
+            assert data.startswith(magic)
 
         hooked = client.hook_template(proc.pid, "noop", allowed_pid=proc.pid)
         assert hooked.get("loaded") is True

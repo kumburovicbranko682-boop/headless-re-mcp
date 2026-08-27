@@ -117,7 +117,10 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // NativePointer.readByteArray, not the Memory.readByteArray global: frida 17
+    // removed the Memory.readX/writeX globals, so the old call raised
+    // "TypeError: not a function" and memory_read failed on modern frida.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
