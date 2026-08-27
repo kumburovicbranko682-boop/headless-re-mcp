@@ -181,12 +181,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install system backends (radare2, wabt, arm cross toolchains)
+      - name: Install system backends (radare2, wabt, arm + mingw cross toolchains)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends radare2 wabt \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
+            gcc-mingw-w64-x86-64
 
       - name: Install webcrack (JS deobfuscation)
         run: npm install -g webcrack
@@ -252,7 +253,7 @@ jobs:
         # than silently hollowing out this job.
         run: |
           set -e
-          for tool in r2 wat2wasm wasm2wat webcrack cc java; do
+          for tool in r2 wat2wasm wasm2wat webcrack cc java x86_64-w64-mingw32-gcc; do
             command -v "$tool" >/dev/null || { echo "::error::$tool not on PATH"; exit 1; }
           done
           test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" \
@@ -316,6 +317,7 @@ jobs:
             tests/integration/test_m11_r2_ghidra_arm_agree_gate.py \
             tests/integration/test_m11_r2_arm_xrefs_gate.py \
             tests/integration/test_m11_r2_data_xrefs_gate.py \
+            tests/integration/test_m11_r2_pe_imports_gate.py \
             tests/integration/test_android_re_gate.py \
             tests/integration/test_android_tools_gate.py \
             tests/integration/test_android_dex_gate.py \
