@@ -1050,6 +1050,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **OpenAI 兼容 provider 的解析与装配契约成套固定**（`openai_compatible.py` 77%→99%）：
+  流里每个字段都来自第三方模型端点,新测试直测纯解析辅助函数把各家会发的形状钉死——
+  `_plain_text` 只认字符串/列表/带 text·content·summary 的对象、跳过非字符串值而不 stringify;
+  `_hidden_texts` 从 reasoning_content·reasoning 对象·extra_content.google.thought 各处抽思考文本,
+  无文本时返回空表而非空串块;`_usage_output_tokens` 跨 completion/output·驼峰·浮点·
+  completion_tokens_details 求和等拼写取输出 token,全非整数时返回 None;`_normalize_chunk` 提
+  Responses 风格 `output` 信封且仅在顶层缺 usage 时借用;`_ingest_tool_calls` 对重复 id/name
+  去重、空片段忽略、id 与 name 字节各自触发缓冲上限。SSE 行分割器去 CRLF、无换行的尾行照常
+  吐出、超限的完整行拒收。stream_chat 无 key 时不发 Authorization 头、错误体为空时原样重抛裸
+  状态码、工具参数最终非法 JSON 或非对象或缺函数名各自 ValueError;list_models 排序去重并丢弃
+  畸形条目、data 非列表回空、错误体为空原样重抛;proxy 环境不可解析的告警只发一次;两个入口
+  在缺 httpx 时都报 `web extra requires httpx` 而非 NameError。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
