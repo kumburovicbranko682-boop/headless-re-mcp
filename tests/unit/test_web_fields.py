@@ -129,6 +129,86 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "metadata_truncated" in doc
 
 
+class _MixedNetworkHandle:
+    """A session handle whose capture holds mixed traffic for the filter tests."""
+
+    def __init__(self, rows: list[dict[str, Any]], *, dropped: int = 0) -> None:
+        self.lock = Lock()
+        self.requests = {str(row["requestId"]): row for row in rows}
+        self.requests_dropped = dropped
+
+
+def test_web_network_list_filters_narrow_the_capture(monkeypatch: Any) -> None:
+    """A capture of mixed traffic must narrow by method/url/status/type/failed.
+
+    Finding the one XHR to an API host among documents, scripts and images
+    otherwise meant paging the whole capture. Assert each filter narrows to the
+    matching subset, that total/has_more describe that subset (not the whole
+    capture), and that filtered/unfiltered_total are reported so a small match
+    is not mistaken for a small capture.
+    """
+    rows = [
+        {"requestId": "1", "url": "https://app/index.html", "method": "GET",
+         "resourceType": "Document", "status": 200},
+        {"requestId": "2", "url": "https://cdn/app.js", "method": "GET",
+         "resourceType": "Script", "status": 200},
+        {"requestId": "3", "url": "https://api.example.com/v1/login", "method": "POST",
+         "resourceType": "XHR", "status": 401, "has_request_body": True},
+        {"requestId": "4", "url": "https://api.example.com/v1/me", "method": "GET",
+         "resourceType": "XHR", "status": 200},
+        {"requestId": "5", "url": "https://cdn/pixel.gif", "method": "GET",
+         "resourceType": "Image", "status": None, "failed": True,
+         "error_text": "net::ERR_BLOCKED_BY_CLIENT"},
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _MixedNetworkHandle(rows, dropped=7))
+
+    # url_contains folds case and matches a host fragment; the two API calls hit.
+    api = backend.network_list("s", url_contains="API.EXAMPLE.com")
+    assert {row["requestId"] for row in api["requests"]} == {"3", "4"}
+    assert api["total"] == 2
+    assert api["has_more"] is False
+    assert api["filtered"] is True
+    assert api["unfiltered_total"] == 5
+    # dropped stays the whole-capture eviction count, not the filtered count.
+    assert api["dropped"] == 7
+
+    # resource_type is exact and case-insensitive: only the two XHRs.
+    xhr = backend.network_list("s", resource_type="xhr")
+    assert {row["requestId"] for row in xhr["requests"]} == {"3", "4"}
+
+    # method is exact and case-insensitive.
+    posts = backend.network_list("s", method="post")
+    assert [row["requestId"] for row in posts["requests"]] == ["3"]
+
+    # status is an exact int; the pending/failed request (status None) never matches.
+    ok = backend.network_list("s", status=200)
+    assert {row["requestId"] for row in ok["requests"]} == {"1", "2", "4"}
+
+    # failed selects only the blocked/aborted request.
+    dead = backend.network_list("s", failed=True)
+    assert [row["requestId"] for row in dead["requests"]] == ["5"]
+    alive = backend.network_list("s", failed=False)
+    assert {row["requestId"] for row in alive["requests"]} == {"1", "2", "3", "4"}
+
+    # Filters combine: an XHR POST to the API host is just the login call.
+    combo = backend.network_list("s", resource_type="xhr", method="POST", url_contains="login")
+    assert [row["requestId"] for row in combo["requests"]] == ["3"]
+
+    # An unfiltered call carries neither key, so a plain listing is not read as
+    # a filtered one.
+    plain = backend.network_list("s")
+    assert "filtered" not in plain
+    assert "unfiltered_total" not in plain
+    assert plain["total"] == 5
+
+    doc = _tool_docstring("web.network.list")
+    assert "url_contains" in doc
+    assert "resource_type" in doc
+    assert "filtered" in doc
+    assert "unfiltered_total" in doc
+
+
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     class _Cdp:
         def __init__(self) -> None:

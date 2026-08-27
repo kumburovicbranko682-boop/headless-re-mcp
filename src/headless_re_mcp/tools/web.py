@@ -66,6 +66,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        method: str | None = None,
+        url_contains: str | None = None,
+        status: int | None = None,
+        resource_type: str | None = None,
+        failed: bool | None = None,
     ) -> dict[str, Any]:
         """List captured network requests.
 
@@ -84,8 +89,32 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         for one still pending. Headers are not in the list (it stays cheap);
         fetch them with web.network.get. metadata_truncated marks bounded
         oversized request fields. There is no type field.
+
+        Pass any of method (exact, case-insensitive), url_contains (a
+        case-insensitive substring of the URL -- a host or path fragment),
+        status (exact int; a request with no status yet never matches),
+        resource_type (exact, case-insensitive: xhr/fetch/script/document/
+        image/...) or failed (true keeps only blocked/aborted requests, false
+        only those not flagged failed) to narrow a large capture -- finding one
+        XHR to an API host among thousands of requests otherwise meant paging
+        the whole log. Filters combine (all must hold) and are applied before
+        pagination, so total/count/has_more describe the matched subset; when
+        any filter is set the reply also carries filtered true and
+        unfiltered_total (the whole capture's size) so a small match is not
+        read as a small capture. dropped stays the whole-capture eviction count.
         """
-        return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.web_network_list(
+                session_id,
+                offset=offset,
+                limit=limit,
+                method=method,
+                url_contains=url_contains,
+                status=status,
+                resource_type=resource_type,
+                failed=failed,
+            )
+        )
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:

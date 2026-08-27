@@ -354,6 +354,63 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             png_path = got.data.get("body_path")
             assert isinstance(png_path, str), "a binary body must always spill to a file"
             assert Path(png_path).read_bytes() == _LOCAL_PNG
+
+            # Server-side filtering must narrow the same live capture without
+            # paging: the whole point is finding one call among many. Compare
+            # against the full listing so the filtered view is provably a subset.
+            full = service.web_network_list(session_id, limit=1000)
+            assert full.ok, full.error
+            full_total = full.data["total"]
+            assert full_total >= 3
+
+            # method is exact and case-insensitive: the POST /api/login is a POST,
+            # and every row a method filter returns must share that method.
+            posts = service.web_network_list(session_id, method="post", limit=1000)
+            assert posts.ok, posts.error
+            assert posts.data["filtered"] is True
+            assert posts.data["unfiltered_total"] == full_total
+            assert posts.data["total"] <= full_total
+            assert all(row["method"] == "POST" for row in posts.data["requests"])
+            assert any(
+                str(row.get("url", "")).endswith("/api/login") for row in posts.data["requests"]
+            ), "the POST /api/login was not found by a method=POST filter"
+
+            # url_contains folds case and matches a path fragment; it must pin the
+            # login call and report the whole capture's size so a one-row match is
+            # not read as a one-request capture.
+            login_only = service.web_network_list(session_id, url_contains="/API/login")
+            assert login_only.ok, login_only.error
+            assert login_only.data["filtered"] is True
+            assert login_only.data["unfiltered_total"] == full_total
+            urls = {str(row.get("url", "")) for row in login_only.data["requests"]}
+            assert urls, "url_contains=/api/login matched nothing"
+            assert all(url.endswith("/api/login") for url in urls)
+
+            # resource_type is exact: read the type CDP actually assigned the
+            # /data.json fetch, then filter by it (lower-cased, proving case
+            # folding) and assert the call is surfaced while every returned row
+            # shares that type -- so the type filter narrows rather than matching
+            # everything. The fixture's own type is used because CDP's label
+            # (Fetch vs XHR) is not ours to hard-code.
+            data_row = next(
+                row
+                for row in full.data["requests"]
+                if str(row.get("url", "")).endswith("/data.json")
+            )
+            data_type = str(data_row["resourceType"])
+            assert data_type, "the /data.json request carried no resourceType"
+            typed = service.web_network_list(
+                session_id, resource_type=data_type.lower(), limit=1000
+            )
+            assert typed.ok, typed.error
+            assert typed.data["filtered"] is True
+            assert all(
+                str(row["resourceType"]).casefold() == data_type.casefold()
+                for row in typed.data["requests"]
+            )
+            assert any(
+                str(row.get("url", "")).endswith("/data.json") for row in typed.data["requests"]
+            ), f"resource_type={data_type} did not surface /data.json"
         finally:
             service.close_all()
 

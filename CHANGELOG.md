@@ -356,6 +356,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   活体门经代理打一条 GET 和一条 POST，断言 `method`/`url_contains`/`status` 各自把实时抓包收窄到目标 flow、回
   `filtered`/`unfiltered_total`、且非命中 flow 不在过滤页里（缺 mitmproxy 时 skip≠pass）；单测覆盖四种过滤器与组合、
   `total` 报命中数而 `unfiltered_total` 留全量、无过滤器不多出字段、以及 `status` 过滤跳过失败 flow。
+- **`web.network.list` 同样只能整页翻——一个页面动辄几百上千条请求**。CDP 抓包此前只有分页，要在文档、脚本、图片、
+  XHR/fetch 里找某个打到 API 主机的调用只能一页页翻。与 `proxy.flows` 对齐，给 `web.network.list` 加五个可选过滤器，
+  在分页**之前**收窄：`method`（精确、大小写不敏感）、`url_contains`（大小写不敏感子串，便于按主机或路径片段定位）、
+  `status`（精确状态码，尚无状态的在途/失败请求永不匹配，避免把「未知」当成「命中一切」）、`resource_type`（精确、
+  大小写不敏感：xhr/fetch/script/document/image…）、以及 `failed`（真只留被拦截/中止的请求，假只留未被标 `failed` 的）。
+  过滤器可叠加（需全部命中）。设了任一过滤器时，`total`/`count`/`has_more` 描述命中子集，另回 `filtered` 为真与
+  `unfiltered_total`（整次抓包规模）——一小撮命中不会被读成一小撮抓包；`dropped` 仍按整个环的淘汰量计（过滤前）。
+  无过滤器时行为与字段完全不变（不多出 `filtered`/`unfiltered_total`），工具计数与读写归类不变。活体门用本地站点驱动
+  一次含文档、GET fetch、POST fetch、图片 fetch 的混合抓包，断言 `method=POST` 只回带请求体的登录调用、`url_contains`
+  折叠大小写并锁定该调用、`resource_type` 按 CDP 实际标注的类型收窄且非该类型的请求被排除，并核对 `filtered`/
+  `unfiltered_total`（缺浏览器时 skip≠pass）；单测覆盖五种过滤器与组合、`total` 报命中数、`dropped` 留全量、以及
+  无过滤器不多出字段。
 - **`apk.strings` 只能整页翻，找一个 URL/密钥要人肉翻完整个 DEX**。列表此前只有分页；要在一个大 app 的几万条常量里
   定位某个域名、`api_key`/token 标记、或某个加密常量，只能一页页翻，而收集上限是 5000 条去重字符串——真正想找的那条
   可能就在这 5000 条之外，无过滤扫描到上限就停了，永远够不着。给 `apk.strings` 加可选 `contains`（大小写不敏感子串），

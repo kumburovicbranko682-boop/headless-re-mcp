@@ -78,6 +78,41 @@ class WebError(RuntimeError):
         self.details = details
 
 
+def _request_matches(
+    entry: JsonObject,
+    method: str | None,
+    url_contains: str | None,
+    status: int | None,
+    resource_type: str | None,
+    failed: bool | None,
+) -> bool:
+    """Whether a captured request passes the (already-non-None) filters.
+
+    method and resource_type are exact, case-insensitive matches (GET is not
+    POST, ``script`` is not ``xhr``); url_contains is a case-insensitive
+    substring so a host or path fragment matches its URL; status is an exact
+    integer, and a request with no status yet (still pending, or one that
+    failed before a response) never matches a status filter rather than
+    matching everything. failed selects only blocked/aborted requests when
+    true, and only requests that were not flagged failed when false.
+    """
+    if method is not None and str(entry.get("method", "")).upper() != method.upper():
+        return False
+    if resource_type is not None and (
+        str(entry.get("resourceType", "")).casefold() != resource_type.casefold()
+    ):
+        return False
+    if url_contains is not None and (
+        url_contains.casefold() not in str(entry.get("url", "")).casefold()
+    ):
+        return False
+    if status is not None:
+        entry_status = entry.get("status")
+        if not isinstance(entry_status, int) or entry_status != status:
+            return False
+    return failed is None or bool(entry.get("failed")) is failed
+
+
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     payload = text.encode("utf-8", errors="replace")
@@ -785,18 +820,45 @@ class WebBackend:
         runner.shutdown()
         return {"closed": True, "clean": clean}
 
-    def network_list(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def network_list(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        method: str | None = None,
+        url_contains: str | None = None,
+        status: int | None = None,
+        resource_type: str | None = None,
+        failed: bool | None = None,
+    ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
+        # ``dropped`` is the ring-eviction count for the whole capture, measured
+        # against every recorded request before any filter narrows the view, so a
+        # filtered page cannot misreport how much history the ring has lost.
+        unfiltered_total = len(items)
+        filtered = any(
+            v is not None for v in (method, url_contains, status, resource_type, failed)
+        )
+        if filtered:
+            # Narrow before paginating so the pagination fields describe the set
+            # the caller is actually walking. Finding one XHR among thousands of
+            # requests otherwise meant paging the whole capture by hand.
+            items = [
+                row
+                for row in items
+                if _request_matches(row, method, url_contains, status, resource_type, failed)
+            ]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
         # Headers live on the entry for network.get, but a list page must stay
         # cheap, so hand back copies without them.
         slim = [{k: v for k, v in row.items() if k not in _HEADER_KEYS} for row in window]
-        return {
+        result: JsonObject = {
             "requests": slim,
             "count": len(slim),
             "total": len(items),
@@ -804,6 +866,13 @@ class WebBackend:
             "has_more": start + len(slim) < len(items),
             "dropped": dropped,
         }
+        if filtered:
+            # total already reports the matched count; unfiltered_total keeps the
+            # size of the whole capture visible so a small match is not read as a
+            # small capture.
+            result["filtered"] = True
+            result["unfiltered_total"] = unfiltered_total
+        return result
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
