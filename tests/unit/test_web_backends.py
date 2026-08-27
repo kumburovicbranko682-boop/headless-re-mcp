@@ -306,24 +306,27 @@ class TestProxyStopFreesTheListenPort:
             loop.close()
 
 
-class TestProxyDropsTheKeepservingAddon:
-    """keepserving.running() reads ctx.options.rfile and can raise at startup.
+class TestProxyDropsTheStartupOnlyAddons:
+    """readfile/keepserving running() reads race the process-global ctx.options.
 
-    The addon does nothing for a live intercepting proxy -- it only schedules
-    work when a file-read or replay was requested on startup, which this proxy
-    never does -- so the client removes it before the master runs, deleting both
-    the fragile ``No such option: rfile`` read and the latent post-replay
-    shutdown it would otherwise perform. This pins that removal without
-    mitmproxy; the live proxy gate covers the rest.
+    Both hooks immediately dereference an addon-registered option (``rfile`` and
+    the replay options). Because mitmproxy's ``ctx.options`` is a module global
+    that a second session's starting proxy rebinds before its own addons
+    register those options, a still-running proxy's read can raise
+    ``AttributeError: No such option: rfile`` and fail startup. The addons are
+    inert for a live intercepting proxy, so the client removes them before the
+    master runs. DumpMaster installs the reader as ``readfilestdin`` (a
+    ``ReadFile`` subclass), which the earlier keepserving-only removal missed --
+    this pins that both names go. The live proxy gate covers the rest.
     """
 
-    def _fake_master(self, *, present: bool) -> tuple[object, object, list[object]]:
-        addon = object()
+    def _fake_master(self, present: set[str]) -> tuple[object, dict[str, object], list[object]]:
+        addons = {name: object() for name in present}
         removed: list[object] = []
 
         class _Addons:
             def get(self, name: str) -> object | None:
-                return addon if (name == "keepserving" and present) else None
+                return addons.get(name)
 
             def remove(self, target: object) -> None:
                 removed.append(target)
@@ -331,20 +334,29 @@ class TestProxyDropsTheKeepservingAddon:
         class _Master:
             addons = _Addons()
 
-        return _Master(), addon, removed
+        return _Master(), addons, removed
 
-    def test_keepserving_is_removed_before_the_master_runs(self) -> None:
-        from headless_re_mcp.backends.proxy.client import _drop_keepserving
+    def test_readfilestdin_and_keepserving_are_both_removed(self) -> None:
+        """DumpMaster installs the reader as readfilestdin; both must go."""
+        from headless_re_mcp.backends.proxy.client import _drop_startup_only_addons
 
-        master, addon, removed = self._fake_master(present=True)
-        _drop_keepserving(master)
-        assert removed == [addon], "the fragile keepserving addon must be removed"
+        master, addons, removed = self._fake_master({"keepserving", "readfilestdin"})
+        _drop_startup_only_addons(master)
+        assert set(removed) == {addons["keepserving"], addons["readfilestdin"]}
 
-    def test_a_master_without_the_addon_is_a_no_op(self) -> None:
-        from headless_re_mcp.backends.proxy.client import _drop_keepserving
+    def test_a_plain_readfile_name_is_also_removed(self) -> None:
+        """Other mitmproxy tools/versions register the reader as ``readfile``."""
+        from headless_re_mcp.backends.proxy.client import _drop_startup_only_addons
 
-        master, _addon, removed = self._fake_master(present=False)
-        _drop_keepserving(master)  # older mitmproxy that lacks the addon
+        master, addons, removed = self._fake_master({"readfile"})
+        _drop_startup_only_addons(master)
+        assert removed == [addons["readfile"]]
+
+    def test_a_master_without_the_addons_is_a_no_op(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _drop_startup_only_addons
+
+        master, _addons, removed = self._fake_master(set())  # older mitmproxy
+        _drop_startup_only_addons(master)
         assert removed == []
 
 

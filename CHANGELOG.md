@@ -234,6 +234,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `apk.repack` 再重建出（未签名）APK；新增 gate 驱动整条往返：decode 断言产出 smali 目录与命名 package
   的文本清单，repack 断言落盘一个未签名 APK。无 apktool 时干净跳过（skip != pass），apktool 在场时
   已验证通过。签名需 apksigner（Android build-tools），仍由既有降级单测覆盖。
+- **代理偶发 `No such option: rfile` 启动崩溃的真正根因找到并修掉了(上一次只修了一半)**。上一轮按机理
+  摘掉了 `keepserving` addon,但那次"复现不出来"的错其实仍在:回归 gate 现在能稳定重现——满文件跑
+  大约每三次挂一次,traceback 明确指向 `readfile.py:77` 的 `running()` 读 `ctx.options.rfile`。根因是
+  mitmproxy 的 `ctx.options` 是**进程级全局**,`Master.__init__` 会在该 master 的 addon 尚未注册自己的
+  选项之前就把这个全局重绑到新 master 的 options 上。本项目每会话一个代理,于是"第二个会话的代理正在
+  启动(options 还没装全)"这一瞬间,另一个仍在运行的代理的 `running()` 钩子去读 `ctx.options.rfile` 就
+  读到半成品 options、抛 `No such option: rfile` 并让启动失败——单会话跑不出来,多会话才现形。上一次只
+  摘 `keepserving` 漏掉了真正的读者:DumpMaster 装的是 `readfile.ReadFileStdin`(`ReadFile` 子类,继承那个
+  读 `rfile` 的 `running()`),注册名是 **`readfilestdin`** 而非 `readfile`。扫过所有默认 addon 的
+  `running()`,只有 `keepserving` 与 `readfile` 会在钩子里立即解引用 addon 级选项(`rfile` 与重放选项),
+  两者对实时拦截代理都无用,故把 `_drop_keepserving` 扩成 `_drop_startup_only_addons`,启动前一并摘掉
+  `keepserving` / `readfilestdin` / `readfile`(后者为兼容其它工具/版本注册的平名)。修复后同一 gate
+  连跑 20 次 20 次过(修复前约 1/3 挂)。单测同步覆盖三个名字都被摘、且缺失时是 no-op。
 - **doctor 现在只在浏览器真正装好时才判定 Web CDP 线就绪**。playwright 探针原先用 `probe_python_module`，
   只要包能 import 就报 `detected`;但 `web.open` 还需要浏览器二进制,而能力目录把 `web.cdp` 映射到这个探针。
   于是一次全新安装(或浏览器缓存被清掉——这很容易发生)就会把一条实际会在 launch 时 `backend_error` 的

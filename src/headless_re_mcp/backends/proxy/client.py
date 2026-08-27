@@ -42,24 +42,38 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
-def _drop_keepserving(master: Any) -> None:
-    """Remove the ``keepserving`` addon before the master runs.
+# Startup-only addons whose ``running()`` hook immediately dereferences an
+# addon-registered option (``rfile`` and the replay options). ``readfilestdin``
+# is the ``ReadFile`` subclass DumpMaster actually installs; ``readfile`` is
+# listed too so other mitmproxy tools/versions that register the plain name are
+# covered. All are inert for a live intercepting proxy.
+_STARTUP_ONLY_ADDONS: tuple[str, ...] = ("keepserving", "readfilestdin", "readfile")
 
-    Its ``running()`` hook unconditionally reads ``ctx.options.rfile`` (an
-    option owned by the readfile addon) alongside the replay options; when that
-    read lands before the option is visible the addon raises
-    ``AttributeError: No such option: rfile`` during startup. The addon is inert
-    for a live intercepting proxy -- it only schedules work when a file-read or
-    replay was requested on startup, which this embedded proxy never does -- and
-    if it ever did fire it would shut the proxy down once a replay drained,
-    killing a long-lived capture. Dropping it removes both the fragile read and
-    that latent teardown. Best-effort and version-tolerant: an older mitmproxy
-    without the addon is a no-op.
+
+def _drop_startup_only_addons(master: Any) -> None:
+    """Remove the startup-only addons that race on the process-global options.
+
+    mitmproxy's ``ctx.options`` is a module global that ``Master.__init__``
+    rebinds to the new master's options *before* that master's addons register
+    their options. With one proxy per session, a second session's proxy coming
+    up therefore leaves ``ctx.options`` pointing at a half-built options object;
+    a still-running proxy's ``running()`` hook that reads ``ctx.options.rfile``
+    (readfile) or the replay options (keepserving) then raises
+    ``AttributeError: No such option: rfile`` and fails startup. That was an
+    intermittent gate failure that only reproduced once several proxies were
+    started in one process.
+
+    These addons only do work when a file-read or replay was requested at
+    startup, which this embedded proxy never does, and keepserving would also
+    shut the proxy down once such a replay drained -- so dropping them removes
+    both the fragile reads and that latent teardown. Best-effort and
+    version-tolerant: an addon a given mitmproxy lacks is simply skipped.
     """
-    with contextlib.suppress(Exception):
-        addon = master.addons.get("keepserving")
-        if addon is not None:
-            master.addons.remove(addon)
+    for name in _STARTUP_ONLY_ADDONS:
+        with contextlib.suppress(Exception):
+            addon = master.addons.get(name)
+            if addon is not None:
+                master.addons.remove(addon)
 
 
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -375,7 +389,7 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
-            _drop_keepserving(master)
+            _drop_startup_only_addons(master)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
