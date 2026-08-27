@@ -939,6 +939,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.packages` 一次回完整包列表，`device.properties` 截断却不说**。忙碌的模拟器
   轻轻松松超过一次工具回包该装下的量；停在上限的列表和「到此为止」看起来一样。两者都
   带回 `has_more`，包列表默认 500、硬上限 2000。`apk.native_libs` 同样封顶并披露。
+- 新增回归（`device.properties` 解析真实 `getprop` 输出）：逐行以
+  `re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())` 取 `[键]: [值]`，非匹配行 `continue`
+  跳过，上限在匹配之后按已收属性数计。既有用例只喂规整、非空、同质的行（`[ro.item0]: [0]`
+  之类），于是真实 `getprop` 常见的四类情况全然惰性：空值属性（`[persist.sys.locale]: []`）须
+  以 `""` 保留而非丢弃（值组 `(.*)` 非 `(.+)`）；非 `[k]: [v]` 的行（横幅、空行、`key=value`
+  片段）须 `continue` 跳过而非 `break` 截断整份属性集；夹在有效行之间的垃圾行不得消耗上限预算
+  （上限计的是属性数而非原始行数，两条有效属性 + 中间垃圾行在 `limit=2` 下都保留且 `has_more`
+  为 False）；行首尾空白与冒号后额外空白须容忍（`line.strip()` 加正则 `\s*`）。以变异逐一验证
+  （`(.*)` 改 `(.+)`、`continue` 改 `break`、去掉 `line.strip()`、正则去掉 `\s*`）均被新用例
+  捕获，既有测试仍绿。
 - **ADB 调用在设备卡住时没有截止时间**。adbutils 的 `shell` / `install` / `sync` 默认
   一直等到设备应答；一个假死的模拟器就能永久占住一条工具线程。能传 `timeout` 的路径
   都带上截止（探测 8 秒、shell 30 秒、传输 120 秒），老版本 adbutils 不认该参数时回退。
