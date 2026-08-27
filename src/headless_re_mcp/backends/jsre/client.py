@@ -200,8 +200,13 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # -f/--force: webcrack refuses to write into a directory that already
+        # exists ("output directory already exists", exit 1), and the caller
+        # always hands us a freshly created unique dir, so without this every
+        # unpack fails. The dir is ours and empty, so overwrite is a no-op that
+        # simply grants permission to proceed.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )
