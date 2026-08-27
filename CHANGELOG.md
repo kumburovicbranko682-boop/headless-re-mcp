@@ -697,6 +697,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **OpenAI 导出的 265 份函数模式逐份体检**：每个条目须带非空 description、`type:"object"`
+  的 parameters、字典型 properties，且 `required` 里的每个名字都真实存在于 properties——
+  漂移的模式过去只会在真实调用方把整套工具发给 OpenAI 时才报错，离出问题的代码很远。
+- **MCP `call_tool` 进程内往返**：此前单测只看工具元数据，从未真的经 FastMCP 派发一次调用。
+  现以只读的 `session.list` 钉住传输契约——结构化结果恒为 `{ok, data, error, meta}` 信封、
+  文本内容块与信封序列化一致;同时钉住未知工具名在派发前即抛 `ToolError`,不会落到任何
+  服务方法上。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
