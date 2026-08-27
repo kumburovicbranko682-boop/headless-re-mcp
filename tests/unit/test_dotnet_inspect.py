@@ -134,6 +134,27 @@ def test_inspect_verified_cor20_bsjb(tmp_path: Path) -> None:
     assert "ILONLY" in report.flags_decoded
 
 
+def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
+    """Assembly (0x20) sits behind TypeDef/Field/MethodDef in every real image.
+
+    The name walker used to bail at the first table it could not size -- the
+    TypeDef right after Module -- so ``assembly_name`` came back None for any
+    genuine assembly. It must now step over the intervening tables and read the
+    real name from the committed multi-table fixture.
+    """
+    fixture = (
+        Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    )
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    report = inspect_dotnet(fixture, require_verified=True)
+    assert report.module_name == "MyModule.dll"
+    assert report.assembly_name == "MyAssembly"
+    assert report.metadata_stats is not None
+    assert report.metadata_stats.type_count == 2
+    assert report.metadata_stats.method_count == 2
+
+
 def test_service_dotnet_inspect(tmp_path: Path) -> None:
     path = tmp_path / "managed.exe"
     _write_verified_clr_pe(path)

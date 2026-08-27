@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.detection.pe import PeFormatError, scan_pe
+from headless_re_mcp.dotnet.tables import table_row_size
 
 JsonObject = dict[str, Any]
 
@@ -368,40 +369,29 @@ def _parse_tables_and_names(
     assembly_name: str | None = None
     if not strings:
         return None, None, stats
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    # Walk the tables in ascending order, sizing each one so the offset lands
+    # on the next. The Module table (0x00) is first, but the Assembly table
+    # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
+    # without those is not a real one -- so reaching its name means stepping
+    # over every table between them, not bailing at the first unknown row.
+    offset = cursor
     for bit in range(64):
         rows = row_counts.get(bit)
         if not rows:
             continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            break
+        if bit == 0x00:  # Module: Generation(2) then Name
+            name_idx, _ = read_string_index(tables, offset + 2)
             module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
+        elif bit == 0x20:  # Assembly: Name follows the fixed fields + PublicKey blob
+            name_at = offset + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
+        offset += row_size * rows
     return module_name, assembly_name, stats
