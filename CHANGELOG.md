@@ -60,6 +60,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`unpack.iat.scan` 候选被 max_candidates 截断而不作声明）
+
+- `rank_iat_candidates` 在 `_merge_overlaps` 去重后按 `max_candidates` 截断（默认 8），但返回里
+  只有 `candidate_count`（截断后）与 `raw_candidate_count`（去重*前*的扫描命中数）。二者都无法
+  告诉调用方“去重后的不同候选”被截掉了多少：当去重后的候选数超过上限时，返回的只是评分最高的
+  一段，尾部——可能藏着一个真实、不重叠的 IAT——被悄悄丢弃，调用方却会把这段当成“候选就这些”。
+  现返回 `merged_total`（截断前的去重候选总数）、`candidates_truncated`（布尔）与 `max_candidates`，
+  并在截断时于 `note` 说明这是“切片而非全集”。服务层 `unpack.iat.scan` 透传这三个字段，并在
+  `next` 里提示可调大 `max_candidates` 再看低分候选，避免把空尾部误当作“已无其它候选”。新增两条
+  纯函数直测（十个不重叠候选、cap=3 → 截断并披露；cap 覆盖全部 → 不标）与一条服务直测（透传字段）。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

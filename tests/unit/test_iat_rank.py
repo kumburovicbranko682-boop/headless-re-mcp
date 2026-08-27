@@ -100,10 +100,70 @@ def test_rank_dedupes_overlap_and_penalizes_high_rva_ime() -> None:
     )
     assert ranked["candidate_count"] == 3
     assert ranked["raw_candidate_count"] == 4
+    # No cap hit: the deduped set is returned whole, not a slice.
+    assert ranked["merged_total"] == 3
+    assert ranked["candidates_truncated"] is False
+    assert ranked["max_candidates"] == 8
     # Overlapping 0x431678 collapsed; alt_kinds present.
     ime = next(c for c in ranked["candidates"] if c["iat_va"] == 0x431678)
     assert "alt_kinds" in ime
     assert "ime_dominated" in (ime.get("noise_tags") or [])
+
+
+def test_rank_discloses_truncated_candidate_tail() -> None:
+    # Ten distinct, non-overlapping candidates; a small cap must drop the tail
+    # and say so rather than presenting the slice as the whole set.
+    candidates = [
+        {
+            "iat_va": 0x400000 + i * 0x1000,
+            "iat_rva": i * 0x1000,
+            "size": 64,
+            "matched_count": 16 - i,
+            "slot_count": 16,
+            "kind": "consecutive",
+            "confidence": 1.0 - i * 0.05,
+            "sample_apis": [{"module": "kernel32.dll", "name": f"Api{i}"}],
+        }
+        for i in range(10)
+    ]
+    ranked = rank_iat_candidates(
+        candidates,
+        module_base=0x400000,
+        module_size=0x2000000,
+        max_candidates=3,
+    )
+    assert ranked["candidate_count"] == 3
+    assert ranked["merged_total"] == 10
+    assert ranked["candidates_truncated"] is True
+    assert ranked["max_candidates"] == 3
+    assert len(ranked["candidates"]) == 3
+    assert "slice, not the full set" in ranked["note"]
+
+
+def test_rank_untruncated_when_cap_covers_all() -> None:
+    candidates = [
+        {
+            "iat_va": 0x400000 + i * 0x1000,
+            "iat_rva": i * 0x1000,
+            "size": 64,
+            "matched_count": 16,
+            "slot_count": 16,
+            "kind": "consecutive",
+            "confidence": 1.0,
+            "sample_apis": [{"module": "kernel32.dll", "name": f"Api{i}"}],
+        }
+        for i in range(3)
+    ]
+    ranked = rank_iat_candidates(
+        candidates,
+        module_base=0x400000,
+        module_size=0x2000000,
+        max_candidates=8,
+    )
+    assert ranked["candidates_truncated"] is False
+    assert ranked["merged_total"] == 3
+    assert ranked["candidate_count"] == 3
+    assert "slice, not the full set" not in ranked["note"]
 
 
 def test_stub_ratio_forces_vm_coupled() -> None:
