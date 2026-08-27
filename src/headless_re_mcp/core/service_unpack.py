@@ -1183,15 +1183,19 @@ class UnpackMixin:
             }
             if isinstance(scanners, list):
                 payload["scanners"] = scanners
-            if detection_inconclusive:
+            # The caveat only applies when the plan actually rests on the
+            # absence of candidates (route "none"). pe_dotnet / pe_vm_like /
+            # force_route can still pick a real route from PE signals despite an
+            # inconclusive DIE, and there "no packer plan" is not the claim.
+            if detection_inconclusive and str(plan.get("route")) == "none":
                 payload["note"] = (
                     "packer detection was inconclusive: the signature scanner "
                     "(diec/exeinfope) did not run to completion (unavailable/disabled/"
-                    "failed with no second opinion), so an empty candidate set does not "
-                    "confirm the sample is unpacked. A 'none' plan derived purely from "
-                    "the absence of candidates should be read as 'unknown', not a "
-                    "confirmed absence of packing; re-run with a configured/working DIE "
-                    "or set force_route before concluding no unpacking is needed."
+                    "failed with no second opinion), so the empty candidate set does not "
+                    "confirm the sample is unpacked. This 'none' plan reflects the "
+                    "absence of candidates, not a confirmed absence of packing; read it "
+                    "as 'unknown' and re-run with a configured/working DIE (or set "
+                    "force_route) before concluding no unpacking is needed."
                 )
             return _success(
                 payload,
@@ -1273,6 +1277,16 @@ class UnpackMixin:
                 return planned
             plan = planned.data["plan"]
             assert isinstance(plan, dict)
+            # Carry the plan's detection verdict through: unpack.start acts on a
+            # route derived from detection, and a "none" route off an
+            # inconclusive scan must not be recorded (in the timeline) or
+            # returned as a confirmed "no packer".
+            detection_conclusion = planned.data.get("detection_conclusion")
+            signature_scan_completed = bool(
+                planned.data.get("signature_scan_completed")
+            )
+            detection_inconclusive = bool(planned.data.get("detection_inconclusive"))
+            detection_note = planned.data.get("note")
             session = self.registry.get(session_id)
             route = str(plan.get("route", "none"))
             self._reset_unpack_cancel(session_id)
@@ -1374,6 +1388,27 @@ class UnpackMixin:
                     session_id,
                     route=route,
                 )
+            elif detection_inconclusive:
+                # route == "none" but the packer detector never ran: the
+                # timeline is the durable record an agent/human reads later, so
+                # do not write it as a confirmed "no packer".
+                state = append_timeline(
+                    state,
+                    event="no_packer_route",
+                    message=(
+                        "No packer candidates, but packer detection was inconclusive "
+                        "(signature scanner did not complete); the absence of a packer "
+                        "route is not confirmed. Prefer static analysis, and re-run "
+                        "detection with DIE configured (or set force_route) before "
+                        "ruling out packing."
+                    ),
+                    input_sha256=session.sha256,
+                    details={
+                        "detection_inconclusive": True,
+                        "detection_conclusion": detection_conclusion,
+                    },
+                )
+                bounded_probe = None
             else:
                 state = append_timeline(
                     state,
@@ -1396,7 +1431,14 @@ class UnpackMixin:
             payload: JsonObject = {
                 "unpack": state.to_dict(),
                 "claims_universal_unpack": False,
+                "detection_conclusion": detection_conclusion,
+                "signature_scan_completed": signature_scan_completed,
+                "detection_inconclusive": detection_inconclusive,
             }
+            # Only the candidate-absence route ("none") makes an inconclusive
+            # scan read as a false "no packer"; surface the caveat exactly there.
+            if detection_inconclusive and route == "none" and detection_note is not None:
+                payload["note"] = detection_note
             if bounded_probe is not None:
                 payload["bounded_probe"] = bounded_probe
             return _success(payload, session_id=session_id, backend="unpack")

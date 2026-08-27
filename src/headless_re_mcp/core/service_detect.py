@@ -543,16 +543,19 @@ class DetectAnalysisMixin:
             }
             if isinstance(scanners, list):
                 payload["scanners"] = scanners
-            if detection_inconclusive:
+            # The caveat only applies when the route actually rests on the
+            # absence of candidates (route "none"). pe_dotnet / pe_vm_like /
+            # force_route can still choose a real route from PE signals despite
+            # an inconclusive DIE, and there "no packer route" is not the claim.
+            if detection_inconclusive and recommendation.route == "none":
                 payload["note"] = (
                     "packer detection was inconclusive: the signature scanner "
                     "(diec/exeinfope) did not run to completion (unavailable/disabled/"
-                    "failed with no second opinion), so an empty candidate set does not "
-                    "confirm the sample is unpacked. Any route derived purely from the "
-                    "absence of candidates -- route 'none' in particular -- should be "
-                    "read as 'unknown', not a confirmed absence of packing; re-run with "
-                    "a configured/working DIE or set force_route before concluding no "
-                    "unpacking is needed."
+                    "failed with no second opinion), so the empty candidate set does not "
+                    "confirm the sample is unpacked. Route 'none' here reflects the "
+                    "absence of candidates, not a confirmed absence of packing; read it "
+                    "as 'unknown' and re-run with a configured/working DIE (or set "
+                    "force_route) before concluding no unpacking is needed."
                 )
             return _success(payload, session_id=session_id, backend="unpack")
         except BaseException as exc:
