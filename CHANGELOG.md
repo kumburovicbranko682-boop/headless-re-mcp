@@ -73,6 +73,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   首个可用的 `cc`/`gcc`/`clang` 现编（无编译器则如实 skip，仓库不落二进制），并加
   `test_m11_r2_live_elf_address_mapping`：对 ELF 跑 `aa`/`aflj`，断言 `parsed`、函数计数、
   不报 `image_base`、函数地址为 `va` 且不含 `rva`。原 PE Gate 在 Windows 继续覆盖重定位分支。
+- 再补两条实测 Gate,覆盖 `parse_r2_json` / `_item_va` 在真机输出上此前只有单元桩验证的路径。
+  其一 `test_m11_r2_live_elf_disassembly_parses_despite_bracket_operands`:对 -O0 的具名 helper 跑 `pdj`
+  反汇编——其局部变量留在栈上,反汇编必然带 `[rbp - 4]` 这类方括号内存操作数,正是当年 `rfind("[")`
+  从操作数里的方括号切起、错过根数组、报 `parsed` 却零 item 的那种病态输入;断言 raw 里确有 `[`、
+  仍解析出带 `va` 地址的操作码 item。其二 `test_m11_r2_live_elf_strings_map_to_addresses`:对 ELF 跑 `izj`,
+  断言字符串走 `vaddr` 分支映射出 `va` 地址(与函数 `offset` 分支不同的 key 路径),并核对夹具里那条
+  printf 字面量确被 `izj` 找到。r2/rizin 缺失时如实 skip,skip≠pass。
 
 ### 修复（Ghidra 后端在 Linux 与现代 Ghidra 上都跑不起来）
 
