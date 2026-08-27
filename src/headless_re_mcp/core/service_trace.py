@@ -466,7 +466,7 @@ class TraceMixin:
                 self._finalize_trace_artifact(state, terminal_reason="status_failed")
             return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
     def _new_trace_artifact_path(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             raise ValueError("invalid session id for trace artifact path")
         session = self.registry.get(session_id)
         directory = self.settings.artifact_root.expanduser().resolve() / "trace" / session_id

@@ -2120,7 +2120,7 @@ class UnpackMixin:
             )
         return state
     def _unpack_session_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             raise ValueError("invalid session id for unpack artifact path")
         return (
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"

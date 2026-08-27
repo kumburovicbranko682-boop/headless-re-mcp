@@ -435,7 +435,11 @@ class DynamicInspectMixin:
             )
         output_path: Path | None = None
         try:
-            if not session_id or Path(session_id).name != session_id:
+            if (
+                not session_id
+                or session_id in {".", ".."}
+                or Path(session_id).name != session_id
+            ):
                 raise ValueError("invalid session id for artifact path")
             directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
             directory.mkdir(parents=True, exist_ok=True)
@@ -589,7 +593,11 @@ class DynamicInspectMixin:
             params: JsonObject = {"base": base}
             header_path: Path | None = None
             if save_artifact:
-                if not session_id or Path(session_id).name != session_id:
+                if (
+                    not session_id
+                    or session_id in {".", ".."}
+                    or Path(session_id).name != session_id
+                ):
                     raise ValueError("invalid session id for artifact path")
                 directory = self.settings.artifact_root.expanduser().resolve() / "dump" / session_id
                 directory.mkdir(parents=True, exist_ok=True)

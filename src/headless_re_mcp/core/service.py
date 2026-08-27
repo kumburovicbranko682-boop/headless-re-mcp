@@ -936,7 +936,7 @@ class AnalysisService(
         return self.services.runtime.close_session(session_id)
 
     def _session_work_dir(self, kind: str, session_id: str) -> Path | None:
-        if not session_id or Path(session_id).name != session_id:
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             return None
         root = self.settings.artifact_root.expanduser().resolve()
         path = (root / kind / session_id).resolve()

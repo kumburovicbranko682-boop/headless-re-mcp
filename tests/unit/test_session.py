@@ -249,3 +249,22 @@ def test_store_row_survives_a_missing_file(tmp_path: Path) -> None:
     assert session.locator == str(missing)
     assert session.metadata.get("missing_file") is True
     assert session.architecture == Architecture.X86
+
+
+@pytest.mark.parametrize("bad_id", ["..", ".", "a/b", "../escape", "", "   "])
+def test_store_row_refuses_a_non_segment_session_id(tmp_path: Path, bad_id: str) -> None:
+    """The restore choke point must reject an id that is not one path name.
+
+    The stored id becomes a path component under the artifact root in every
+    downstream writer. ``Path(x).name != x`` alone let ``..`` through, so a
+    tampered row could adopt a ``..`` session whose ``<cat>/<id>`` writes then
+    resolve to the category root. A dot segment (or separator, or blank) must
+    skip the row instead.
+    """
+    row = {
+        "id": bad_id,
+        "binary": str(tmp_path / "app.exe"),
+        "architecture": "x86",
+        "state": "created",
+    }
+    assert session_from_store_row(row) is None

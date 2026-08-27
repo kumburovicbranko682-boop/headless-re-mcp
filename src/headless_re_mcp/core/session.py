@@ -277,7 +277,13 @@ def hydrate_persisted_sessions(
 def session_from_store_row(row: Mapping[str, Any]) -> Session | None:
     """Build a dormant Session from a sessions.db row, or skip a bad row."""
     session_id = str(row.get("id") or "").strip()
-    if not session_id or Path(session_id).name != session_id:
+    # This is the choke point where a stored id re-enters the process: the id
+    # becomes a path component under the artifact root in every downstream
+    # writer. ``Path(x).name != x`` alone lets ``..`` through (``Path("..").name
+    # == ".."``), and an adopted ``..`` session then resolves each ``<cat>/<id>``
+    # write to the category root. Reject the dot segments explicitly, the way
+    # session_timeline_path and _is_safe_session_segment already do.
+    if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
         return None
     stored_state = str(row.get("state") or "").strip().lower()
     try:
