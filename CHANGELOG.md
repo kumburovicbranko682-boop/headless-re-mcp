@@ -60,6 +60,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`apk.strings` 的 `scan_capped` 不再被重复串误报为“可能还有更多唯一串”）
+
+- `ApkClient.strings` 把 DEX 串去重进一个 `set`,且在入集前先按 `_MAX_STRING_LEN`
+  截断——`get_strings()` 本身给的是**去重后**的串常量,但两条超过 `_MAX_STRING_LEN`、
+  又共享同一前缀的长串会被截断成同一个值、在集合里撞成重复。原实现把封顶判断放在循环
+  开头:只要 `len(seen) >= _MAX_STRINGS_COLLECT` 就置 `scan_more=True` 并 `break`,于是这条
+  截断重复(或任何在集合填满后到来的重复)也会触发——一个其唯一串其实**已全部收齐**的
+  DEX 却报 `scan_capped=True`。这既与工具契约(`scan_capped is true when more unique
+  strings may exist`)相悖,也与同文件的 `apk.xrefs` 背道而驰——后者明说 has_more「只在
+  确有东西被落下时才置位」。现改为先跳过已见值(`if value in seen: continue`),仅当一个
+  **确实是新的**唯一串因封顶被丢弃时才置 `scan_more`,与 `xrefs` 对齐;因 `get_strings()`
+  基本逐条给新值,越过封顶后的下一个新唯一串会立刻触发 `break`,故常见路径不多扫、无性能
+  回退。新增 `test_apk_strings_scan_capped.py`:以 `_MAX_STRINGS_COLLECT=3` 喂
+  `["a","b","c","a"]`(精确重复)与 `_MAX_STRING_LEN=2` 下的 `["aa","bb","cc","aaZZZ"]`
+  (截断撞车)断言 `scan_capped is False`、`total==3`;并以 `["a","b","c","d"]` 断言真有第四个
+  新唯一串被丢时 `scan_capped` 仍为 True。去掉修复后前两条以 `assert True is False` 失败,
+  正是调用方会被误导的那两条路径。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

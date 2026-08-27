@@ -401,10 +401,21 @@ class ApkClient:
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
+            value = str(item.get_value())[:_MAX_STRING_LEN]
+            if value in seen:
+                continue
             if len(seen) >= _MAX_STRINGS_COLLECT:
+                # Flag scan_capped only once a genuinely new string is dropped,
+                # the same rule xrefs states below. This dedups into a set and
+                # then truncates to _MAX_STRING_LEN, so two distinct long
+                # strings sharing a prefix collapse to one value; the old
+                # top-of-loop check fired on that duplicate and reported
+                # scan_capped for a DEX whose unique strings were in fact all
+                # collected. Skipping duplicates first keeps the flag meaning
+                # what the tool promises -- more unique strings may exist.
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
+            seen.add(value)
         values = sorted(seen)
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
         window = values[start : start + cap]
