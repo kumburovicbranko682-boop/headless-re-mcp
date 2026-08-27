@@ -8,6 +8,7 @@ disk. jadx needs a JRE on PATH; when either is missing the tool degrades to
 
 from __future__ import annotations
 
+import glob
 import os
 import subprocess
 import zipfile
@@ -145,8 +146,19 @@ class JadxClient:
                 # A simple-name walk used to return the first Main.java in the
                 # tree, which is whoever jadx happened to emit first -- not
                 # necessarily the class the caller named.
+                #
+                # rglob reads its argument as a glob, and the JVM permits ``*``
+                # and ``?`` in a class name (obfuscators emit them; only
+                # ``. ; [ /`` are reserved). So ``com.example.Foo*`` arrived here
+                # as the pattern ``Foo*.java``: the literal never exists, the
+                # exact lookup above always missed, and the walk then matched a
+                # *different* class (a lone ``Foobar.java``) and returned its
+                # source under the requested name. Escaping the basename makes the
+                # walk match the literal filename -- a genuine ``Foo*.java`` that
+                # jadx sanitised onto disk still resolves, while a wildcard that
+                # names nothing honestly falls through to not_found.
                 matches = []
-                for path in sources.rglob(candidate.name):
+                for path in sources.rglob(glob.escape(candidate.name)):
                     try:
                         resolved = path.resolve()
                     except (OSError, RuntimeError):

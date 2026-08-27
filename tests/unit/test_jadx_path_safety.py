@@ -99,6 +99,58 @@ def test_jadx_rejects_an_invalid_class_name_before_decompiling(
     assert caught.value.code == "invalid_params"
 
 
+def test_jadx_simple_name_fallback_does_not_treat_a_wildcard_as_a_glob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A class_name with glob metacharacters must not match a different class.
+
+    When the exact source path is absent, decompile falls back to a basename
+    walk. rglob reads its argument as a glob, and the JVM permits ``*`` in a
+    class name, so ``com.example.Foo*`` reached rglob as ``Foo*.java`` and
+    matched the lone ``Foobar.java``, returning that class's source under the
+    requested name. Escaping the basename makes the walk match the literal
+    filename, which does not exist, so the caller gets an honest not_found
+    instead of a different class's source.
+    """
+    out = tmp_path / "out"
+    src = out / "sources" / "com" / "example"
+    src.mkdir(parents=True)
+    (src / "Foobar.java").write_text("class Foobar { /* secret */ }", encoding="utf-8")
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "export_sources", lambda *args, **kwargs: {})
+
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", out, "com.example.Foo*")
+
+    assert caught.value.code == "not_found"
+    assert "secret" not in str(caught.value.details)
+
+
+def test_jadx_simple_name_fallback_still_resolves_a_relocated_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The basename walk must still find a real class jadx emitted elsewhere.
+
+    Escaping the rglob pattern only neutralises glob metacharacters; a genuine
+    class name (no wildcards) whose file landed under a different package layout
+    than its dotted name implies is still resolved by its unique basename.
+    """
+    out = tmp_path / "out"
+    src = out / "sources" / "relocated" / "pkg"
+    src.mkdir(parents=True)
+    (src / "Foobar.java").write_text("class Foobar {}", encoding="utf-8")
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "export_sources", lambda *args, **kwargs: {})
+
+    payload = client.decompile(tmp_path / "app.apk", out, "com.example.Foobar")
+
+    assert payload["class_name"] == "com.example.Foobar"
+    assert Path(payload["path"]).name == "Foobar.java"
+    assert payload["source"] == "class Foobar {}"
+
+
 def test_jadx_valid_class_name_falls_through_to_the_missing_backend(
     tmp_path: Path,
 ) -> None:
