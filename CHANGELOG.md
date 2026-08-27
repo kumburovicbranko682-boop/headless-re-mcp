@@ -193,6 +193,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   以显式 HTTP 代理发一条 GET 穿过它，再钉住流被抓到且解出真实的 method=`GET`、url 结尾 `/probe?x=1`、
   status=200、body 等于已知 marker、origin 设的 `X-Gate-Marker` 响应头也在，并验证 `export_har` 落出
   含该 URL 的条目。缺 mitmproxy 时明确 skip（skip≠pass）。mitmproxy 实测通过。
+- 第二条 gate 覆盖 `proxy.replay`（同样版本敏感：`flow.copy()` + `replay.client` 命令）：抓到一条流后
+  重放，并用 origin 命中计数证明**真的重发**了请求（origin 命中 1→2）、重放的请求也被重新抓成第二条流
+  （`flows.total` 1→2），而非只回一个 `replayed=True` 的空壳。mitmproxy 实测通过。
 
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
