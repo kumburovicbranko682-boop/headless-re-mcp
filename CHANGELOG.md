@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（WASM 静态反汇编 Gate：证明 wabt 真解码，而不只是「(module)」）
+
+- 既有 Web RE Gate 只拿最小模块（magic+version、零段）跑 `wasm.wat`，且只断言输出里有
+  "module"——空 `(module)` 也满足，等于没证明 wabt 真能解出函数、操作码与导出；`wasm.info`
+  （wasm-objdump）更是全无实测。新增 `tests/integration/test_wasm_decode_gate.py`：喂一份
+  手工编码、导出 `add(i32,i32)->i32` 的完整模块（字节按段落逐行标注，测试内构造，不依赖
+  `wat2wasm`），断言 `wasm.wat` 还原出 `local.get 0/1`、`i32.add` 与 `(export "add"`，
+  `wasm.info` 列出 Type/Function/Export/Code 四个段并解析出 `add` 导出。wabt 缺席时按
+  skip != pass 明确跳过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
