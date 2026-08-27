@@ -26,8 +26,10 @@ from headless_re_mcp.core.service import AnalysisService
 
 _TYPE_NAME = "Widget"
 _NAMESPACE = "HeadlessRe.Fixture"
+_FIELD_NAME = "Value"
 _METHOD_NAME = "Compute"
 _MEMBER_NAME = "WriteLine"
+_RESOURCE_NAME = "config.json"
 _MODULE_NAME = "HeadlessReFixture.dll"
 _METHOD_TOKEN = 0x06000001
 _CALL_TOKEN = 0x0A000001
@@ -52,10 +54,12 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     """Emit a minimal, verifiable PE/CLR assembly with populated tables.
 
     Layout mirrors the empty-table scaffold in the dotnet unit tests, extended
-    with a real ``#~`` tables stream (Module/TypeDef/MethodDef/MemberRef), the
-    string/guid/blob heaps those rows reference, and a tiny-format IL body the
-    MethodDef RVA points at. heap_sizes is 0 so every heap index is 2 bytes,
-    which keeps the ECMA-335 row sizes the reader computes matching ours.
+    with a real ``#~`` tables stream (Module/TypeDef/Field/MethodDef/MemberRef/
+    ManifestResource), the string/guid/blob heaps those rows reference, and a
+    tiny-format IL body the MethodDef RVA points at. heap_sizes is 0 so every
+    heap index is 2 bytes, which keeps the ECMA-335 row sizes the reader
+    computes matching ours. One row per table covers all five enumeration kinds
+    (types/methods/fields/resources/strings) plus IL and MemberRef xrefs.
     """
     strings = bytearray(b"\x00")
 
@@ -67,15 +71,20 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     idx_module = add_str(_MODULE_NAME)
     idx_ns = add_str(_NAMESPACE)
     idx_type = add_str(_TYPE_NAME)
+    idx_field = add_str(_FIELD_NAME)
     idx_method = add_str(_METHOD_NAME)
     idx_member = add_str(_MEMBER_NAME)
+    idx_resource = add_str(_RESOURCE_NAME)
 
     guid_heap = b"\x11" * 16
     blob_heap = b"\x00"
     us_heap = b"\x00"
 
     method_rva = 0x1050
-    valid = (1 << 0x00) | (1 << 0x02) | (1 << 0x06) | (1 << 0x0A)
+    # Module(0) TypeDef(2) Field(4) MethodDef(6) MemberRef(10) ManifestResource(40)
+    valid = (
+        (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x28)
+    )
     tables = bytearray()
     tables += _u32(0)                    # reserved
     tables += bytes([2, 0])              # schema major/minor
@@ -83,15 +92,19 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     tables += bytes([1])                 # reserved
     tables += struct.pack("<Q", valid)
     tables += struct.pack("<Q", 0)       # sorted
-    tables += _u32(1) + _u32(1) + _u32(1) + _u32(1)  # row counts, ascending bit order
+    tables += _u32(1) * 6                 # row counts, ascending bit order
     # Module: generation, name, mvid, encid, encbaseid
     tables += _u16(0) + _u16(idx_module) + _u16(1) + _u16(0) + _u16(0)
     # TypeDef: flags, name, namespace, extends, fieldlist, methodlist
     tables += _u32(0x00100001) + _u16(idx_type) + _u16(idx_ns) + _u16(0) + _u16(1) + _u16(1)
+    # Field: flags, name, signature
+    tables += _u16(0x0006) + _u16(idx_field) + _u16(0)
     # MethodDef: rva, implflags, flags, name, signature, paramlist
     tables += _u32(method_rva) + _u16(0) + _u16(0x0016) + _u16(idx_method) + _u16(0) + _u16(1)
     # MemberRef: class (TypeDef rid 1 -> (1<<3)|0), name, signature
     tables += _u16(8) + _u16(idx_member) + _u16(0)
+    # ManifestResource: offset, flags, name, implementation (in this file -> 0)
+    tables += _u32(0) + _u32(0x0001) + _u16(idx_resource) + _u16(0)
 
     streams = [
         ("#~", bytes(tables)),
@@ -215,6 +228,23 @@ def test_dotnet_metadata_enumerate_il_xrefs_without_de4dot(tmp_path: Path) -> No
         assert method_item["name"] == _METHOD_NAME
         assert method_item["token"] == assembly.method_token
         assert int(method_item["rva"]) > 0
+
+        fields = service.dotnet_enumerate(session_id, "fields", limit=16)
+        assert fields.ok and fields.data is not None, fields.error
+        assert fields.data["total"] == 1
+        assert fields.data["items"][0]["name"] == _FIELD_NAME
+        assert fields.data["items"][0]["token"] == 0x04000001
+
+        resources = service.dotnet_enumerate(session_id, "resources", limit=16)
+        assert resources.ok and resources.data is not None, resources.error
+        assert resources.data["total"] == 1
+        assert resources.data["items"][0]["name"] == _RESOURCE_NAME
+        assert resources.data["items"][0]["token"] == 0x28000001
+
+        heap = service.dotnet_enumerate(session_id, "strings", limit=64)
+        assert heap.ok and heap.data is not None, heap.error
+        heap_values = {item["value"] for item in heap.data["items"]}
+        assert {_MODULE_NAME, _TYPE_NAME, _METHOD_NAME, _MEMBER_NAME} <= heap_values
 
         il = service.dotnet_il(session_id, assembly.method_token)
         assert il.ok and il.data is not None, il.error
