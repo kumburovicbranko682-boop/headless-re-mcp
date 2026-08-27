@@ -45,7 +45,7 @@ class UnpackRecommendation(BaseModel):
 
     def to_dict(self) -> JsonObject:
         value = self.model_dump(mode="json")
-        if not isinstance(value, dict):
+        if not isinstance(value, dict):  # pragma: no cover - a BaseModel always dumps to a dict
             raise TypeError("unpack recommendation did not serialize to an object")
         return value
 
