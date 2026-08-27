@@ -475,10 +475,18 @@ def _capture_process(
                 _terminate_process(process)
                 returncode = process.poll()
             else:
-                # Exeinfo PE ended on its own; the parent/child walk cannot see a
-                # child it orphaned to init, so kill any survivor by the session
-                # group it still carries.
-                if os.name != "nt" and group_id:
+                # Exeinfo PE ended on its own; a child it left behind outlives
+                # it. On POSIX that child is reparented to init -- the parent/
+                # child walk is blind to it but it keeps the recorded session
+                # group, so kill by group membership. On Windows the Toolhelp walk
+                # still resolves its (now-stale) parent link, so the tree kill
+                # reaches it.
+                if os.name == "nt":
+                    from headless_re_mcp.core.process_tree import collect_descendants
+
+                    if pid and collect_descendants(int(pid)):
+                        _terminate_process(process)
+                elif group_id:
                     from headless_re_mcp.core.process_tree import terminate_process_group
 
                     terminate_process_group(group_id)
