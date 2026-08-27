@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（APK 解包的实际尺寸兜底此前无契约覆盖）
+
+- `_refuse_oversized_tree` 是 `apk.decode` / `apk.decompile` / `apk.export_sources` 三处的实际
+  尺寸兜底：`check_zip_expansion` 只挡住*声明*尺寸的炸弹，而中央目录诚实、运行后才在磁盘上膨胀
+  到数 GB 的归档（嵌套压缩、密集生成的 smali、展开远超存储尺寸的资源表）要靠它——量出工具真正
+  写下的树，一旦超过 `UNREGISTERED_CAPTURE_MAX_BYTES` 就删树并以 `too_large` 拒绝，使填满磁盘的
+  解包不把残留留给下一次 close 或 artifacts.gc 继承。声明尺寸护栏有测试、这个实际尺寸兜底却没有，
+  三处任一调用被删都不会有测试报警。`tests/unit/test_apk_oversized_tree_guard.py` 钉住 helper 契约
+  （超限删除并拒绝、界内不动、缺失即无操作、单文件产物同样覆盖）以及它仍接在 apktool 与 jadx 两条
+  路径上（超限的解包回 `too_large` 且树被删除）。
+
 ### 修复（proxy.start 空 host 会静默绑定所有网卡，把 MITM 暴露到全网）
 
 - `proxy.start` 的 host 默认回环，但空串/纯空白会原样交给 mitmproxy 的 `listen_host`，
