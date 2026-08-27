@@ -43,6 +43,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（.NET 托管元数据/IL 读取面首个在干净机器上真跑的 Gate）
+
+- `dotnet.inspect/enumerate/il/xrefs` 这条纯 Python 的 CLR 元数据/IL 读取面此前在干净机器上没有
+  任何集成覆盖:现有 .NET Gate（`test_dotnet_m6_gate.py`）把这些读取通过 `_gate_sample` 绑到了
+  de4dot——没配 `HEADLESS_RE_DE4DOT` 时整条 Gate 全跳过——可这些读取根本不调用 de4dot,只是一个
+  自带的 ECMA-335 解析器;而唯一已提交的 .NET 夹具（`minimal_clr_hint.exe`）是一枚故意不可校验的
+  桩,只能用来验证 `dotnet.inspect` 拒收它,解析器从没在真程序集上被验证过。现提交一枚真实、极小、
+  可校验的托管程序集 `fixtures/dotnet/managed_gate.exe`（由旁边的 `managed_gate_fixture.cs` 用 Mono
+  的 C# 编译器编成,构建命令写在源码头部）并新增 `tests/integration/test_dotnet_read_gate.py`,经
+  `AnalysisService` 把它读回来:夹具是刻意设计的——带命名空间的类型
+  `HeadlessRe.DotnetGate.GateFixture`、方法 `GetMarker`/`ComputeChecksum`/`Announce`/`Main`、字段
+  `Marker`、`GetMarker` 的方法体恰好是 `ldstr <marker>; ret`、`ComputeChecksum` 的循环带分支与调用
+  opcode、以及一处 `System.Console.WriteLine` 的 MemberRef——因此每条断言核的都是“还原出的内容”:
+  `dotnet.inspect` 报 `is_dotnet`/`verified_clr` 且入口点 token 解析回还原出的 `Main`;
+  `dotnet.enumerate` 还原出该类型（含命名空间）、四个方法、`Marker` 字段与 `#Strings` 堆里的标识符;
+  `dotnet.il` 精确复现 `GetMarker` 的 `ldstr+ret` 与 `ComputeChecksum` 的分支/调用/ret 指令流;
+  `dotnet.xrefs` 还原出 `Console.WriteLine` 这条 MemberRef。负路径（非 MethodDef token、非法 kind、
+  越界 rid 分别报 `invalid_argument`/`not_found`,以及原生 PE 报 `not_dotnet`）就地覆盖。读取面无任何
+  可选依赖,故该 Gate 恒跑。基于 Mono 6.8 的 C# 编译器产物,由自带 Python CLR 解析器在 Linux 无 .NET
+  运行时下实测。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
