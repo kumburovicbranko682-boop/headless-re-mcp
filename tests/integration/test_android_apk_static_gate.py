@@ -64,6 +64,18 @@ def test_android_apk_static_happy_path() -> None:
         assert info["permission_count"] == 1
         assert set(info["native_abis"]) == {"arm64-v8a", "x86_64"}
 
+        # The stdlib AXML facts attached at session creation must agree with
+        # androguard's parse -- the same package, versions, SDK levels and
+        # permission read two independent ways (androguard reports the numeric
+        # ones as strings, so compare with a cast).
+        tool_free = meta["manifest"]
+        assert tool_free["package"] == info["package"]
+        assert str(tool_free["version_code"]) == info["version_code"]
+        assert tool_free["version_name"] == info["version_name"]
+        assert str(tool_free["min_sdk"]) == info["min_sdk"]
+        assert str(tool_free["target_sdk"]) == info["target_sdk"]
+        assert tool_free["permissions"] == ["android.permission.INTERNET"]
+
         manifest = service.apk_manifest(session_id)
         assert manifest.ok, manifest.error
         assert manifest.data["package"] == "com.example.headless"

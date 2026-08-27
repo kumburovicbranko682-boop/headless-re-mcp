@@ -67,6 +67,115 @@ def _apk_with_signing_block(path: Path, scheme_ids: list[int]) -> Path:
     return path
 
 
+_APK_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minimal.apk"
+
+
+def _axml_utf8_manifest() -> bytes:
+    """A compiled manifest with a UTF-8 string pool, as aapt2 emits.
+
+    The committed fixture uses a UTF-16 pool and keeps every attribute name, so
+    this exercises the other two real-world shapes at once: an 8-bit pool, and an
+    ``android:name`` whose name string aapt2 stripped, leaving only the framework
+    resource id for the resource-map fallback to resolve.
+    """
+    strings = [
+        "",  # 0: the stripped android:name, resolved via the resource map
+        "manifest",  # 1
+        "uses-permission",  # 2
+        "package",  # 3: a plain (non-framework) attribute keeps its name
+        "com.example.utf8",  # 4
+        "android.permission.CAMERA",  # 5
+    ]
+    data = bytearray()
+    offsets: list[int] = []
+    for text in strings:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(strings) * 4
+    utf8_flag = 1 << 8
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(strings), 0, utf8_flag,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    res_ids = [0x01010003]  # android:name; index 0 lines up with the empty string
+    resmap = struct.pack("<HHI", 0x0180, 8, 8 + 4 * len(res_ids))
+    resmap += b"".join(struct.pack("<I", rid) for rid in res_ids)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for ns, attr_name_idx, value_idx in attrs:
+            body += struct.pack("<iiiHBBI", ns, attr_name_idx, value_idx, 8, 0, 0x03, value_idx)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    body = bytearray(resmap)
+    body += start(1, [(-1, 3, 4)])  # <manifest package="com.example.utf8">
+    body += start(2, [(-1, 0, 5)])  # <uses-permission android:name="...CAMERA">
+    body += end(2)
+    body += end(1)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
+class TestManifestFactsWithoutAndroguard:
+    """describe_apk reads the compiled AndroidManifest stdlib-only.
+
+    The package, versions, SDK levels and permissions otherwise come only from
+    androguard; parsing the AXML ourselves gives every APK session those facts on
+    a machine without it -- the Android analogue of describe_wasm for WebAssembly.
+    """
+
+    def test_reads_the_committed_fixture_manifest(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        manifest = describe_apk(_APK_FIXTURE)["apk"]["manifest"]
+        assert manifest["package"] == "com.example.headless"
+        assert manifest["version_code"] == 1
+        assert manifest["version_name"] == "1.0"
+        assert manifest["min_sdk"] == 21
+        assert manifest["target_sdk"] == 33
+        assert manifest["permissions"] == ["android.permission.INTERNET"]
+
+    def test_reads_a_utf8_pool_and_resolves_stripped_names_by_resource_id(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "utf8.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", _axml_utf8_manifest())
+            archive.writestr("classes.dex", b"dex\n035\x00")
+        manifest = describe_apk(path)["apk"]["manifest"]
+        assert manifest["package"] == "com.example.utf8"
+        # The android:name was resolved through the resource map, not a name string.
+        assert manifest["permissions"] == ["android.permission.CAMERA"]
+
+    def test_manifest_is_present_but_empty_on_a_garbage_axml(self, tmp_path: Path) -> None:
+        # _apk() writes a RES_XML header with no real chunks behind it; the walk
+        # must yield the empty-valued manifest rather than raising.
+        manifest = describe_apk(_apk(tmp_path / "app.apk"))["apk"]["manifest"]
+        assert manifest["package"] is None
+        assert manifest["permissions"] == []
+
+    def test_session_metadata_carries_the_manifest_facts(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        from headless_re_mcp.core.session import SessionRegistry
+
+        session = SessionRegistry().create(str(_APK_FIXTURE))
+        assert session.target is TargetKind.APK
+        assert session.metadata["apk"]["manifest"]["package"] == "com.example.headless"
+
+
 class TestNoShellPassthrough:
     def test_catalog_exposes_no_generic_device_shell(self) -> None:
         """The debugger surface has no dynamic.command; devices get the same rule."""

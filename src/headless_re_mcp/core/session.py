@@ -384,6 +384,34 @@ _ZIP64_SENTINEL = 0xFFFFFFFF
 # refuses a pathological size before allocating for it.
 _APK_SIG_BLOCK_MAX = 8 * 1024 * 1024
 
+# AndroidManifest.xml ships as compiled binary XML (AXML), not text, so the
+# package name, versions, SDK levels and permissions -- the facts every triage
+# starts from -- are otherwise only reachable through androguard. These let
+# describe_apk read them stdlib-only, the Android analogue of describe_wasm.
+_AXML_RES_XML_TYPE = 0x0003
+_AXML_STRING_POOL_TYPE = 0x0001
+_AXML_RESOURCE_MAP_TYPE = 0x0180
+_AXML_START_ELEMENT_TYPE = 0x0102
+_AXML_END_ELEMENT_TYPE = 0x0103
+_AXML_STRING_POOL_UTF8 = 1 << 8
+_AXML_TYPE_STRING = 0x03
+# A compiled manifest is a few kilobytes; getinfo reports the uncompressed size,
+# so a zip-bomb member is refused before it is read.
+_AXML_MAX_BYTES = 4 * 1024 * 1024
+_AXML_MAX_CHUNKS = 100_000
+_AXML_MAX_STRINGS = 200_000
+_AXML_MAX_ATTRS = 4096
+_AXML_MAX_PERMISSIONS = 4096
+# aapt2 can drop the android:* attribute names from the string pool and keep
+# only their framework resource ids, so resolve the handful we read by id too.
+_AXML_ATTR_BY_RES_ID = {
+    0x0101021B: "versionCode",
+    0x0101021C: "versionName",
+    0x0101020C: "minSdkVersion",
+    0x01010270: "targetSdkVersion",
+    0x01010003: "name",
+}
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -462,8 +490,30 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
             "signed_v2": signed_v2,
             "signed_v3": signed_v3,
+            "manifest": _apk_manifest_facts_from_apk(path),
         }
     }
+
+
+def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
+    """Read the compiled AndroidManifest and return its identity facts, or {}.
+
+    Fail-closed: a manifest we cannot open, that is implausibly large, or that
+    does not parse yields an empty dict rather than raising, so a session still
+    opens over a hostile or unusual package.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo(_APK_MANIFEST)
+            if info.file_size > _AXML_MAX_BYTES:
+                return {}
+            with archive.open(_APK_MANIFEST) as handle:
+                data = handle.read(_AXML_MAX_BYTES + 1)
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return {}
+    if len(data) > _AXML_MAX_BYTES:
+        return {}
+    return _apk_manifest_facts(data)
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool]:
@@ -528,6 +578,170 @@ def _apk_signing_block_ids(block: bytes) -> tuple[bool, bool]:
             signed_v3 = True
         cursor += 8 + pair_len
     return (signed_v2, signed_v3)
+
+
+def _apk_manifest_facts(data: bytes) -> dict[str, Any]:
+    """Parse the binary AndroidManifest (AXML) for cheap identity facts.
+
+    Returns ``package``, ``version_code``, ``version_name``, ``min_sdk``,
+    ``target_sdk`` and a sorted ``permissions`` list -- whatever the walk could
+    read. Fail-closed: any structural surprise returns ``{}`` so this never
+    raises on a truncated, obfuscated or hostile manifest.
+    """
+    try:
+        return _walk_axml(data)
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return {}
+
+
+def _walk_axml(data: bytes) -> dict[str, Any]:
+    if len(data) < 8 or int.from_bytes(data[0:2], "little") != _AXML_RES_XML_TYPE:
+        return {}
+    total = int.from_bytes(data[4:8], "little")
+    limit = min(total, len(data)) if 8 <= total <= len(data) else len(data)
+    strings: list[str] = []
+    res_map: list[int] = []
+    package: str | None = None
+    version_code: int | None = None
+    version_name: str | None = None
+    min_sdk: int | None = None
+    target_sdk: int | None = None
+    permissions: list[str] = []
+    pos = 8
+    chunks = 0
+    while pos + 8 <= limit and chunks < _AXML_MAX_CHUNKS:
+        chunks += 1
+        ctype = int.from_bytes(data[pos + 0 : pos + 2], "little")
+        csize = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        if csize < 8 or pos + csize > limit:
+            break
+        chunk = data[pos : pos + csize]
+        if ctype == _AXML_STRING_POOL_TYPE:
+            strings = _axml_string_pool(chunk)
+        elif ctype == _AXML_RESOURCE_MAP_TYPE:
+            res_map = _axml_resource_map(chunk)
+        elif ctype == _AXML_START_ELEMENT_TYPE:
+            name, attrs = _axml_start_element(chunk, strings, res_map)
+            if name == "manifest":
+                package = _axml_str(attrs, "package") or package
+                version_name = _axml_str(attrs, "versionName") or version_name
+                version_code = _axml_int(attrs, "versionCode", version_code)
+            elif name == "uses-sdk":
+                min_sdk = _axml_int(attrs, "minSdkVersion", min_sdk)
+                target_sdk = _axml_int(attrs, "targetSdkVersion", target_sdk)
+            elif name == "uses-permission" and len(permissions) < _AXML_MAX_PERMISSIONS:
+                perm = _axml_str(attrs, "name")
+                if perm:
+                    permissions.append(perm)
+        pos += csize
+    return {
+        "package": package,
+        "version_code": version_code,
+        "version_name": version_name,
+        "min_sdk": min_sdk,
+        "target_sdk": target_sdk,
+        "permissions": sorted(set(permissions)),
+    }
+
+
+def _axml_string_pool(chunk: bytes) -> list[str]:
+    """Decode a ResStringPool chunk (UTF-8 or UTF-16) into its string list."""
+    if len(chunk) < 28:
+        return []
+    count = min(int.from_bytes(chunk[8:12], "little"), _AXML_MAX_STRINGS)
+    flags = int.from_bytes(chunk[16:20], "little")
+    strings_start = int.from_bytes(chunk[20:24], "little")
+    is_utf8 = bool(flags & _AXML_STRING_POOL_UTF8)
+    out: list[str] = []
+    for i in range(count):
+        off_pos = 28 + i * 4
+        if off_pos + 4 > len(chunk):
+            break
+        start = strings_start + int.from_bytes(chunk[off_pos : off_pos + 4], "little")
+        if not 0 <= start < len(chunk):
+            out.append("")
+            continue
+        out.append(_axml_read_utf8(chunk, start) if is_utf8 else _axml_read_utf16(chunk, start))
+    return out
+
+
+def _axml_read_utf16(chunk: bytes, pos: int) -> str:
+    length = int.from_bytes(chunk[pos : pos + 2], "little")
+    pos += 2
+    if length & 0x8000:
+        length = ((length & 0x7FFF) << 16) | int.from_bytes(chunk[pos : pos + 2], "little")
+        pos += 2
+    return chunk[pos : min(pos + length * 2, len(chunk))].decode("utf-16-le", errors="replace")
+
+
+def _axml_read_utf8(chunk: bytes, pos: int) -> str:
+    # A UTF-8 pool prefixes each string with its char count then its byte count,
+    # each a 1- or 2-byte varint. Only the byte count matters for the slice.
+    _, pos = _axml_utf8_len(chunk, pos)
+    nbytes, pos = _axml_utf8_len(chunk, pos)
+    return chunk[pos : min(pos + nbytes, len(chunk))].decode("utf-8", errors="replace")
+
+
+def _axml_utf8_len(chunk: bytes, pos: int) -> tuple[int, int]:
+    first = chunk[pos]
+    pos += 1
+    if first & 0x80:
+        value = ((first & 0x7F) << 8) | chunk[pos]
+        return value, pos + 1
+    return first, pos
+
+
+def _axml_resource_map(chunk: bytes) -> list[int]:
+    body = chunk[8:]
+    count = min(len(body) // 4, _AXML_MAX_STRINGS)
+    return [int.from_bytes(body[i * 4 : i * 4 + 4], "little") for i in range(count)]
+
+
+def _axml_start_element(
+    chunk: bytes, strings: list[str], res_map: list[int]
+) -> tuple[str, list[tuple[str, int, Any]]]:
+    """Return ``(element_name, [(attr_name, data_type, value), ...])``."""
+
+    def name_of(idx: int) -> str:
+        return strings[idx] if 0 <= idx < len(strings) else ""
+
+    element = name_of(int.from_bytes(chunk[20:24], "little"))
+    attr_start = int.from_bytes(chunk[24:26], "little")
+    attr_size = int.from_bytes(chunk[26:28], "little") or 20
+    attr_count = min(int.from_bytes(chunk[28:30], "little"), _AXML_MAX_ATTRS)
+    base = 16 + attr_start
+    attrs: list[tuple[str, int, Any]] = []
+    for i in range(attr_count):
+        at = base + i * attr_size
+        if at + 20 > len(chunk):
+            break
+        name_idx = int.from_bytes(chunk[at + 4 : at + 8], "little")
+        data_type = chunk[at + 15]
+        data = int.from_bytes(chunk[at + 16 : at + 20], "little")
+        attr_name = name_of(name_idx)
+        if not attr_name and 0 <= name_idx < len(res_map):
+            attr_name = _AXML_ATTR_BY_RES_ID.get(res_map[name_idx], "")
+        value: Any = name_of(data) if data_type == _AXML_TYPE_STRING else data
+        attrs.append((attr_name, data_type, value))
+    return element, attrs
+
+
+def _axml_str(attrs: list[tuple[str, int, Any]], name: str) -> str | None:
+    for attr_name, data_type, value in attrs:
+        if attr_name == name and data_type == _AXML_TYPE_STRING and isinstance(value, str):
+            return value
+    return None
+
+
+def _axml_int(attrs: list[tuple[str, int, Any]], name: str, default: int | None) -> int | None:
+    for attr_name, _data_type, value in attrs:
+        if attr_name != name:
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.lstrip("-").isdigit():
+            return int(value)
+    return default
 
 
 _WASM_MAGIC = b"\x00asm"

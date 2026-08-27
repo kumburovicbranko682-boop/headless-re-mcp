@@ -175,5 +175,9 @@ def test_android_apktool_repack_and_sign() -> None:
         assert resigned.ok, resigned.error
         signed_meta = resigned.data["session"]["metadata"]["apk"]
         assert signed_meta["signed_v2"] is True
+        # apktool rebuilds the manifest through aapt, so this also proves the
+        # stdlib AXML reader handles real aapt output (an 8-bit string pool),
+        # not just the committed fixture's hand-written UTF-16 one.
+        assert signed_meta["manifest"]["package"] == "com.example.headless"
     finally:
         service.close_all()
