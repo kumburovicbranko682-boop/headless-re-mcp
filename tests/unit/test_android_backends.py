@@ -87,10 +87,25 @@ class TestAdbArgumentValidation:
 
 
 class TestFridaTargetAuthorization:
-    def test_device_operations_refuse_unauthorized_pid(self) -> None:
+    """The target boundary holds whether or not the frida module is installed.
+
+    Authorization is a property of the request, so it is settled before the
+    capability gate on both the local (`_require`) and device (`_authorize`)
+    paths. That is what lets these assertions run unconditionally: an
+    unauthorized pid is refused with `permission_denied` -- not masked as
+    `capability_unavailable` -- on a host with no frida, and none of these
+    calls reaches a real device (the refusal fires first).
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        """A client that behaves as if frida were not installed, on any host."""
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client._frida = None
+        client._available = False
+        return client
+
+    def test_device_operations_refuse_unauthorized_pid(self) -> None:
+        client = self._unavailable_client()
         with pytest.raises(FridaError) as info:
             client.java_enumerate(
                 "usb", 4242, allowed_pids=[1, 2, 3], mode="classes", limit=1
@@ -99,26 +114,27 @@ class TestFridaTargetAuthorization:
         assert info.value.details["pid"] == 4242
 
     def test_device_hook_refuses_unauthorized_pid(self) -> None:
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client = self._unavailable_client()
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 99, "noop", allowed_pids=[7])
         assert info.value.code == "permission_denied"
 
+    def test_device_authorization_precedes_the_capability_gate(self) -> None:
+        """A malformed pid is invalid_params, not capability_unavailable."""
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate("usb", -1, allowed_pids=[1], mode="classes", limit=1)
+        assert info.value.code == "invalid_params"
+
     def test_local_single_pid_rule_is_unchanged(self) -> None:
         """The pre-existing PE contract must survive the device generalisation."""
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client = self._unavailable_client()
         with pytest.raises(FridaError) as info:
             client.modules(4242, allowed_pid=4243, limit=1)
         assert info.value.code == "permission_denied"
 
     def test_unknown_hook_template_is_rejected_with_allowed_list(self) -> None:
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — template path not exercised (skip != pass)")
+        client = self._unavailable_client()
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 5, "arbitrary-script", allowed_pids=[5])
         assert info.value.code == "invalid_params"

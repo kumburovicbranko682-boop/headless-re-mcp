@@ -749,8 +749,20 @@ class FridaClient:
             raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+        # Pure authorization: whether the request may touch this pid, decided
+        # from the request alone. It carries no capability check because the
+        # device is reached through ``_resolve_device`` -> ``_need``, which is
+        # the real capability gate; duplicating it here only fixed the *order*
+        # of errors, and did so wrongly. With the gate ahead of the membership
+        # test, an unauthorized (or malformed) pid answered
+        # ``capability_unavailable`` on every host lacking the frida module -- a
+        # different error for the same bad request depending on the machine, and
+        # one that hid the permission contract from every test run without the
+        # optional dependency. Settling authorization first (the order the local
+        # ``_require`` path uses) means a refused pid is refused everywhere, and
+        # a malformed pid or unknown hook template is reported before "frida is
+        # not installed" -- the same "input/authorization before the gate"
+        # ordering as web.open's scheme, Ghidra's max_heap and proxy.start's port.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         allowed = set(int(value) for value in allowed_pids)

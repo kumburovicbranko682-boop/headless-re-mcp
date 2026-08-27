@@ -81,6 +81,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   回归去掉 skip、参数化钉住 `0/-1/99999/70000` 均被拒，和 web.open 的 scheme、Ghidra 的 max_heap、
   frida 的 address 同属"输入先于门"的一致处理。
 
+### 修复（frida 设备操作的 pid 授权移到能力门之前，未授权 pid 在任何机器上都回 permission_denied）
+
+- 设备维度的 frida 操作（`frida.java.classes/methods`、设备 `hook.template`）经 `_authorize` 把关，
+  它却先判 frida 模块是否安装、后判 pid 是否在本会话授权集合内。于是没装 frida 的机器上，一个
+  未授权 pid 得到的是 `capability_unavailable` 而不是 `permission_denied`——授权是请求自身的属性，
+  却被机器状态改写了结论，同一个越权请求在不同机器上给不同错误，也让"未授权 pid 被拒"这条契约在
+  所有缺 frida 的测试环境里都够不着（对应单测只能 `skip`）。本地路径 `_require` 早已"先判 pid 再判
+  可用"，设备路径没跟上。现把 `_authorize` 收敛为纯授权（pid 合法性 + 集合成员判定），能力门交给
+  真正要用设备的 `_resolve_device`/`_need`——它本就是唯一的可用性关卡，`_authorize` 里的那份只影响
+  错误顺序且顺序反了。于是：畸形 pid → `invalid_params`、越权 pid → `permission_denied`、未知 hook
+  模板 → `invalid_params`，都在"frida 未安装"之前定论；合法且授权的 pid 在缺 frida 时仍由
+  `_resolve_device` 回 `capability_unavailable`。去掉四个授权用例的 skip 并改为在"假装未装 frida"的
+  客户端上无条件断言，和 web.open 的 scheme、Ghidra 的 max_heap、proxy.start 的 port、
+  frida.memory.read 的 address 同属"输入/授权先于门"的一致处理。
+
 ### 修复（frida.memory.read 的 address 与 size 一样先校验，不再变成 internal_error 事故）
 
 - `frida.memory.read` 只对 `size` 做了范围校验，`address` 却原样交给注入脚本里的 `ptr(address)`。
