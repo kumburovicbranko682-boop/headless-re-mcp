@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+from headless_re_mcp.backends.apk.client import _MAX_STRING_LEN, ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -65,3 +65,40 @@ def test_apk_strings_puts_the_page_in_strings_not_constants() -> None:
     doc = _tool_docstring("apk.strings")
     assert "Answers with strings" in doc
     assert "has_more" in doc
+    assert "values_truncated" in doc
+
+
+def test_apk_strings_flags_a_value_cut_at_the_per_string_cap() -> None:
+    """A constant longer than the cap is returned as a prefix; say so.
+
+    A returned string cut at _MAX_STRING_LEN looks whole, and dedupe keys on
+    that cut value, so two constants sharing the first _MAX_STRING_LEN chars
+    collapse into one row -- a distinct string silently gone. values_truncated
+    (with max_string_len) names it so a prefix is not read as the whole value.
+    """
+    long_value = "A" * (_MAX_STRING_LEN + 50)
+
+    class _LongParsed:
+        def __init__(self) -> None:
+            self.analysis = self
+
+        def get_strings(self) -> list[_FakeString]:
+            return [_FakeString("short"), _FakeString(long_value)]
+
+    client = ApkClient()
+    client._parsed = lambda _path: _LongParsed()  # type: ignore[method-assign]
+    payload = client.strings(Path("dummy.apk"), offset=0, limit=10)
+
+    assert payload["values_truncated"] is True
+    assert payload["max_string_len"] == _MAX_STRING_LEN
+    assert all(len(value) <= _MAX_STRING_LEN for value in payload["strings"])
+
+
+def test_apk_strings_short_values_carry_no_truncation_flag() -> None:
+    """A table of short strings stays clean: no values_truncated field."""
+    client = ApkClient()
+    client._parsed = lambda _path: _FakeParsed()  # type: ignore[method-assign]
+    payload = client.strings(Path("dummy.apk"), offset=0, limit=10)
+
+    assert "values_truncated" not in payload
+    assert "max_string_len" not in payload

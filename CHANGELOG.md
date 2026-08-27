@@ -134,6 +134,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`apk.strings` 把长常量截成前缀且按截断值去重，都不声明）
+
+- `apk.strings` 把每条 DEX 字符串常量截到 `_MAX_STRING_LEN`（2000 字符）后放进集合去重，回给调用方的
+  信封只有 `count` / `total` / `has_more` / `scan_capped`，从不声明单条值被截。于是一条被截到 2000 字符的
+  返回值看起来是完整常量（读 URL、密钥、base64 时尤其误导），而且去重是按截断后的值做的——两条共享前
+  2000 字符的常量会塌成同一行，一条不同的字符串就此无声消失，`total` 也随之少算。现在收集时若有任何常量
+  超过上限即置 `values_truncated=True` 并附 `max_string_len`，与其旁的 `scan_capped`（收集上限）口径一致；
+  短字符串表则完全不带该字段，与 IDA `strings` 的按条 `truncated`、r2 映射的 `items_truncated` 等既有披露
+  一脉相承。`apk.strings` 工具文档补上该字段及其含义。补回归测试钉住：含一条超长常量的表报
+  `values_truncated=True`、`max_string_len=2000` 且返回值不超过上限；全为短串的表不带该字段。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
