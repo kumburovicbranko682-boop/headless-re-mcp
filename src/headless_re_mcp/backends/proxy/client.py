@@ -60,6 +60,30 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _close_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Stop the proxyserver's listeners so their ports are freed.
+
+    ``master.shutdown()`` only sets the exit event that ends ``run()``; the
+    proxyserver addon has no teardown hook, and closing the loop does not help
+    either -- a listening ``asyncio.Server`` is not a task that cancellation can
+    unwind. Older mitmproxy cancelled a pending accept task here and the port
+    happened to come free; mitmproxy 12 owns each listener as a ``ServerInstance``
+    that survives that, so the socket stayed bound and the next capture on the
+    port could never start. Asking the manager to hold no modes stops every
+    instance, which is what actually closes those sockets. Runs on the loop's own
+    thread while the loop is stopped but not yet closed.
+    """
+    if master is None:
+        return
+    getter = getattr(getattr(master, "addons", None), "get", None)
+    proxyserver = getter("proxyserver") if callable(getter) else None
+    servers = getattr(proxyserver, "servers", None)
+    update = getattr(servers, "update", None)
+    if update is None:
+        return
+    loop.run_until_complete(update([]))
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -348,8 +372,12 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Close the proxy's own
+            # listeners first (mitmproxy never does this on shutdown), then
+            # unwind the loop's tasks.
             if loop is not None:
+                with contextlib.suppress(Exception):
+                    _close_proxy_servers(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
