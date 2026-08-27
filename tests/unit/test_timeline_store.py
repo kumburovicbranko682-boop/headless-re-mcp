@@ -141,6 +141,42 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_a_torn_line_in_the_page_is_reported_as_skipped(tmp_path: Path) -> None:
+    """A dropped torn entry is disclosed, not silently absorbed into the page.
+
+    The reader drops a line that will not parse, so on a settled page (has_more
+    false) count comes back less than total with nothing to explain the gap --
+    which reads as a paging quirk. skipped names it: an entry was unreadable and
+    dropped, so a lost mark is not mistaken for a mark that was never made.
+    """
+    path = tmp_path / "timeline.jsonl"
+    _append(path, 0)
+    with path.open("ab") as stream:
+        stream.write(b'{"at": "truncated"\n')
+    _append(path, 1)
+
+    listed = store.list_session_timeline(path)
+
+    assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
+    assert listed["count"] == 2
+    assert listed["total"] == 3
+    assert listed["has_more"] is False
+    assert listed["skipped"] == 1
+
+
+def test_a_clean_page_reports_no_skipped_key(tmp_path: Path) -> None:
+    """A page with nothing dropped stays clean: no skipped field at all."""
+    path = tmp_path / "timeline.jsonl"
+    for index in range(3):
+        _append(path, index)
+
+    listed = store.list_session_timeline(path)
+
+    assert listed["count"] == 3
+    assert listed["total"] == 3
+    assert "skipped" not in listed
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

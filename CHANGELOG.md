@@ -134,6 +134,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`timeline.list` 悄悄丢弃解析失败的撕裂行，丢失的标记读起来像从未发生）
+
+- `list_session_timeline` 读取某页时，一条解析失败的撕裂行（进程写到一半崩溃，或进程内锁盖不住的
+  跨进程竞争）会被直接跳过——这是写入侧注释里已承认的取舍。可回给调用方的信封只有 `count`
+  （成功解析的条数）与用原始行数算出的 `has_more`，于是在一页已经落定（`has_more=false`）时
+  `count` 会小于 `total` 却没有任何解释，读起来像分页的怪癖，一条被丢掉的时间线标记与一条从未写过
+  的标记无从区分。现在丢弃发生时附上 `skipped`（本页解析失败被丢弃的行数），干净的一页则完全不带该
+  字段，与本模块 `exists` / `read_failed` 的按需披露口径一致；`timeline.list` 工具文档也补上该字段。
+  补回归测试钉住：页内一条撕裂行报 `skipped=1` 且照常返回其余事件、`count=2`/`total=3`；干净的一页
+  不带 `skipped`。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
