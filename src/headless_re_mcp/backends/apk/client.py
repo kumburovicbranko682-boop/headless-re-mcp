@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 JsonObject = dict[str, Any]
+_T = TypeVar("_T")
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -35,6 +37,26 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _safe(call: Callable[[], _T], default: _T) -> _T:
+    """Read one androguard manifest field, degrading instead of raising.
+
+    A present-but-unparseable ``AndroidManifest.xml`` is hostile input, not a
+    server fault, but androguard does not treat it uniformly: when its own
+    manifest analysis fails, ``get_androidversion_name`` / ``get_androidversion_code``
+    raise ``KeyError`` while the sibling getters quietly return empty. That
+    ``KeyError`` reached the service envelope as an ``internal_error`` with a
+    logged incident -- the same miscasting the r2 adapter fixed for a bad launch
+    -- so ``apk.open`` filed a defect against the server for a malformed APK.
+    Degrade each field the way ``permissions`` / ``certificates`` already do for
+    their optional getters, so a broken manifest yields null fields, not an
+    incident.
+    """
+    try:
+        return call()
+    except Exception:  # noqa: BLE001 - androguard raises assorted types on bad input
+        return default
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -169,13 +191,13 @@ class ApkClient:
         apk = self._apk(path)
         return {
             "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
+            "package": _safe(apk.get_package, "") or "",
+            "version_name": _safe(apk.get_androidversion_name, None),
+            "version_code": _safe(apk.get_androidversion_code, None),
+            "min_sdk": _safe(apk.get_min_sdk_version, None),
+            "target_sdk": _safe(apk.get_target_sdk_version, None),
+            "main_activity": _safe(apk.get_main_activity, None),
+            "permission_count": len(_safe(apk.get_permissions, []) or []),
             "native_abis": sorted(
                 {
                     name.split("/")[1]
