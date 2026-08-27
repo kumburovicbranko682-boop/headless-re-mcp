@@ -177,6 +177,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
   纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
   环境里。
+
+### 修复（`proxy.replay` 无法重放的流不再谎报成功）
+
+- **`proxy.replay` 对 mitmproxy 静默丢弃的流也报 `replayed: True`。**
+  `replay.client` 命令遇到无法重放的流（live、intercepted、WebSocket，或缺请求/请求体）
+  只记一条警告便正常返回，本服务照单全收地返回 `replayed: True`——一个从未真正发出的请求
+  被当成已重放，做 API 逆向的调用方随后在 `proxy.flows` 里怎么也找不到对应响应。现在在真正
+  调 `replay.client` 前先问 `clientplayback` addon 自己内部会问的同一个 `check()`，拿到拒绝
+  原因就以 `invalid_request` 上抛，而不是谎报成功；成功路径另外回传 `replayed_flow_id`
+  （重放是一条带独立 id 的新流），调用方据此在 `proxy.flows` 里定位重放响应，不必在众多条目
+  里猜。补单测钉住：不可重放的流被按原因拒绝、可重放的流回传非空 `replayed_flow_id`。
+
 ### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
 
 - **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**

@@ -94,8 +94,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_replay(session_id: str, flow_id: str) -> dict[str, Any]:
         """Replay a captured request through the proxy.
 
-        Answers with replayed and flow_id after the mitmproxy command has
-        actually run, not merely after it was queued on the proxy thread.
+        Answers with replayed, flow_id, and replayed_flow_id -- the fresh id the
+        replayed request is recorded under, so its response can be found in
+        proxy.flows -- after the mitmproxy command has actually run, not merely
+        after it was queued on the proxy thread. A flow the proxy cannot replay
+        (live, intercepted, WebSocket, or missing request/content) is refused
+        with the reason rather than reported as replayed.
         """
         return _dump(analysis.proxy_replay(session_id, flow_id))
 
