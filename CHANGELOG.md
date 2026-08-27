@@ -1275,8 +1275,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
-
-### 变更（Android 后端清理）
+- **`web.status` / `web.close` 的会话槽三态钉死**：一个会话槽要么空(已关)、要么在浏览器启动期间
+  占一个裸 `object()` 令牌、要么持一个活的 `_WebSession`;status 与 close 都按此分派,而既有覆盖
+  各自只测了"空"这一态,把中间态与在用态全留成死代码。新增 6 个用例:status 对启动令牌
+  (`type(handle) is object`)须报 `opening: True`、对真实 `_WebSession` 才报 open 并带 url/title;
+  close 须把启动令牌当作"open was aborted"丢弃且完全不碰浏览器、对没有 runner 的句柄就地
+  `handle.close()` 拆除(结果不带 clean 标)、对健康会话把 `handle.close` 交给它的浏览器线程
+  (runner)执行并报 `clean=True`、而当 runner 卡死(wedged)时**跳过**那个会挂住的 call、直接
+  reap 掉 node driver 并报 `clean=False`——诚实地表明浏览器是被杀掉而非有序关闭。close 是恢复
+  路径,一个它收不回的卡死会话就是整个进程生命周期里泄漏的 Chromium 进程树。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
