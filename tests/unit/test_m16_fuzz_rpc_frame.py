@@ -45,6 +45,25 @@ def test_frame_parser_rejects_garbage(blob: bytes) -> None:
         parse_rpc_frame(blob)
 
 
+def test_frame_parser_rejects_a_deeply_nested_body() -> None:
+    """A valid-length frame whose JSON nests thousands deep must still refuse cleanly.
+
+    20k '[' is a well-formed length prefix and body far under MAX_FRAME_BYTES,
+    so it passes every size check and reaches json.loads -- whose C decoder
+    recurses per bracket and raises RecursionError, not JSONDecodeError. That is
+    not in the caught set the parser used, so it escaped as an uncaught
+    RecursionError where every other malformed frame here becomes an
+    XdbgRpcError. The contract is a clean rpc_protocol_error.
+    """
+    body = b"[" * 20_000
+    frame = len(body).to_bytes(4, "little") + body
+
+    with pytest.raises(XdbgRpcError) as caught:
+        parse_rpc_frame(frame)
+
+    assert caught.value.code == "rpc_protocol_error"
+
+
 def test_frame_fuzz_random_lengths() -> None:
     # Deterministic pseudo-fuzz: many length prefixes and bodies.
     for size in list(range(0, 40)) + [1024, MAX_FRAME_BYTES, MAX_FRAME_BYTES + 1]:
