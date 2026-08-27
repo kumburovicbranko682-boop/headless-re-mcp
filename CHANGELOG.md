@@ -959,13 +959,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `xrefs` 的单测要么 mock 掉 androguard(monkeypatch `_parsed`)、要么只断言结构化降级,于是「androguard 4.x
   API 漂了」这类问题抓不到——3→4 大改重塑了 `get_classes`/`is_external`/`get_xref_from`/`get_strings`,一旦
   漂移,真实工具什么有用的都不吐,而整套单测照过;apktool decode 同理无 live 覆盖。新增一个极小的committed
-  APK 夹具(`fixtures/android/sample.apk`,1KB:单个 `com.example.gate.Sample`,其 `caller` 调 `callee`、后者
-  返回标记串 `APK_GATE_MARKER_STRING`),对它真跑两个后端:androguard 必须列出该类、其方法、标记串,解出
-  caller→callee 的 xref,并从二进制 AXML 读出包名与 `com.example.gate.MainActivity` 组件(manifest/components
-  走的是与 DEX 分析不同的另一套 4.x API);apktool 必须把它 decode 回一棵含该类的 manifest+smali 树。两个能力各自独立 skip
-  (skip≠pass)。夹具用 apktool 3.0.3 构建(`apktool b` 把 smali 汇成 `classes.dex`、经 aapt2 把 manifest 编成
-  二进制 AXML),可读的 smali/manifest 源一并committed 在旁。已在 androguard 4.1.4 + apktool 3.0.3(JDK 21)
-  实测通过,两面都解得出,故客户端无需改动。
+  APK 夹具(`fixtures/android/sample.apk`:单个 `com.example.gate.Sample`,其 `caller` 调 `callee`、后者
+  返回标记串 `APK_GATE_MARKER_STRING`;清单声明 `INTERNET` 权限,并随包带一个 `lib/arm64-v8a/libgate.so`
+  原生库,好让 manifest 侧的读法有真东西可查),对它真跑两个后端:androguard 必须列出该类、其方法、标记串,解出
+  caller→callee 的 xref,从二进制 AXML 读出包名与 `com.example.gate.MainActivity` 组件、读出声明的权限、枚举出
+  原生 ABI(manifest/components/permissions/native_libs 走的是与 DEX 分析不同的另一套 4.x API);apktool 必须把它
+  decode 回一棵含该类的 manifest+smali 树。两个能力各自独立 skip(skip≠pass)。夹具的 smali 由 apktool 3.0.3
+  汇成 `classes.dex`、manifest 由 aapt2 链接 android framework 编成二进制 AXML(apktool 自带的 aapt2 步在本环境
+  不传 framework `-I`、解不出 `android:` 属性,故 manifest 单独编好后连同一个极小 `resources.arsc` 与占位
+  `.so`(合成、不可加载,只会被按名列出)一起打进 APK zip),可读的 smali/manifest 源一并committed 在旁。已在
+  androguard 4.1.4 + apktool 3.0.3(JDK 21)实测通过,两面都解得出,故客户端无需改动。
 - **androguard 的 loguru DEBUG 洪流灌爆无人值守服务的日志**。androguard 默认经 loguru 在 DEBUG 级输出——
   实测一个只含单类的 1KB APK,每次 `AnalyzeAPK` 就吐约 150 行(每个 basic block 一行),真实应用则成千上万。
   代码树里没有任何 androguard 日志配置,于是 `apk.classes`/`methods`/`strings`/`xrefs` 每调一次都把这堆

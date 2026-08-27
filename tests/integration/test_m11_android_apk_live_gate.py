@@ -8,15 +8,21 @@ drifted -- the 3->4 rewrite reshaped ``get_classes`` / ``is_external`` /
 would pass the whole suite while the real tools returned nothing usable. This
 runs both against a tiny committed APK, ``fixtures/android/sample.apk``: a single
 ``com.example.gate.Sample`` class whose ``caller`` calls ``callee``, which
-returns the marker string ``APK_GATE_MARKER_STRING``. androguard must list the
-class, its methods, the marker string, and resolve the caller->callee xref;
-apktool must decode it back into a manifest plus a smali tree containing that
-class. Each capability skips (skip != pass) when its backend is absent.
+returns the marker string ``APK_GATE_MARKER_STRING``. The manifest declares the
+``INTERNET`` permission and the APK ships a native ``lib/arm64-v8a/libgate.so``
+so the manifest-side surface has something to find. androguard must list the
+class, its methods, the marker string, resolve the caller->callee xref, decode
+the binary manifest (package + main activity), read the declared permission, and
+enumerate the native ABI; apktool must decode it back into a manifest plus a
+smali tree containing that class. Each capability skips (skip != pass) when its
+backend is absent.
 
-Fixture provenance: built with apktool 3.0.3 (``apktool b`` assembles the smali
-into ``classes.dex`` and compiles the manifest to binary AXML via aapt2). The
-readable sources are committed beside it as ``fixtures/android/sample.smali`` and
-``fixtures/android/sample.AndroidManifest.xml``.
+Fixture provenance: the smali is assembled into ``classes.dex`` by apktool 3.0.3
+and the manifest is compiled to binary AXML by aapt2 linked against the android
+framework; those, a minimal ``resources.arsc``, and a placeholder
+``lib/arm64-v8a/libgate.so`` (a synthetic non-loadable stub, only ever listed by
+name) are zipped into the APK. The readable sources are committed beside it as
+``fixtures/android/sample.smali`` and ``fixtures/android/sample.AndroidManifest.xml``.
 """
 
 from __future__ import annotations
@@ -44,6 +50,11 @@ def test_m11_androguard_apk_surface() -> None:
     opened = client.open(_APK)
     assert opened["opened"] is True
     assert opened["package"] == "com.example.gate"
+    # open() summarises the manifest permission count and the native ABIs it walks
+    # out of the lib/ entries; both are non-trivial on this fixture only because it
+    # carries a permission and a native lib, so they pin those two reads at a glance.
+    assert opened["permission_count"] == 1
+    assert opened["native_abis"] == ["arm64-v8a"]
 
     # ApkClient silences androguard's DEBUG loguru flood on construction (~150
     # records per AnalyzeAPK, one per basic block). Prove a real analysis emits
@@ -51,7 +62,9 @@ def test_m11_androguard_apk_surface() -> None:
     from loguru import logger
 
     origins: list[str] = []
-    sink = logger.add(lambda message: origins.append(message.record["name"]), level="TRACE")
+    sink = logger.add(
+        lambda message: origins.append(str(message.record["name"] or "")), level="TRACE"
+    )
     try:
         classes = client.classes(_APK)
     finally:
@@ -88,6 +101,21 @@ def test_m11_androguard_apk_surface() -> None:
 
     components = client.components(_APK)
     assert "com.example.gate.MainActivity" in components["activities"], components
+
+    # permissions() and native_libs() are the remaining manifest-side reads: the
+    # first parses <uses-permission> out of the AXML, the second walks the APK's
+    # lib/<abi>/ entries. The fixture declares exactly INTERNET and ships one
+    # arm64-v8a stub, so a drifted androguard that stopped reading either surface
+    # (empty list) is caught here rather than in a mock that fabricates both.
+    permissions = client.permissions(_APK)
+    assert "android.permission.INTERNET" in permissions["permissions"], permissions
+    assert "android.permission.INTERNET" in permissions["requested_permissions"], permissions
+
+    native = client.native_libs(_APK)
+    assert native["abis"] == ["arm64-v8a"], native
+    assert any(
+        name == "lib/arm64-v8a/libgate.so" for name in native["native_libs"]
+    ), native["native_libs"]
 
 
 @pytest.mark.integration
