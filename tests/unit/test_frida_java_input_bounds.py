@@ -14,6 +14,8 @@ fail-fast ordering ``install``/``push`` use for their cheap local checks.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,6 +25,32 @@ from headless_re_mcp.backends.frida.client import (
     FridaClient,
     FridaError,
 )
+from headless_re_mcp.tools.frida import build_frida_tools
+
+
+def _tool_docstring(name: str) -> str:
+    """The docstring of the tool declared with @tools.tool(name=...).
+
+    Read from source via AST rather than importing the closure, matching how
+    test_frida_fields.py inspects these -- the tool functions are defined
+    inside build_frida_tools and are not otherwise reachable.
+    """
+    source = Path(build_frida_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
 
 
 class _RecordingApi:
@@ -185,6 +213,25 @@ def test_an_unknown_mode_is_refused_before_any_device_work() -> None:
     assert caught.value.details.get("mode") == "fields"
     assert resolved == []
     assert attached == []
+
+
+def test_the_tool_docstrings_publish_the_input_bound() -> None:
+    """The bound is only useful if an agent can learn it from the tool schema.
+
+    This codebase treats tool docstrings as the published contract, so the
+    guard added in the backend must also be named where a caller reads it --
+    otherwise the first sign of the 512-byte / NUL rule is an invalid_params
+    the agent could not have anticipated.
+    """
+    classes_doc = _tool_docstring("frida.java.classes")
+    assert "name_filter" in classes_doc
+    assert "512" in classes_doc
+    assert "invalid_params" in classes_doc
+
+    methods_doc = _tool_docstring("frida.java.methods")
+    assert "class_name is required" in methods_doc
+    assert "512" in methods_doc
+    assert "invalid_params" in methods_doc
 
 
 def test_the_authorization_boundary_still_precedes_input_validation() -> None:

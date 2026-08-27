@@ -161,7 +161,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
         Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        limit is not read as every loaded class. name_filter is an optional
+        substring match: an empty value means no filtering, and an over-long
+        (>512 bytes) or NUL-bearing filter is refused with invalid_params
+        before the device is touched.
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -180,7 +183,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         that filled the limit is not read as every declared method. found is
         false when the class is not loaded on the target, which an empty
         methods list alone cannot distinguish from a loaded class that declares
-        none of its own.
+        none of its own. class_name is required and bounded: empty, over-long
+        (>512 bytes) or NUL-bearing values are refused with invalid_params
+        before the device is touched, and it is stripped before use.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
