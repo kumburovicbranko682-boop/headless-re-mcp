@@ -835,21 +835,30 @@ class AdbBackend:
         or an adb forward, not from any host that can route to the device. Pass
         ``0.0.0.0`` to expose it on the network for a remote-by-IP connection.
         """
-        dev = self._device(serial)
+        # Validate the cheap local inputs before resolving the device (which
+        # reaches the adb server), matching install()/push()/forward(): a bad
+        # remote_path or bind_host, or a missing server_binary, should fail fast
+        # and precisely rather than be masked by a device error when the adb
+        # server or device is also unreachable.
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
+        local_path: Path | None = None
+        if server_binary:
+            local_path = Path(server_binary).expanduser()
+            if not local_path.is_file():
+                raise AdbError(
+                    "not_found", "frida-server binary not found", path=str(local_path)
+                )
+        dev = self._device(serial)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
         pushed = False
-        if server_binary:
-            path = Path(server_binary).expanduser()
-            if not path.is_file():
-                raise AdbError("not_found", "frida-server binary not found", path=str(path))
+        if local_path is not None:
             try:
-                _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
+                _call(dev.sync.push, str(local_path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
                 _device_shell(dev, ["chmod", "755", remote_path])
                 pushed = True
             except AdbError:

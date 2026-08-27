@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（frida.server.ensure 在解析设备前先校验 remote_path/bind_host/server_binary，与 install/push/forward 看齐）
+
+- `ensure_frida_server`（`frida.server.ensure` 背后、以 root 推送并启动 frida-server 的高风险设备变更）过去先
+  `_device(serial)`（触达 adb server）再校验三个便宜的本地输入:`remote_path` 的绝对路径 regex、`bind_host` 的
+  严格主机集、以及 `server_binary` 是否存在。于是在 adb server 或设备不可达时,一个畸形 `remote_path`/`bind_host`
+  或打错的二进制路径会被解析器抛的设备错误盖过,而不是它应得的 `invalid_params` / `not_found`,还白付一次它用不上
+  的设备解析代价。
+- 现把这三个校验移到 `_device` 之前,与 `install` / `push` / `forward` 的 fail-fast 次序一致;真正的 `sync.push`
+  仍留在设备解析之后(它本就需要 `dev`)。三者都是纯本地校验,无设备依赖,移动零风险。
+- `tests/unit/test_frida_server_bind_host.py` 新增一例:畸形 `remote_path`/`bind_host` 与缺失的 `server_binary` 各自
+  在 `_device` 被调用之前即以 `invalid_params` / `not_found` 拒掉(记录式 resolver 全程保持空)。
+
 ### 加固（device 的 uninstall/launch/force_stop 在解析设备前先校验 package，与 install/push/forward 看齐）
 
 - adb 后端里 `install` / `push` 先做便宜的本地校验(apk 存在且是 zip / 本地文件存在且不超限)再 `_device`

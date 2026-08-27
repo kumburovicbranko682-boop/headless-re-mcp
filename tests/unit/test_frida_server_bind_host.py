@@ -16,6 +16,7 @@ a shell metacharacter is refused rather than run.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -77,3 +78,43 @@ def test_invalid_bind_host_is_refused_before_any_launch(monkeypatch: Any, bad: s
         backend.ensure_frida_server("emulator-5554", bind_host=bad)
     assert caught.value.code == "invalid_params"
     assert commands == []
+
+
+def test_cheap_local_inputs_are_validated_before_resolving_the_device(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A bad remote_path/bind_host or a missing server_binary must fail before _device.
+
+    ensure_frida_server resolved the device first and validated remote_path,
+    bind_host, and the server_binary's existence after -- so on a host where the
+    adb server or device is unreachable, a malformed remote_path or a typo'd
+    binary path surfaced as the resolver's device error instead of the precise
+    invalid_params / not_found the input warranted, and paid the cost of reaching
+    the adb server first. The checks now run before _device, exactly like
+    install()/push()/forward(): proven by a resolver that records every call and
+    must stay empty across all three malformed inputs.
+    """
+    resolved: list[str] = []
+
+    def _recording_device(serial: str) -> object:
+        resolved.append(serial)
+        return object()
+
+    backend = AdbBackend()
+    monkeypatch.setattr(backend, "_device", _recording_device)
+
+    with pytest.raises(AdbError) as bad_remote:
+        backend.ensure_frida_server("emulator-5554", remote_path="not-absolute")
+    assert bad_remote.value.code == "invalid_params"
+
+    with pytest.raises(AdbError) as bad_bind:
+        backend.ensure_frida_server("emulator-5554", bind_host="1.2.3.4; rm -rf /")
+    assert bad_bind.value.code == "invalid_params"
+
+    with pytest.raises(AdbError) as missing_binary:
+        backend.ensure_frida_server(
+            "emulator-5554", server_binary=str(tmp_path / "no-such-frida-server")
+        )
+    assert missing_binary.value.code == "not_found"
+
+    assert resolved == [], "a bad local input reached _device before validation"
