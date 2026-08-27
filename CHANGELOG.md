@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida NaN 超时会变成零截止并泄漏会话）
+
+- `_bound_timeout` 只挡 `value <= 0`，却漏了 NaN：`nan <= 0` 为假、`min(nan, MAX)` 仍返回 nan，
+  于是一个 NaN 超时会一路穿过、成为交给 `_run_deadline` → `Future.result(nan)` 的截止值——它会
+  立即以超时返回，把刚建好的会话拆掉，并与 worker 线程的 `sessions.append` 竞争，可能在守护线程上
+  泄漏一个 frida 会话。工具 schema 会限制 timeout，但 agent 传输直接调用 handler、绕过该校验。现
+  在守卫里加上有限值安全的 NaN 判定 `value != value`（与 `clamp_cli_timeout` 同法），NaN 与
+  非正数一律报 `invalid_params`；inf 仍通过该判定并被 `min` 收敛到上限。新增回归测试覆盖
+  NaN/负数/零被拒、正常值与 inf 被正确收敛。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
