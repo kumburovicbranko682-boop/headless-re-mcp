@@ -112,6 +112,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（stub-coupling 把 UPX0 当作壳段，脱壳后的 UPX 转储被报成「无代码」）
+
+- `analyze_dump_stub_coupling`（经 MCP `unpack.stub_coupling` 暴露）先用
+  `vmp_like_section_ranges` 从 PE 段名推导「VMP/壳」段，再用 `code_section_ranges`
+  取应用代码段（显式剔除壳段与其重叠段），最后在代码段里扫 E8/FF15/FF25。UPX 把段命名为
+  UPX0、UPX1……：**壳的解压 stub 与压缩数据在 UPX1+，UPX0 是 stub 把原始代码解压进去的目的段
+  ——脱壳后真正的代码就落在 UPX0**。但 `vmp_like_section_ranges` 里那条「短名 + 可执行 +
+  未知名」的 `weird` 泛化启发式会把真实 UPX0（RWX、带 `MEM_EXECUTE`、四字符非点开头未知名）
+  一并收进壳段集合。于是 `code_section_ranges` 把 UPX0 当壳段整段剔除，兜底逻辑又拒绝把壳段
+  当代码找回——一个已完整脱壳的 UPX 转储便报成 `code_sections: []`、`code_bytes: 0`、
+  `code_nonzero_ratio: 0`，把「代码都在、只是在 UPX0」误说成「转储里没有可分析的代码」，还会经
+  `code_nonzero_ratio` 误触发 `pause_quality` 的「代码尚未就绪（全零）」判定而错误拦下 IAT 重建。
+  这与刚修的 `unpack/observe.py`（`stub_rva_ranges_from_sections` 把 UPX0 误当 stub 区间）同源。
+  现新增 `_UPX_FAMILY_SECTION`（`^\.?upx\d+$`）与 `_UPX_STUB_SECTION`（`^\.?upx[1-9]\d*$`）：
+  凡属 UPX 家族且本身不是编号 stub 段（即 UPX0）的段一律视为解压目的段，绝不计入壳段；UPX1+
+  仍按 stub 处理，其余短名可执行未知段（如 `.xz`、`.vmp0`）行为不变。新增回归
+  `test_upx0_destination_is_not_a_stub_range_but_upx1_is` 与
+  `test_upx_dump_scans_unpacked_code_in_upx0`：断言只有 UPX1 入壳段、UPX0 进代码段并被扫描，
+  且端到端下 `code_sections`/`code_bytes`/`code_nonzero_ratio` 都非空；去掉修复后二者因 UPX0
+  被剔除而失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
