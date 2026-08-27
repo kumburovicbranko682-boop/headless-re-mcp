@@ -431,6 +431,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（发布 tag 与包版本错位）
+
+- release workflow 在构建前先校验 `v*` tag 与 `pyproject.toml` 的版本一致。此前
+  `build_msi.ps1` 只互查 pyproject 与 `Product.wxs`,但没有任何东西把两者与被发布的
+  tag 绑住——tag 打在版本提交之前、或打错 commit,会把版本号还是上一版的 MSI 挂上
+  新版本号的 GitHub Release,且该 MSI 的 `MajorUpgrade` 不会取代已装的同版本旧包。
+  现在这种 tag 在装依赖之前就以明确报错失败;`workflow_dispatch` 空跑不受影响。
+  CONTRIBUTING 的发布流程随之注明这道守卫。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、

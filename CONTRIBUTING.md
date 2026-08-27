@@ -114,7 +114,8 @@ CI 会断言提交的 SPA 与 `webui/src` 匹配,忘了重编会红。
 步骤:main 全绿为前提;改完四处后**重装 editable 包再跑质量门**(版本一致性测试读的是
 安装元数据,不重装它就用旧版本号比对);提交 `Release X.Y.Z` 并推上 main,等 CI 绿;
 打附注 tag `vX.Y.Z`(tag 消息写发布摘要,惯例见 `git tag -n9`)并推送——release
-workflow 会构建 MSI、做装-跑-卸往返验证,然后自动创建 GitHub Release 并附上安装包
+workflow 先校验 tag 与 pyproject 版本一致(tag 打在版本提交之前或打错 commit 都会在
+构建前失败),再构建 MSI、做装-跑-卸往返验证,然后自动创建 GitHub Release 并附上安装包
 与校验和。想只验打包路径不发布,用 release workflow 的 `workflow_dispatch` 空跑。
 
 有配好真实 IDA / x64dbg 的机器时,发布前手动触发 `windows-integration` 的集成 gate
