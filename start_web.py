@@ -33,6 +33,19 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _bracketed_authority(host: str, port: int) -> str:
+    """Return ``host:port`` for a URL, bracketing an IPv6 literal host.
+
+    ``run_web`` accepts any loopback address, ``::1`` among them. Without
+    brackets ``http://::1:8765/`` is not a URL a browser can parse -- the
+    authority needs ``[::1]`` to separate the host from the port -- so the
+    printed link and the one handed to ``webbrowser.open`` both pointed nowhere
+    on an IPv6-loopback console. IPv4 and hostnames are returned unchanged.
+    """
+    host_part = f"[{host}]" if ":" in host else host
+    return f"{host_part}:{int(port)}"
+
+
 def _preflight(settings: object) -> int:
     """在 WebUI 起来之前跑安装向导同款依赖步骤。返回非 0 表示严重失败。"""
     from headless_re_mcp.web.setup import run_setup_step
@@ -158,8 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         query = f"token={token}"
         if args.wizard:
             query += "&wizard=1"
-        url = f"http://{host}:{preferred}/?{query}"
-        _log(f"检测到监控台已在运行：http://{host}:{preferred}/")
+        authority = _bracketed_authority(host, preferred)
+        url = f"http://{authority}/?{query}"
+        _log(f"检测到监控台已在运行：http://{authority}/")
         _log(f"Token 文件：{token_path}")
         _log("将打开已有实例，不再重复绑定端口。")
         if not args.no_browser:
@@ -193,9 +207,10 @@ def main(argv: list[str] | None = None) -> int:
     query = f"token={token}"
     if args.wizard:
         query += "&wizard=1"
-    url = f"http://{host}:{bind_port}/?{query}"
+    authority = _bracketed_authority(host, bind_port)
+    url = f"http://{authority}/?{query}"
 
-    _log(f"监听地址：http://{host}:{bind_port}/")
+    _log(f"监听地址：http://{authority}/")
     _log(f"完整 URL：{url}")
     _log(f"Token 文件：{token_path}")
     _log("说明：IDA 永不打包；需要时在安装向导中配置本机路径。")
