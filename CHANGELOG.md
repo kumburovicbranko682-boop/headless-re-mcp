@@ -549,6 +549,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
   先物化全集再截断；加壳应用可以有十几万个类，这一次 RPC 就能把目标拖死。改为边枚举边停。
+- **`frida.java.classes/methods` 的 `pid` 是签名里唯一没设下界、也没说明默认值的整数**。
+  `pid=0` 是「本会话最近一次 spawn/attach 的 pid」的哨兵（Java 工具正是这么默认对准刚拉起的
+  应用），但 schema 只写 integer、文档只字未提；传负数能过 schema，直到 `_authorize` 才以
+  `pid must be a positive integer` 报出来，是 `limit`（已 1..2000）之外唯一没兜住的那半个入参。
+  现在 schema 把 `pid` 下界钉在 0（哨兵仍有效、负数当场拒绝），并在两个工具的文档里写清 `pid=0`
+  的含义与非负约束。
 - **jadx 反编译会把整个 .java 读进内存再切**。生成器吐出的单文件可以到几十 MB。按上限读。
 - **有界执行器仍会把工具的全部 stdout/stderr 读进内存**。Ghidra / jadx 的进度输出可以到
   上百 MB，调用方只用其中几 KB。现在每个流最多保留 8 MB，多出的丢弃以免撑满管道。
