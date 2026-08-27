@@ -17,6 +17,7 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
+_WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "sample_module.wasm"
 
 _DATA_URL = (
     "data:text/html,"
@@ -84,16 +85,42 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
-def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
+def test_wasm_wat_disassembles_a_real_module_when_wabt_present() -> None:
+    """wasm2wat lifts the fixture's exported functions back to WAT.
+
+    An empty (magic + version) module only proves the tool runs; the committed
+    fixture has real type/function/export/code sections, so a regression that
+    dropped section decoding would fail here instead of passing on an empty
+    module.
+    """
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
     service = AnalysisService()
     try:
-        result = service.wasm_wat(str(module))
+        result = service.wasm_wat(str(_WASM_FIXTURE))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert "module" in wat
+        assert '"add"' in wat
+        assert "i32.add" in wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_reports_sections_when_wabt_present() -> None:
+    """wasm-objdump enumerates the fixture's sections and exported names."""
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM Gate not run (skip != pass)")
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(_WASM_FIXTURE))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        assert "Export" in objdump
+        assert "Code" in objdump
+        assert "add" in objdump
     finally:
         service.close_all()
