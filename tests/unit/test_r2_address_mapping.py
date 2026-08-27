@@ -524,3 +524,112 @@ def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
             described = ast.get_docstring(node) or ""
     assert "Answers with raw" in described
     assert "no format, arch, bits" in described
+
+
+def test_disasm_disassembles_at_the_request_address_with_the_request_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """disasm runs ``pdj <count> @ <address>`` and maps the request address back.
+
+    The requested count is what pdj is told to fetch (an off-by-one on the
+    address or count disassembles the wrong bytes), while the reply reports the
+    instructions that actually came back and maps each to its module address.
+    The request address is carried back mapped to {va, rva} so a caller knows
+    which address the disassembly belongs to, not just anonymous opcode text.
+    """
+    recorded: list[list[str]] = []
+    rows = [
+        {"offset": 0x140001000, "opcode": "nop"},
+        {"offset": 0x140001001, "opcode": "ret"},
+    ]
+
+    def capture(cmd: list[str], **kwargs: Any) -> Completed:
+        recorded.append(list(cmd))
+        return Completed(returncode=0, stdout=json.dumps(rows).encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", capture)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.disasm(_minimal_pe(tmp_path), 0x140001000, count=4)
+
+    assert payload["address"]["rva"] == 0x1000
+    assert payload["address_va"] == 0x140001000
+    assert payload["count"] == 2
+    assert payload["items"][0]["address"]["rva"] == 0x1000
+    argv = recorded[0]
+    script = argv[argv.index("-c") + 1]
+    assert f"pdj 4 @ {0x140001000}" in script
+    assert "aa" in script.splitlines()
+
+
+def test_xrefs_asks_for_axj_at_the_request_address_and_echoes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """xrefs must query axj at the asked address and carry that address back.
+
+    The reply lists references to one address; without echoing which address was
+    queried the list is unanchored, so the payload has to carry it alongside the
+    ``axj @ <address>`` command that produced it.
+    """
+    recorded: list[list[str]] = []
+
+    def capture(cmd: list[str], **kwargs: Any) -> Completed:
+        recorded.append(list(cmd))
+        return Completed(returncode=0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", capture)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.xrefs(_minimal_pe(tmp_path), 0x140002000)
+
+    assert payload["address"]["rva"] == 0x2000
+    assert payload["address_va"] == 0x140002000
+    argv = recorded[0]
+    script = argv[argv.index("-c") + 1]
+    assert f"axj @ {0x140002000}" in script
+
+
+def test_open_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
+    """open refuses a nonexistent binary before spawning r2.
+
+    The guard names the missing path so the caller sees a bad input, not an r2
+    that failed to open a file it was never given.
+    """
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    missing = tmp_path / "nope.exe"
+    with pytest.raises(r2_client.R2Error) as caught:
+        client.open(missing)
+    assert caught.value.code == "not_found"
+    assert caught.value.details.get("path") == str(missing)
+
+
+def test_run_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
+    """run refuses a nonexistent binary even when r2 itself is configured.
+
+    Availability is checked first, so a configured r2 pointed at a missing file
+    still answers not_found rather than launching r2 on a path that is not there.
+    """
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    assert client.available is True
+    missing = tmp_path / "gone.bin"
+    with pytest.raises(r2_client.R2Error) as caught:
+        client.run(missing, ["i"])
+    assert caught.value.code == "not_found"
+    assert caught.value.details.get("path") == str(missing)
+
+
+def test_discover_returns_the_first_tool_found_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_discover prefers r2, then rizin, then radare2, and resolves the found one.
+
+    The client falls back to PATH discovery when no executable is configured, so
+    the first name that resolves must come back as a Path -- a discovery that
+    answered None with r2 on PATH would report the backend unavailable when it
+    is installed.
+    """
+    def only_rizin(name: str) -> str | None:
+        return "/opt/bin/rizin" if name == "rizin" else None
+
+    monkeypatch.setattr(r2_client.shutil, "which", only_rizin)
+    assert r2_client._discover() == Path("/opt/bin/rizin")
