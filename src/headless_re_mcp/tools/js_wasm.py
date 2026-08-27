@@ -28,10 +28,12 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Deobfuscate and unminify a JavaScript file via webcrack.
 
         Answers with code and bytes, plus truncated when the text was cut at
-        the buffer. If webcrack exits non-zero but still emitted code, that
-        code is returned with exit_code, tool_failed and stderr set so a
-        partial run is not read as complete. An input over 16 MiB is refused
-        as too_large rather than handed to webcrack.
+        the inline buffer (bytes still holds the full length). output_capped is
+        set instead when webcrack emitted more than the capture limit, so bytes
+        is a floor and the excess was discarded. If webcrack exits non-zero but
+        still emitted code, that code is returned with exit_code, tool_failed
+        and stderr set so a partial run is not read as complete. An input over
+        16 MiB is refused as too_large rather than handed to webcrack.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
@@ -42,10 +44,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return a readable, unminified form of a JavaScript file via webcrack.
 
         Same payload as js.deobfuscate: Answers with code and bytes, plus
-        truncated when the text was cut at the buffer, and exit_code /
-        tool_failed / stderr when webcrack exits non-zero but still emitted
-        code. An input over 16 MiB is refused as too_large rather than handed
-        to webcrack.
+        truncated when the text was cut at the inline buffer, output_capped
+        when webcrack emitted more than the capture limit so bytes is a floor,
+        and exit_code / tool_failed / stderr when webcrack exits non-zero but
+        still emitted code. An input over 16 MiB is refused as too_large rather
+        than handed to webcrack.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
@@ -76,10 +79,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
         Answers with wat and bytes, plus truncated when the text was cut at
-        the buffer, and exit_code / tool_failed / stderr when wasm2wat exits
-        non-zero but still emitted text. An input over 16 MiB is refused as
-        too_large, and a file that is not a WebAssembly module as
-        invalid_params, rather than handed to wasm2wat.
+        the inline buffer, output_capped when wasm2wat emitted more than the
+        capture limit so bytes is a floor, and exit_code / tool_failed /
+        stderr when wasm2wat exits non-zero but still emitted text. An input
+        over 16 MiB is refused as too_large, and a file that is not a
+        WebAssembly module as invalid_params, rather than handed to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -90,7 +94,8 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
         Answers with objdump holding that text, not a sections list, plus
-        truncated when the text was cut at the buffer, and exit_code /
+        truncated when the text was cut at the inline buffer, output_capped
+        when wasm-objdump emitted more than the capture limit, and exit_code /
         tool_failed / stderr when wasm-objdump exits non-zero but still
         emitted text. An input over 16 MiB is refused as too_large, and a file
         that is not a WebAssembly module as invalid_params, rather than handed

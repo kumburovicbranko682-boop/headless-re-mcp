@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`js.deobfuscate` / `js.beautify` / `wasm.wat` / `wasm.info` 补 `output_capped`，`bytes` 被采集上限截断时不再沉默）
+
+- 这四个工具的回包里 `bytes` 被文档承诺为“完整输出字节数”、`truncated` 只表示“内联显示在
+  `_MAX_INLINE`(400 KiB) 处截断,`bytes` 仍精确”。但真正采集这些字节的 `run_bounded` 会把
+  **每条流**封顶在 `DEFAULT_MAX_OUTPUT`(8 MiB) 并丢弃其余,且把这一事实记进
+  `Completed.stdout_truncated`——而 `_run` 把这个标志直接扔了。后果:输入上限是 16 MiB,而
+  美化后的 JS、`wasm2wat` 产出的 WAT 文本体量常成倍膨胀、轻松越过 8 MiB 采集上限;此时工具
+  产出 40 MiB、调用方读回的 `bytes` 却恰是 8 MiB 天花板,且没有任何字段说明“超出部分已丢、
+  `bytes` 只是下界”。`truncated` 也帮不上忙——它按契约只意味“内联被切、bytes 仍准”,无法表达
+  这层含义。现让 `_run` 透出 `completed.stdout_truncated`,`_bounded_output` 在其为真时补
+  `output_capped=True`(采集上限 8 MiB 远高于内联上限 400 KiB,故 `output_capped` 必然蕴含
+  `truncated`);该标志与 `tool_failed` 一样只在触发时出现,常见路径回包形状不变。`js.unpack_bundle`
+  的 stdout 只是 webcrack 的进度日志、真正产物是落盘文件,故其 stdout 采集截断按原样忽略。四个
+  工具文档串补记 `output_capped`。新增 `test_jsre_output_capped.py`:以桩 `run_bounded` 回
+  `stdout_truncated=True` 断言 `deobfuscate` / `wasm.wat` 回包带 `output_capped=True`、`truncated
+  is True` 且 `bytes` 为采集长度(下界);以 `stdout_truncated=False` 断言 `output_capped` 缺席、
+  `bytes` 精确;并直测 `_bounded_output` 仅按入参而非文本长度决定该标志。去掉修复后前者以
+  `KeyError: 'output_capped'` 失败,正是调用方会撞上的缺键。同步把因 `_run` 现返回四元组而失配的
+  既有桩(`test_jsre_unpack_dirs.py`、`test_cli_adapter_timeout_bounds.py`、
+  `test_unattended_resource_bounds.py`)更新为四元组/带 `stdout_truncated` 的形状。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

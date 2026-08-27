@@ -3464,7 +3464,7 @@ class TestExportedFileListsDiscloseTruncation:
             "_require_input",
             lambda self, path: path,
         )
-        monkeypatch.setattr(mod, "_run", lambda cmd, timeout, maximum=0.0: ("", "", 0))
+        monkeypatch.setattr(mod, "_run", lambda cmd, timeout, maximum=0.0: ("", "", 0, False))
         out = tmp_path / "unpacked"
         out.mkdir()
         for index in range(5):
