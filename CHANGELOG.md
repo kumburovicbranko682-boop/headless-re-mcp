@@ -158,6 +158,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 现在把读探针的清理改为:读一旦成功就显式 `session.detach()`,失败则抛 `frida_detach_failed`
   (带 `pid` 与失败类型),而非把 payload 原样回去掩盖泄漏;`frida.probe` 同理。读取过程中若中途异常
   (`except BaseException`)仍尽力 detach 后重抛原异常。新增回归覆盖四个探针 detach 成功/失败两路。
+- 同样的漏洞也在**注入类探针**上:`hook.template`(本地与设备)与 Java 类/方法枚举过去也在 `finally` 里
+  静默 detach,脚本加载成功后无论 detach 成不成都回 `loaded=true` / 类表 / 方法表——一个 detach 失败的
+  hook 会话连同刚注入的脚本一起滞留在目标里。新增模块级 `_detach_or_raise`:成功路径显式 detach、失败抛
+  `frida_detach_failed`(带 `pid` 与探针标签),异常路径仍 best-effort detach 后重抛原因。新增回归覆盖
+  hook 探针、Java 探针、设备 hook 探针的 detach 成功/失败两路。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

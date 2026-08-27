@@ -745,3 +745,121 @@ def test_add_remote_device_reuses_a_device_already_registered() -> None:
     assert first["id"] == "10.0.0.1:27042"
     assert second["id"] == "10.0.0.1:27042"
     assert client._frida.manager.added == 0
+
+
+class _HookScript:
+    def load(self) -> None:
+        return None
+
+
+class _DetachFailHookSession:
+    def create_script(self, source: str) -> _HookScript:
+        del source
+        return _HookScript()
+
+    def detach(self) -> None:
+        raise RuntimeError("native session is still attached")
+
+
+class _DetachFailHookDevice:
+    def attach(self, pid: int) -> _DetachFailHookSession:
+        del pid
+        return _DetachFailHookSession()
+
+
+class _JavaDetachFailScript:
+    exports_sync = _JavaApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _DetachFailJavaSession:
+    def create_script(self, source: str) -> _JavaDetachFailScript:
+        del source
+        return _JavaDetachFailScript()
+
+    def detach(self) -> None:
+        raise RuntimeError("native session is still attached")
+
+
+class _DetachFailJavaDevice:
+    def attach(self, pid: int) -> _DetachFailJavaSession:
+        del pid
+        return _DetachFailJavaSession()
+
+
+def test_frida_hook_template_reports_a_detach_failure_instead_of_success() -> None:
+    """A loaded hook whose session cannot detach is a leak, not loaded=true.
+
+    The hook script is destroyed with the session, so a probe that stays
+    attached keeps it live in the target. Reporting loaded=true would hide
+    that the probe never detached.
+    """
+
+    class _Frida:
+        def attach(self, pid: int) -> _DetachFailHookSession:
+            del pid
+            return _DetachFailHookSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, "noop", allowed_pid=1, timeout=1.0)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_hook_template_device_reports_a_detach_failure_instead_of_success() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _DetachFailHookDevice()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 1, "noop", allowed_pids={1}, timeout=1.0)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_java_enumerate_reports_a_detach_failure_instead_of_success() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _DetachFailJavaDevice()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", timeout=1.0)
+
+    assert caught.value.code == "frida_detach_failed"
+    assert caught.value.details["pid"] == 1
+
+
+def test_frida_hook_probe_detach_failure_does_not_mask_the_real_error() -> None:
+    """When the hook load fails, its error wins over a later detach failure."""
+
+    class _Session:
+        def create_script(self, source: str) -> object:
+            del source
+            raise FridaError("backend_error", "script load exploded")
+
+        def detach(self) -> None:
+            raise RuntimeError("also cannot detach")
+
+    class _Frida:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, "noop", allowed_pid=1, timeout=1.0)
+
+    assert caught.value.code == "backend_error"
