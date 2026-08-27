@@ -49,6 +49,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.screenshot` 拒绝零字节空 PNG，而非把空文件注册成产物）
+
+- Playwright 有时会在截图落地一个零字节文件后正常返回（页面尚未绘制、目标崩溃等）。旧路径
+  照常把这个空文件注册成产物、回一个 `artifact_id`，调用方拿到的却是一张打不开的空 PNG，
+  与「截图成功」无从区分。现落盘后先核对大小：为 0 时删除该文件并以 `backend_error`
+  （`screenshot produced an empty file`）报错，绝不把空产物冒充成一张截图。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
