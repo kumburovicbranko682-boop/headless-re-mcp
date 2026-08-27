@@ -99,6 +99,78 @@ def test_deobfuscate_still_raises_when_nonzero_and_nothing_printed(tmp_path: Pat
     assert caught.value.details.get("exit_code") == 3
 
 
+def test_unpack_bundle_raises_when_nonzero_and_nothing_was_written(tmp_path: Path) -> None:
+    """A crash that left no files behind is a hard failure, not an empty listing.
+
+    unpack_bundle keeps a partial unpack (nonzero exit but files on disk) on the
+    return-what-we-got path, but with nothing written the run produced no usable
+    result at all -- surfacing an empty ``files`` with a ``tool_failed`` flag would
+    read as "this bundle unpacks to zero modules". It must fail closed instead.
+    """
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(2, b"", b"unpack aborted before writing anything")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 2
+    assert caught.value.details.get("stderr") == "unpack aborted before writing anything"
+
+
+def test_wasm_wat_raises_when_nonzero_and_nothing_printed(tmp_path: Path) -> None:
+    """wasm2wat that died without emitting any WAT fails closed, matching the
+    webcrack contract: an empty conversion is never reported as a clean run."""
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"", b"fatal: unknown section")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).wat(module)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 1
+    assert caught.value.details.get("stderr") == "fatal: unknown section"
+
+
+def test_wasm_info_raises_when_nonzero_and_nothing_printed(tmp_path: Path) -> None:
+    """wasm-objdump that died without printing any section listing fails closed
+    rather than returning an empty objdump dump as if it were the whole module."""
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"", b"fatal: bad magic")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).info(module)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 1
+    assert caught.value.details.get("stderr") == "fatal: bad magic"
+
+
 def test_unpack_bundle_surfaces_a_nonzero_exit_when_files_were_written(tmp_path: Path) -> None:
     tool = tmp_path / "webcrack.exe"
     tool.write_bytes(b"")

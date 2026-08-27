@@ -28,6 +28,7 @@ from headless_re_mcp.backends.jsre.client import (
     _capped_file_listing,
     _looks_like_wasm,
     _require_existing_file,
+    _resolve_wabt_tool,
     _run,
 )
 
@@ -121,6 +122,32 @@ def test_require_existing_file_refuses_an_oversized_input(
     assert info.value.code == "too_large"
     assert info.value.details["size"] == 100
     assert info.value.details["max_file_size"] == 4
+
+
+def test_resolve_wabt_tool_accepts_a_direct_binary_path(tmp_path: Path) -> None:
+    """Pointing wabt straight at the wasm2wat binary resolves to that file, so a
+    deployment that pins one tool by absolute path is honoured verbatim."""
+    binary = tmp_path / "wasm2wat"
+    binary.write_text("", encoding="utf-8")
+    assert _resolve_wabt_tool(binary, "wasm2wat") == binary
+
+
+def test_resolve_wabt_tool_finds_the_binary_under_a_bin_subdir(tmp_path: Path) -> None:
+    """A wabt path that names the install root (not the tool) is searched under
+    ``bin/`` -- the common release layout -- rather than being given up on."""
+    root = tmp_path / "wabt-install"
+    (root / "bin").mkdir(parents=True)
+    binary = root / "bin" / "wasm2wat"
+    binary.write_text("", encoding="utf-8")
+    assert _resolve_wabt_tool(root, "wasm2wat") == binary
+
+
+def test_resolve_wabt_tool_is_none_when_a_root_holds_no_such_tool(tmp_path: Path) -> None:
+    """A root with neither a direct nor a bin/ match resolves to None (the tool
+    is simply unavailable) instead of returning a path that does not exist."""
+    root = tmp_path / "empty-root"
+    root.mkdir()
+    assert _resolve_wabt_tool(root, "wasm2wat-not-on-path-xyz") is None
 
 
 def test_run_maps_an_invalid_timeout_to_invalid_params(monkeypatch: pytest.MonkeyPatch) -> None:
