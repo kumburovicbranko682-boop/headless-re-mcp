@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`proxy.export_har` 给每条流打上真实发起时间,而非导出时刻）
+
+- 和 Web 侧同样的毛病:HAR 的 `startedDateTime` 本该是流真正发起的时间,可 `proxy.export_har`
+  从不传它,`har_entry` 于是回退到**导出那一刻**——一份跑了整夜、几千条流的抓包导出来,所有条目
+  共用一个时间戳,看上去像全部流量同时发生。而 mitmproxy 的每条流本就带着
+  `request.timestamp_start`(纪元秒)。
+- 现在 `_FlowRecorder` 在记录每条流时把 `timestamp_start` 存进一张与摘要环**并行**的表
+  (`_flow_times`),它刻意不进摘要本身,故不会泄进 `proxy.flows` 的字段;这张表按环容量做 FIFO 封顶,
+  长跑抓包也不会让它无限增长。`export_har` 据此把每条记录的 `startedDateTime` 设为该流的真实发起时间;
+  只有在 `timestamp_start` 不可知时才回退到导出时刻,绝不伪造。工具描述点明 `startedDateTime` 取自
+  `timestamp_start`、保留先后与间隔。
+- 新增回归:`_iso_from_epoch` 转 ISO 并对 None/0/负/布尔/越界回退 None、`_flow_start_time` 读
+  `timestamp_start` 并拒非法值;`export_har` 按各流的 `timestamp_start` 打上互不相同的真实时间戳、
+  无该值时回退到「就在此刻」的合法 ISO;并行时间表按容量 3 封顶(灌 6 条只余最新 `3/4/5`)、且时间戳
+  绝不出现在 `proxy.flows` 的摘要行里。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

@@ -17,6 +17,7 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -154,6 +155,36 @@ def _drain_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
         return
     with contextlib.suppress(Exception):
         future.result(timeout=_SERVER_STOP_WAIT_S)
+
+
+def _flow_start_time(req: Any) -> float | None:
+    """The request's start as epoch seconds, or None when unavailable.
+
+    mitmproxy stamps ``request.timestamp_start`` when it first sees a request.
+    Without it har_entry falls back to the export instant, so an overnight
+    capture's HAR reads as though every flow happened at once -- the ordering
+    and spacing that are a main reason to open a HAR in DevTools are gone.
+    """
+    ts = getattr(req, "timestamp_start", None)
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0:
+        return float(ts)
+    return None
+
+
+def _iso_from_epoch(value: object) -> str | None:
+    """Epoch seconds as an ISO 8601 instant, or None when unusable.
+
+    None (missing, non-numeric, or out-of-range) lets har_entry keep its
+    export-time default rather than fabricating a timestamp.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    if value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _content_len(part: Any) -> int:
@@ -314,6 +345,11 @@ class _FlowRecorder:
         self._capacity = max(1, capacity)
         self.flows: deque[JsonObject] = deque(maxlen=self._capacity)
         self._seq = 0
+        # flow_id -> request start (epoch seconds), kept beside the summary ring
+        # rather than in the summary itself so it never enters proxy.flows, and
+        # bounded to the ring capacity so a long capture cannot grow it without
+        # limit. har_export reads it to stamp each entry's real start time.
+        self._flow_times: OrderedDict[str, float] = OrderedDict()
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
@@ -369,6 +405,7 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        started = _flow_start_time(req)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -415,6 +452,17 @@ class _FlowRecorder:
             ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
+            if started is not None:
+                # Bounded FIFO in lockstep with the summary ring's capacity, so
+                # the newest timed flows are kept and memory stays capped.
+                self._flow_times[flow_id] = started
+                while len(self._flow_times) > self._capacity:
+                    self._flow_times.popitem(last=False)
+
+    def flow_times(self) -> dict[str, float]:
+        """A snapshot of the flow_id -> start-time map, taken under the lock."""
+        with self._lock:
+            return dict(self._flow_times)
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -723,6 +771,8 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
+        snapshot = inst.recorder.snapshot()
+        times = inst.recorder.flow_times()
         entries = [
             har_entry(
                 method=f.get("method"),
@@ -730,8 +780,9 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                started_date_time=_iso_from_epoch(times.get(str(f.get("id")))),
             )
-            for f in inst.recorder.snapshot()
+            for f in snapshot
         ]
         # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
         # URLs alone can be 16 KiB each, so an unbounded write would drop a

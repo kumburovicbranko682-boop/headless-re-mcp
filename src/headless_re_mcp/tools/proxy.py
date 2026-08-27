@@ -105,9 +105,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        dropped to keep the file under the capture cap. Each entry's
+        startedDateTime is the flow's real request start (mitmproxy's
+        timestamp_start), so the HAR preserves ordering and spacing; only flows
+        whose start time was unavailable fall back to the export instant. There
+        is no har, output or artifact field. path is the file; looking for har
+        after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

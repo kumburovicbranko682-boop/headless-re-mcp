@@ -15,7 +15,7 @@ written whole.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
@@ -25,7 +25,13 @@ import pytest
 
 from headless_re_mcp.backends.common.har import build_har, har_entry, serialize_har
 from headless_re_mcp.backends.proxy import client as proxy_client
-from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
+from headless_re_mcp.backends.proxy.client import (
+    ProxyBackend,
+    ProxyError,
+    _flow_start_time,
+    _FlowRecorder,
+    _iso_from_epoch,
+)
 from headless_re_mcp.backends.web import client as web_client
 from headless_re_mcp.backends.web.client import WebBackend, WebError
 
@@ -315,3 +321,84 @@ def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
     with pytest.raises(ProxyError) as info:
         backend.export_har("s", tmp_path / "capture.har")
     assert info.value.code == "too_large"
+
+
+def _flow_with_start(index: int, ts: float | None) -> Any:
+    request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+    if ts is not None:
+        request.timestamp_start = ts
+    response = SimpleNamespace(
+        status_code=200, headers={"content-type": "text/plain"}, raw_content=None
+    )
+    return SimpleNamespace(id=str(index), request=request, response=response)
+
+
+def test_iso_from_epoch_converts_and_rejects_unusable_values() -> None:
+    epoch = 1_700_000_000.5
+    assert _iso_from_epoch(epoch) == datetime.fromtimestamp(epoch, tz=UTC).isoformat()
+    assert _iso_from_epoch(None) is None
+    assert _iso_from_epoch(0) is None
+    assert _iso_from_epoch(-1) is None
+    assert _iso_from_epoch(True) is None
+    assert _iso_from_epoch("2026") is None
+    assert _iso_from_epoch(10**30) is None
+
+
+def test_flow_start_time_reads_timestamp_start_and_rejects_bad() -> None:
+    assert _flow_start_time(SimpleNamespace(timestamp_start=1_700_000_000.0)) == 1_700_000_000.0
+    assert _flow_start_time(SimpleNamespace()) is None
+    assert _flow_start_time(SimpleNamespace(timestamp_start=0)) is None
+    assert _flow_start_time(SimpleNamespace(timestamp_start=True)) is None
+
+
+def test_proxy_export_har_stamps_entries_with_the_flow_start_time(tmp_path: Path) -> None:
+    """The HAR must carry each flow's real request start, not the export time.
+
+    Without it har_entry stamps every entry with the export instant, so an
+    overnight capture reads as though all traffic happened at once -- the
+    ordering and spacing a HAR exists to show are lost.
+    """
+    recorder = _FlowRecorder()
+    recorder.response(_flow_with_start(0, 1_700_000_000.0))
+    recorder.response(_flow_with_start(1, 1_700_000_050.5))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    by_url = {e["request"]["url"]: e["startedDateTime"] for e in doc["log"]["entries"]}
+    assert by_url["http://x/0"] == _iso_from_epoch(1_700_000_000.0)
+    assert by_url["http://x/1"] == _iso_from_epoch(1_700_000_050.5)
+    assert by_url["http://x/0"] != by_url["http://x/1"]
+
+
+def test_proxy_export_har_falls_back_to_export_time_without_a_start(
+    tmp_path: Path,
+) -> None:
+    """A flow lacking timestamp_start still gets a valid, recent instant."""
+    backend = _proxy_backend_with_flows(2)  # this helper sets no timestamp_start
+    before = datetime.now(UTC)
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    after = datetime.now(UTC)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    for entry in doc["log"]["entries"]:
+        stamped = datetime.fromisoformat(entry["startedDateTime"])
+        assert before <= stamped <= after
+
+
+def test_recorder_flow_times_map_is_bounded_to_the_ring_capacity() -> None:
+    """The parallel time map must not outgrow the summary ring it shadows."""
+    recorder = _FlowRecorder(capacity=3)
+    for index in range(6):
+        recorder.response(_flow_with_start(index, 1_700_000_000.0 + index))
+    times = recorder.flow_times()
+    assert len(times) == 3
+    assert set(times) == {"3", "4", "5"}
+    assert times["5"] == 1_700_000_005.0
+    # And the timestamp never leaked into the flow summaries (proxy.flows).
+    for row in recorder.snapshot():
+        assert "started" not in row
+        assert "timestamp_start" not in row
