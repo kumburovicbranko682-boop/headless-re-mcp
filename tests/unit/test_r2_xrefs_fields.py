@@ -6,6 +6,8 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.tools.r2 import build_r2_tools
@@ -72,6 +74,62 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
     assert "from_address" in described
     assert "address_va" in described
     assert "no integer address" in described.replace("\n", " ")
+
+
+def test_r2_xrefs_queries_the_address_with_axtj_axfj_not_the_whole_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`axj @ addr` ignores the address and lists every ref in the binary.
+
+    Verified against radare2 5.5.0: `axj @ A` and `axj @ B` return byte-for-byte
+    the same full reference table, so the old xrefs answered "what references A"
+    with the program's entire xref graph. The fix runs axtj (to) and axfj (from),
+    which do honour the address, and merges them into a directed edge list.
+    """
+    import headless_re_mcp.backends.r2.client as r2_module
+    from headless_re_mcp.backends.common.bounded_run import Completed
+    from headless_re_mcp.backends.r2.client import R2Client
+
+    pe = _pe(tmp_path)
+    executable = tmp_path / "r2.exe"
+    executable.write_bytes(b"")
+    to_list = [{"from": 0x140002000, "type": "CALL", "refname": "sym.target"}]
+    from_list = [{"from": 0x140001000, "to": 0x140003000, "type": "CALL"}]
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> Completed:
+        del kwargs
+        launched.append([str(part) for part in cmd])
+        stdout = (json.dumps(to_list) + "\n" + json.dumps(from_list)).encode("utf-8")
+        return Completed(0, stdout, b"")
+
+    monkeypatch.setattr(r2_module, "run_bounded", fake_run)
+    payload = R2Client(executable).xrefs(pe, 0x140001000)
+
+    assert len(launched) == 1
+    script = launched[0][launched[0].index("-c") + 1]
+    assert "axtj @ " in script
+    assert "axfj @ " in script
+    assert "axj @ " not in script
+
+    assert payload["address_va"] == 0x140001000
+    assert payload["xrefs_to"] == 1
+    assert payload["xrefs_from"] == 1
+    assert payload["count"] == 2
+    by_direction = {item["direction"]: item for item in payload["items"]}
+    assert by_direction["to"]["from_address"]["va"] == 0x140002000
+    assert by_direction["to"]["to_address"]["va"] == 0x140001000
+    assert by_direction["from"]["from_address"]["va"] == 0x140001000
+    assert by_direction["from"]["to_address"]["va"] == 0x140003000
+
+
+def test_r2_xrefs_docstring_warns_axj_lists_the_whole_binary() -> None:
+    """The description must steer callers off the address-ignoring command."""
+    described = _tool_docstring("r2.xrefs").replace("\n", " ")
+    assert "axtj" in described
+    assert "axfj" in described
+    assert "direction" in described
+    assert "ignores the address" in described
 
 
 def test_r2_address_schemas_match_the_client_non_negative_check() -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json_values
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -31,6 +31,9 @@ _ALLOWED = frozenset(
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axtj (refs to) and axfj (refs from) honour the @ address; plain axj ignores
+# it and lists the whole program, which is why xrefs() uses these two instead.
+_AXTF_COMMAND = re.compile(r"ax[tf]j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -48,6 +51,8 @@ def _require_allowed_command(command: str) -> None:
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AXTF_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -100,11 +105,33 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
-        data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        # `axj @ addr` ignores the address and lists every reference in the
+        # binary; `axtj` (to) and `axfj` (from) are the ones that honour it. Run
+        # both in one analysis pass and merge into a directed edge list so the
+        # result actually describes the address that was asked for.
+        data = self.run(
+            binary,
+            ["aa", f"axtj @ {address}", f"axfj @ {address}"],
+            timeout=timeout,
+        )
+        values = parse_r2_json_values(str(data.get("raw") or ""))
+        arrays = [value for value in values if isinstance(value, list)]
+        to_refs = arrays[0] if len(arrays) >= 1 else []
+        from_refs = arrays[1] if len(arrays) >= 2 else []
+        edges = _merge_xref_edges(to_refs, from_refs, address)
+        enriched = enrich_r2_payload(
+            {"raw": data.get("raw", ""), "commands": data.get("commands"), "address": address},
+            binary=binary,
+            parsed_override=edges,
+        )
+        enriched["xrefs_to"] = len(to_refs)
+        enriched["xrefs_from"] = len(from_refs)
+        # Carry any raw-output truncation the underlying run recorded; a cut that
+        # lost the second array must not read as "no refs from here".
+        for key in ("truncated", "output_bytes", "returned_bytes"):
+            if key in data:
+                enriched[key] = data[key]
+        return enriched
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:
@@ -166,6 +193,35 @@ class R2Client:
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
         return enrich_r2_payload(payload, binary=binary)
+
+
+def _merge_xref_edges(
+    to_refs: list[Any], from_refs: list[Any], address: int
+) -> list[JsonObject]:
+    """Combine axtj (to) and axfj (from) into one direction-tagged edge list.
+
+    axtj items carry the referrer as ``from`` and leave the queried address
+    implicit, so the queried address is filled in as ``to``. axfj items already
+    carry both endpoints. ``direction`` says which query produced each edge so a
+    caller reading the merged list can still tell "who references this" from
+    "what this references".
+    """
+    edges: list[JsonObject] = []
+    for ref in to_refs:
+        if not isinstance(ref, dict):
+            continue
+        edge = dict(ref)
+        edge["direction"] = "to"
+        edge.setdefault("to", address)
+        edges.append(edge)
+    for ref in from_refs:
+        if not isinstance(ref, dict):
+            continue
+        edge = dict(ref)
+        edge["direction"] = "from"
+        edge.setdefault("from", address)
+        edges.append(edge)
+    return edges
 
 
 def _discover() -> Path | None:

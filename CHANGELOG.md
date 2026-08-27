@@ -131,6 +131,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `decompile` 的 `found=false` 配 `address_resolved=false` 是坏地址而非“此处没有函数”。补测:脚本源码
   含 `address_resolved` 标记;客户端在坏地址回 `address_resolved=false`、脚本沉默时两模式都默认为真。
 
+### 修复（r2.xrefs 之前无视地址、返回整个二进制的引用表）
+
+- `r2.xrefs` 过去执行 `axj @ <addr>`,但 `axj` 根本不理会 `@` 定位,它列的是**整个程序**的交叉引用。
+  在 radare2 5.5.0 上实测:`axj @ A` 与 `axj @ B` 逐字节相同,都吐出全量引用表——于是“谁引用了
+  A”得到的是全图,一个无人值守的调用方据此得出的每条结论都是错的,而工具描述却写着“到/从该地址的
+  引用”。现改为在同一次 `aa` 分析里跑 `axtj @ addr`（引用到）与 `axfj @ addr`（引用从）——这两个才
+  真正按地址过滤——再合并成带 `direction`（`to`/`from`）的有向边列表,每条边带 `from`/`to` 与经
+  `enrich_r2_payload` 映射出的 `from_address`/`to_address`,另在顶层给出 `xrefs_to`/`xrefs_from` 两个
+  方向计数。空 items 现在真表示该地址两个方向都没有引用（坏地址/未映射地址同样返回空,radare2 对两者
+  一视同仁,描述已点明）。命令白名单相应放行 `ax[tf]j @ <addr>`。`mapping.py` 新增 `parse_r2_json_values`
+  以从一次调用的两段 JSON 中依次取出两个数组,并给 `enrich_r2_payload` 加 `parsed_override` 复用其地址
+  映射与截断记账。补测:客户端对 helper 目标只回那一条真实调用边、命令用 axtj/axfj 而非 axj、
+  `xrefs_to`/`xrefs_from`/`direction`/`from_address`/`to_address` 正确;描述点名 axtj/axfj/direction 与
+  “ignores the address”;白名单放行 `ax[tf]j @ addr` 且拒绝裸 `axtj`/`axfj`。
+
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 
 - `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时

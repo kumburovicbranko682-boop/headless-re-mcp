@@ -117,6 +117,35 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def parse_r2_json_values(raw: str) -> list[Any]:
+    """Extract every top-level JSON value from r2 output, in order.
+
+    A single r2 invocation that runs two ``*j`` commands prints two arrays back
+    to back; ``parse_r2_json`` only ever returns the first. Decoding proceeds
+    from the end of each value so brackets inside opcodes and strings, which sit
+    within a value already being decoded, cannot be mistaken for a new root.
+    """
+    text = (raw or "").strip()
+    values: list[Any] = []
+    if not text:
+        return values
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] not in "[{":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        values.append(value)
+        index = end
+    return values
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -135,14 +164,21 @@ def enrich_r2_payload(
     *,
     binary: Path,
     architecture: Architecture | None = None,
+    parsed_override: Any | None = None,
 ) -> JsonObject:
-    """Parse *j payloads into items with unified Address fields."""
+    """Parse *j payloads into items with unified Address fields.
+
+    ``parsed_override`` lets a caller that already assembled the item list (for
+    example r2.xrefs merging a to-list and a from-list) reuse the address
+    mapping and truncation accounting here instead of re-serialising through
+    ``raw``.
+    """
     module = binary.name
     pe_arch, image_base = pe_preferred_base(binary)
     arch = architecture or pe_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
-    parsed = parse_r2_json(raw)
+    parsed = parsed_override if parsed_override is not None else parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
     if image_base is not None:
