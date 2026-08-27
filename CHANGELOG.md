@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（stub 耦合扫描到达字节预算即止,却不说自己只扫了前缀）
+
+- `count_stub_vs_api_calls` 扫描代码字节统计 E8→stub 与 FF15/FF25 API 间接调用,到达 `max_scan_bytes`
+  (默认 8 MiB)就 `break`,只回 `scanned_bytes`,不透露是否还有没扫到的代码。而 `still_vm_stub_count` /
+  `stub_vs_api_ratio` 是 IAT 重建的 fail-closed 信号(stub 占比高 → 判定仍 VM 耦合、拦重建):一旦大转储的
+  代码超过预算,尾部若满是 E8→stub 调用却没被计入,这些数就成了「偏低」的下界,gate 反而可能误放行。相邻的
+  apk 扫描早就用 `scan_capped` 披露「可能还有」,这里却没有。
+- 现让扫描器额外回 `scan_capped`、`code_bytes_available`(各范围在镜像内的代码总字节)与 `scan_limit_bytes`:
+  当预算把扫描截断(`scanned_bytes < code_bytes_available`)时 `scan_capped` 为真,读到的计数只是前缀、是 stub
+  耦合的下界。把范围裁到镜像末尾属于「数据到头」,不是截断,不置该标志;空转储、无代码同理为 False。
+  `analyze_dump_stub_coupling` 通过 `**counts` 原样带出这三项,三处消费方(`unpack.iat.analyze` /
+  `unpack.iat.rebuild` / dump 耦合分析)回包里的 `stub_coupling` 便随之可见;解析失败的 fail-closed 分支
+  (`ok=False`)不带扫描字段。两个函数的文档串同步说明。
+- 新增/扩展回归:预算耗尽跨范围、单范围超预算的尾部、预算内全扫、裁到镜像末尾不误标,以及 dump 层把
+  `scan_capped` 带出、空转储不误标、解析失败不带扫描字段。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
