@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -266,6 +267,51 @@ def _file_mode_size(info: Any) -> tuple[int, int]:
         mode = int(info[0] or 0)
         size = int(info[1] or 0)
     return mode, size
+
+
+def _pull_streamed(sync: Any, remote_path: str, local_path: Path, cap: int) -> int:
+    """Stream a remote file to disk, never keeping more than ``cap`` bytes.
+
+    The stat pre-check in ``pull`` is advice, not a bound: a /proc-style
+    device file stats as size 0, a log grows between stat and transfer, and
+    an older backend may not answer stat at all. ``sync.pull`` then streams
+    until EOF or the 120s deadline -- enough to fill the local disk from a
+    device that lies. Counting the bytes ourselves closes that: the chunk
+    that would cross the cap is never written, and a refusal or a failure
+    keeps nothing on disk rather than a partial file the caller might read.
+    """
+    written = 0
+    try:
+        with local_path.open("wb") as output:
+            for chunk in _call(
+                sync.iter_content, remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S
+            ):
+                data = bytes(chunk)
+                if not data:
+                    continue
+                if written + len(data) > cap:
+                    raise AdbError(
+                        "too_large",
+                        "remote file exceeds pull cap",
+                        remote=remote_path,
+                        size=written + len(data),
+                        cap=cap,
+                    )
+                output.write(data)
+                written += len(data)
+    except AdbError:
+        with suppress(OSError):
+            local_path.unlink()
+        raise
+    except Exception as exc:  # noqa: BLE001
+        with suppress(OSError):
+            local_path.unlink()
+        if _is_timeout(exc):
+            raise AdbError(
+                "timeout", f"adb timed out after {_ADB_TRANSFER_TIMEOUT_S:g}s"
+            ) from exc
+        raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+    return written
 
 
 class AdbBackend:
@@ -592,6 +638,9 @@ class AdbBackend:
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
         size, over = capped_file_size(out_path, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
         if over:
+            # Same principle as pull: a refused capture keeps nothing on disk.
+            with suppress(OSError):
+                out_path.unlink()
             raise AdbError(
                 "too_large",
                 "screenshot exceeds capture cap",
@@ -630,6 +679,10 @@ class AdbBackend:
                         size=size,
                         cap=cap,
                     )
+        iter_content = getattr(sync, "iter_content", None)
+        if callable(iter_content):
+            pulled = _pull_streamed(sync, remote_path, local_path, cap)
+            return {"remote": remote_path, "local": str(local_path), "size": pulled}
         try:
             _call(dev.sync.pull, remote_path, str(local_path), timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -645,6 +698,10 @@ class AdbBackend:
             )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:
+            # The cap bounds what an unregistered capture may keep, not merely
+            # what it may report; the oversized copy must not stay behind.
+            with suppress(OSError):
+                local_path.unlink()
             raise AdbError(
                 "too_large",
                 "pulled file exceeds capture cap",

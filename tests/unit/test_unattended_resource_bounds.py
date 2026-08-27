@@ -3816,6 +3816,161 @@ class TestDevicePullRefusesTreesAndHugeFiles:
             backend.pull("emulator-5554", "/sdcard/huge.bin", tmp_path / "huge.bin")
         assert caught.value.code == "too_large"
 
+    def test_a_stream_that_outgrows_its_stat_is_cut_at_the_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The stat pre-check is advice from the device, not a bound.
+
+        A /proc-style file stats as size 0 and a log grows between stat and
+        transfer, so only counting the received bytes ourselves keeps the cap
+        true. The offending chunk must never be written, the stream must not
+        be drained to EOF, and a refused pull must keep nothing on disk.
+        """
+        from headless_re_mcp.backends.adb import client as mod
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 8)
+        served = {"chunks": 0}
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> tuple[int, int]:
+                del remote, timeout
+                return (0o100644, 0)  # the device says "empty"
+
+            def iter_content(self, remote: str) -> Any:
+                del remote
+                while True:
+                    served["chunks"] += 1
+                    yield b"xxxx"
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        target = tmp_path / "grown.bin"
+        with pytest.raises(AdbError) as caught:
+            backend.pull("emulator-5554", "/proc/self/environ", target)
+        assert caught.value.code == "too_large"
+        assert not target.exists()
+        assert served["chunks"] == 3  # 4+4 fit an 8-byte cap; the third refuses
+
+    def test_a_streamed_pull_within_the_cap_reports_the_exact_bytes(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> tuple[int, int]:
+                del remote, timeout
+                return (0o100644, 4)
+
+            def iter_content(self, remote: str) -> Any:
+                del remote
+                yield b"ab"
+                yield b""
+                yield b"cd"
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        target = tmp_path / "small.bin"
+        result = backend.pull("emulator-5554", "/sdcard/small.bin", target)
+        assert result["size"] == 4
+        assert target.read_bytes() == b"abcd"
+
+    def test_a_stream_that_dies_midway_leaves_no_partial_file(
+        self, tmp_path: Any
+    ) -> None:
+        """A partial file reads like a complete one; a failed pull keeps none."""
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> tuple[int, int]:
+                del remote, timeout
+                return (0o100644, 4)
+
+            def iter_content(self, remote: str) -> Any:
+                del remote
+                yield b"ab"
+                raise RuntimeError("device went away")
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        target = tmp_path / "torn.bin"
+        with pytest.raises(AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/torn.bin", target)
+        assert caught.value.code == "backend_error"
+        assert not target.exists()
+
+    def test_an_oversized_fallback_pull_does_not_keep_the_copy(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Without iter_content the check is post-hoc; the refusal still holds.
+
+        Refusing with too_large while the oversized copy stays behind would
+        make the cap a report, not a bound: the disk usage it exists to
+        prevent has already happened and outlives the error.
+        """
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 4)
+        target = tmp_path / "big.bin"
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> tuple[int, int]:
+                del remote, timeout
+                return (0o100644, 0)  # the device under-reports
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, timeout
+                Path(local).write_bytes(b"x" * 64)
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/big.bin", target)
+        assert caught.value.code == "too_large"
+        assert not target.exists()
+
+    def test_an_oversized_screenshot_does_not_keep_the_image(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 4)
+        target = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"P" * 64)
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.screenshot("emulator-5554", target)
+        assert caught.value.code == "too_large"
+        assert not target.exists()
+
     def test_a_local_file_over_the_capture_cap_is_not_pushed(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
