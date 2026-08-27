@@ -215,6 +215,49 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             # request_body is fetched -- pins the flag that gates that fetch.
             assert got.data["has_post_data"] is False, got.data
 
+            # web.network.list filters narrow a busy capture without paging the
+            # whole ring; exercise them against the real capture rather than a
+            # unit mock. A url_contains for the sub-resource returns it and flags
+            # the narrowing (filtered/captured); a resource_type of Script keeps
+            # only script requests (app.js is one); a GET method and a 2xx status
+            # range both keep it; a nonsense substring returns an empty filtered
+            # view, not the whole ring.
+            by_url = service.web_network_list(session_id, url_contains="app.js")
+            assert by_url.ok, by_url.error
+            assert by_url.data["filtered"] is True
+            assert "captured" in by_url.data
+            assert by_url.data["count"] >= 1
+            assert all(
+                "app.js" in str(row.get("url", "")) for row in by_url.data["requests"]
+            ), by_url.data["requests"]
+
+            by_type = service.web_network_list(session_id, resource_type="Script")
+            assert by_type.ok, by_type.error
+            assert any(
+                str(row.get("url", "")).endswith("/app.js")
+                for row in by_type.data["requests"]
+            ), by_type.data["requests"]
+            assert all(
+                row.get("resourceType") == "Script" for row in by_type.data["requests"]
+            ), by_type.data["requests"]
+
+            by_status = service.web_network_list(
+                session_id, method="GET", status_min=200, status_max=299
+            )
+            assert by_status.ok, by_status.error
+            assert any(
+                str(row.get("url", "")).endswith("/app.js")
+                for row in by_status.data["requests"]
+            ), by_status.data["requests"]
+
+            none_match = service.web_network_list(
+                session_id, url_contains="no-such-path-xyz"
+            )
+            assert none_match.ok, none_match.error
+            assert none_match.data["filtered"] is True
+            assert none_match.data["total"] == 0
+            assert none_match.data["requests"] == []
+
             # web.cookies reads the browser's cookie store over CDP. The index
             # set an HttpOnly cookie, so a working read returns it with the value
             # and the http_only flag -- and getAllCookies surfacing an HttpOnly

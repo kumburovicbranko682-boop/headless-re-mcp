@@ -66,6 +66,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        method: str | None = None,
+        url_contains: str | None = None,
+        resource_type: str | None = None,
+        status_min: Annotated[int | None, Field(ge=100, le=599)] = None,
+        status_max: Annotated[int | None, Field(ge=100, le=599)] = None,
     ) -> dict[str, Any]:
         """List captured network requests.
 
@@ -76,8 +81,33 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         budget trimmed the page (each url can be 16 KiB), so read count, not
         limit, and page on has_more. metadata_truncated marks bounded
         oversized request fields. There is no type field.
+
+        Optional filters narrow a busy capture and are ANDed: method is an exact
+        case-insensitive match (e.g. GET); resource_type is an exact
+        case-insensitive match on the CDP resourceType (Document, Script, XHR,
+        Fetch, Image, Stylesheet ...); url_contains is a case-insensitive
+        substring; status_min and status_max are an inclusive status-code range
+        (both 100..599), so status_min 400 alone is every error and status_min
+        404 with status_max 404 is exactly 404. A status bound excludes any
+        request with no response captured yet. When a filter is active the reply
+        adds filtered true and captured (the pre-filter ring size), and total
+        becomes the number of matching requests, so page on has_more against the
+        filtered view. dropped stays the ring-eviction count regardless of any
+        filter. An empty or whitespace-only filter string is ignored rather than
+        matching everything or nothing.
         """
-        return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.web_network_list(
+                session_id,
+                offset=offset,
+                limit=limit,
+                method=method,
+                url_contains=url_contains,
+                resource_type=resource_type,
+                status_min=status_min,
+                status_max=status_max,
+            )
+        )
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
