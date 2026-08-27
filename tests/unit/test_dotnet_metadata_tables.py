@@ -17,6 +17,7 @@ from headless_re_mcp.dotnet.clr_inspect import inspect_dotnet
 from headless_re_mcp.dotnet.metadata_enum import (
     disassemble_method_il,
     enumerate_metadata,
+    list_memberref_xrefs,
 )
 
 _METHOD_BODY_RVA = 0x1180
@@ -26,7 +27,7 @@ _METHOD_BODY_FILE = 0x380
 def _build_strings_heap() -> tuple[bytes, dict[str, int]]:
     heap = bytearray(b"\0")
     indexes: dict[str, int] = {}
-    for name in ("MyModule.exe", "Program", "MyApp", "Main", "counter", "MyAssembly"):
+    for name in ("MyModule.exe", "Program", "MyApp", "Main", "counter", "ToString", "MyAssembly"):
         indexes[name] = len(heap)
         heap.extend(name.encode("ascii") + b"\0")
     return bytes(heap), indexes
@@ -36,9 +37,11 @@ def _build_tables_stream(idx: dict[str, int]) -> bytes:
     tables = bytearray()
     # reserved(4), major, minor, heap_sizes (all 2-byte heap indexes), reserved
     tables += struct.pack("<IBBBB", 0, 2, 0, 0x00, 1)
-    valid = (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x20)
+    valid = (
+        (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x20)
+    )
     tables += struct.pack("<QQ", valid, 0)
-    tables += struct.pack("<IIIII", 1, 1, 1, 1, 1)  # one row per present table
+    tables += struct.pack("<IIIIII", 1, 1, 1, 1, 1, 1)  # one row per present table
     # Module: Generation, Name, Mvid, EncId, EncBaseId
     tables += struct.pack("<HHHHH", 0, idx["MyModule.exe"], 1, 0, 0)
     # TypeDef: Flags, Name, Namespace, Extends, FieldList, MethodList
@@ -47,6 +50,8 @@ def _build_tables_stream(idx: dict[str, int]) -> bytes:
     tables += struct.pack("<HHH", 0x0016, idx["counter"], 0)
     # MethodDef: RVA, ImplFlags, Flags, Name, Signature, ParamList
     tables += struct.pack("<IHHHHH", _METHOD_BODY_RVA, 0, 0x0096, idx["Main"], 0, 1)
+    # MemberRef: Class (MemberRefParent -> TypeDef rid 1 == (1<<3)|0), Name, Signature
+    tables += struct.pack("<HHH", (1 << 3) | 0, idx["ToString"], 0)
     # Assembly: HashAlgId, Major, Minor, Build, Revision, Flags, PublicKey, Name, Culture
     tables += struct.pack("<IHHHHIHHH", 0x8004, 1, 2, 3, 4, 0, 0, idx["MyAssembly"], 0)
     return bytes(tables)
@@ -151,6 +156,19 @@ def test_disassemble_tiny_method_body(tmp_path: Path) -> None:
     assert result["header"]["code_size"] == 2
     assert [insn["mnemonic"] for insn in result["instructions"]] == ["ldc.i4.0", "ret"]
     assert result["partial"] is False
+
+
+def test_memberref_xrefs_from_real_tables(tmp_path: Path) -> None:
+    binary = tmp_path / "tables.exe"
+    _write_clr_with_tables(binary)
+    page = list_memberref_xrefs(binary, limit=10)
+    assert page.kind == "xrefs"
+    assert page.total == 1
+    row = page.items[0]
+    assert row["token"] == 0x0A000001
+    assert row["name"] == "ToString"
+    # Class is a MemberRefParent coded index at TypeDef rid 1 (tag 0).
+    assert row["class_coded_index"] == (1 << 3) | 0
 
 
 def test_inspect_reports_module_and_assembly_names(tmp_path: Path) -> None:
