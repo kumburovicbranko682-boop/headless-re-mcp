@@ -69,6 +69,38 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.calls")
+    def wasm_calls(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Extract each function's direct call targets (the call graph), wabt-free.
+
+        Who calls whom, statically: the code section's instruction streams are
+        walked in pure Python -- no wabt needed -- and every call / return_call
+        target is collected per function, so an export can be traced down to the
+        routine that does the work (join indices against wasm.functions for
+        names; call_indirect dispatch is counted here and its possible targets
+        enumerated by wasm.elements). Each row is index (the function's index in
+        the module-wide space, where imports occupy [0, imported_count) and have
+        no bodies), callees (the function's distinct direct targets, sorted;
+        capped at 100 per function with callees_clipped), call_sites and
+        call_indirect_sites (instruction counts, so N calls to one helper still
+        read as N), and decoded -- false when the body used an opcode outside
+        the walker's table (e.g. a GC proposal instruction); the calls found up
+        to that point are kept, and because bodies are size-delimited the walk
+        resumes cleanly at the next function. Answers with has_code_section
+        (false for a module with no code section -- then functions is empty and
+        total 0, not an error), imported_count, and functions with count, total,
+        offset and has_more so a filled page is not read as the whole graph;
+        total is capped at 50000 with scan_capped when more may exist, and
+        truncated is true when the section itself is malformed (rows read so far
+        are still returned). A file that is not a WebAssembly module is refused
+        as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_calls(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.data")
     def wasm_data(
         path: str,

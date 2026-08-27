@@ -153,6 +153,27 @@ _MAX_WASM_TABLES_PAGE = 1000
 _WASM_ELEMENT_SECTION_ID = 9
 _MAX_WASM_ELEMENTS_COLLECT = 50000
 _MAX_WASM_ELEMENTS_PAGE = 1000
+# wasm.calls walks each function body's instruction stream to collect direct
+# call targets -- the static call graph. The walker must know every opcode's
+# immediates to stay aligned, but the code section prefixes each body with its
+# size, so an unrecognised opcode only abandons that one body (decoded: false)
+# and the walk resumes cleanly at the next. Plain one-byte opcodes (parametric,
+# numeric, sign-extension, ref.is_null/as_non_null) carry no immediates.
+_WASM_CODE_SECTION_ID = 10
+_WASM_OPS_NO_IMMEDIATE = frozenset(
+    {0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD4}
+) | frozenset(range(0x45, 0xC5))
+# One LEB immediate: br/br_if, blocktypes (a single sleb33), locals/globals,
+# table.get/set, memory.size/grow, i32/i64.const, call_ref/return_call_ref,
+# ref.null (heaptype), ref.func, br_on_null/br_on_non_null.
+_WASM_OPS_ONE_LEB = frozenset(
+    {0x02, 0x03, 0x04, 0x0C, 0x0D, 0x14, 0x15, 0x3F, 0x40, 0x41, 0x42}
+    | set(range(0x20, 0x27))
+    | {0xD0, 0xD2, 0xD5, 0xD6}
+)
+_MAX_WASM_CALLS_COLLECT = 50000
+_MAX_WASM_CALLS_PAGE = 1000
+_MAX_WASM_CALLEES = 100
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1747,6 +1768,198 @@ def parse_wasm_elements(
         "entries": window,
         "has_element_section": has_element_section,
         "segment_count": segments,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _skip_misc_immediates(data: bytes, sub: int, pos: int) -> int:
+    """Skip a 0xFC (misc) instruction's immediates; raise on unknown subops."""
+    if sub <= 7:  # trunc_sat: no immediates
+        return pos
+    if sub in (8, 10, 12, 14):  # memory.init/copy, table.init/copy: two indices
+        pos = _skip_leb(data, pos)
+        return _skip_leb(data, pos)
+    if sub in (9, 11, 13, 15, 16, 17):  # data/elem.drop, fill/grow/size: one
+        return _skip_leb(data, pos)
+    raise _WasmParseError(f"unknown misc subop {sub}")
+
+
+def _skip_simd_immediates(data: bytes, sub: int, pos: int) -> int:
+    """Skip a 0xFD (SIMD) instruction's immediates; raise on unknown subops."""
+    if sub <= 11 or sub in (92, 93):  # loads/stores and load_zero: memarg
+        pos = _skip_leb(data, pos)
+        return _skip_leb(data, pos)
+    if sub in (12, 13):  # v128.const / i8x16.shuffle: 16 raw bytes
+        return pos + 16
+    if 21 <= sub <= 34:  # extract/replace lane: one lane byte
+        return pos + 1
+    if 84 <= sub <= 91:  # load/store lane: memarg + lane byte
+        pos = _skip_leb(data, pos)
+        return _skip_leb(data, pos) + 1
+    if sub <= 275:  # plain vector ops (incl. relaxed SIMD): no immediates
+        return pos
+    raise _WasmParseError(f"unknown SIMD subop {sub}")
+
+
+def _walk_body(code: bytes) -> tuple[list[int], int, int, bool]:
+    """Walk one function body collecting direct-call targets.
+
+    Returns (call targets in order, direct call sites, indirect call sites,
+    decoded). The body is size-delimited by the code section, so on an opcode
+    outside the walker's table the body is abandoned (decoded False) with the
+    calls found so far kept, and the caller resumes at the next body.
+    """
+    callees: list[int] = []
+    direct = 0
+    indirect = 0
+    try:
+        declcount, pos = _read_uleb(code, 0)
+        for _ in range(declcount):
+            _n, pos = _read_uleb(code, pos)
+            pos += 1  # the declared valtype
+        if pos > len(code):
+            raise _WasmParseError("locals run past the body")
+        while pos < len(code):
+            op = code[pos]
+            pos += 1
+            if op in _WASM_OPS_NO_IMMEDIATE:
+                continue
+            if op in _WASM_OPS_ONE_LEB:
+                pos = _skip_leb(code, pos)
+            elif op == 0x10 or op == 0x12:  # call / return_call
+                target, pos = _read_uleb(code, pos)
+                callees.append(target)
+                direct += 1
+            elif op == 0x11 or op == 0x13:  # call_indirect variants
+                pos = _skip_leb(code, pos)  # typeidx
+                pos = _skip_leb(code, pos)  # tableidx
+                indirect += 1
+            elif op == 0x0E:  # br_table: vec(label) + default label
+                n, pos = _read_uleb(code, pos)
+                for _ in range(n + 1):
+                    pos = _skip_leb(code, pos)
+            elif op == 0x1C:  # select t*: vec(valtype)
+                n, pos = _read_uleb(code, pos)
+                pos += n
+            elif 0x28 <= op <= 0x3E:  # loads/stores: memarg
+                pos = _skip_leb(code, pos)
+                pos = _skip_leb(code, pos)
+            elif op == 0x43:  # f32.const
+                pos += 4
+            elif op == 0x44:  # f64.const
+                pos += 8
+            elif op == 0xFC:
+                sub, pos = _read_uleb(code, pos)
+                pos = _skip_misc_immediates(code, sub, pos)
+            elif op == 0xFD:
+                sub, pos = _read_uleb(code, pos)
+                pos = _skip_simd_immediates(code, sub, pos)
+            elif op == 0xFE:  # atomics: memarg, except atomic.fence's flag byte
+                sub, pos = _read_uleb(code, pos)
+                if sub == 3:
+                    pos += 1
+                elif sub <= 0x4E:
+                    pos = _skip_leb(code, pos)
+                    pos = _skip_leb(code, pos)
+                else:
+                    raise _WasmParseError(f"unknown atomic subop {sub}")
+            else:  # 0xFB GC prefix and anything newer
+                raise _WasmParseError(f"unknown opcode {op:#x}")
+            if pos > len(code):
+                raise _WasmParseError("instruction runs past the body")
+    except _WasmParseError:
+        return callees, direct, indirect, False
+    return callees, direct, indirect, True
+
+
+def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Extract each function's direct call targets (the call graph), wabt-free.
+
+    Who calls whom, statically: the code section's instruction streams are
+    walked in pure Python -- no wabt needed -- and every ``call`` /
+    ``return_call`` target is collected per function, so an export can be traced
+    down to the routine that does the work (join indices against wasm.functions
+    for names; call_indirect dispatch is counted here and its possible targets
+    enumerated by wasm.elements). Each row is index (the function's index in the
+    module-wide space, where imports occupy [0, imported_count) and have no
+    bodies), callees (the function's distinct direct targets, sorted; capped at
+    100 per function with callees_clipped), call_sites and call_indirect_sites
+    (instruction counts, so N calls to one helper still read as N), and decoded
+    -- false when the body used an opcode outside the walker's table (e.g. a GC
+    proposal instruction); the calls found up to that point are kept, and
+    because bodies are size-delimited the walk resumes cleanly at the next
+    function. Answers with has_code_section (false for a module with no code
+    section -- then functions is empty and total 0, not an error),
+    imported_count, and functions with count, total, offset and has_more so a
+    filled page is not read as the whole graph; total is capped at 50000 with
+    scan_capped when more may exist, and truncated is true when the section
+    itself is malformed (rows read so far are still returned). A file that is
+    not a WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_CODE_SECTION_ID})
+    )
+    imported_count = 0
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        imported_count = len(func_imports)
+        truncated = truncated or imp_trunc
+    has_code_section = _WASM_CODE_SECTION_ID in bodies
+    rows: list[JsonObject] = []
+    scan_more = False
+    if has_code_section:
+        body = bodies[_WASM_CODE_SECTION_ID]
+        try:
+            count, pos = _read_uleb(body, 0)
+            for i in range(count):
+                if len(rows) >= _MAX_WASM_CALLS_COLLECT:
+                    scan_more = True
+                    break
+                size, pos = _read_uleb(body, pos)
+                if pos + size > len(body):
+                    raise _WasmParseError("function body runs past the section")
+                callees, direct, indirect, decoded = _walk_body(
+                    body[pos : pos + size]
+                )
+                pos += size
+                distinct = sorted(set(callees))
+                clipped = len(distinct) > _MAX_WASM_CALLEES
+                rows.append(
+                    {
+                        "index": imported_count + i,
+                        "callees": distinct[:_MAX_WASM_CALLEES],
+                        "callees_clipped": clipped,
+                        "call_sites": direct,
+                        "call_indirect_sites": indirect,
+                        "decoded": decoded,
+                    }
+                )
+        except _WasmParseError:
+            truncated = True
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_CALLS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "functions": window,
+        "has_code_section": has_code_section,
+        "imported_count": imported_count,
         "count": len(window),
         "total": len(rows),
         "offset": start,

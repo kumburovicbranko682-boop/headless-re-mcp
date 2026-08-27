@@ -4,6 +4,7 @@ from headless_re_mcp.backends.jsre.client import (
     JsClient,
     JsReError,
     WasmClient,
+    parse_wasm_calls,
     parse_wasm_data,
     parse_wasm_elements,
     parse_wasm_exports,
@@ -32,4 +33,5 @@ __all__ = [
     "parse_wasm_memory",
     "parse_wasm_tables",
     "parse_wasm_elements",
+    "parse_wasm_calls",
 ]
