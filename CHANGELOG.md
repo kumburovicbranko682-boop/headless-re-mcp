@@ -892,6 +892,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   为省去在设备上数大集合而用的 `limit+1` 试探——它本就枚举并数清了全部模块，因此可以像其余
   列表读取器一样按 `offset` 翻页。脚本改为切 `[offset, offset+limit)` 窗口，后端回
   `offset` 并按位置算 `has_more`；`offset` 在工具 schema 与后端都钉在非负（负值会从尾部切窗）。
+- **`frida.exports` 报了 `has_more` 却没有 `offset`，第一页之后的导出够不着**。和 `frida.modules`
+  同源：`enumerateExports()` 本就把整张导出表在设备上物化出来，只回前 `limit` 条（上限 512）；
+  libc 这类模块的导出动辄上千，超过一页的部分只能看见「还有」却翻不过去。因为整表已物化、
+  不像 java/applications 那样需要用 `limit+1` 早停来省去数大集合，脚本改为切
+  `[offset, offset+limit)` 窗口并回 `total`/`offset`，后端按位置算 `has_more`；`offset` 在工具
+  schema 与后端都钉在非负（负值会从尾部切窗）。至此 modules 与 exports 这两个同步全量读取器
+  都成了带 `offset`/`total` 的标准分页读取器。
 
 ### 新增（项目文档）
 

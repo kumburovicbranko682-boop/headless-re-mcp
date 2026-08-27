@@ -50,15 +50,20 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_exports(
         session_id: str,
         module_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
         """List exports of one named module in the session debuggee via a Frida probe.
 
         Answers with found, module, base, and exports (name, address, type),
-        plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        plus count, total, offset and has_more so a page that filled the limit
+        is not read as the whole export table and exports past the first page
+        stay reachable -- the probe already materialises the whole table, so
+        like frida.modules it pages by offset. Limited to the debuggee pid.
         """
-        return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
+        return _dump(
+            analysis.frida_exports(session_id, module_name, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(

@@ -487,12 +487,14 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def frida_exports(
-        self, session_id: str, module_name: str, limit: int = 64
+        self, session_id: str, module_name: str, offset: int = 0, limit: int = 64
     ) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.exports(pid, module_name, allowed_pid=pid, limit=limit)
+            data = client.exports(
+                pid, module_name, allowed_pid=pid, offset=offset, limit=limit
+            )
             _timeline_append(
                 self,
                 session_id,
