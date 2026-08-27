@@ -450,6 +450,27 @@ class TestLocalHookTemplate:
         assert info.value.code == "invalid_params"
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
+    def test_a_clean_probe_reports_loaded_and_detaches(self) -> None:
+        # The one local-probe success path: attach, create, load, then the
+        # finally detaches. It must report loaded with the "nothing persists"
+        # disclosure, the same honesty the device variant carries.
+        device = _Device()
+        client = _client(_Frida(device=device))
+        result = client.hook_template(9, "noop", allowed_pid=9)
+        assert result["loaded"] is True
+        assert result["pid"] == 9
+        assert result["template"] == "noop"
+        assert device.sessions[0].detached is True
+
+    def test_a_pid_outside_the_allow_set_is_denied(self) -> None:
+        # _require rejects a mismatch before it ever reaches a device, so an
+        # agent cannot probe a process the session was not authorized for.
+        client = _client(_Frida())
+        with pytest.raises(FridaError) as info:
+            client.hook_template(9, "noop", allowed_pid=8)
+        assert info.value.code == "permission_denied"
+        assert info.value.details["pid"] == 9
+
     def test_load_failure_propagates_as_backend_error(self) -> None:
         client = _client(_Frida(device=_Device(load_error=RuntimeError("not an ART process"))))
         with pytest.raises(RuntimeError):
