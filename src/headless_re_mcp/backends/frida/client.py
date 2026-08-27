@@ -415,12 +415,28 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            # frida's readByteArray returns null for a range it cannot read (and
+            # can hand back fewer bytes than asked), which the script turns into
+            # an empty or short array. Reporting the requested size next to a
+            # shorter hex string would let a caller read past the bytes that
+            # actually exist -- an unmapped or guarded page would look like data.
+            # Report what came back and flag the shortfall so the two are never
+            # confused, the way the enumerations disclose a capped page.
+            bytes_read = len(data)
+            result: JsonObject = {
                 "address": address,
                 "size": size,
+                "bytes_read": bytes_read,
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            if bytes_read < size:
+                result["truncated"] = True
+                result["note"] = (
+                    "frida returned fewer bytes than requested; part or all of "
+                    "the range was unreadable (unmapped or guarded memory)"
+                )
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

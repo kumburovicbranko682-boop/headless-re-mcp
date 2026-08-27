@@ -222,6 +222,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
+### 修复（frida.memory.read 把读不满的区间报成完整读取）
+
+- **`frida.memory.read` 只回请求的 `size`，读不满时不作声。** frida 的 `readByteArray(size)`
+  对读不了的区间（未映射或受保护的页）返回 null，也可能只回比请求更短的字节；注入脚本把这变成
+  一个空的或短的数组。此前返回体里只有 `size`（请求值）与 `data`（十六进制串），二者对不上时
+  调用方无从察觉——一个未映射页会被当成「读到的数据」，unattended agent 据此把空读当真值去解析。
+  现返回体新增 `bytes_read`（frida 实际回了多少字节），并在 `bytes_read < size` 时补 `truncated`
+  与 `note`，说明该区间部分或全部读不了——与枚举接口用 `has_more` 披露截断的做法一致。frida 原生
+  runtime 在 CI 跑不了，故以 fake session 单测钉住三种情形：读满不标 truncated、空读标 truncated
+  且 `bytes_read=0`、短读如实回 `bytes_read`。
+
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
