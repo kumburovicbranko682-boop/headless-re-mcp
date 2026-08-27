@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **287（167 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **288（168 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -580,6 +580,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `web.dom.snapshot`。活体门起本地站点、主页嵌一个具名 iframe，断言两个 frame 都在、主文档 `is_main`、子 frame 的
   `url` 指向嵌页且 `parent_url` 指回主文档；单测 mock Playwright 的 page.frames/main_frame 钉住整形、父子链、
   detach 跳过、200 截断与 docstring 形状。该工具计入读效果，工具面因此 286→287。
+- **Ghidra 线能列函数/导入/符号/交叉引用、能反编译，却没把「分析出的字符串」单列出来**。字符串常量是逆向的第一手线索
+  （URL、路径、密钥、命令行、格式串），但之前只能靠 `r2.strings` 的裸字节扫描，拿不到 Ghidra 的数据类型与地址上下文，
+  也无法直接接着 `ghidra.xrefs` 找引用点。新增只读的 `ghidra.strings`：跑同一条 `analyzeHeadless` + `ExportJson.java`
+  管线，新增 `strings` 模式，走 `getDefinedData(true)` 只挑 `hasStringValue()` 的已定义数据。回 `items`，每条带
+  `address`、`value`（解码后的文本，单条上限 1024 字符，超了置 `truncated`）、`length`（存储字节数，含终止符）与
+  `data_type`（Ghidra 的数据类型名，如 string / unicode / TerminatedCString，好把 ASCII 与 UTF-16 分开），外加
+  `count` 与 `has_more`，于是填满 limit 的一页不会被当成全部。这是 `ghidra.symbols`（标签）、`ghidra.functions`（代码）
+  都不给的「分析出的字符串」视图，且每条带 Ghidra 地址可直接 `ghidra.xrefs` 追引用。单条 1024 字符上限防止某个内嵌大 blob
+  （base64 载荷、内联配置）撑爆有界导出；整份导出仍受 2MB 与 limit≤1024 双重约束。活体门（装了 Ghidra 才跑，skip≠pass）
+  在真 PE fixture 上断言至少解析出一条字符串，每条带 address/value/length/data_type/truncated；单测钉住 mode 经
+  postScript 到达、address/value/length/data_type/truncated 走同一解析路径、docstring 形状，并静态校验 Java 侧确有
+  `strings` 分派与 `getDefinedData`/`hasStringValue` 遍历，免得 Java 与 Python 走偏（本环境无 Ghidra，端到端跑不了）。
+  该工具计入读效果，工具面因此 287→288。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

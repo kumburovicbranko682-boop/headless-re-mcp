@@ -58,6 +58,18 @@ def test_ghidra_headless_drives_the_whole_line(
         assert symbols.data["count"] >= 1
         assert set(symbols.data["items"][0]) >= {"name", "address", "type"}
 
+        # strings exercises the new ExportJson mode (getDefinedData +
+        # hasStringValue). A console binary carries defined string data, so at
+        # least one must come back, each with address/value/length/data_type/
+        # truncated.
+        strings = service.ghidra_strings(session_id, limit=64, timeout=400.0)
+        assert strings.ok, strings.error
+        assert strings.data["count"] >= 1
+        first_str = strings.data["items"][0]
+        assert set(first_str) >= {"address", "value", "length", "data_type", "truncated"}
+        assert isinstance(first_str["value"], str)
+        assert isinstance(first_str["truncated"], bool)
+
         # imports exercises the new ExportJson mode (getExternalFunctions). A PE
         # console binary links against the CRT/KERNEL32, so it must resolve at
         # least one external function, each carrying name/entry/library.

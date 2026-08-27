@@ -78,6 +78,27 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.strings")
+    def ghidra_strings(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined string data Ghidra's analysis recovered.
+
+        Answers with items, each carrying address, value (the decoded text,
+        capped at 1024 chars with truncated set when cut), length (the stored
+        byte size, including any terminator) and data_type (Ghidra's type name,
+        e.g. string / unicode / TerminatedCString, so ASCII and UTF-16 are told
+        apart), plus count and has_more so a page that filled the limit is not
+        read as the whole list. Only data Ghidra defined as a string is listed;
+        this is the analyzed-strings view that ghidra.symbols (labels) and
+        ghidra.functions (code) do not surface, and unlike a raw byte scan each
+        hit comes with a Ghidra address to pivot on with ghidra.xrefs. Requires
+        HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_strings(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,

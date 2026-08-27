@@ -19,8 +19,11 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.listing.Data;
+import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionManager;
+import ghidra.program.model.listing.Listing;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Symbol;
@@ -30,6 +33,10 @@ import ghidra.util.task.ConsoleTaskMonitor;
 public class ExportJson extends GhidraScript {
 
     private static final int MAX_DECOMPILED = 200000;
+    // A single defined string is capped so one huge embedded blob (a base64
+    // payload, an inlined config) cannot dominate the bounded export; the cut
+    // is reported per item via "truncated".
+    private static final int MAX_STRING_CHARS = 1024;
 
     @Override
     public void run() throws Exception {
@@ -56,6 +63,8 @@ public class ExportJson extends GhidraScript {
             payload = imports(limit);
         } else if ("symbols".equals(mode)) {
             payload = symbols(limit);
+        } else if ("strings".equals(mode)) {
+            payload = strings(limit);
         } else if ("xrefs".equals(mode)) {
             payload = xrefs(limit, addressArg);
         } else if ("decompile".equals(mode)) {
@@ -157,6 +166,64 @@ public class ExportJson extends GhidraScript {
         }
         items.append(']');
         return listPayload("symbols", items, count, hasMore);
+    }
+
+    private String strings(int limit) {
+        // Defined string data Ghidra's analysis laid down: the ASCII/Unicode
+        // literals with their address, storage length and data type. symbols()
+        // (labels) and functions() (code) never surface these, and a raw byte
+        // scan (r2 izz) has no data-type or Ghidra-address context. Only string
+        // data is emitted; the iterate/emit shape mirrors symbols() otherwise.
+        Listing listing = currentProgram.getListing();
+        DataIterator it = listing.getDefinedData(true);
+        StringBuilder items = new StringBuilder("[");
+        int count = 0;
+        boolean hasMore = false;
+        while (it.hasNext()) {
+            Data d = it.next();
+            if (d == null || !d.hasStringValue()) {
+                continue;
+            }
+            if (count >= limit) {
+                hasMore = true;
+                break;
+            }
+            String value;
+            try {
+                Object v = d.getValue();
+                value = v != null ? v.toString() : d.getDefaultValueRepresentation();
+            } catch (Exception ex) {
+                value = "";
+            }
+            if (value == null) {
+                value = "";
+            }
+            boolean truncated = value.length() > MAX_STRING_CHARS;
+            if (truncated) {
+                value = value.substring(0, MAX_STRING_CHARS);
+            }
+            String dataType = "";
+            try {
+                if (d.getDataType() != null) {
+                    dataType = d.getDataType().getName();
+                }
+            } catch (Exception ex) {
+                dataType = "";
+            }
+            if (count > 0) {
+                items.append(',');
+            }
+            items.append('{')
+                .append("\"address\":").append(quote(d.getAddress().toString()))
+                .append(",\"value\":").append(quote(value))
+                .append(",\"length\":").append(d.getLength())
+                .append(",\"data_type\":").append(quote(dataType))
+                .append(",\"truncated\":").append(truncated)
+                .append('}');
+            count++;
+        }
+        items.append(']');
+        return listPayload("strings", items, count, hasMore);
     }
 
     private String xrefs(int limit, String addressArg) {

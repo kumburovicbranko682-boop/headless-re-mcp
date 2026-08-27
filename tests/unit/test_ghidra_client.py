@@ -306,6 +306,82 @@ def test_ghidra_export_script_handles_the_imports_mode() -> None:
     assert 'listPayload("imports"' in script
 
 
+def test_ghidra_strings_passes_the_mode_and_returns_the_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """strings must drive analyzeHeadless with the strings mode and pass the JSON.
+
+    The mode is a bare postScript arg; assert it reaches analyzeHeadless and that
+    the defined-string payload (address/value/length/data_type/truncated) comes
+    back through the same parse path as the other list modes. Ghidra is not
+    installed, so the run is faked -- the Java side is covered by the static sync
+    check below.
+    """
+    payload = (
+        '{"mode":"strings","items":['
+        '{"address":"00404000","value":"http://evil.example/","length":21,'
+        '"data_type":"string","truncated":false},'
+        '{"address":"00404020","value":"password","length":9,'
+        '"data_type":"string","truncated":false}'
+        '],"count":2,"has_more":false}'
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"analyze ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    result = client.strings(_binary(tmp_path), tmp_path / "project")
+    assert result["mode"] == "strings"
+    assert result["count"] == 2
+    assert result["has_more"] is False
+    first = result["items"][0]
+    assert first["address"] == "00404000"
+    assert first["value"] == "http://evil.example/"
+    assert first["length"] == 21
+    assert first["data_type"] == "string"
+    assert first["truncated"] is False
+    assert result["export_path"].endswith("export_strings.json")
+    # The mode reaches analyzeHeadless as a bare postScript arg.
+    assert any("strings" in argv for argv in calls)
+
+
+def test_ghidra_strings_docstring_names_the_fields() -> None:
+    doc = _tool_docstring("ghidra.strings")
+    assert doc, "ghidra.strings is missing its docstring"
+    assert "address" in doc
+    assert "value" in doc
+    assert "length" in doc
+    assert "data_type" in doc
+    assert "truncated" in doc
+    assert "has_more" in doc
+
+
+def test_ghidra_export_script_handles_the_strings_mode() -> None:
+    """The Java postScript and the Python mode must stay in sync.
+
+    Ghidra is not installed here, so strings() cannot be run end to end. Pin the
+    Java side statically: ExportJson.java must dispatch the strings mode and walk
+    the defined data for string values, so a Python call passing mode=strings is
+    not silently answered with the script's "unknown mode" payload.
+    """
+    script = (
+        Path(ghidra_client.__file__).resolve().parent / "scripts" / "ExportJson.java"
+    ).read_text(encoding="utf-8")
+    assert '"strings".equals(mode)' in script
+    assert "getDefinedData(true)" in script
+    assert "hasStringValue()" in script
+    assert 'listPayload("strings"' in script
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [
