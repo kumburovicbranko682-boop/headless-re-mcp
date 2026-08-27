@@ -15,13 +15,16 @@ is not installed.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import struct
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.apktool import ApktoolClient
 from headless_re_mcp.core.service import AnalysisService
 
 _ANDROID_URI = "http://schemas.android.com/apk/res/android"
@@ -260,6 +263,86 @@ def _build_apk(dest: Path) -> Path:
     return dest
 
 
+# --- A second, apksigner-parseable manifest ------------------------------
+# apksigner (unlike androguard) needs a real <uses-sdk minSdkVersion> to pick a
+# JAR-signature digest: with no minSdkVersion it assumes API 1 and then rejects
+# its own SHA-256 v1 signature as unsupported below API 18. apksig finds that
+# attribute *by resource id* (0x0101020c) via the XML resource-map chunk, not by
+# name, and the value must be an int -- so this builds a minimal manifest with
+# "minSdkVersion" at string index 0, a resource map pointing index 0 at the
+# framework attribute id, and the value typed as TYPE_INT_DEC.
+_MIN_SDK_ATTR_ID = 0x0101020C
+_TYPE_STRING = 0x03
+_TYPE_INT_DEC = 0x10
+
+
+def _attr(pool: _StringPool, ns: str | None, name: str, *, data_type: int, data: int) -> bytes:
+    raw = 0xFFFFFFFF if data_type != _TYPE_STRING else data
+    return (
+        struct.pack("<I", pool.add(ns))
+        + struct.pack("<I", pool.add(name))
+        + struct.pack("<I", raw)
+        + struct.pack("<I", 8 | (data_type << 24))
+        + struct.pack("<I", data)
+    )
+
+
+def _start(pool: _StringPool, name: str, attrs: bytes, count: int) -> bytes:
+    payload = struct.pack("<II", 0xFFFFFFFF, pool.add(name))
+    payload += struct.pack("<HH", 0x14, 0x14)
+    payload += struct.pack("<I", count)
+    payload += struct.pack("<I", 0)
+    return _node(0x0102, payload + attrs)
+
+
+def _end(pool: _StringPool, name: str) -> bytes:
+    return _node(0x0103, struct.pack("<II", 0xFFFFFFFF, pool.add(name)))
+
+
+def _build_signable_manifest_axml() -> bytes:
+    pool = _StringPool()
+    # index 0 must be minSdkVersion so resource_map[0] carries its attribute id.
+    assert pool.add("minSdkVersion") == 0
+    android = _ANDROID_URI
+    prefix_idx = pool.add("android")
+    uri_idx = pool.add(android)
+
+    pkg = pool.add("com.example.headlessre")
+    manifest = _start(
+        pool, "manifest", _attr(pool, None, "package", data_type=_TYPE_STRING, data=pkg), 1
+    )
+    uses_sdk = _start(
+        pool,
+        "uses-sdk",
+        _attr(pool, android, "minSdkVersion", data_type=_TYPE_INT_DEC, data=21),
+        1,
+    )
+    application = _start(pool, "application", b"", 0)
+
+    resource_map = struct.pack("<HHI", 0x0180, 8, 8 + 4) + struct.pack("<I", _MIN_SDK_ATTR_ID)
+
+    nodes = [
+        _node(0x0100, struct.pack("<II", prefix_idx, uri_idx)),
+        manifest,
+        uses_sdk,
+        _end(pool, "uses-sdk"),
+        application,
+        _end(pool, "application"),
+        _end(pool, "manifest"),
+        _node(0x0101, struct.pack("<II", prefix_idx, uri_idx)),
+    ]
+    rest = pool.build() + resource_map + b"".join(nodes)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(rest)) + rest
+
+
+def _build_signable_apk(dest: Path) -> Path:
+    """A minimal APK whose binary manifest apksigner can actually parse."""
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("AndroidManifest.xml", _build_signable_manifest_axml())
+        zf.writestr("classes.dex", _build_classes_dex())
+    return dest
+
+
 def _androguard_available() -> bool:
     try:
         import androguard.core.apk  # noqa: F401
@@ -350,6 +433,128 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
 
 def _jadx_available() -> bool:
     return AnalysisService().settings.jadx is not None
+
+
+def _build_resourceless_apk(dest: Path) -> Path:
+    """An APK with no resources.arsc, which apktool decodes and rebuilds cleanly.
+
+    apktool refuses to decode a placeholder/empty resources.arsc, and its build
+    step only recompiles the manifest to binary when a framework is installed;
+    a resource-free tree sidesteps both and still exercises the smali round trip.
+    """
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("AndroidManifest.xml", _build_manifest_axml())
+        zf.writestr("classes.dex", _build_classes_dex())
+        zf.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"\x00" * 60)
+        zf.writestr("assets/config.json", b'{"k":1}')
+    return dest
+
+
+def _apktool_available() -> bool:
+    return AnalysisService().settings.apktool is not None
+
+
+def _apksigner_available() -> bool:
+    return AnalysisService().settings.apksigner is not None
+
+
+@pytest.mark.integration
+def test_apk_apktool_decode_and_repack(tmp_path: Path) -> None:
+    """The apktool resource line -- decode to smali, then rebuild -- had no test.
+
+    Both are thin subprocess wrappers over apktool whose contract (the ``d``/``b``
+    argument vectors, the decoded-tree shape, and the "AndroidManifest.xml must
+    exist" success check) only shows up against a real apktool. Drive both
+    through the service and assert the decode yields a text manifest plus a smali
+    directory and that the rebuild produces an unsigned APK.
+    """
+    if not _apktool_available():
+        pytest.skip("apktool not configured — APK apktool Gate not run (skip != pass)")
+    apk = _build_resourceless_apk(tmp_path / "resourceless.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=180.0)
+        assert decoded.ok, decoded.error
+        assert decoded.data["smali_dirs"], "apktool produced no smali directory"
+        assert decoded.data["has_resources"] is False
+        manifest_text = Path(decoded.data["manifest"]).read_text(encoding="utf-8")
+        assert manifest_text.lstrip().startswith("<?xml")
+        assert "com.example.headlessre" in manifest_text
+
+        repacked = service.apk_repack(session_id, timeout=180.0)
+        assert repacked.ok, repacked.error
+        rebuilt = Path(repacked.data["apk"])
+        assert rebuilt.is_file() and rebuilt.stat().st_size > 0
+        assert repacked.data["signed"] is False
+        with zipfile.ZipFile(rebuilt) as zf:
+            assert "classes.dex" in zf.namelist()
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_sign_produces_a_verifiable_apk(tmp_path: Path) -> None:
+    """apk.sign wraps apksigner's sign+verify; nothing exercised the real CLI.
+
+    The wrapper builds an argument vector with four password-bearing flags, then
+    re-invokes apksigner to verify its own output and only reports success when
+    that verify passes. apksigner's flag names and its refusal to sign an APK
+    whose manifest lacks a parseable minSdkVersion are exactly the kind of
+    contract a mock can't hold, so sign a real (freshly generated) keystore over
+    an APK with a genuine binary manifest and confirm the output verifies.
+    """
+    if not _apksigner_available():
+        pytest.skip("apksigner not configured — APK sign Gate not run (skip != pass)")
+    keytool = shutil.which("keytool")
+    if keytool is None:
+        pytest.skip("keytool not installed — cannot mint a test keystore (skip != pass)")
+
+    keystore = tmp_path / "test.jks"
+    generated = subprocess.run(
+        [
+            keytool, "-genkeypair", "-keystore", str(keystore),
+            "-storepass", "storepass", "-keypass", "storepass",
+            "-alias", "gatekey", "-keyalg", "RSA", "-keysize", "2048",
+            "-validity", "365", "-dname", "CN=headless-re gate,O=test,C=US",
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    assert generated.returncode == 0, generated.stderr.decode("utf-8", "replace")
+
+    apk = _build_signable_apk(tmp_path / "signable.apk")
+    out_apk = tmp_path / "signed.apk"
+    settings = AnalysisService().settings
+    client = ApktoolClient(settings.apktool, settings.apksigner)
+
+    result = client.sign(
+        apk,
+        out_apk,
+        keystore=keystore,
+        keystore_password="storepass",
+        key_alias="gatekey",
+        timeout=180.0,
+    )
+    assert result["signed"] is True
+    assert result["debug_keystore"] is False
+    assert out_apk.is_file() and out_apk.stat().st_size > apk.stat().st_size
+    with zipfile.ZipFile(out_apk) as zf:
+        names = zf.namelist()
+        assert any(n.startswith("META-INF/") and n.endswith(".RSA") for n in names), (
+            "the signed APK carries no v1 JAR signature block"
+        )
+    # The wrapper already ran apksigner verify internally (it raises otherwise);
+    # re-run it here so the gate fails loudly if that contract ever regresses.
+    verified = subprocess.run(
+        [str(settings.apksigner), "verify", str(out_apk)],
+        capture_output=True,
+        timeout=120,
+    )
+    assert verified.returncode == 0, verified.stderr.decode("utf-8", "replace")
 
 
 @pytest.mark.integration

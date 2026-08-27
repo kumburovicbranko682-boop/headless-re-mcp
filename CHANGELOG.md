@@ -266,6 +266,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的干净返回（缺 androguard 时 skip≠pass）。同一夹具还驱动 jadx 反编译线（此前也无活体覆盖）：跑通
   `apk.export_sources` 生成 `sources/…/Secret.java`、`apk.decompile` 取回该类的 Java 源码，验证
   `--output-dir` / `sources/` 目录布局、单类路径解析与退出码处理确实对得上真实 jadx（缺 jadx 时 skip≠pass）。
+- **APK 改包线（apktool 解包/重打包、apksigner 签名）整条没有活体门**。`apk.decode`/`apk.repack`/`apk.sign`
+  都是薄薄的子进程封装，其契约（`d`/`b` 参数向量、解包目录形态、「AndroidManifest.xml 必须存在」的成功判据，
+  以及 apksigner 那四个带密码的 flag 和「签完再 verify 一遍」）只有对着真实 CLI 才现形，mock 一律挡不住。
+  新增两条门：一条用无 `resources.arsc` 的现搓 APK 走 service 把 `apk.decode`→`apk.repack` 跑通（断言解出文本
+  manifest + smali 目录 + 包名、重打出未签名 APK；缺 apktool 时 skip≠pass）——顺带记录一个真实约束：apktool 2.7
+  只在装了框架时才把 manifest 重编成二进制，无资源树会原样拷文本 manifest，apksigner 便无法解析。另一条现搓一个
+  **apksigner 真能解析**的二进制 manifest（`minSdkVersion` 按资源 id `0x0101020c` 走 XML resource-map、值按
+  `TYPE_INT_DEC` 编码——否则 apksig 默认 API 1、又拒签自己的 SHA-256 v1 签名），用 keytool 现生成的 keystore
+  驱动 `ApktoolClient.sign` 签名，断言产物签成、带 v1 JAR 签名块，再独立 `apksigner verify` 复核（缺 apksigner /
+  keytool 时 skip≠pass）。
 - **Ghidra 线在现代 Ghidra（11.4+/12.x）上整条不可用**，两处独立故障叠加：
   1) 导出脚本 `ExportJson.py` 标了 `@runtime Jython`，而 Ghidra 11.4 起不再内置 Jython，headless
      分析一执行 postScript 就以 `JythonStubException` 整体中止——`ghidra.functions/symbols/xrefs/decompile`
