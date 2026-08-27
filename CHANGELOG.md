@@ -49,6 +49,33 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（CLI 适配器分离子进程回收）
+
+- die / exeinfope / upx 三条 CLI 适配器在**正常退出**后不再遗留被自己拉起、随后被内核过继给
+  init 的分离子进程。de4dot 早已在退出后清扫 launcher 所在的 POSIX 会话组（这类子进程既不在
+  ppid 遍历里、也不持有我们的管道，只有按会话组枚举才找得到），但这三条是当年从 de4dot 拷贝
+  出去的、没拿到该修复，于是一次成功的扫描/脱壳可能把一个 worker 留在样本上继续跑。现把
+  de4dot 的退出清扫抽成共享的 `process_tree.reap_exited_launcher`（Windows 走 Toolhelp 后代
+  遍历、POSIX 走会话组清扫），四条适配器统一走它，避免再各自漂移；三条适配器的
+  `_terminate_process` 也补上和 de4dot 一致的 `kill_group`，让超时/取消路径同样能够到被过继的
+  子进程。
+
+### 修复（UI 捕获会话 id 先于平台判定校验）
+
+- `ui.screenshot` / `ui.ocr` 过去先判 `os.name != "nt"` 再校验会话 id，于是 Linux 上一个
+  路径穿越 id（如 `../../escaped`）会先拿到 `unsupported_on_platform`，把捕获路径据以拼目录的
+  那道守卫整个跳过。会话 id 非法在任何平台都是坏输入，现改为先 fail-closed 校验会话 id（非法返回
+  `invalid_request`）再判平台；合法 id 的 Windows 行为不变。
+
+### 修复（跨平台单测套件回归）
+
+- 修好 Linux 核心支持与批量合并后残留的一批单测失稳，让 Windows 与 Linux 两条 quality CI 重新
+  转绿：README 头部工具总数守卫改用现文案（`(\d+) 个受限语义工具供`，此前找的 `收成` 一词已不
+  在 README 中）；能力目录状态测试补上 Linux 支持新增的 `win32_ui` 探针（`ui.win32` 不再是无探
+  针能力），并单独钉住 `status_probe=None → ready` 分支；`config generate` 就绪桩补上两平台都必需
+  的 `platform` 探针，否则 `DoctorReport.ready` 恒为假、脱敏路径压根没被跑到；监控台 pick-file
+  测试改打 `is_windows_host` 而非已被移除的 `os`（顺带甩掉在 Linux 上构造 WindowsPath 的隐患）。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
