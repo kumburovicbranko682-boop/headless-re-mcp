@@ -214,6 +214,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把 `offset` 钳到 `>=0`、`limit` 钳到 `1..schema 上限`,与 web / proxy / jsre 列表后端既有做法
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
+- **`apk.strings` 在去重前就先截断，前缀相同的两个常量被并成一条。**去重集合里加的是
+  `str(value)[:_MAX_STRING_LEN]`——**截断后**再去重——于是两个前 `_MAX_STRING_LEN` 字符相同、
+  只在尾部不同的常量（长公共前缀在混淆应用里很常见，多 DEX 里同一池字符串也会复现）被折成一条：
+  `total` 少算，一条不同的字符串无声消失。改为按**全量值**的 blake2b 摘要去重（全量值只是 `str()`
+  已经物化的临时对象、从不留存，内存上界与截断前一致，超大常量也撑不爆集合），展示串仍切到
+  `_MAX_STRING_LEN`；前缀相同的常量因此各留一行、`total` 准确。新增 `values_truncated`（有任一收集到的
+  字符串被切时为真），让两条读起来一样的行不被误当成一条。新增回归覆盖共享 2000 字符前缀的两串
+  `total=2` 且带标志、多 DEX 重复值折成一行且无标志、全短输入不带标志、描述点名 `values_truncated`。
 
 ### 修复（签名口令上进程表）
 
