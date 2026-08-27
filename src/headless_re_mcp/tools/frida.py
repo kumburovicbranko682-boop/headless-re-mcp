@@ -38,7 +38,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with modules (name, base, size, path), count for this page,
         total, and has_more so a page that filled the limit is not read as
-        the whole list. Limited to the debuggee pid.
+        the whole list. count may be below the requested limit when the
+        result-size budget trimmed the page (module paths can be long), so
+        read count, not limit, and page on has_more. Limited to the debuggee
+        pid.
         """
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
@@ -52,7 +55,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with found, module, base, and exports (name, address, type),
         plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        as the whole export table. count may be below the requested limit when
+        the result-size budget trimmed the page (mangled C++ names can be
+        long), so read count, not limit, and page on has_more. Limited to the
+        debuggee pid.
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
@@ -63,7 +69,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Read up to 256 KiB from the session debuggee via a Frida probe.
 
         Answers with data holding the hex string and encoding naming the form,
-        alongside address and size. Limited to the debuggee pid.
+        alongside address, size, returned, and truncated. Because hex doubles
+        the byte length, a large read is cut to fit the result-size budget:
+        returned is how many bytes data actually holds and truncated says it
+        was cut, so read returned (not size) and continue from address+returned
+        for the rest. Limited to the debuggee pid.
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 
@@ -132,7 +142,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with applications (identifier, name, pid), count, total, and
         has_more so a page that filled the limit is not read as the whole
-        device. The list field is applications, not apps or packages.
+        device. count may be below the requested limit when the result-size
+        budget trimmed the page (package ids can be 255 chars), so read count,
+        not limit, and page on has_more. The list field is applications, not
+        apps or packages.
         """
         return _dump(analysis.frida_applications(session_id, limit=limit))
 
@@ -155,7 +168,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
         Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        limit is not read as every loaded class. has_more is also set when the
+        result-size budget trimmed the page, so count may be below the limit;
+        read count and page on has_more.
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -171,7 +186,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
         Answers with methods, class_name, count, and has_more so a page that
-        filled the limit is not read as every declared method.
+        filled the limit is not read as every declared method. has_more is also
+        set when the result-size budget trimmed the page, so count may be below
+        the limit; read count and page on has_more.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 

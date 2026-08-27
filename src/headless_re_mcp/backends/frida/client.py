@@ -9,10 +9,18 @@ from inspect import signature
 from threading import Thread
 from typing import Any, TypeVar
 
+from headless_re_mcp.backends.common.json_budget import RESULT_BUDGET_BYTES, fit_json_list
 from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 
 JsonObject = dict[str, Any]
 T = TypeVar("T")
+# Headroom for a list result's scalar siblings (count/total/has_more, plus a
+# module/class name and a base address) when the enumerated list is bounded by
+# encoded size; the list itself gets the rest of the 262144-byte budget.
+_LIST_FIELD_RESERVE = 16 * 1024
+# Headroom for memory_read's scalars (address/size/encoding/returned/truncated).
+# hex doubles the byte length, so the readable byte budget is halved below.
+_HEX_FIELD_RESERVE = 4 * 1024
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # attach / spawn / Java.perform can block forever on a paused debuggee or a
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
@@ -386,6 +394,12 @@ class FridaClient:
                 for item in held[:capped]
                 if isinstance(item, dict)
             ]
+            # Bound by encoded size too, not just the 256 count cap: a module
+            # path is unbounded in length (deep Android data paths), so a full
+            # list can outrun the budget and be discarded whole for a ~16 KiB
+            # summary. has_more is computed from len(items) vs total, so a
+            # budget cut already reports more to fetch.
+            items = fit_json_list(items, reserve=_LIST_FIELD_RESERVE)[0]
             return {
                 "modules": items,
                 "count": len(items),
@@ -424,13 +438,18 @@ class FridaClient:
                         "type": str(item.get("type", "")),
                     }
                 )
+            # Bound by encoded size too, not just the 512 count cap: a C++
+            # mangled export name can run to hundreds of chars, so a full page
+            # can outrun the budget and be discarded whole. Fold the cut into
+            # has_more so a trimmed page still reports more to fetch.
+            items, _dropped, budget_cut = fit_json_list(items, reserve=_LIST_FIELD_RESERVE)
             return {
                 "found": bool(raw.get("found")),
                 "module": str(raw.get("module") or module_name),
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
-                "has_more": has_more,
+                "has_more": has_more or budget_cut,
             }
 
         return self._read_with_script(pid, run)
@@ -450,11 +469,23 @@ class FridaClient:
 
         def run(script: Any) -> JsonObject:
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            # hex doubles the byte length and the whole result is JSON-encoded
+            # under the 262144-byte budget, so a large read (size can be
+            # 256 KiB) encodes to ~512 KiB and the transport discards the whole
+            # reply -- data, address, and all -- for a ~16 KiB summary. Return as
+            # many leading bytes as the encoded hex fits (hex needs no JSON
+            # escaping, so the readable budget is simply halved) and say it was
+            # cut, so the caller reads the rest from address+returned.
+            max_bytes = max(0, (RESULT_BUDGET_BYTES - _HEX_FIELD_RESERVE) // 2)
+            truncated = len(data) > max_bytes
+            kept = data[:max_bytes] if truncated else data
             return {
                 "address": address,
                 "size": size,
                 "encoding": "hex",
-                "data": data.hex(),
+                "data": kept.hex(),
+                "returned": len(kept),
+                "truncated": truncated,
             }
 
         return self._read_with_script(pid, run)
@@ -602,11 +633,16 @@ class FridaClient:
             }
             for app in apps[:capped]
         ]
+        # Bound by encoded size too, not just the 1000 count cap: an app
+        # identifier is a package id up to 255 chars, so a full list can outrun
+        # the budget and be discarded whole. has_more is recomputed from
+        # len(items) so a budget cut still reports more to fetch.
+        items = fit_json_list(items, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "applications": items,
             "count": len(items),
             "total": len(apps),
-            "has_more": len(apps) > capped,
+            "has_more": len(apps) > len(items),
         }
 
     def spawn(
@@ -702,18 +738,34 @@ class FridaClient:
                     values, has_more = _page(
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
-                    return {"classes": values, "count": len(values), "has_more": has_more}
+                    # Bound by encoded size too, not just the 2000 count cap: a
+                    # large app has thousands of long fully-qualified class
+                    # names, so a full page can outrun the budget and be
+                    # discarded whole. Fold the cut into has_more.
+                    values, _dropped, budget_cut = fit_json_list(
+                        values, reserve=_LIST_FIELD_RESERVE
+                    )
+                    return {
+                        "classes": values,
+                        "count": len(values),
+                        "has_more": has_more or budget_cut,
+                    }
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
                     values, has_more = _page(
                         script.exports_sync.methods(class_name, capped + 1), capped
                     )
+                    # See classes above: method signatures can be long, so bound
+                    # the page by encoded size and fold the cut into has_more.
+                    values, _dropped, budget_cut = fit_json_list(
+                        values, reserve=_LIST_FIELD_RESERVE
+                    )
                     return {
                         "class_name": class_name,
                         "methods": values,
                         "count": len(values),
-                        "has_more": has_more,
+                        "has_more": has_more or budget_cut,
                     }
                 raise FridaError("invalid_params", "mode must be classes or methods")
             finally:
