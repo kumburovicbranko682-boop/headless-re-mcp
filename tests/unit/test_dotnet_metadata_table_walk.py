@@ -20,7 +20,6 @@ import pytest
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError
 from headless_re_mcp.dotnet.metadata_enum import (
     _disassemble_il,
-    _iter_strings_heap,
     _load_metadata_context,
     _MetaCtx,
     _read_method_body,
@@ -131,8 +130,9 @@ def _write_image(
     body_at: int = 0x1000,
     cor_dir: tuple[int, int] = (0x1100, 72),
     cor_meta_size: int | None = None,
+    section_size: int = 0x1000,
 ) -> None:
-    image = bytearray(0x1200)
+    image = bytearray(0x200 + section_size)
     pe = 0x80
     image[:2] = b"MZ"
     struct.pack_into("<I", image, 0x3C, pe)
@@ -144,14 +144,14 @@ def _write_image(
     struct.pack_into("<I", image, optional + 16, 0x1000)
     struct.pack_into("<Q", image, optional + 24, 0x140000000)
     struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
-    struct.pack_into("<II", image, optional + 56, 0x2000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x1000 + section_size, 0x200)
     struct.pack_into("<HH", image, optional + 68, 3, 0x8160)
     struct.pack_into("<I", image, optional + 108, 16)
     dir_base = optional + 112
     struct.pack_into("<II", image, dir_base + 14 * 8, *cor_dir)
     section = optional + 0xF0
     image[section : section + 8] = b".text\0\0\0"
-    struct.pack_into("<IIII", image, section + 8, 0x1000, 0x1000, 0x1000, 0x200)
+    struct.pack_into("<IIII", image, section + 8, section_size, 0x1000, section_size, 0x200)
     struct.pack_into("<I", image, section + 36, 0x60000020)
     cor_off = 0x300
     struct.pack_into("<I", image, cor_off, 72)
@@ -176,10 +176,25 @@ def _write_assembly(
     typedef_declared: int | None = None,
     body: bytes | None = None,
     body_at: int = 0x1000,
+    terminate_strings: bool = True,
+    extra_strings: int = 0,
+    section_size: int = 0x1000,
 ) -> None:
     strings, at = _strings_heap()
+    if not terminate_strings:
+        # Drop the final NUL (and alignment padding), leaving the last heap
+        # entry running into the end of the stream.
+        strings = strings.rstrip(b"\0")
+    if extra_strings:
+        strings += b"s\0" * extra_strings
     tables = _tables_stream(at, wide=wide, method_rva=method_rva, typedef_declared=typedef_declared)
-    _write_image(path, _metadata_root(tables, strings), body=body, body_at=body_at)
+    _write_image(
+        path,
+        _metadata_root(tables, strings),
+        body=body,
+        body_at=body_at,
+        section_size=section_size,
+    )
 
 
 @pytest.fixture
@@ -521,7 +536,7 @@ def test_a_tables_stream_shorter_than_its_header_reads_as_empty(tmp_path: Path) 
     assert ctx.row_counts == {}
     assert ctx.table_data_offset == 0
     # The #Strings heap is still served even though the tables are unusable.
-    assert list(_iter_strings_heap(ctx))[0]["value"] == "<Module>"
+    assert enumerate_metadata(binary, "strings", limit=1).items[0]["value"] == "<Module>"
 
 
 def test_a_valid_bitmap_with_truncated_row_counts_reads_as_empty(tmp_path: Path) -> None:
@@ -565,14 +580,24 @@ def test_a_string_without_a_terminator_reads_to_the_heap_end() -> None:
     assert _string_at(_ctx(strings=b"\0tail"), 1) == "tail"
 
 
-def test_the_strings_iterator_survives_a_missing_final_terminator() -> None:
-    items = list(_iter_strings_heap(_ctx(strings=b"\0first\0tail")))
-    assert [item["value"] for item in items] == ["first", "tail"]
+def test_an_unterminated_heap_still_serves_its_last_entry(tmp_path: Path) -> None:
+    # The heap's final NUL is gone, so the last name runs into the stream end;
+    # both the heap listing and a row that points at that name must fall back
+    # to the heap end instead of dropping the entry.
+    binary = tmp_path / "unterminated_heap.exe"
+    _write_assembly(binary, terminate_strings=False)
+
+    strings = enumerate_metadata(binary, "strings", limit=50)
+    assert [item["value"] for item in strings.items] == list(_HEAP_NAMES)
+    assert list_memberref_xrefs(binary).items[0]["name"] == "Concat"
 
 
-def test_the_strings_iterator_stops_at_ten_thousand_entries() -> None:
-    heap = b"\0" + b"s\0" * 10_050
-    assert len(list(_iter_strings_heap(_ctx(strings=heap)))) == 10_000
+def test_the_strings_listing_stops_at_ten_thousand_entries(tmp_path: Path) -> None:
+    # 10_100 padding entries on top of the seven named ones; the listing is
+    # bounded, so the total reported is the cap rather than the heap's count.
+    binary = tmp_path / "bigheap.exe"
+    _write_assembly(binary, extra_strings=10_100, body=b"", section_size=0x6000)
+    assert enumerate_metadata(binary, "strings", limit=5).total == 10_000
 
 
 def test_sizing_an_unmodelled_table_refuses_instead_of_guessing() -> None:
