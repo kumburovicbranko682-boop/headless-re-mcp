@@ -12,6 +12,7 @@ from uuid import uuid4
 JsonObject = dict[str, Any]
 _MAX_LINES = 10_000
 _MAX_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
 # Trimming rewrites the file, so it runs at a high-water mark and cuts back to a
 # low one. Rewriting on every append made each one cost the size of the file:
 # 4000 appends onto a 2 MB timeline took nine seconds, and the last thousand of
@@ -214,17 +215,34 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
             # has not done anything yet, and the caller has to be able to tell
             # them apart.
             return {**empty, "exists": False}
+        budget = _MAX_BYTES + 1
+        buffer = bytearray()
         try:
             with path.open("rb") as stream:
-                raw = stream.read(_MAX_BYTES + 1)
+                # Chunked rather than one read(_MAX_BYTES + 1): a buffered
+                # read(n) pre-allocates all n bytes before shrinking, so the
+                # one-shot form spent the whole 8 MiB cap of transient heap on
+                # every read, whatever the file's real size -- and every
+                # timeline.list call and every monitor frame is one of those
+                # reads, on a log that is a few KiB for most of a session. A
+                # short read is EOF on a regular file, so a timeline under one
+                # chunk still costs a single read and the over-cap rejection
+                # below is unchanged.
+                while len(buffer) < budget:
+                    want = min(_READ_CHUNK_BYTES, budget - len(buffer))
+                    piece = stream.read(want)
+                    buffer.extend(piece)
+                    if len(piece) < want:
+                        break
         except OSError as exc:
             return {**empty, "read_failed": f"{type(exc).__name__}: {exc}", "path": str(path)}
-        if len(raw) > _MAX_BYTES:
+        if len(buffer) > _MAX_BYTES:
             return {
                 **empty,
                 "read_failed": f"timeline exceeds {_MAX_BYTES} bytes",
                 "path": str(path),
             }
+    raw = bytes(buffer)
     # Counted and sliced as bytes, and only the requested page decoded. Holding
     # the lock across a full decode of the 8 MB cap cost 13ms, which every
     # append landing behind a reader waited out; this is 5.6ms for the same
