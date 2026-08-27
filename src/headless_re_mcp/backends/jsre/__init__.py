@@ -6,6 +6,7 @@ from headless_re_mcp.backends.jsre.client import (
     WasmClient,
     parse_wasm_exports,
     parse_wasm_functions,
+    parse_wasm_globals,
     parse_wasm_imports,
     parse_wasm_names,
     parse_wasm_sections,
@@ -22,4 +23,5 @@ __all__ = [
     "parse_wasm_names",
     "parse_wasm_functions",
     "parse_wasm_strings",
+    "parse_wasm_globals",
 ]

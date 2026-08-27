@@ -126,6 +126,35 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.globals")
+    def wasm_globals(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's globals (its module-level state), wabt-free.
+
+        Globals are a module's mutable state cells -- the stack pointer, heap
+        base, memory/table bases and config flags a runtime threads through the
+        code. This lists them in pure Python, so unlike wasm.info / wasm.wat it
+        needs no wabt installed, joining the import and global sections into one
+        table whose indices match the global index space. Each row is index (its
+        position there), kind (import or local), type (the value type: i32, i64,
+        f32, f64, v128, funcref, externref, or hex for an exotic one) and mutable
+        (true for a var global, false for a const one). Imported globals come
+        first, per the WASM spec, and carry module and name (the import's module
+        and field); imported_count marks the import/local boundary. Module-
+        defined globals each carry an initialiser expression, which is stepped
+        over, not evaluated, so no value is reported. Answers with globals,
+        count, total, offset and has_more so a filled page is not read as every
+        global; total is capped at 50000 with scan_capped when more may exist,
+        and truncated is true when a section is malformed or an initialiser uses
+        an opcode outside the constant-expression set (globals resolved so far
+        are still returned). A file that is not a WebAssembly module is refused
+        as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_globals(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,

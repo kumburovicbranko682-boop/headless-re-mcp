@@ -119,6 +119,14 @@ _WASM_MAX_MIN_STRING = 256
 _MAX_WASM_STRINGS_COLLECT = 50000
 _MAX_WASM_STRINGS_PAGE = 1000
 _MAX_WASM_STRING_LEN = 1024
+# wasm.globals lists module globals (stack pointer, heap base, config flags).
+# Each module-defined global carries an init expression that must be stepped
+# over to reach the next entry; _skip_const_expr walks that bounded opcode set
+# and degrades to truncated on anything it does not recognise, so a misread
+# never spills into the next global.
+_WASM_GLOBAL_SECTION_ID = 6
+_MAX_WASM_GLOBALS_COLLECT = 50000
+_MAX_WASM_GLOBALS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -978,6 +986,191 @@ def parse_wasm_strings(
         "total": len(found),
         "offset": start,
         "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _skip_leb(data: bytes, pos: int) -> int:
+    """Consume one LEB128 (signed or unsigned) without decoding its value."""
+    while True:
+        byte = _byte_at(data, pos)
+        pos += 1
+        if not byte & 0x80:
+            return pos
+
+
+def _skip_const_expr(data: bytes, pos: int) -> int:
+    """Step over a constant expression, returning the position after its end.
+
+    Constant expressions (data/element offsets and global initialisers) draw
+    from a small opcode set. Each is skipped by consuming exactly its immediate
+    so the byte after 0x0B is the next entry. An opcode outside this set raises
+    _WasmParseError -- the caller then reports truncated rather than letting a
+    misread run into the following global.
+    """
+    while True:
+        op = _byte_at(data, pos)
+        pos += 1
+        if op == 0x0B:  # end
+            return pos
+        if op in (0x41, 0x42):  # i32.const / i64.const: (S)LEB immediate
+            pos = _skip_leb(data, pos)
+        elif op == 0x43:  # f32.const: 4 raw bytes
+            pos += 4
+        elif op == 0x44:  # f64.const: 8 raw bytes
+            pos += 8
+        elif op in (0x23, 0xD2):  # global.get / ref.func: LEB index
+            pos = _skip_leb(data, pos)
+        elif op == 0xD0:  # ref.null: one heaptype byte (MVP)
+            pos += 1
+        elif op in (0x6A, 0x6B, 0x6C, 0x7C, 0x7D, 0x7E):
+            # extended-const arithmetic (i32/i64 add/sub/mul): no immediate
+            continue
+        elif op == 0xFD:  # SIMD prefix: only v128.const (subop 12) is const
+            sub, pos = _read_uleb(data, pos)
+            if sub != 12:
+                raise _WasmParseError(f"non-const SIMD op {sub} in const expr")
+            pos += 16
+        else:
+            raise _WasmParseError(f"unexpected const-expr opcode {op:#x}")
+        if pos > len(data):
+            raise _WasmParseError("const expr runs past the buffer")
+
+
+def _parse_global_imports(
+    body: bytes,
+) -> tuple[list[tuple[str, str, int, int]], bool]:
+    """Parse the import section, keeping (module, field, valtype, mut) for globals."""
+    out: list[tuple[str, str, int, int]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            module, pos = _read_wasm_name(body, pos)
+            field, pos = _read_wasm_name(body, pos)
+            kind = _byte_at(body, pos)
+            pos += 1
+            if kind == 3:  # global import: valtype byte + mutability byte
+                valtype = _byte_at(body, pos)
+                mut = _byte_at(body, pos + 1)
+                pos += 2
+                out.append((module, field, valtype, mut))
+            else:
+                pos = _skip_import_desc(body, pos, kind)
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def _parse_global_section(body: bytes) -> tuple[list[tuple[int, int]], bool]:
+    """Parse vec(global) into (valtype, mut) pairs, skipping init exprs."""
+    out: list[tuple[int, int]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            valtype = _byte_at(body, pos)
+            mut = _byte_at(body, pos + 1)
+            pos += 2
+            pos = _skip_const_expr(body, pos)
+            out.append((valtype, mut))
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def parse_wasm_globals(
+    path: Path, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """List a WebAssembly module's globals (its module-level state), wabt-free.
+
+    Globals are a module's mutable state cells -- the stack pointer, heap base,
+    memory/table bases and config flags a runtime threads through the code. This
+    lists them in pure Python, so unlike wasm.info / wasm.wat it needs no wabt
+    installed, joining the import (2) and global (6) sections into one table
+    whose indices match the global index space. Each row is index (its position
+    there), kind (import or local), type (the value type: i32, i64, f32, f64,
+    v128, funcref, externref, or hex for an exotic one) and mutable (true for a
+    var global, false for a const one). Imported globals come first, per the
+    WASM spec, and carry module and name (the import's module and field);
+    imported_count marks the import/local boundary. Module-defined globals each
+    carry an initialiser expression, which is stepped over, not evaluated, so no
+    value is reported. Returns globals, count, total, offset and has_more so a
+    filled page is not read as every global; total is capped at 50000 with
+    scan_capped when more may exist, and truncated is true when a section is
+    malformed or an initialiser uses an opcode outside the constant-expression
+    set (the globals resolved so far are still returned). A file that is not a
+    WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_GLOBAL_SECTION_ID})
+    )
+    global_imports: list[tuple[str, str, int, int]] = []
+    local_globals: list[tuple[int, int]] = []
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        global_imports, imp_trunc = _parse_global_imports(
+            bodies[_WASM_IMPORT_SECTION_ID]
+        )
+        truncated = truncated or imp_trunc
+    if _WASM_GLOBAL_SECTION_ID in bodies:
+        local_globals, glob_trunc = _parse_global_section(
+            bodies[_WASM_GLOBAL_SECTION_ID]
+        )
+        truncated = truncated or glob_trunc
+    rows: list[JsonObject] = []
+    scan_more = False
+    imported_count = len(global_imports)
+    idx = 0
+    for module, field, valtype, mut in global_imports:
+        if len(rows) >= _MAX_WASM_GLOBALS_COLLECT:
+            scan_more = True
+            break
+        rows.append(
+            {
+                "index": idx,
+                "kind": "import",
+                "module": module,
+                "name": field,
+                "type": _valtype_name(valtype),
+                "mutable": mut == 0x01,
+            }
+        )
+        idx += 1
+    if not scan_more:
+        for valtype, mut in local_globals:
+            if len(rows) >= _MAX_WASM_GLOBALS_COLLECT:
+                scan_more = True
+                break
+            rows.append(
+                {
+                    "index": idx,
+                    "kind": "local",
+                    "type": _valtype_name(valtype),
+                    "mutable": mut == 0x01,
+                }
+            )
+            idx += 1
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_GLOBALS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "globals": window,
+        "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
         "scan_capped": scan_more,
         "truncated": truncated,
     }
