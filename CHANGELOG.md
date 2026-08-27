@@ -305,6 +305,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.network.get` 的非法 base64 分支同样保持形状）
+
+- 承接上一条:CDP 把某个体标记 `base64Encoded=true` 却给出无法解码的 base64 时,`network_get`
+  的这条失败分支仍只回 `{**entry, body_error}`——与「取不到响应体」修复前一模一样的缺键问题,
+  恰恰又落在一条 `result["body"]` 会缺键的错误路径上。现与无体分支形状对齐:补齐 `body=""`、
+  `base64_encoded=false`、`body_truncated=false`,`body_error` 说明是非法 base64,不落盘任何制品。
+  原有的非法 base64 单测只断言 `body_error` 在场、无 `body_path`,现补断言这三个字段确实齐备。
+
 ### 修复（`web.network.get` 取不到响应体时仍保持形状）
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP

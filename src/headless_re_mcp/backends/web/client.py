@@ -645,7 +645,18 @@ class WebBackend:
             try:
                 raw = base64.b64decode(body, validate=False)
             except (ValueError, binascii.Error) as exc:
-                return {**entry, "body_error": f"response body was not valid base64: {exc}"}
+                # Same shape as the no-body path above: keep body,
+                # base64_encoded and body_truncated present so a caller reading
+                # result["body"] never hits a missing key on an error path.
+                # There are no decodable bytes, so base64_encoded is false and
+                # body_error carries the reason.
+                return {
+                    **entry,
+                    "body": "",
+                    "base64_encoded": False,
+                    "body_truncated": False,
+                    "body_error": f"response body was not valid base64: {exc}",
+                }
             spill_path = _spill_bytes(
                 raw,
                 artifact_dir=artifact_dir,
