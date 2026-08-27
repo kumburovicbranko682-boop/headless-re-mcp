@@ -82,6 +82,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
+### 修复（`r2.functions` 文档串补齐 items_total / items_limit，与其余 r2 列表工具对齐）
+
+- `enrich_r2_payload` 对**任何**列表载荷在超过 4096 条上限时统一回 `items_truncated` /
+  `items_total` / `items_limit`,`r2.strings` / `imports` / `exports` / `xrefs` 的文档串都照实
+  点名了这三个字段;唯独 `r2.functions` 只提了 `items_truncated`。问题在于:大二进制的函数数
+  轻易超过 4096(`aflj` 走的是同一条封顶路径),此时 `r2.functions` 同样会回 `items_total` /
+  `items_limit`,但读文档的调用方并不知道去看——只读 `count` 就会把一份被截断的清单当成全部
+  函数。现把 `r2.functions` 文档串补齐到与兄弟工具一致(点名三个截断字段与 4096 上限,并声明既
+  无 `truncated` 也无 `has_more` 字段);同时补上此前缺失的 `test_r2_functions_fields.py`——
+  r2 的列表工具里只有 `functions` 没有「文档串点名回包字段」的直测——以 4099 个函数触发封顶,
+  断言 `count==4096`、`items_total==4099`、`items_limit==4096`、无 `truncated`/`has_more`/
+  `functions` 字段,并断言文档串点名这三个截断字段。
+
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、

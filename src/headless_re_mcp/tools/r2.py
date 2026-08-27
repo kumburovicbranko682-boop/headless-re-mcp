@@ -54,7 +54,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, offset, size and address
         (va/rva/module), plus count. There is no functions field. Read
-        items_truncated when the list filled the cap.
+        items_truncated, items_total and items_limit when the list filled
+        the cap (4096) -- a large binary can hold more functions than that,
+        and a caller reading count alone would take a capped list for the
+        whole. There is no truncated or has_more field.
         """
         return _dump(analysis.r2_functions(session_id, timeout=timeout))
 
