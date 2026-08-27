@@ -79,7 +79,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List installed package names, optionally only third-party ones.
 
         Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        page that filled the cap is not read as every package. has_more is
+        also set when the result-size budget trimmed the list (package names
+        can be 255 chars); read count, not limit.
         """
         return _dump(
             analysis.device_packages(
@@ -141,8 +143,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return the last N lines of logcat (non-streaming snapshot).
 
-        Answers with lines, requested, and truncated when the dump was cut
-        at the character cap.
+        Answers with lines, requested, and truncated when the dump was cut --
+        at the character cap or, on quote-heavy logs, by the result-size
+        budget. This is a most-recent view: a budget trim keeps the newest
+        lines and drops the oldest, so lines may hold fewer than requested.
         """
         return _dump(analysis.device_logcat(serial, lines=lines))
 

@@ -36,7 +36,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the decoded AndroidManifest.xml for the APK session.
 
         Answers with package and manifest_xml, plus truncated when the XML
-        was cut at the buffer.
+        was cut -- by the character cap or, on a quote-heavy manifest, by the
+        result-size budget, so treat manifest_xml as possibly partial and read
+        truncated rather than assuming the whole document is present.
         """
         return _dump(analysis.apk_manifest(session_id))
 

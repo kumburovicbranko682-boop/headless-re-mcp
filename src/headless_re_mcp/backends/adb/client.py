@@ -19,6 +19,7 @@ from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.json_budget import fit_json_list
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
@@ -32,6 +33,10 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# Headroom for a list result's scalar siblings (count/has_more/requested/
+# truncated/third_party_only) when the list (packages, logcat lines) is bounded
+# by encoded size; the list itself gets the rest of the budget.
+_LIST_FIELD_RESERVE = 16 * 1024
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -423,10 +428,17 @@ class AdbBackend:
                 break
             pkgs.append(name)
         pkgs.sort()
+        # Bound the list by its JSON-encoded size too, not just the 2000 count
+        # cap: an Android package name can run to 255 chars, so a full list can
+        # sum past the transport budget and be discarded whole for a ~16 KiB
+        # summary. There is no offset here, so a budget cut just omits the
+        # alphabetically-last names -- fold it into has_more so a trimmed list is
+        # not read as every package on the device.
+        pkgs, _dropped, budget_cut = fit_json_list(pkgs, reserve=_LIST_FIELD_RESERVE)
         return {
             "packages": pkgs,
             "count": len(pkgs),
-            "has_more": has_more,
+            "has_more": has_more or budget_cut,
             "third_party_only": third_party_only,
         }
 
@@ -561,13 +573,26 @@ class AdbBackend:
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
         text = str(raw)
-        truncated = len(text) > _MAX_LOGCAT_CHARS
-        if truncated:
+        char_truncated = len(text) > _MAX_LOGCAT_CHARS
+        if char_truncated:
             text = text[-_MAX_LOGCAT_CHARS:]
+        lines = text.splitlines()[-capped:]
+        # Bound the line list by its JSON-encoded size too, not just the joined
+        # 200k-char cap: logcat lines carry quotes/backslashes/control chars that
+        # inflate when encoded, and the array's own quoting and commas add to
+        # that, so the char cap alone can still push the result past the
+        # transport budget and get the whole thing discarded for a ~16 KiB
+        # summary. This is a most-recent-N view, so keep the newest lines: trim
+        # the reversed list (fit_json_list keeps a leading run) and restore
+        # order.
+        kept_recent, _dropped_old, budget_cut = fit_json_list(
+            list(reversed(lines)), reserve=_LIST_FIELD_RESERVE
+        )
+        lines = list(reversed(kept_recent))
         return {
-            "lines": text.splitlines()[-capped:],
+            "lines": lines,
             "requested": capped,
-            "truncated": truncated,
+            "truncated": char_truncated or budget_cut,
         }
 
     def screenshot(self, serial: str, out_path: Path) -> JsonObject:

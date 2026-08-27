@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
-from headless_re_mcp.backends.common.json_budget import fit_json_list
+from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 
 JsonObject = dict[str, Any]
 
@@ -34,6 +34,10 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Headroom for manifest()'s other fields (package name, truncated flag) when the
+# XML is bounded by encoded size; both are tiny, so a small reserve leaves nearly
+# the whole budget for the manifest itself.
+_MANIFEST_FIELD_RESERVE = 8 * 1024
 
 
 class ApkError(RuntimeError):
@@ -278,10 +282,19 @@ class ApkClient:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+        capped = xml[:_MAX_MANIFEST_CHARS]
+        # Bound by the JSON-encoded size, not just the raw char count: a
+        # 200k-char manifest is full of attribute quotes that each become \" when
+        # encoded, so the char cap alone can still push the result past the
+        # transport budget and get the whole thing -- manifest, package, and all
+        # -- discarded for a ~16 KiB summary. fit_json_text trims the encoded
+        # form under the budget; truncated stays honest whether the char cap or
+        # the encoded bound did the cutting.
+        inline, _bytes, encoded_cut = fit_json_text(capped, reserve=_MANIFEST_FIELD_RESERVE)
         return {
             "package": apk.get_package(),
-            "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
-            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            "manifest_xml": inline,
+            "truncated": encoded_cut or len(xml) > _MAX_MANIFEST_CHARS,
         }
 
     def permissions(self, path: Path) -> JsonObject:
