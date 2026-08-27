@@ -79,6 +79,16 @@ def test_m11_androguard_apk_surface() -> None:
         for caller in xrefs["callers"]
     ), xrefs["callers"]
 
+    # Manifest side: these use androguard's APK object (binary AXML decode plus
+    # component queries), a different 4.x surface from the DEX analysis above.
+    manifest = client.manifest(_APK)
+    assert manifest["package"] == "com.example.gate"
+    assert manifest["truncated"] is False
+    assert "com.example.gate.MainActivity" in manifest["manifest_xml"]
+
+    components = client.components(_APK)
+    assert "com.example.gate.MainActivity" in components["activities"], components
+
 
 @pytest.mark.integration
 def test_m11_apktool_decode(tmp_path: Path) -> None:
