@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from headless_re_mcp.backends.common.har import (
+    content_length,
     har_document,
     har_entry,
     har_headers,
@@ -150,6 +151,52 @@ def test_har_headers_degrades_and_bounds() -> None:
     assert len(har_headers(flood)) == 200
     long = har_headers({"x": "y" * 100_000})
     assert len(long[0]["value"]) == 8 * 1024
+
+
+def test_content_length_reads_the_declared_body_size() -> None:
+    assert content_length([{"name": "Content-Length", "value": "1024"}]) == 1024
+    # Case-insensitive, like every other header lookup.
+    assert content_length([{"name": "content-length", "value": "7"}]) == 7
+
+
+def test_content_length_is_unknown_when_absent_or_not_a_plain_integer() -> None:
+    assert content_length(None) == -1
+    assert content_length([]) == -1
+    assert content_length([{"name": "content-type", "value": "text/html"}]) == -1
+    # A comma-folded duplicate is ambiguous, not a size.
+    assert content_length([{"name": "content-length", "value": "10, 10"}]) == -1
+    assert content_length([{"name": "content-length", "value": "-5"}]) == -1
+    assert content_length([{"name": "content-length", "value": "abc"}]) == -1
+
+
+def test_har_entry_recovers_body_sizes_from_content_length() -> None:
+    """bodySize is the sender's own count, honest even past a clipped body copy."""
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="POST",
+        url="https://x/api",
+        status=200,
+        mime_type="application/json",
+        request_headers=[{"name": "Content-Length", "value": "31"}],
+        response_headers=[{"name": "Content-Length", "value": "4096"}],
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["bodySize"] == 31
+    assert entry["response"]["bodySize"] == 4096
+    # Uncompressed body length is not known without decoding, so it stays 0.
+    assert entry["response"]["content"]["size"] == 0
+
+
+def test_har_entry_leaves_body_sizes_unknown_without_content_length() -> None:
+    entry = har_entry(
+        started_at=None,
+        method="GET",
+        url="https://x",
+        status=200,
+        mime_type="text/html",
+    )
+    assert entry["request"]["bodySize"] == -1
+    assert entry["response"]["bodySize"] == -1
 
 
 def test_har_entry_recovers_redirect_url_from_the_location_header() -> None:

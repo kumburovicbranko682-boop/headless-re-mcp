@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **HAR 导出的 `request.bodySize`/`response.bodySize` 恒为 `-1`，请求/响应体大小丢失**。这两个字段按 HAR 规范就是消息体的
+  字节数，而发送方自己声明的 `Content-Length` 正是该值——它取自请求头而非我们保留的（可能已被截断的）体副本，因此即使内联体
+  被裁剪也不会少报。web 与 proxy 两侧现在都已把头传给 `har_entry`，于是新增 `content_length` 助手从 Content-Length 还原
+  `bodySize`（缺失、重复折叠或非数字则退化为 `-1`），两个导出器同时受益；`response.content.size` 仍为 0，因为不解压就无从
+  得知未压缩长度，而导出刻意不保留响应体。
 - **HAR 导出的 `response.redirectURL` 一直为空，重定向链丢失**。该字段按 HAR 规范就是响应 `Location` 头的跳转目标，
   而 web 与 proxy 两侧现在都已把响应头传给 `har_entry`，于是直接在其中用 `header_value` 从 Location 头还原 redirectURL——
   两个导出器同时受益，OAuth 跳转、追踪器、短链这类重定向链不再在查看器里显示为空白。

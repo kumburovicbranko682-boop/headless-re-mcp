@@ -11,7 +11,8 @@ every required field, using the real capture timestamp when one was recorded,
 the request parameters recovered from the URL for ``queryString``, the raw
 request/response headers when the capture retained them, the request body as
 ``postData`` when the capture held it, the redirect target recovered from the
-response ``Location`` header for ``redirectURL``, and honest "unknown"
+response ``Location`` header for ``redirectURL``, the request/response
+``bodySize`` recovered from the ``Content-Length`` header, and honest "unknown"
 sentinels (``-1`` sizes, empty arrays) where the capture did not retain that
 detail, so the document loads while never claiming data it does not have.
 """
@@ -61,6 +62,25 @@ def header_value(headers: list[JsonObject] | None, name: str) -> str:
         if isinstance(item, dict) and str(item.get("name", "")).lower() == target:
             return str(item.get("value", ""))
     return ""
+
+
+def content_length(headers: list[JsonObject] | None) -> int:
+    """The body byte count declared by ``Content-Length``, or ``-1`` when unknown.
+
+    HAR's request/response ``bodySize`` is exactly this figure for the common
+    case, and taking it from the sender's own header is authoritative: it is the
+    true on-wire body size even when the export retained only a clipped copy of
+    the body (so it never understates a truncated payload the way measuring our
+    stored text would). A missing, repeated (comma-folded), or non-numeric value
+    degrades to ``-1`` (the spec's "unknown") rather than a guess.
+    """
+    raw = header_value(headers, "content-length").strip()
+    if not raw or not raw.isascii() or not raw.isdigit():
+        return -1
+    try:
+        return int(raw)
+    except ValueError:
+        return -1
 
 
 def post_data(body: str | bytes | None, mime_type: str | None) -> JsonObject | None:
@@ -192,7 +212,7 @@ def har_entry(
         "headers": request_headers or [],
         "queryString": query_string(url),
         "headersSize": -1,
-        "bodySize": -1,
+        "bodySize": content_length(request_headers),
     }
     if request_post_data is not None:
         request["postData"] = request_post_data
@@ -215,7 +235,12 @@ def har_entry(
             # trackers, URL shorteners) a viewer would otherwise show as blank.
             "redirectURL": header_value(response_headers, "location"),
             "headersSize": -1,
-            "bodySize": -1,
+            # The received body's on-wire byte count, recovered from the
+            # response Content-Length (which, when the body is compressed, is the
+            # transferred size -- exactly what bodySize means). content.size
+            # stays 0 because the uncompressed length is not known without
+            # decoding the body, which the export deliberately does not retain.
+            "bodySize": content_length(response_headers),
         },
         "cache": {},
         "timings": {"send": 0.0, "wait": 0.0, "receive": 0.0},
