@@ -563,7 +563,15 @@ class AdbBackend:
         text = str(raw)
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
+            # Keeping the last N chars slices into the middle of a line, so the
+            # oldest survivor is a fragment with its start cut off. Drop it up to
+            # the first newline rather than hand back half a log line dressed as a
+            # whole one -- truncated already says the dump was clipped. A single
+            # line longer than the cap has no newline to cut on, so it is kept.
             text = text[-_MAX_LOGCAT_CHARS:]
+            newline = text.find("\n")
+            if newline != -1:
+                text = text[newline + 1 :]
         return {
             "lines": text.splitlines()[-capped:],
             "requested": capped,
