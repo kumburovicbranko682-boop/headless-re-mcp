@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 web 服务层的读透传、抓取落盘登记与信封分类钉进测试）
+
+- web 后端由 field 测试驱动、`web.open` 的泄漏守卫由 `test_web_backends.py` 钉住,但服务层还有一整条
+  只在真开浏览器(需 Playwright)时才跑的带子从没被单测触及:几个薄读透传(`web.network.list` /
+  `console` / `scripts` / `wasm.list` / `dom.snapshot`)、`web.network.get` / `web.script.source` 的
+  落盘→`_register_capture` 登记接线、`web.status` / `web.preview` / `web.close`、`web.open` 的**成功**
+  尾段(记 backend+timeline),以及 `_web_wrap` 那句把非 WebError 意外故障收敛成 `internal_error` 的
+  `except BaseException`。
+- 新增 `tests/unit/test_web_service_envelopes.py`,用假 WebBackend(不起浏览器)在服务层钉住:每个读
+  透传都带 session_id+backend 回信封且 `wasm.list` 恒定 `wasm_only=True`;`network.get`/`script.source`
+  在有落盘时把文件登记成 artifact(回带 `artifact_id`)、无落盘时原样裹;`status` 合并会话
+  locator/state/target;`preview` 落稳定 PNG;`open` 成功记 backend+timeline、`close` 记 timeline;以及
+  status/preview/open/close/screenshot/har/dom 各自的 WebError→原样 code 与意外异常→`internal_error`
+  两类 fail-closed 分类。`service_web` 覆盖率 83%→99%(仅剩一条正常建会话到不了的防御分支),纯补测、
+  不改行为。
+
 ### 加固（把 jsre 服务层四个一次性包装的成功/错误分类钉进测试）
 
 - `js.deobfuscate` / `js.beautify` / `wasm.wat` / `wasm.info` 在服务层都是薄包装:把文件交给
