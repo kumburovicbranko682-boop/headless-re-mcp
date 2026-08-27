@@ -20,6 +20,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
+_MAX_FILES_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
@@ -33,6 +34,7 @@ _MAX_MANIFEST_CHARS = 200_000
 _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
+_MAX_FILES_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
 
 
@@ -324,6 +326,55 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    def files(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """List every entry in the APK zip with sizes (paginated).
+
+        apk.native_libs only reports lib/*.so; assets/, res/raw/, secondary
+        DEX, embedded configs and any packed payload were otherwise invisible
+        without unpacking. Each entry carries name, size (uncompressed) and
+        compressed_size read from the central directory; a name the directory
+        does not describe reports null sizes rather than dropping out. Names are
+        sorted so paging is stable.
+        """
+        apk = self._apk(path)
+        sizes: dict[str, tuple[int, int]] = {}
+        try:
+            for name, info in (apk.zip.infolist() or {}).items():
+                sizes[str(name)] = (
+                    int(getattr(info, "uncompressed_size", 0) or 0),
+                    int(getattr(info, "compressed_size", 0) or 0),
+                )
+        except Exception:  # noqa: BLE001 - zip directory shapes vary by version
+            sizes = {}
+        names: list[str] = []
+        scan_more = False
+        for name in apk.get_files() or []:
+            if len(names) >= _MAX_FILES_COLLECT:
+                scan_more = True
+                break
+            names.append(str(name))
+        names.sort()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_FILES_PAGE)
+        window = names[start : start + cap]
+        entries: list[JsonObject] = []
+        for name in window:
+            info = sizes.get(name)
+            entries.append(
+                {
+                    "name": name,
+                    "size": info[0] if info else None,
+                    "compressed_size": info[1] if info else None,
+                }
+            )
+        return {
+            "files": entries,
+            "count": len(entries),
+            "total": len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
+            "scan_capped": scan_more,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

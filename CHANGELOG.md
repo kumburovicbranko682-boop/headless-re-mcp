@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,20 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（`apk.files` 列出 APK 归档内的所有条目）
+
+- Android 静态面能读清单、组件、DEX（类/方法/字符串）、原生库，却没有“这个包里到底装了
+  哪些文件”的一览：`apk.native_libs` 只报 `lib/*.so`，`assets/`、`res/raw/`、附带的次级 DEX、
+  内嵌配置、以及被塞进来的任意载荷此前都看不到，要看只能 `apk.decode` 解包整个 zip。新增只读
+  工具 `apk.files`：用 androguard `APK.get_files()` 取归档条目名，并从中央目录
+  （`apk.zip.infolist()` 的 `CentralDirectoryEntry`）读出每条的 `size`（未压缩字节）与
+  `compressed_size`（存储字节）；名字若不在中央目录里则两处报 null 而不是被丢掉。列表按名字
+  稳定排序并与其他 apk 列表同构分页（`offset` / `limit` ≤ 2000，`count` / `total` / `has_more`，
+  采集上限 5000 时置 `scan_capped`）。归类只读（`agent_auto_execute`），工具面 265 → **266**
+  （只读 148 → 149，写不变），`tools/catalog.py` 计数、README 三处工具算术与计数守卫同步更新。
+  新增 `test_apk_files_fields.py` 覆盖字段/分页/缺失尺寸报 null/采集封顶，并把 `apk.files` 纳入
+  既有的负偏移 schema 与页上限一致性守卫。
 
 ### 新增（监控台工作台）
 
