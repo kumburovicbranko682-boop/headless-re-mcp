@@ -101,6 +101,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`report.generate` 的知识值预览悄悄丢掉第 5 个及之后的键）
+
+- 报告渲染器给“发现/制品/最近动作”三段都加了 `_note_if_partial`,一旦截到上限就注明
+  “Showing N of M”。可 `_summarize_value` 把知识值(dict)预览成 `list(value.items())[:4]` 时,
+  只取前 4 个键、其余**不留任何痕迹**:一个十键的值渲染出来与四键的值一模一样,被丢掉的 6 个
+  键读作从未记录——正是这三段级注释要杜绝的“截断却读作完整”,只不过下沉到了单元格。四键以内
+  的值本就已整串经 `_cell`(120 字符)裁剪,单元格级截断有 `…` 提示;唯独“键数超 4”这条会无声丢弃。
+  现按同一诚实原则:预览仍只展前 4 键(保持单元格窄),但当 `len(value) > 4` 时追加
+  `… (+N more keys)` 说明还有多少键在会话里而不在报告里。新增回归:十键值注明 `(+6 more keys)`
+  且不泄露第 5 键、恰好四键的值不加任何标记。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

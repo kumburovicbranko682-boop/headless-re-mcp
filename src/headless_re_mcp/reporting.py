@@ -57,7 +57,19 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        # The preview keeps only the first four keys. Without a marker a short
+        # ten-key value renders exactly like a four-key one, and the dropped
+        # keys read as never recorded -- the same "partial reads as complete"
+        # failure _note_if_partial exists to prevent, one table cell down.
+        shown = list(value.items())[:4]
+
+        summary = ", ".join(f"{key}={_cell(item)}" for key, item in shown)
+
+        if len(value) > len(shown):
+
+            summary += f", … (+{len(value) - len(shown)} more keys)"
+
+        return summary
 
     return _cell(value)
 
