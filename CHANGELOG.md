@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`js.unpack_bundle` 描述漏掉 `listing_truncated`,超大 bundle 被读成完整）
+
+- `js.unpack_bundle` 回一个 `listing_truncated`,专门标记 bundle 大到**连计数本身都封顶**的
+  情形:后端用 `_capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)` 收集,一旦文件数超过
+  50000,`total`(即 `file_count`)就停在这个上限,而 `has_more = start + len(window) < file_count`
+  是拿分页窗口和这个**已封顶**的 total 比——于是翻到最后一页时 `has_more` 读作 false,看上去
+  「全都看完了」。真正说明「还有 5 万条之外没被计数」的只有 `listing_truncated` 这一个字段,
+  可工具描述从头到尾只字未提它,只让调用方「读 total 和 has_more」。照描述办事的无人值守 agent
+  会把一个模块数爆表的 webpack bundle 当成已完整解包,漏掉封顶之外的全部模块而毫无察觉。
+- 现在描述把 `listing_truncated` 列进「Answers with」并单独点明:它与 `has_more` 是**两个**信号,
+  当 bundle 超过 50000 个文件、count 在此封顶时 `has_more` 仍可能读 false,唯有 `listing_truncated`
+  才揭示封顶之外的文件从未被计数。字段与行为本就如此,本次只补齐描述使其兑现「不要把 files 当成
+  完整」的承诺。
+- 新增回归:把 `_MAX_COUNTED_FILES` 压到 3、灌 5 个文件,`unpack_bundle` 回 `total=3`、`file_count=3`、
+  `has_more=false`(整页装得下已封顶的清单)而 `listing_truncated=true`——正是「看着完整、其实被截」
+  的陷阱;并断言描述里点名了 `listing_truncated`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

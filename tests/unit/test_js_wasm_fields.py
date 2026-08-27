@@ -216,6 +216,47 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
 
 
+def test_unpack_bundle_flags_listing_truncated_when_the_count_cap_is_hit(
+    tmp_path: Path,
+) -> None:
+    """A bundle past the count cap reads complete unless listing_truncated is read.
+
+    has_more is a pagination signal against total, but total itself stops at
+    _MAX_COUNTED_FILES. Drive more files than that (shrunk) cap: total pins at
+    the cap and, once the page covers every counted row, has_more reads false --
+    exactly the "looks complete" trap. listing_truncated is the only field that
+    still says files beyond the cap were never counted, so it must be set here
+    and named in the description.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    for index in range(5):
+        (out / f"m{index}.js").write_text("1", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"", b"")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        patch("headless_re_mcp.backends.jsre.client._MAX_COUNTED_FILES", 3),
+    ):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=100)
+
+    # total capped at the count cap and the whole (capped) list fits one page,
+    # so has_more reads false -- listing_truncated is the sole overflow signal.
+    assert payload["total"] == 3
+    assert payload["file_count"] == 3
+    assert payload["has_more"] is False
+    assert payload["listing_truncated"] is True
+    assert "listing_truncated" in _tool_docstring("js.unpack_bundle")
+
+
 def test_js_deobfuscate_refuses_an_oversized_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
