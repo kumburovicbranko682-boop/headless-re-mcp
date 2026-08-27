@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 proxy.flow.get / proxy.replay 的 fail-closed 守卫，不依赖 mitmproxy）
+
+- `flow_get` 与 `replay` 都先从抓包环里解析一条 flow,且都必须在其不存在时精确失败:未知或已被淘汰的 id\
+  报 `not_found`,body 被丢弃(过大未保留)的 flow 报 `too_large`,代理未运行时的重放报 `invalid_state`。\
+  这些守卫都在触碰任何 mitmproxy 对象之前运行,故以一个 recorder 返回当下哨兵的假实例即可驱动(与\
+  `test_proxy_flow_get_bounds` 同一 `_get` 接缝),无需真实代理。新增 `test_proxy_flow_get_replay_guards.py`\
+  钉住上述三条守卫,并补齐请求侧 `metadata_truncated` 标记——既有 bounds 测试只标了响应侧,超长的请求\
+  method/url/头映射此前未测。proxy/client.py 覆盖率由 82% 升至 84%(其余未覆盖行为需 mitmproxy 的\
+  start/_run/stop 与防御性 asyncio/socket helper)。(纯测试补充,无行为变更。)
+
 ### 测试（用假 CDP 钉住 web 抓包环淘汰/dropped 记账与截断标记，及驱动进程回收守卫）
 
 - `_wire_events` 注册的四个 CDP 处理器负责填充每会话抓包环(requests/scripts/console)并维护\
