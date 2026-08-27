@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`r2.disasm` / `r2.xrefs` 补记 radare2 后端，与其余 r2 工具对齐）
+
+- 八个 r2 工具里,`r2.open` 与走 `_r2_request` 的 `r2.info` / `functions` / `strings` /
+  `imports` / `exports` 在成功后都会 `_record_backend(session, "radare2", endpoint="pipe")`,
+  把 radare2 记进会话的后端清单;唯独另起实现的 `r2.disasm` 与 `r2.xrefs` 只
+  `_timeline_append`,漏了这一步。后果是:一个只反汇编(`r2.disasm`)或只查交叉引用
+  (`r2.xrefs`)的会话——两者都会真正拉起 radare2 分析样本——在 `list_backends`(即
+  「哪些引擎碰过这个会话」的审计)里读回来却是**从未用过 radare2**,与它实际做过的事相悖。
+  现给这两个方法补上与兄弟工具同样的 `_record_backend`(置于状态复检之后、`_timeline_append`
+  之前);`record_backend` 以 `(session_id, kind)` upsert,重复调用只维持一行,故繁忙会话反复
+  反汇编也不会堆出多行 radare2。新增 `test_r2_disasm_records_backend.py`:分别以桩 `R2Client`
+  跑 `r2.disasm` / `r2.xrefs`,断言 `list_backends` 恰好多出一条 `kind==radare2` /
+  `endpoint==pipe`,并断言连续三次 `r2.disasm` 仍只有一行(upsert 幂等)。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

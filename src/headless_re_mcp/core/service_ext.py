@@ -369,6 +369,13 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.disasm cannot run in {session.state.value} state"
                 )
+            # Every other r2 tool that spawns radare2 records the backend --
+            # r2.open and the r2.info/functions/strings/imports/exports path
+            # through _r2_request both do -- so a session that only ever ran
+            # r2.disasm otherwise reads back as never having touched radare2.
+            # record_backend is a (session_id, kind) upsert, so this is safe to
+            # repeat across calls and keeps list_backends a complete audit.
+            _record_backend(self, session_id, "radare2", endpoint="pipe")
             _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
@@ -399,6 +406,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs cannot run in {session.state.value} state"
                 )
+            # As in r2.disasm: record radare2 so a session that only ran
+            # r2.xrefs still shows the backend it actually used.
+            _record_backend(self, session_id, "radare2", endpoint="pipe")
             _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
