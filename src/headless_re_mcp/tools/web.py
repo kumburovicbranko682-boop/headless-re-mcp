@@ -86,8 +86,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         not truncated. A binary body (base64_encoded true) is never inlined or
         base64-written to disk: it is decoded and body_path holds the raw
         bytes, body is empty, body_truncated is false, and body_bytes is the
-        decoded size. A body over the capture cap is refused rather than
-        written to disk.
+        decoded size. When CDP has no body for the request (a redirect, or a
+        body already evicted from its cache) body is empty and body_error says
+        why, while body, base64_encoded and body_truncated stay present. A
+        body over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

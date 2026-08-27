@@ -90,6 +90,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.network.get` 取不到响应体时仍保持形状）
+
+- `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
+  对某个请求没有响应体时(重定向,或响应体已被其缓存淘汰,`Network.getResponseBody` 抛
+  「No resource with given identifier found」),失败分支只回 `{**entry, body_error}`——恰恰在
+  这条路径上把承诺的三个字段全丢了,读 `result["body"]` 的调用方直接缺键。现失败分支补齐
+  `body=""`、`base64_encoded=false`、`body_truncated=false` 与 `body_error`(说明原因),成功
+  与失败两条路径形状一致;空体不落盘。文档串补上 `body_error`,并新增该失败路径的回归测试。
 
 ### 修复（监控台回环护栏）
 
