@@ -3645,7 +3645,13 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert seen["socket_timeout"] == _ADB_PROBE_TIMEOUT_S
-        assert result == {"devices": [], "count": 0, "has_more": False}
+        assert result == {
+            "devices": [],
+            "count": 0,
+            "total": 0,
+            "offset": 0,
+            "has_more": False,
+        }
 
     def test_list_includes_offline_devices_and_does_not_probe_get_state(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
@@ -3672,8 +3678,56 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert result["count"] == 2
-        assert result["devices"][0]["state"] == "offline"
+        assert result["total"] == 2
         assert result["has_more"] is False
+        # Sorted by serial for stable paging, so assert by serial not position.
+        states = {row["serial"]: row["state"] for row in result["devices"]}
+        assert states["emulator-5554"] == "offline"
+        assert states["ZY223KDTM7"] == "device"
+        assert [row["serial"] for row in result["devices"]] == sorted(states)
+
+    def test_list_devices_pages_are_a_stable_sorted_partition(self) -> None:
+        """Walking pages with offset reassembles the whole sorted list once.
+
+        The old first-N cap raised has_more with no offset, so a device past the
+        cap was unreachable. Paging over a serial-sorted view reaches all of them
+        and never repeats one; adb's own order is not a stable contract.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Info:
+            def __init__(self, serial: str) -> None:
+                self.serial = serial
+                self.state = "device"
+
+        serials = [f"emulator-55{index:02d}" for index in range(7)]
+
+        class FakeAdb:
+            class AdbClient:
+                def __init__(self, **kwargs: Any) -> None:
+                    del kwargs
+
+                def list(self) -> list[Any]:
+                    # Handed back reversed: the sort, not adb, fixes the order.
+                    return [Info(serial) for serial in reversed(serials)]
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = FakeAdb
+        expected = sorted(serials)
+
+        seen: list[str] = []
+        for start in (0, 3, 6):
+            page = backend.list_devices(offset=start, limit=3)
+            assert page["offset"] == start
+            assert page["total"] == 7
+            assert page["count"] == len(page["devices"])
+            got = [row["serial"] for row in page["devices"]]
+            assert got == expected[start : start + 3]
+            seen.extend(got)
+        assert seen == expected
+        assert backend.list_devices(offset=6, limit=3)["has_more"] is False
+        assert backend.list_devices(offset=0, limit=3)["has_more"] is True
 
     def test_open_transport_default_is_not_ten_minutes(self) -> None:
         from headless_re_mcp.backends.adb.client import (

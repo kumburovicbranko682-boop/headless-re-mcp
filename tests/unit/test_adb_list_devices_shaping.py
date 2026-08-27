@@ -4,8 +4,9 @@
 releases expose ``client.list()`` returning objects with ``serial`` / ``state``,
 some return ``(serial, state)`` tuples, and older ones only offer
 ``device_list()`` of connected devices. ``_device_info_row`` is the shim that
-flattens all three to ``{"serial", "state"}``, and the result is capped at
-``_MAX_DEVICES`` with a ``has_more`` flag. A shim that quietly returns blank
+flattens all three to ``{"serial", "state"}``, and the result is sorted by
+serial, then paged (``_MAX_DEVICES`` cap) with ``total``/``offset``/``has_more``.
+A shim that quietly returns blank
 serials after an adbutils upgrade would make every device unaddressable while
 the call still looks like it succeeded, so the shapes are pinned here with a
 fake client -- no adbutils, no emulator.
@@ -52,24 +53,26 @@ def _backend_with_client(client: Any) -> AdbBackend:
 
 
 def test_attribute_style_rows_are_shaped() -> None:
-    """Objects with serial/state flatten to those two fields."""
+    """Objects with serial/state flatten to those two fields, sorted by serial."""
     client = _ListClient([_Info("emulator-5554", "device"), _Info("abc123", "unauthorized")])
     payload = _backend_with_client(client).list_devices()
+    # Rows come back sorted by serial for stable paging, so "abc123" leads.
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "abc123", "state": "unauthorized"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
     assert payload["count"] == 2
     assert payload["has_more"] is False
 
 
 def test_tuple_style_rows_are_shaped() -> None:
-    """(serial, state) tuples flatten the same way as objects."""
+    """(serial, state) tuples flatten the same way as objects, sorted by serial."""
     client = _ListClient([("emulator-5554", "device"), ("192.168.0.2:5555", "offline")])
     payload = _backend_with_client(client).list_devices()
+    # Sorted by serial: the dotted IP sorts ahead of "emulator-5554".
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "192.168.0.2:5555", "state": "offline"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
 
 
