@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
+from headless_re_mcp.core.session import is_http_url
 
 JsonObject = dict[str, Any]
 T = TypeVar("T")
@@ -51,6 +52,29 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_http_url(url: str) -> str:
+    """Refuse to drive the browser anywhere but http(s).
+
+    ``page.goto`` accepts ``file://``, ``chrome://``, ``view-source:`` and
+    ``data:`` just as happily as a web address, and the session's readers
+    (``dom_snapshot``, ``network_get``) then hand back whatever the browser
+    read -- ``file:///etc/passwd`` turns the web analyzer into a local file
+    reader, sidestepping every path guard in the rest of the system. The
+    analyzer drives web targets, so anything without an explicit http(s)
+    scheme fails closed before a browser launches. The stripped string is
+    what gets navigated, so a control-character prefix cannot smuggle a
+    scheme past the check.
+    """
+    text = (url or "").strip()
+    if not is_http_url(text):
+        raise WebError(
+            "invalid_params",
+            "web navigation is limited to http(s) URLs",
+            url=_bounded_metadata(text, _MAX_URL_BYTES)[0],
+        )
+    return text
 
 
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
@@ -307,6 +331,9 @@ class WebBackend:
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
         self._check_available()
+        # An empty target opens a blank page and never reaches goto; anything
+        # else must be http(s) before a browser (and its driver) is spent on it.
+        target = _require_http_url(url) if (url or "").strip() else ""
 
         with self._lock:
             if session_id in self._sessions:
@@ -337,8 +364,8 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
-                if url:
-                    page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                if target:
+                    page.goto(target, timeout=timeout * 1000.0, wait_until="domcontentloaded")
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -351,7 +378,9 @@ class WebBackend:
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
-                raise WebError("backend_error", f"failed to open browser: {exc}", url=url) from exc
+                raise WebError(
+                    "backend_error", f"failed to open browser: {exc}", url=target
+                ) from exc
             return handle, summary
 
         try:
@@ -465,13 +494,16 @@ class WebBackend:
         cdp.on("Runtime.consoleAPICalled", on_console)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
+        target = _require_http_url(url)
         handle = self._get(session_id)
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                handle.page.goto(target, timeout=timeout * 1000.0, wait_until="domcontentloaded")
             except Exception as exc:  # noqa: BLE001
-                raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
+                raise WebError(
+                    "backend_error", f"navigation failed: {exc}", url=target
+                ) from exc
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),

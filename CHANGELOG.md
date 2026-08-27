@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.open / web.navigate 可导航到 file:// 等本地 scheme）
+
+- `web.open` / `web.navigate` 把调用方的 URL 原样交给 `page.goto`，而 goto 对 `file://`、
+  `chrome://`、`view-source:`、`data:` 一视同仁：导航到 `file:///etc/passwd` 后，
+  `web.dom_snapshot` / `web.network_get` 就把文件内容递回来——Web 分析线因此变成本地文件读取器，
+  绕过系统其余部分的所有路径护栏。现新增 `_require_http_url`：非 http(s) 目标在浏览器启动、
+  会话槽位保留之前即以 `invalid_params` 拒绝（空 URL 仍打开空白页）；校验的是去除首尾空白后
+  实际交给 goto 的字符串，控制字符前缀混淆不过关。`tests/unit/test_web_url_guard.py` 钉住
+  file/chrome/view-source/javascript/data/协议相对等敌意形态全部拒绝、真实 http(s) 目标放行，
+  且拒绝发生在触碰会话与 Playwright 导入之前。
+
 ### 修复（apksigner 口令走命令行泄露给本机用户）
 
 - `apk.sign` 把 keystore 口令放在命令行上（`--ks-pass pass:<口令>`）。Linux 下 `/proc/<pid>/cmdline`

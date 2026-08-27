@@ -35,7 +35,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
         Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        browser, ok or page field. Only http(s) URLs are driven: file://,
+        chrome://, data: and the like are refused with invalid_params before
+        a browser launches. An empty url opens a blank page.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
@@ -48,6 +50,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Navigate the session's browser to a new URL.
 
         Answers with url and title. There is no navigated, ok or page field.
+        Only http(s) URLs are driven: file://, chrome://, data: and the like
+        are refused with invalid_params.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 

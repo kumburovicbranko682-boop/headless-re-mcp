@@ -41,7 +41,9 @@ Frida 脚本——每个能力都是具名、参数经校验的工具。任何�
   autonomy 处于 `请求批准` 档时写操作未经批准即执行;`agent_never_auto_approve`
   名单内的工具被自动放行;
 - **路径逃逸**:产物库、会话工作树的读写或清理(prune)越出其专属目录,
-  能读写或删除仓库外的文件;
+  能读写或删除仓库外的文件;浏览器驱动同理——`web.open` / `web.navigate` 只接受
+  http(s),若能让它导航到 `file://` / `chrome://` 等本地 scheme 并经
+  `dom_snapshot` 读回内容,按本类漏洞处理;
 - **敏感信息泄露**:签名口令、token 等出现在错误信封、日志或产物中
   (现有实现会抹掉 apksigner stderr 里的口令,并经环境变量而非命令行把口令交给 apksigner,
   以免 `/proc/<pid>/cmdline` 对本机用户暴露;同类泄露按漏洞处理);
