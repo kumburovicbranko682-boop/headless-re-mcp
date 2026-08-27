@@ -34,6 +34,33 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# A page of the archive's file listing. An APK can hold thousands of resource
+# entries, so the listing is paginated and each entry name is bounded.
+_MAX_FILES_PAGE = 5000
+_MAX_ENTRY_NAME = 1024
+
+
+def _apk_entry_category(name: str) -> str:
+    """Bucket an APK zip entry by what it is, for triage.
+
+    Order matters: META-INF signatures and the manifest are matched before the
+    generic resource/asset buckets so a signer file under META-INF is not read
+    as an ordinary "other" entry.
+    """
+    lower = name.lower()
+    if name == "AndroidManifest.xml":
+        return "manifest"
+    if name.startswith("META-INF/"):
+        return "signature"
+    if lower.endswith(".dex"):
+        return "dex"
+    if name.startswith("lib/") and lower.endswith(".so"):
+        return "native_lib"
+    if name == "resources.arsc" or name.startswith("res/"):
+        return "resource"
+    if name.startswith("assets/"):
+        return "asset"
+    return "other"
 
 # Manifest attributes live in the Android resource namespace; the AXML decoder
 # androguard hands back keeps that URI, so component attributes read as
@@ -566,6 +593,69 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    @_guard_androguard
+    def files(self, path: Path, *, offset: int = 0, limit: int = 1000) -> JsonObject:
+        """List the archive's entries with size and a triage category.
+
+        ``native_libs`` only sees ``lib/*.so``; nothing showed the rest of the
+        archive -- how many dex, whether there is an ``assets/`` tree (a common
+        place to hide a bundled dex/JS payload or config), the resource table,
+        the signer files. Enumerating it meant a full ``apktool`` decode.
+
+        Sizes come from the zip central directory (no decompression), so this
+        is cheap even on a large app. The APK is parsed through androguard first
+        so the call is gated and validated like the rest of the line, but the
+        listing is the real zip contents, which is what triage needs.
+        """
+        import zipfile
+
+        # Parse through androguard so this is gated (capability_unavailable when
+        # absent, not_found for a missing file) and only a real, parseable APK
+        # is listed -- not any zip. _apk resolves and validates the path.
+        self._apk(path)
+        resolved = path.expanduser().resolve()
+        try:
+            with zipfile.ZipFile(resolved) as archive:
+                infos = [info for info in archive.infolist() if not info.is_dir()]
+        except zipfile.BadZipFile as exc:
+            raise ApkError("backend_error", f"apk is not a readable zip: {exc}") from exc
+
+        # Category tallies span the whole archive, not just the page, so "how
+        # many dex" and "is there an assets tree" are answerable in one call.
+        categories: dict[str, int] = {}
+        total_bytes = 0
+        for info in infos:
+            categories[_apk_entry_category(info.filename)] = (
+                categories.get(_apk_entry_category(info.filename), 0) + 1
+            )
+            total_bytes += int(info.file_size)
+
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_FILES_PAGE))
+        window = infos[start : start + cap]
+        items: list[JsonObject] = []
+        for info in window:
+            name = info.filename
+            name_truncated = len(name) > _MAX_ENTRY_NAME
+            entry: JsonObject = {
+                "name": name[:_MAX_ENTRY_NAME],
+                "size": int(info.file_size),
+                "compressed": int(info.compress_size),
+                "category": _apk_entry_category(name),
+            }
+            if name_truncated:
+                entry["name_truncated"] = True
+            items.append(entry)
+        return {
+            "files": items,
+            "count": len(items),
+            "total": len(infos),
+            "offset": start,
+            "has_more": start + len(window) < len(infos),
+            "categories": categories,
+            "total_bytes": total_bytes,
         }
 
     @_guard_androguard

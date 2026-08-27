@@ -99,6 +99,31 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 1000,
+    ) -> dict[str, Any]:
+        """List the APK archive's entries with size and a triage category.
+
+        native_libs only sees lib/*.so; this shows the rest of the archive --
+        how many dex, whether there is an assets/ tree (a common hiding place
+        for a bundled dex/JS payload or config), the resource table, the signer
+        files -- which otherwise needed a full apktool decode. Sizes come from
+        the zip directory (no decompression), so it is cheap on a large app.
+
+        Answers with files, each carrying name, size (uncompressed bytes),
+        compressed (on-disk bytes) and category (one of manifest, dex,
+        native_lib, resource, asset, signature, other), plus count, total,
+        offset and has_more so a page that filled the limit is not read as the
+        whole archive. categories maps each category to its count across the
+        whole archive (not just the page), and total_bytes is the summed
+        uncompressed size. A pathologically long entry name is cut and flagged
+        name_truncated. There is no entries or names field.
+        """
+        return _dump(analysis.apk_files(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.extract_native_lib")
     def apk_extract_native_lib(session_id: str, entry: str) -> dict[str, Any]:
         """Extract one bundled native library (.so) for r2/Ghidra analysis.

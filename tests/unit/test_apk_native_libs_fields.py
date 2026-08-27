@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError, _apk_entry_category
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -140,3 +141,86 @@ def test_apk_extract_native_lib_docstring_names_its_fields() -> None:
     assert "entry" in doc
     assert "sha256" in doc
     assert "path" in doc
+
+
+def _write_sample_apk(dest: Path) -> None:
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("AndroidManifest.xml", b"AXML-manifest")
+        zf.writestr("classes.dex", b"dex\n" + b"\x00" * 40)
+        zf.writestr("classes2.dex", b"dex2")
+        zf.writestr("resources.arsc", b"\x00" * 16)
+        zf.writestr("res/layout/main.xml", b"<x/>")
+        zf.writestr("lib/arm64-v8a/libfoo.so", b"\x7fELF" + b"\x00" * 60)
+        zf.writestr("assets/config.json", b'{"k":1}')
+        zf.writestr("META-INF/CERT.RSA", b"signature-bytes")
+
+
+def test_apk_files_lists_entries_with_category_and_size(tmp_path: Path) -> None:
+    """native_libs only saw .so; apk.files must show the whole archive.
+
+    Build an APK-shaped zip and assert each entry is listed with its size and
+    the right triage category, that the category tally spans the whole archive
+    (two dex), and that assets/config.json's size matches its bytes.
+    """
+    apk = tmp_path / "app.apk"
+    _write_sample_apk(apk)
+    client = ApkClient()
+    # Stub the androguard parse (the availability/validity gate) so the test
+    # exercises the zip listing without needing androguard, like native_libs.
+    client._apk = lambda _path: object()  # type: ignore[method-assign]
+
+    payload = client.files(apk)
+    by_name = {row["name"]: row for row in payload["files"]}
+    assert by_name["AndroidManifest.xml"]["category"] == "manifest"
+    assert by_name["classes.dex"]["category"] == "dex"
+    assert by_name["classes2.dex"]["category"] == "dex"
+    assert by_name["resources.arsc"]["category"] == "resource"
+    assert by_name["res/layout/main.xml"]["category"] == "resource"
+    assert by_name["lib/arm64-v8a/libfoo.so"]["category"] == "native_lib"
+    assert by_name["assets/config.json"]["category"] == "asset"
+    assert by_name["META-INF/CERT.RSA"]["category"] == "signature"
+    assert by_name["assets/config.json"]["size"] == len(b'{"k":1}')
+    assert "compressed" in by_name["assets/config.json"]
+
+    assert payload["total"] == 8
+    assert payload["count"] == 8
+    assert payload["categories"]["dex"] == 2
+    assert payload["categories"]["native_lib"] == 1
+    assert payload["total_bytes"] == sum(row["size"] for row in payload["files"])
+    assert payload["has_more"] is False
+
+    doc = _tool_docstring("apk.files")
+    assert "category" in doc
+    assert "categories" in doc
+    assert "compressed" in doc
+
+
+def test_apk_files_paginates_and_flags_more(tmp_path: Path) -> None:
+    """A page that filled the limit must not read as the whole archive."""
+    apk = tmp_path / "many.apk"
+    with zipfile.ZipFile(apk, "w") as zf:
+        for index in range(10):
+            zf.writestr(f"assets/file{index}.bin", b"x" * index)
+    client = ApkClient()
+    client._apk = lambda _path: object()  # type: ignore[method-assign]
+
+    first = client.files(apk, offset=0, limit=4)
+    assert first["count"] == 4
+    assert first["total"] == 10
+    assert first["has_more"] is True
+    assert first["categories"]["asset"] == 10  # tally spans the whole archive
+
+    last = client.files(apk, offset=8, limit=4)
+    assert last["count"] == 2
+    assert last["has_more"] is False
+
+
+def test_apk_entry_category_buckets_paths() -> None:
+    assert _apk_entry_category("AndroidManifest.xml") == "manifest"
+    assert _apk_entry_category("META-INF/MANIFEST.MF") == "signature"
+    assert _apk_entry_category("classes.dex") == "dex"
+    assert _apk_entry_category("lib/x86_64/libc++.so") == "native_lib"
+    assert _apk_entry_category("resources.arsc") == "resource"
+    assert _apk_entry_category("res/values/strings.xml") == "resource"
+    assert _apk_entry_category("assets/www/index.html") == "asset"
+    assert _apk_entry_category("kotlin/kotlin.kotlin_builtins") == "other"

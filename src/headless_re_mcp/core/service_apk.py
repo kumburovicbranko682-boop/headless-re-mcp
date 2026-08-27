@@ -118,6 +118,16 @@ class ApkAnalysisMixin:
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
 
+    def apk_files(self, session_id: str, offset: int = 0, limit: int = 1000) -> Result[JsonObject]:
+        try:
+            binary = self._apk_binary(session_id)
+            data = ApkClient().files(binary, offset=offset, limit=limit)
+            return _success(data, session_id=session_id, backend="apk")
+        except ApkError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def _apk_artifact_dir(self, session_id: str) -> Path:
         if not session_id or Path(session_id).name != session_id:
             raise ApkError("invalid_params", "invalid session id")

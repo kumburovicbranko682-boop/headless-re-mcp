@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **269（151 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **270（152 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -356,6 +356,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   活体门经代理打一条 GET 和一条 POST，断言 `method`/`url_contains`/`status` 各自把实时抓包收窄到目标 flow、回
   `filtered`/`unfiltered_total`、且非命中 flow 不在过滤页里（缺 mitmproxy 时 skip≠pass）；单测覆盖四种过滤器与组合、
   `total` 报命中数而 `unfiltered_total` 留全量、无过滤器不多出字段、以及 `status` 过滤跳过失败 flow。
+- **看不清 APK 里到底装了什么——只能看见 `.so`**。`apk.native_libs` 只列 `lib/*.so`，其余归档内容（有几个 dex、
+  有没有 `assets/` 目录——藏 bundled dex/JS 载荷或配置的常见地方、资源表、META-INF 签名文件）此前没有任何工具能看到，
+  想枚举只能 `apk.decode` 整包 apktool 解一遍。新增只读的 `apk.files`：先经 androguard 解析做门禁与校验（确是可解析
+  APK、且 androguard 在场），再按 zip 中央目录列出真实归档条目——大小取自目录、不解压，大应用上也很轻。回 `files`，
+  每条带 `name`、`size`（解压后字节）、`compressed`（盘上字节）、`category`（manifest/dex/native_lib/resource/asset/
+  signature/other 之一），加 `count`/`total`/`offset`/`has_more`（填满每页 5000 上限时不会被当成整包读完）；`categories`
+  给出各类在**整包**（非本页）的计数、`total_bytes` 为解压总大小，一次调用即可回答「有几个 dex」「有没有 assets 树」。
+  超长条目名截断并标 `name_truncated`。活体门在自建 APK（含 manifest、dex、resources.arsc、两个 ABI 的 `.so`、
+  `assets/config.json`）上断言各条目按正确 `category` 列出、`assets/config.json` 的 `size` 与内容相符、`categories`
+  统计与归档一致（缺 androguard 时 skip≠pass）；单测直接驱动 zip 分页、类别归类、名字截断标记。该工具计入读效果，
+  工具面因此 269→270。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

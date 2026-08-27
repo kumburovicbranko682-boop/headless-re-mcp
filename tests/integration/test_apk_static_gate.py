@@ -435,6 +435,24 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert sorted(libs.data["abis"]) == ["arm64-v8a", "x86_64"]
         assert libs.data["count"] == 2
 
+        # apk.files sees the whole archive, not just the .so: the manifest, the
+        # dex, the resource table, both libs, and the bundled asset must each be
+        # listed with the right category, and the asset's size must match the
+        # bytes the fixture wrote.
+        listing = service.apk_files(session_id)
+        assert listing.ok, listing.error
+        rows = {row["name"]: row for row in listing.data["files"]}
+        assert rows["AndroidManifest.xml"]["category"] == "manifest"
+        assert rows["classes.dex"]["category"] == "dex"
+        assert rows["resources.arsc"]["category"] == "resource"
+        assert rows["lib/arm64-v8a/libnative.so"]["category"] == "native_lib"
+        assert rows["lib/x86_64/libnative.so"]["category"] == "native_lib"
+        assert rows["assets/config.json"]["category"] == "asset"
+        assert rows["assets/config.json"]["size"] == len(b'{"k":1}')
+        assert listing.data["categories"]["native_lib"] == 2
+        assert listing.data["categories"]["dex"] == 1
+        assert listing.data["total"] == len(rows)
+
         # Pull one .so straight out of the zip for the binary line and confirm
         # the bytes on disk are the real member (the fixture wrote this exact
         # payload), the metadata matches, and it registered as an artifact.
