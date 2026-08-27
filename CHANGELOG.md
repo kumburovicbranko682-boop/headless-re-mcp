@@ -62,6 +62,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（frida.memory.read 的 address 与 size 一样先校验，不再变成 internal_error 事故）
+
+- `frida.memory.read` 只对 `size` 做了范围校验，`address` 却原样交给注入脚本里的 `ptr(address)`。
+  负数或非整数地址在目标进程里读出的是未捕获的脚本错误，经服务层通用 `except BaseException`
+  落成 `internal_error` 事故——而 r2 适配器对同类畸形地址早已回 `invalid_params`。现按 r2 的成例，
+  在 `memory_read` 里于附加探针之前校验 `type(address) is int and address >= 0`，畸形读取窗口在
+  spawn/attach 之前即以 `invalid_params` 拒绝，绝不触碰调试目标。回归钉住：负地址在任何 attach
+  之前被拒（fake frida 的 `attach` 未被调用），合法窗口仍照常读回 hex。
+
 ### 修复（web.open/navigate 只放行 http(s)/data:，堵住 file:// 本地读与 javascript: 执行）
 
 - `web.open` / `web.navigate` 把 URL 原样交给 `page.goto`，不校验 scheme。`file:///etc/passwd` 会让

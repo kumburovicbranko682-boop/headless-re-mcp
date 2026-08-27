@@ -396,6 +396,12 @@ class FridaClient:
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Validate the read window before attaching, the same shape the r2
+        # adapter uses. A negative or non-int address reached ptr(address) in
+        # the injected script and came back as an uncaught error -- an
+        # internal_error incident for what is a malformed request.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative integer")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)

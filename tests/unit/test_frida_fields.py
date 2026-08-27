@@ -130,6 +130,70 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ReadApi:
+    def read(self, address: int, size: int) -> list[int]:
+        return list(b"\xde\xad\xbe\xef"[:size])
+
+
+class _ReadScript:
+    exports_sync = _ReadApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ReadSession:
+    def create_script(self, source: str) -> _ReadScript:
+        del source
+        return _ReadScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ReadFrida:
+    def __init__(self) -> None:
+        self.attached: list[int] = []
+
+    def attach(self, pid: int) -> _ReadSession:
+        self.attached.append(pid)
+        return _ReadSession()
+
+
+class TestFridaMemoryReadValidatesAddress:
+    """memory_read validated size but not address, so a bad address reached ptr().
+
+    ``size`` was range-checked, yet ``address`` was passed straight into the
+    injected ``ptr(address)``; a negative or non-int value came back as an
+    uncaught script error -- an internal_error incident for a malformed request,
+    where the r2 adapter answers invalid_params. The check now mirrors r2 and
+    fires before the probe attaches, so no target is touched for a bad window.
+    """
+
+    @pytest.mark.parametrize("address", [-1, -4096])
+    def test_a_negative_address_is_rejected_before_any_attach(self, address: int) -> None:
+        client = FridaClient()
+        client._available = True
+        client._frida = _ReadFrida()
+        with pytest.raises(FridaError) as caught:
+            client.memory_read(1, address, 16, allowed_pid=1)
+        assert caught.value.code == "invalid_params"
+        # The window is judged before _attach_local, so a malformed read never
+        # spawns a Frida session against the debuggee.
+        assert client._frida.attached == []
+
+    def test_a_valid_window_still_reads(self) -> None:
+        client = FridaClient()
+        client._available = True
+        client._frida = _ReadFrida()
+        payload = client.memory_read(1, 0x1000, 4, allowed_pid=1)
+        assert payload["address"] == 0x1000
+        assert payload["size"] == 4
+        assert payload["encoding"] == "hex"
+        assert payload["data"] == "deadbeef"
+        assert client._frida.attached == [1]
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
