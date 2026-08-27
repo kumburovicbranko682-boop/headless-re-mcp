@@ -76,6 +76,10 @@ def test_dynamic_registers_write_schema_matches_native_register_name_cap() -> No
     start = native.index("Outcome WriteRegister")
     chunk = native[start : native.index("char HexDigit", start)]
     assert 'ReadString(params, "name", name, error, true, 16)' in chunk
+    # WriteRegister reads value through ReadUnsigned, which rejects a negative
+    # raw before it reaches the register, so the schema must refuse it too --
+    # the same non-negative bound threads.context.write already declares.
+    assert 'ReadUnsigned(params, "value"' in chunk
     handler = next(
         binding.handler
         for binding in build_dynamic_tools(object())  # type: ignore[arg-type]
@@ -84,3 +88,4 @@ def test_dynamic_registers_write_schema_matches_native_register_name_cap() -> No
     props = input_schema_for(handler)["properties"]
     assert props["name"]["minLength"] == 1
     assert props["name"]["maxLength"] == 16
+    assert props["value"]["minimum"] == 0
