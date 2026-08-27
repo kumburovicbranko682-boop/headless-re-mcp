@@ -85,6 +85,43 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_deobfuscate_faults_soft_on_unparseable_input(tmp_path: Path) -> None:
+    """Broken JS must fault with a structured error, not a false success.
+
+    webcrack reports a parse failure by exiting non-zero and writing the
+    SyntaxError to stderr (stdout empty) -- the mirror image of wasm-objdump,
+    which put its error on stdout and slipped past the same guard. This pins the
+    JS reader's half of that contract: unparseable input comes back
+    backend_error (never internal_error, never ok with garbage as "code"), while
+    an empty file -- which webcrack accepts -- still succeeds with empty output.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
+    service = AnalysisService()
+    try:
+        broken = tmp_path / "broken.js"
+        broken.write_text("function ( { syntax ]]] error !!!", encoding="utf-8")
+        result = service.js_deobfuscate(str(broken))
+        assert not result.ok and result.error is not None
+        assert result.error.code == "backend_error", result.error
+
+        binary = tmp_path / "binary.js"
+        binary.write_bytes(bytes(range(64)))
+        binary_result = service.js_deobfuscate(str(binary))
+        assert not binary_result.ok and binary_result.error is not None
+        assert binary_result.error.code == "backend_error", binary_result.error
+
+        # An empty module is legal input, not a failure: webcrack exits 0 and the
+        # reader must stay on the success path rather than over-rejecting.
+        empty = tmp_path / "empty.js"
+        empty.write_text("", encoding="utf-8")
+        empty_result = service.js_deobfuscate(str(empty))
+        assert empty_result.ok, empty_result.error
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_js_unpack_bundle_when_webcrack_present() -> None:
     if not JsClient().available:
         pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
