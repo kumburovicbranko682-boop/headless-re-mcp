@@ -31,6 +31,7 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+_LISTENER_CLOSE_WAIT_S = 5.0
 _OMITTED_BODY = object()
 
 
@@ -58,6 +59,31 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.run_until_complete(loop.shutdown_asyncgens())
     finally:
         loop.close()
+
+
+def _stop_proxy_listeners(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close the listening sockets that mitmproxy's own shutdown leaves open.
+
+    ``Master.shutdown()`` only makes ``run()`` return; the ``Proxyserver``
+    addon has no ``done`` hook, so nothing ever stops its server instances --
+    the mitmdump CLI leans on process exit to free the port. Embedded in a
+    long-lived process that means a "stopped" capture keeps completing TCP
+    handshakes into a backlog nobody reads, and the port can never be bound
+    again. Stopping the mode servers is what a mode change does, so drive the
+    same teardown explicitly while the loop can still run it.
+    """
+    if master is None or loop.is_closed():
+        return
+    try:
+        proxyserver = master.addons.get("proxyserver")
+        servers = getattr(proxyserver, "servers", None)
+        if servers is None:
+            return
+        loop.run_until_complete(
+            asyncio.wait_for(servers.update([]), timeout=_LISTENER_CLOSE_WAIT_S)
+        )
+    except Exception:  # noqa: BLE001 - best effort; the loop unwind still runs
+        pass
 
 
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -348,8 +374,11 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Stop the listeners
+            # first (task unwinding alone does not close asyncio servers),
+            # then unwind the tasks.
             if loop is not None:
+                _stop_proxy_listeners(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
