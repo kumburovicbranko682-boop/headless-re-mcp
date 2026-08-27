@@ -175,3 +175,45 @@ def test_small_row_counts_keep_every_index_two_bytes() -> None:
     meta = _ctx({0x02: 10, 0x01: 10, 0x06: 10, 0x26: 10})
     assert _table_row_size(meta, 0x09) == 4
     assert _table_row_size(meta, 0x29) == 4
+
+
+def test_methodsemantics_method_column_is_a_simple_methoddef_index() -> None:
+    """MethodSemantics.Method indexes MethodDef directly, not MethodDefOrRef.
+
+    The two widths diverge past 2^15 combined MethodDef+MemberRef rows. With
+    40,000 MemberRefs and few MethodDefs the MethodDefOrRef coded index is 4 bytes
+    while the simple MethodDef index stays 2, so sizing Method as the coded index
+    gives 2 + 4 + 2 = 8; the spec-correct row is Semantics(2) + Method(2) +
+    Association(HasSemantics, 2) = 6.
+    """
+    meta = _ctx({0x0A: 40000})  # MemberRef count lifts MethodDefOrRef to 4 bytes.
+    assert _table_row_size(meta, 0x18) == 6
+
+
+def test_assemblyref_row_is_not_a_copy_of_the_assembly_row() -> None:
+    """AssemblyRef has no HashAlgId prefix but does carry a trailing HashValue.
+
+    The row had been sized as a copy of the Assembly row -- a phantom 4-byte
+    HashAlgId in front and no trailing HashValue blob. Unlike the other four
+    fixes this is wrong for the *ordinary* small-heap assembly, not just large
+    ones: with 2-byte heaps the copy measures 22 bytes where the spec row is
+    2+2+2+2+4 + blob + str + str + blob = 20. Because nearly every assembly has
+    an AssemblyRef table, the two-byte drift shifted every later table -- and so
+    corrupted ManifestResource enumeration -- on essentially all real inputs.
+    """
+    assert _table_row_size(_ctx({}), 0x23) == 20
+    # With a 4-byte blob heap the mistaken copy happened to measure correctly;
+    # pin the true column layout there too so a regression cannot hide again.
+    assert _table_row_size(_ctx({}, heap_sizes=0x04), 0x23) == 24
+
+
+def test_file_hashvalue_column_is_a_blob_not_an_implementation_index() -> None:
+    """File.HashValue is a Blob index, not an Implementation coded index.
+
+    A wide blob heap (4-byte) with few File/AssemblyRef/ExportedType rows makes
+    the blob index 4 while the Implementation coded index stays 2, so sizing the
+    column as Implementation gives 4 + 2 + 2 = 8; the spec-correct row is
+    Flags(4) + Name(str, 2) + HashValue(blob, 4) = 10.
+    """
+    meta = _ctx({}, heap_sizes=0x04)  # 4-byte blob heap, 2-byte strings.
+    assert _table_row_size(meta, 0x26) == 10

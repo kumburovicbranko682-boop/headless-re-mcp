@@ -487,7 +487,8 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x15: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x17),
         0x16: _simple_index_size(rc, 0x17),  # PropertyPtr
         0x17: 2 + s + b,  # Property
-        0x18: 2 + method_def_or_ref + has_semantics,  # MethodSemantics
+        # MethodSemantics: Semantics(2) + Method(MethodDef index) + Association(HasSemantics).
+        0x18: 2 + _simple_index_size(rc, 0x06) + has_semantics,
         0x19: (
             _simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref
         ),
@@ -498,10 +499,13 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
+        # AssemblyRef: Major/Minor/Build/Rev(2 each) + Flags(4) + PublicKeyOrToken(blob)
+        # + Name(str) + Culture(str) + HashValue(blob). Unlike Assembly it has no
+        # HashAlgId prefix and does carry a trailing HashValue.
+        0x23: 2 + 2 + 2 + 2 + 4 + b + s + s + b,  # AssemblyRef
         0x24: 4 + _simple_index_size(rc, 0x23),  # AssemblyRefProcessor
         0x25: 12 + _simple_index_size(rc, 0x23),  # AssemblyRefOS
-        0x26: 4 + s + implementation,  # File
+        0x26: 4 + s + b,  # File: Flags(4) + Name(str) + HashValue(blob)
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
         # NestedClass: NestedClass(TypeDef index) + EnclosingClass(TypeDef index).
