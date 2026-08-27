@@ -200,6 +200,35 @@ def test_a_capped_report_says_it_is_capped() -> None:
     assert "Showing 100 of 247 artifacts" in partial
 
 
+def test_a_capped_audit_section_says_it_is_capped() -> None:
+    """Recent actions is capped like findings and artifacts, and is the section
+
+    most likely to be cut: report.generate defaults its cap to 30 while a busy
+    session logs an action per tool call. Findings and artifacts already carry a
+    "showing X of Y" note; without the same note here the audit table read as the
+    whole action history when it was only the most recent slice.
+    """
+    audit = {
+        "entries": [
+            {"at": f"2026-08-11T00:00:{i:02d}+00:00", "action": "tool.call", "ok": True}
+            for i in range(30)
+        ],
+        "count": 30,
+        "total": 214,
+    }
+    partial = render_markdown_report(session=_SESSION, audit=audit, generated_at="t")
+    assert "## Recent actions" in partial
+    assert "Showing 30 of 214 actions" in partial
+
+    complete = render_markdown_report(
+        session=_SESSION,
+        audit={"entries": audit["entries"], "count": 30, "total": 30},
+        generated_at="t",
+    )
+    assert "## Recent actions" in complete
+    assert "Showing" not in complete
+
+
 def test_report_reads_the_list_artifacts_key() -> None:
     """Production list_artifacts returns artifacts, not entries."""
     markdown = render_markdown_report(

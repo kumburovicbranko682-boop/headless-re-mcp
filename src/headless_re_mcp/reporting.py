@@ -255,6 +255,8 @@ def render_markdown_report(
 
         lines.append("")
 
+        _note_if_partial(lines, audit, shown=len(audit_entries), noun="actions")
+
         lines.extend(
 
             _table(
