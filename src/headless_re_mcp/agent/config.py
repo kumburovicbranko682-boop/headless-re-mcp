@@ -213,10 +213,25 @@ class ProviderConfigStore:
     def get(self, profile_id: str | None = None) -> ProviderProfile:
         with self._lock:
             data = self._read()
-        selected = profile_id or data.get("current") or "default"
+        recorded_current = data.get("current")
+        selected = profile_id or recorded_current or "default"
         profiles_value = data.get("profiles")
         profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
-        raw = profiles.get(selected, {})
+        raw = profiles.get(selected)
+        if raw is None:
+            # profiles.get used to default to {}, a dict, so the guard below
+            # never fired for a missing profile: get() silently fabricated a
+            # keyless api.openai.com default named after the absent id. Three
+            # callers wrap this in `except KeyError` expecting a 404 for an id
+            # that is not there -- save_provider, probe_models, and the run-start
+            # route -- so instead a model probe reached OpenAI and a run began
+            # keyless. Raise unless this is the untouched first run (no id asked
+            # for, nothing recorded current, no profiles at all), where a
+            # synthetic default still lets the empty console build a provider.
+            bootstrap = profile_id is None and not recorded_current and not profiles
+            if not bootstrap:
+                raise KeyError(selected)
+            raw = {}
         if not isinstance(raw, dict):
             raise KeyError(selected)
         return self._profile_from_raw(str(selected), raw)
