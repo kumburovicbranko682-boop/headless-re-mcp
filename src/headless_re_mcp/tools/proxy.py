@@ -61,8 +61,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
         response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
-        request/response body was over the retain cap. A flow mitmproxy could
+        response had no body). redirect_url is the response's Location header,
+        present only on a row that carried one (a 3xx hop, or a 201 Created), so
+        a redirect target is visible without fetching the flow. body_omitted is
+        set on a row whose request/response body was over the retain cap. A flow
+        mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;
         such flows were previously dropped entirely. A completed flow always
@@ -105,9 +108,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        dropped to keep the file under the capture cap. A redirect entry's
+        response.redirectURL is filled from the flow's Location header (empty
+        when the flow carried none), so a consumer can follow the redirect
+        chain the capture recorded instead of seeing every hop's redirectURL
+        blanked. There is no har, output or artifact field. path is the file;
+        looking for har after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

@@ -369,6 +369,15 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # The Location header is the HAR spec's response.redirectURL. Captured
+        # here (bounded, like every other summary field) so the export can link
+        # a 3xx hop to its target; mitmproxy's Headers.get is case-insensitive,
+        # and Location can also ride a 201 Created, so this is keyed on the
+        # header being present rather than on the status class.
+        redirect_url, redirect_truncated = _bounded_metadata(
+            resp.headers.get("location", "") if resp else "",
+            _MAX_URL_BYTES,
+        )
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -403,6 +412,8 @@ class _FlowRecorder:
             }
             if omitted:
                 entry["body_omitted"] = True
+            if redirect_url:
+                entry["redirect_url"] = redirect_url
             if error_msg is not None:
                 entry["error"] = True
                 entry["error_msg"] = error_text
@@ -411,6 +422,7 @@ class _FlowRecorder:
                 or url_truncated
                 or host_truncated
                 or type_truncated
+                or redirect_truncated
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
@@ -730,6 +742,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                redirect_url=f.get("redirect_url"),
             )
             for f in inst.recorder.snapshot()
         ]

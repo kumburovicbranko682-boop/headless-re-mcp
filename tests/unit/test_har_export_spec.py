@@ -138,6 +138,28 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
+def test_har_entry_fills_redirect_url_from_the_location_header() -> None:
+    """A 3xx entry's response.redirectURL must carry the Location, not stay blank.
+
+    The HAR spec defines response.redirectURL as the Location header value, and
+    a consumer links a redirect hop to its target through it. har_entry used to
+    hardcode "" for every entry, so an imported archive lost the redirect chain
+    even when each hop was captured. Absent a Location the field stays the
+    spec's empty string.
+    """
+    redirected = har_entry(
+        method="GET",
+        url="https://example.com/old",
+        status=302,
+        mime_type="text/html",
+        redirect_url="https://example.com/new",
+    )
+    _assert_valid_har(json.dumps(build_har([redirected])))
+    assert redirected["response"]["redirectURL"] == "https://example.com/new"
+    plain = har_entry(method="GET", url="https://example.com/x", status=200, mime_type="")
+    assert plain["response"]["redirectURL"] == ""
+
+
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
     """Eviction drops the oldest end, so the surviving entries are the newest.
 
@@ -282,6 +304,50 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     for entry in doc["log"]["entries"]:
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+def test_proxy_records_the_location_header_and_export_fills_redirect_url(
+    tmp_path: Path,
+) -> None:
+    """A 3xx flow's Location becomes proxy.flows redirect_url and HAR redirectURL.
+
+    mitmproxy holds the Location header on the response; the recorder keeps it
+    (bounded) so the row exposes redirect_url and the export can link the hop to
+    its target. A flow with no Location carries neither the row field nor a
+    non-empty redirectURL, so the field is never fabricated.
+    """
+    recorder = _FlowRecorder()
+    redirect_flow = SimpleNamespace(
+        id="r0",
+        request=SimpleNamespace(method="GET", pretty_url="http://x/old", host="x"),
+        response=SimpleNamespace(
+            status_code=302,
+            headers={"content-type": "text/html", "location": "http://x/new"},
+            raw_content=None,
+        ),
+    )
+    plain_flow = SimpleNamespace(
+        id="p0",
+        request=SimpleNamespace(method="GET", pretty_url="http://x/plain", host="x"),
+        response=SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}, raw_content=None
+        ),
+    )
+    recorder.response(redirect_flow)
+    recorder.response(plain_flow)
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    rows = {row["url"]: row for row in backend.flows("s", offset=0, limit=10)["flows"]}
+    assert rows["http://x/old"]["redirect_url"] == "http://x/new"
+    assert "redirect_url" not in rows["http://x/plain"]
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    by_url = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    assert by_url["http://x/old"]["response"]["redirectURL"] == "http://x/new"
+    assert by_url["http://x/plain"]["response"]["redirectURL"] == ""
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(

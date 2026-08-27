@@ -89,6 +89,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    redirect_url: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -99,7 +100,12 @@ def har_entry(
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
     ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    browser capture keeps that hint. ``redirect_url`` is the response's
+    ``Location`` header when the capture recorded one; the HAR spec's
+    ``response.redirectURL`` is defined as exactly that value, and a consumer
+    (Chrome DevTools "Import HAR", Firefox) links a 3xx entry to the request it
+    points at through this field, so leaving it always empty broke redirect
+    chains in the imported archive even though each hop was captured.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -127,7 +133,7 @@ def har_entry(
             "cookies": [],
             "headers": [],
             "content": {"size": content_size, "mimeType": str(mime_type or "")},
-            "redirectURL": "",
+            "redirectURL": str(redirect_url or ""),
             "headersSize": _UNKNOWN_SIZE,
             "bodySize": content_size,
         },
