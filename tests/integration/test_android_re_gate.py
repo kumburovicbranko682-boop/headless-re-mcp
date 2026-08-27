@@ -14,9 +14,19 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.apk import ApkClient
+from headless_re_mcp.backends.jadx import JadxClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_APK_FIXTURE = _PROJECT_ROOT / "fixtures" / "android" / "hello_world.apk"
+# The committed fixture's known-good facts; the gate asserts these come back so
+# the androguard/jadx happy path is exercised, not just the degradation path.
+_FIXTURE_PACKAGE = "com.example.hello"
+_FIXTURE_ACTIVITY = "com.example.hello.MainActivity"
+_FIXTURE_MARKER = "headless-re-mcp-marker-7f3a"
 
 
 def _build_synthetic_apk(path: Path) -> Path:
@@ -88,5 +98,75 @@ def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
         assert opened.ok is False
         assert opened.error is not None
         assert opened.error.code in {"target_mismatch", "invalid_request", "backend_unavailable"}
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apk_static_happy_path_when_androguard_present() -> None:
+    """androguard parses the real fixture end to end, not just degrades.
+
+    The other test drives a synthetic (invalid) archive, so androguard's success
+    path -- manifest facts, components, and DEX classes/methods/strings -- never
+    runs there. This one opens the committed valid APK and asserts its known
+    contents, so a regression that broke real parsing would fail rather than
+    silently keep passing on the degradation path.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK static happy path not run (skip != pass)")
+    assert _APK_FIXTURE.is_file(), f"fixture missing: {_APK_FIXTURE}"
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(_APK_FIXTURE), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.apk_open(session_id)
+        assert opened.ok, opened.error
+        assert opened.data["package"] == _FIXTURE_PACKAGE
+        assert opened.data["main_activity"] == _FIXTURE_ACTIVITY
+
+        manifest = service.apk_manifest(session_id)
+        assert manifest.ok, manifest.error
+        assert manifest.data["package"] == _FIXTURE_PACKAGE
+
+        perms = service.apk_permissions(session_id)
+        assert perms.ok, perms.error
+        assert "android.permission.INTERNET" in perms.data["permissions"]
+
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert _FIXTURE_ACTIVITY in components.data["activities"]
+
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert any("MainActivity" in name for name in classes.data["classes"])
+
+        methods = service.apk_methods(session_id, _FIXTURE_ACTIVITY)
+        assert methods.ok, methods.error
+        assert "secretMarker" in {m["name"] for m in methods.data["methods"]}
+
+        strings = service.apk_strings(session_id, limit=200)
+        assert strings.ok, strings.error
+        assert _FIXTURE_MARKER in strings.data["strings"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_jadx_decompile_when_configured() -> None:
+    """jadx decompiles the fixture's one class back to source with its marker."""
+    service = AnalysisService()
+    try:
+        if not JadxClient(getattr(service.settings, "jadx", None)).available:
+            pytest.skip("jadx not configured — decompile gate not run (skip != pass)")
+        assert _APK_FIXTURE.is_file(), f"fixture missing: {_APK_FIXTURE}"
+        created = service.create_session(str(_APK_FIXTURE), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        result = service.apk_decompile(session_id, _FIXTURE_ACTIVITY, timeout=180.0)
+        assert result.ok, result.error
+        assert _FIXTURE_MARKER in result.data["source"]
     finally:
         service.close_all()
