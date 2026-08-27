@@ -43,6 +43,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（knowledge/report 分析笔记本 Gate：无后端也能记录、查询、出报）
+
+- `knowledge.record` / `knowledge.query` / `report.generate` 是纯 Python、跨目标的“分析笔记本”：
+  边分析边把结论作为持久事实记进会话的 SQLite 库，读回，再渲染成一份存成可收集制品的 Markdown
+  报告——整条链不碰 IDA/x64dbg/任何外部工具。但既有的端到端覆盖只有
+  `test_composite_tools_gate.py::test_batch_opens_parallel_ida_sessions_and_reports` 一处，
+  它要求真的 IDA + x64dbg 后端且被标为 Windows-only，于是在 Linux 上整块笔记本面全程未被证明。
+- 新增 `tests/integration/test_knowledge_report_gate.py`：在所有后端均未配置的情况下对提交的 PE 夹具
+  驱动这三个方法并断言——同一 `(kind, key)` 二次记录是**原地更新而非重复**（`replaced` 由 False 变
+  True，`created_at` 保持不变，`knowledge.query(kind=...)` 对该键 `total` 仍为 1），值以结构化对象
+  原样回读；`report.generate` 在制品根下 `reports/<sid>/` 落出真实 Markdown 文件，携带记录的事实
+  （含被更新后的备注），`findings` 计数正确，并注册成一个可收集制品，其字节按 size + SHA-256 + 内容
+  逐字回读；未触碰的会话出的报告如实写“No findings were recorded”，且 `include_audit=False` 会真正
+  抹掉“Recent actions”段；空白 kind/key、超出上限的 value、越界 `audit_limit` 都以错误信封被拒而非
+  静默入库。全程零外部工具，任何平台都不应跳过；夹具缺失时按 skip != pass 明确跳过。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
