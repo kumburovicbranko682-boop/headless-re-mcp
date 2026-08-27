@@ -23,10 +23,17 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.open")
     def apk_open(session_id: str) -> dict[str, Any]:
-        """Parse an APK session's identity.
+        """Parse an APK session's identity and security posture.
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
-        native_abis, main_activity, permission_count and opened. There is no
+        native_abis, main_activity, permission_count and opened, plus the
+        application's effective posture flags: debuggable, allow_backup, and
+        uses_cleartext_traffic carry the explicit manifest attribute when set
+        and the platform default otherwise (debug off, backup on, cleartext
+        only below targetSdk 28), and network_security_config says such a
+        config exists and supersedes the cleartext flag. The four posture
+        fields are omitted together when the manifest attributes could not be
+        read, so absence is never read as a safe default. There is no
         version, sdk or abis field. A zip with no readable package name is a
         backend error, not an opened package.
         """
