@@ -4,7 +4,13 @@ from dataclasses import replace
 
 import pytest
 
-from headless_re_mcp.agent.autonomy import ApprovalMode, AutonomyPolicy, parse_approval_mode
+from headless_re_mcp.agent.autonomy import (
+    ApprovalMode,
+    AutoApproval,
+    AutonomyPolicy,
+    _effects,
+    parse_approval_mode,
+)
 from headless_re_mcp.config import Settings
 from headless_re_mcp.tools.catalog import (
     CommandSpec,
@@ -330,3 +336,33 @@ def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> 
 
     # A representative packed-analysis write still runs unattended.
     assert policy.decide(agent_specs["dynamic.stealth.set"]).approved is True
+
+
+def test_auto_approval_serializes_to_the_recorded_verdict() -> None:
+    """The decision is written to the audit trail as approved plus the reason.
+
+    A grant that could not be serialized would leave the console and the audit
+    log unable to say why a non-PE write (apk/web/proxy) ran or parked, so pin
+    the shape the recorder depends on.
+    """
+    assert AutoApproval(True, "allowlisted_tool").as_json() == {
+        "approved": True,
+        "reason": "allowlisted_tool",
+    }
+    assert AutoApproval(False, "requires_human").as_json() == {
+        "approved": False,
+        "reason": "requires_human",
+    }
+
+
+def test_effects_parser_ignores_blank_entries() -> None:
+    """Config lists arrive with stray blanks; a blank is skipped, not an error.
+
+    An operator's YAML/JSON list of auto-approve effect classes can carry an
+    empty string or whitespace from a trailing comma. Those are dropped so the
+    policy still parses, while a genuinely unknown effect name still raises.
+    """
+    assert _effects(["", "  ", "state_change"]) == frozenset({ToolEffect.STATE_CHANGE})
+    assert _effects(["", "   "]) == frozenset()
+    with pytest.raises(ValueError, match="unknown tool effect"):
+        _effects(["not_an_effect"])
