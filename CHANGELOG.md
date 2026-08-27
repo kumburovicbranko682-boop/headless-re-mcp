@@ -216,6 +216,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`R2Client` 配置路径不存在时不回落 PATH，与 doctor 打架**。`__init__` 用
+  `executable or _discover()`，一旦 `HEADLESS_RE_R2` 是过期/打错的路径就原样留着：`available`
+  为 False、每个 `r2.*` 都 `capability_unavailable`，哪怕 r2 就在 PATH 上；而 `doctor` 的
+  `probe_optional_tool` 与兄弟 `JsClient` / `WasmClient` 都会回落 PATH 并报可用，doctor 说
+  detected、工具却说 missing。新增 `_resolve_r2`：配置路径是文件才用，否则回落 PATH，两者都
+  没有时才 `capability_unavailable`——与 webcrack、wabt 的解析方式一致。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

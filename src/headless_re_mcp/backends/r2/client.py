@@ -52,9 +52,28 @@ def _require_allowed_command(command: str) -> None:
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
 
+def _resolve_r2(configured: Path | None) -> Path | None:
+    """An r2 that is actually there, resolved the way doctor resolves it.
+
+    ``__init__`` used to keep any truthy configured path verbatim, so a stale or
+    typo'd ``HEADLESS_RE_R2`` left ``available`` False and every ``r2.*`` call
+    ``capability_unavailable`` even with r2 on PATH -- while ``doctor``'s
+    ``probe_optional_tool`` and the sibling ``JsClient`` / ``WasmClient``
+    resolvers fall back to PATH and report it usable, so doctor and the tools
+    disagreed. Take the configured path only when it is a file, else fall back to
+    PATH; when neither exists ``available`` is False and callers still get
+    ``capability_unavailable``.
+    """
+    if configured is not None:
+        resolved = configured.expanduser()
+        if resolved.is_file():
+            return resolved
+    return _discover()
+
+
 class R2Client:
     def __init__(self, executable: Path | None = None) -> None:
-        self.executable = executable or _discover()
+        self.executable = _resolve_r2(executable)
 
     @property
     def available(self) -> bool:

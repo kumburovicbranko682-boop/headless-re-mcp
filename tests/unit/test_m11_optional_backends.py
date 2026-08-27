@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.config import Settings
@@ -26,6 +27,52 @@ def test_r2_rejects_non_whitelisted_command(tmp_path: Path) -> None:
     with pytest.raises(R2Error) as exc:
         client.run(binary, ["!cmd"])
     assert exc.value.code == "invalid_params"
+
+
+def test_configured_but_missing_r2_falls_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale HEADLESS_RE_R2 must not hide an r2 that is on PATH.
+
+    __init__ kept any truthy configured path verbatim, so a typo'd or stale
+    HEADLESS_RE_R2 left available False and every r2.* call
+    capability_unavailable even with r2 on PATH -- while doctor's
+    probe_optional_tool and the JsClient/WasmClient resolvers fall back to PATH,
+    so doctor reported radare2 detected while the tools reported it missing.
+    """
+    on_path = tmp_path / "path-r2"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(r2_client, "_discover", lambda: on_path)
+
+    client = R2Client(tmp_path / "missing-r2")
+
+    assert client.available is True
+    assert client.executable == on_path
+
+
+def test_missing_r2_everywhere_reports_capability_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(r2_client, "_discover", lambda: None)
+    binary = tmp_path / "x.bin"
+    binary.write_bytes(b"\x7fELF")
+
+    client = R2Client(tmp_path / "missing-r2")
+
+    assert client.available is False
+    with pytest.raises(R2Error) as info:
+        client.run(binary, ["i"])
+    assert info.value.code == "capability_unavailable"
+
+
+def test_configured_r2_that_exists_is_used(tmp_path: Path) -> None:
+    tool = tmp_path / "r2"
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    client = R2Client(tool)
+
+    assert client.available is True
+    assert client.executable == tool
 
 
 def test_windbg_kernel_requires_explicit_allow(tmp_path: Path) -> None:
