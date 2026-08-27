@@ -177,10 +177,14 @@ def _build_axml_manifest() -> bytes:
 
 
 def _build_valid_apk(path: Path) -> Path:
-    """A minimal APK androguard fully parses (package/permission/activity)."""
+    """A minimal APK androguard fully parses (package/permission/activity).
+
+    Two ABIs so apk.native_libs has a real multi-arch list to enumerate.
+    """
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AndroidManifest.xml", _build_axml_manifest())
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"\x00" * 60)
+        archive.writestr("lib/x86/libnative.so", b"\x7fELF" + b"\x00" * 60)
         archive.writestr("resources.arsc", b"")
     return path
 
@@ -470,6 +474,16 @@ def test_valid_apk_androguard_reads_real_static_facts(tmp_path: Path) -> None:
         assert components.ok, components.error
         assert _APK_ACTIVITY in components.data["activities"]
         assert components.data["main_activity"] == _APK_ACTIVITY
+
+        # apk.native_libs enumerates the packed .so files and their ABIs; the
+        # only prior check was native_abis membership via apk.open, never the
+        # dedicated tool's list/abis/count shape.
+        libs = service.apk_native_libs(session_id)
+        assert libs.ok, libs.error
+        assert "lib/arm64-v8a/libnative.so" in libs.data["native_libs"]
+        assert "lib/x86/libnative.so" in libs.data["native_libs"]
+        assert set(libs.data["abis"]) == {"arm64-v8a", "x86"}
+        assert libs.data["count"] == 2
     finally:
         service.close_all()
 

@@ -245,6 +245,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (纯 stdlib `struct`+`zipfile`,不需要 Android SDK/aapt),现造一个 androguard 真能解析的 APK,断言
   `apk.open`/`manifest`/`permissions`/`components` 读回真实编码进去的包名、INTERNET 权限与启动
   Activity。合成包的敌意输入 Gate 保留,两者互补(真解析 vs 结构化失败)。仅当 androguard 缺失时 skip。
+  同一 Gate 再直接钉住 `apk.native_libs`:该合法 APK 现打包两个 ABI 的 `.so`(`arm64-v8a`/`x86`),
+  断言该工具枚举出两条 `.so` 路径、`abis` 恰为这两个、`count=2`——此前原生库只经 `apk.open` 的
+  `native_abis` 间接沾到,专用工具的列表/abis/count 形状从没被直接断言过。
 - Android **DEX** 侧首次有活体覆盖:此前静态线的 `apk.classes`/`methods`/`strings`/`xrefs` 没有任何
   真机 Gate,因为没有夹具带真实 DEX(现编需要 d8/dx 之类 Android 构建工具)。照 AXML 的路子手工编码
   一个最小**合法** `classes.dex`(纯 stdlib,Adler-32 校验和与 SHA-1 签名按格式算好),内含单类
