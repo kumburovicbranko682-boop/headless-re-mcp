@@ -229,6 +229,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `add`/`answer` 函数加一段内存）及其 `.wat` 源，`wat2wasm` 可复现；`wasm.wat` 现断言能把 `add`
   导出与 `i32.add` 反汇编回 WAT，新增的 `wasm.info` 断言 Export/Code 分段与函数名。两者在无 wabt 时
   干净跳过（skip != pass），wabt 在场时已验证通过。
+- **Android 改包线（decode→repack）也从 mock 升级到真实往返**。此前 apktool 只有 mock 的降级用例，
+  真实成功路径从未跑过。借助带二进制 AXML 清单的合法夹具，`apk.decode` 现能把它反汇编成 smali，
+  `apk.repack` 再重建出（未签名）APK；新增 gate 驱动整条往返：decode 断言产出 smali 目录与命名 package
+  的文本清单，repack 断言落盘一个未签名 APK。无 apktool 时干净跳过（skip != pass），apktool 在场时
+  已验证通过。签名需 apksigner（Android build-tools），仍由既有降级单测覆盖。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
