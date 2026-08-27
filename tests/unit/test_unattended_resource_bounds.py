@@ -366,6 +366,104 @@ class TestFailedProxyStartLeavesNothingBehind:
             logging.getLogger().removeHandler(other)
 
 
+class TestProxyStopReleasesTheListeningSocket:
+    """mitmproxy has no Done hook that closes the proxy server, and closing the
+    event loop does not close the socket it opened. Run in process, stop() has
+    to reconfigure the server set to empty (mitmproxy's own teardown path) or
+    the port stays bound until the whole process exits and the next capture can
+    never rebind it. The live gate proves the port frees; these pin the contract
+    without a real mitmproxy so a refactor cannot quietly drop the teardown.
+    """
+
+    @staticmethod
+    def _running_loop() -> tuple[Any, Any]:
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def run() -> None:
+            asyncio.set_event_loop(loop)
+            loop.call_soon(ready.set)
+            loop.run_forever()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        assert ready.wait(2.0)
+        return loop, thread
+
+    @staticmethod
+    def _stop_loop(loop: Any, thread: Any) -> None:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(2.0)
+        loop.close()
+
+    def _proxyserver_master(self, calls: list[list[Any]]) -> Any:
+        from types import SimpleNamespace
+
+        async def update(modes: Any) -> None:
+            calls.append(list(modes))
+
+        servers = SimpleNamespace(update=update)
+        proxyserver = SimpleNamespace(servers=servers)
+        return SimpleNamespace(
+            addons=SimpleNamespace(
+                get=lambda name: proxyserver if name == "proxyserver" else None
+            )
+        )
+
+    def test_close_servers_reconfigures_the_server_set_to_empty(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _close_proxy_servers
+
+        calls: list[list[Any]] = []
+        loop, thread = self._running_loop()
+        try:
+            _close_proxy_servers(self._proxyserver_master(calls), loop, timeout=5.0)
+        finally:
+            self._stop_loop(loop, thread)
+        assert calls == [[]], "stop must tell mitmproxy to drop every server"
+
+    def test_close_servers_is_a_noop_without_the_addon(self) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy.client import _close_proxy_servers
+
+        loop, thread = self._running_loop()
+        try:
+            foreign = SimpleNamespace(addons=SimpleNamespace(get=lambda name: None))
+            # A shape this does not recognise must fall through, not raise.
+            _close_proxy_servers(foreign, loop, timeout=1.0)
+        finally:
+            self._stop_loop(loop, thread)
+
+    def test_close_servers_skips_a_loop_that_is_not_running(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _close_proxy_servers
+
+        calls: list[list[Any]] = []
+        loop = asyncio.new_event_loop()
+        try:
+            # A stopped loop can never run the coroutine; returning at once beats
+            # blocking out the whole timeout for an answer already available.
+            _close_proxy_servers(self._proxyserver_master(calls), loop, timeout=5.0)
+        finally:
+            loop.close()
+        assert calls == []
+
+    def test_stop_closes_servers_before_it_shuts_the_master_down(self) -> None:
+        """Order matters: once should_exit is set the loop unwinds and closes,
+        so the server teardown has to run while the loop is still alive."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance.stop)
+        assert "_close_proxy_servers(" in source
+        assert source.index("_close_proxy_servers(") < source.index("master.shutdown")
+
+
 class TestConcurrentStartDoesNotLeakABackend:
     def test_two_proxy_starts_for_one_session_only_keep_one_instance(
         self, monkeypatch: Any

@@ -60,6 +60,36 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _close_proxy_servers(
+    master: Any, loop: asyncio.AbstractEventLoop, timeout: float = 10.0
+) -> None:
+    """Stop mitmproxy's proxy servers so the listening socket is released.
+
+    mitmproxy has no ``Done`` hook that closes the proxy server, and closing the
+    event loop does not close the socket the server opened: run in process,
+    ``stop()`` would report success while the port stayed bound and the next
+    capture could never rebind it. Reconfiguring the server set to empty is
+    mitmproxy's own teardown path -- the one a mode change already takes -- and
+    it actually frees the port. Best-effort and version-guarded: a master or
+    ``servers`` object this does not recognise falls through to the loop unwind,
+    which is no worse than before.
+    """
+    proxyserver = None
+    with contextlib.suppress(Exception):
+        proxyserver = master.addons.get("proxyserver")
+    servers = getattr(proxyserver, "servers", None)
+    update = getattr(servers, "update", None)
+    if update is None or not loop.is_running():
+        return
+
+    async def _teardown() -> None:
+        await update([])
+
+    with contextlib.suppress(Exception):
+        future = asyncio.run_coroutine_threadsafe(_teardown(), loop)
+        future.result(timeout=timeout)
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -358,6 +388,10 @@ class _ProxyInstance:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            # Release the listening socket before unwinding the master: neither
+            # Master.done() nor closing the loop closes the proxy server, so
+            # without this the port stays bound until the whole process exits.
+            _close_proxy_servers(master, loop)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
