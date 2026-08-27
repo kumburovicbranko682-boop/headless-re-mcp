@@ -323,6 +323,7 @@ jobs:
             tests/integration/test_m11_ghidra_macho_decompile_gate.py \
             tests/integration/test_m11_r2_ghidra_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_elf_coords_agree_gate.py \
+            tests/integration/test_m11_r2_ghidra_elf_symbol_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_macho_coords_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_macho_fat_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_data_xref_agree_gate.py \
