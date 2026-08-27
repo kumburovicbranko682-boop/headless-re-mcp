@@ -49,6 +49,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（dotnet.enumerate 被截断的枚举如实报 source_truncated，不再把下限当总数）
+
+- `enumerate_metadata` 有两个刻意的界：表行数被夹到 `#~` 流实际装得下的行数（防
+  敌意行数撑爆时间与内存），`#Strings` 收集到 10,000 条（`MAX_STRINGS`）为止。两个
+  界都是对的，但触发时全程静默：最后一页 `truncated=False`、`total` 等于被夹后的
+  数量，调用方分不清「列完了」和「被截断了」。被截断的表头声明 5000 个 TypeDef、
+  流里只装得下 100 行时，报出来的就是「一共 100 个类型」；大型真实程序集的字符串
+  超过 10,000 条时，报出来的就是「一共 10,000 条」——正好是把部分说成完整。
+- 现在 `Page` 增加 `source_truncated` 字段（`to_dict` 同步透出）：表类 kind 由
+  `_table_is_clamped`（声明行数 > 流能装下的行数）判定，strings 由收集器精确报告
+  ——只有确实还存在下一条非空串才置位，恰好 10,000 条的堆不误报。置位时 `note`
+  追加说明。分页语义不变：`truncated` 仍只表示「本窗口之后还有页」，靠它循环翻页
+  的调用方仍在 `total` 处正常终止，不会被引进死循环。
+- 新增 `tests/unit/test_metadata_enum_source_truncation.py` 四条直测：谎报行数的
+  TypeDef 表置位、诚实表不置位、超上限的 `#Strings` 堆在最后一页仍置位（且
+  `truncated=False`）、恰好等于上限的堆不置位。已做变异验证：把两处判定退回静默
+  即失败。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
