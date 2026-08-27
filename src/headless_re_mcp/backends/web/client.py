@@ -667,10 +667,16 @@ class WebBackend:
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
+        # Newest tail, and total for parity with every other paginated reader:
+        # has_more alone says "there is more", total says how much is buffered,
+        # so a caller can size its next limit instead of guessing. No offset is
+        # needed here -- the max limit equals the ring capacity, so one call can
+        # return the whole buffer.
         page = held[-capped:]
         return {
             "console": page,
             "count": len(page),
+            "total": len(held),
             "has_more": len(held) > capped,
             "dropped": dropped,
         }

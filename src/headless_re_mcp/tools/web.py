@@ -99,10 +99,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
-        Answers with console, count, has_more, and dropped so a page that
-        filled the limit is not read as the whole buffer, and ring
-        eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated.
+        Answers with console, count, total, has_more, and dropped so a page
+        that filled the limit is not read as the whole buffer: total is how
+        many messages are buffered, and ring eviction is visible via dropped.
+        console holds the newest messages; the max limit covers the whole ring,
+        so there is no offset. A line longer than the per-message cap is cut
+        and marked text_truncated.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
