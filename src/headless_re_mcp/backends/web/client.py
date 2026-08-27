@@ -621,11 +621,20 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            # A closed, wedged, or timed-out session raises WebError from the
+            # runner itself -- that is a session-level failure, not "this one
+            # response has no body". Let it surface as a real error envelope
+            # instead of flattening it into a per-request body_error that reads
+            # as a healthy session with a single unavailable body (an unattended
+            # caller would then move on, none the wiser the browser is dead).
+            raise
         except Exception as exc:  # noqa: BLE001
             # CDP has no body for some requests -- a redirect, or a body already
-            # evicted from its cache. Keep the documented shape (empty body, not
-            # base64, not truncated) with body_error explaining why, so a caller
-            # reading result["body"] does not hit a missing key on this path.
+            # evicted from its cache. That surfaces as the raw driver error the
+            # work function raised, not a WebError. Keep the documented shape
+            # (empty body, not base64, not truncated) with body_error explaining
+            # why, so a caller reading result["body"] does not hit a missing key.
             return {
                 **entry,
                 "body": "",
