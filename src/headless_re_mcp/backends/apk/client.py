@@ -20,6 +20,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
+_MAX_STRING_XREFS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
@@ -449,6 +450,57 @@ class ApkClient:
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,
+        }
+
+    def string_xrefs(self, path: Path, value: str, *, limit: int = 100) -> JsonObject:
+        """List the methods that reference an exact string constant.
+
+        apk.strings lists the constants and apk.xrefs finds a method's callers,
+        but neither answers "where is this hardcoded URL/key/message used" --
+        the top question when triaging a string. Matching is exact (leading and
+        trailing whitespace are significant in a string constant, so the value
+        is not stripped). Referencing methods are de-duplicated and sorted so
+        the page is stable; matched says whether the constant is in the pool at
+        all, distinguishing "no references" from "no such string".
+        """
+        if not value:
+            raise ApkError("invalid_params", "value is required")
+        parsed = self._parsed(path)
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        matched = False
+        scan_more = False
+        seen: set[tuple[str, str, str]] = set()
+        for item in parsed.analysis.get_strings():
+            if str(item.get_value()) != value:
+                continue
+            matched = True
+            for _klass, method in item.get_xref_from():
+                if len(seen) >= _MAX_STRING_XREFS_COLLECT:
+                    scan_more = True
+                    break
+                seen.add(
+                    (
+                        str(getattr(method, "class_name", "")),
+                        str(getattr(method, "name", "")),
+                        str(getattr(method, "descriptor", "")),
+                    )
+                )
+            if scan_more:
+                break
+        rows = sorted(seen)
+        window = rows[:cap]
+        callers = [
+            {"class": klass, "method": name, "descriptor": descriptor}
+            for klass, name, descriptor in window
+        ]
+        return {
+            "value": value,
+            "callers": callers,
+            "count": len(callers),
+            "total": len(rows),
+            "matched": matched,
+            "has_more": len(window) < len(rows) or scan_more,
+            "scan_capped": scan_more,
         }
 
 

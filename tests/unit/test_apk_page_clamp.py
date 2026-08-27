@@ -231,3 +231,4 @@ def test_client_page_caps_match_the_tool_schema_maxima() -> None:
     assert _limit_schema("apk.methods")["maximum"] == _MAX_METHODS_PAGE
     assert _limit_schema("apk.strings")["maximum"] == _MAX_STRINGS_PAGE
     assert _limit_schema("apk.xrefs")["maximum"] == _MAX_XREFS_PAGE
+    assert _limit_schema("apk.string_xrefs")["maximum"] == _MAX_XREFS_PAGE

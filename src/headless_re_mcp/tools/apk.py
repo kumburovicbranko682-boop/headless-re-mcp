@@ -132,6 +132,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.string_xrefs")
+    def apk_string_xrefs(
+        session_id: str,
+        value: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the methods that reference an exact string constant.
+
+        Answers with callers (class, method, descriptor), value, count, total,
+        matched, and has_more so a page that filled the limit is not read as
+        every reference. matched is false when the string is not in the pool at
+        all (distinct from an in-pool string with no callers); scan_capped is
+        true when the referencing set was itself capped. Matching is exact and
+        whitespace-significant. Use apk.strings to find constants first. This is
+        the string analog of apk.xrefs; there is no method_name field.
+        """
+        return _dump(analysis.apk_string_xrefs(session_id, value, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,
