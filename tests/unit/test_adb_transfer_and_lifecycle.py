@@ -148,6 +148,35 @@ def test_install_is_null_when_verification_cannot_run(tmp_path: Path) -> None:
     assert "note" in payload
 
 
+def test_install_is_null_when_pm_path_returns_a_host_error(tmp_path: Path) -> None:
+    """A host error from pm path is "could not verify", not installed False.
+
+    adbutils can return the adb host's own error line as stdout without raising
+    (a device that went offline between install and the pm path check). Reading
+    that as "no package: line" reported a real install as installed False; it
+    must be null with a note, like a probe that raised.
+    """
+    apk = tmp_path / "app.apk"
+    _apk_with_package(apk, "com.example.app")
+    dev = _FakeDev(pm_path_output="error: device offline")
+    payload = _backend_with(dev).install("emulator-5554", str(apk))
+    assert payload["installed"] is None
+    assert payload["package"] == "com.example.app"
+    assert "could not verify" in payload.get("note", "")
+
+
+def test_uninstall_is_null_when_pm_path_returns_a_host_error() -> None:
+    """A host error from pm path must not read as a confirmed uninstall.
+
+    The empty-output case means the package is gone (uninstalled True); a host
+    error means the verify never ran, so uninstalled is null, not True.
+    """
+    dev = _FakeDev(pm_path_output="adb: device 'emulator-5554' not found")
+    payload = _backend_with(dev).uninstall("emulator-5554", "com.example.app")
+    assert payload["uninstalled"] is None
+    assert "could not verify" in payload.get("note", "")
+
+
 def test_install_rejects_a_missing_apk(tmp_path: Path) -> None:
     """A path that is not a file never reaches adb."""
     dev = _FakeDev()
