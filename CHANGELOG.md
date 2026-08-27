@@ -37,7 +37,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `create_session`→`web_open` 的真实路径起一次 Chromium——CDP gate 在浏览器装上却起不来时会
   第二次 skip，纯导入自检抓不到，这一步让浏览器起不来时 job 直接失败而非静默丢掉 CDP 覆盖。
   `pytest -rs` 打印每条 skip 原因，保持
-  skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：14 通过、1 跳过（仅 Windows 才有的 OS
+  skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：15 通过、1 跳过（仅 Windows 才有的 OS
   句柄泄漏检查，POSIX 下诚实 skip）。r2 与 frida 的现场 gate 依赖 Windows PE 夹具，在 Linux 只会
   skip，故仍留在 Windows job。
 - 配套加强 WASM 现场 gate：`test_web_re_gate.py` 过去只把 magic+version 的空模块喂给 wasm2wat、
