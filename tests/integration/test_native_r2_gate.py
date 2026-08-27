@@ -19,6 +19,9 @@ import pytest
 from headless_re_mcp.backends.r2.client import R2Client
 from headless_re_mcp.core.service import AnalysisService
 
+_MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+_MACHO_MARKER = "headless-macho-fixture"
+
 
 def _system_elf() -> Path | None:
     for candidate in ["/bin/ls", "/usr/bin/ls", "/usr/bin/python3", *glob.glob("/lib/*/libc.so*")]:
@@ -119,5 +122,77 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         assert xrefs.ok, xrefs.error
         assert int(xrefs.data["address_va"]) == target_va
         assert int(xrefs.data["address"]["va"]) == target_va
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_native_macho_opens_and_r2_reads_it() -> None:
+    """The macOS half of the native line, proven on Linux via a committed fixture.
+
+    ELF is exercised against real system binaries above, but a Linux runner has
+    no Mach-O to point at, so that half had only synthetic unit coverage of the
+    stdlib reader. This opens a real (hand-built) Mach-O as a NATIVE session and
+    drives the format-agnostic r2 surface -- open, info, functions, strings,
+    disasm, xrefs -- proving classification, session wiring and r2 all handle the
+    Mach-O container end to end. It needs radare2; skip != pass when it is absent.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — native gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(_MACHO_FIXTURE))
+        assert created.ok, created.error
+        session = created.data["session"]
+        assert session["target"] == "native"
+        native = session["metadata"]["native"]
+        assert native["format"] == "macho"
+        assert native["bits"] == 64
+        assert native["arch"] == "x86-64"
+        assert native["type"] == "execute"
+        assert native["pie"] is True
+        # LC_UUID is the Mach-O build id; the stdlib reader surfaced it pre-tool.
+        assert native["uuid"] == "00010203-0405-0607-0809-0a0b0c0d0e0f"
+        session_id = str(session["id"])
+
+        opened = service.r2_open(session_id, timeout=60.0)
+        assert opened.ok, opened.error
+        assert opened.data["opened"] is True
+
+        info = service.r2_info(session_id, timeout=60.0)
+        assert info.ok, info.error
+        assert info.data["module"] == _MACHO_FIXTURE.name
+
+        funcs = service.r2_functions(session_id, timeout=60.0)
+        assert funcs.ok, funcs.error
+        assert funcs.data["parsed"] is True
+        assert funcs.data["count"] >= 1
+        rows = cast(list[dict[str, Any]], funcs.data["items"])
+        mapped = [r for r in rows if isinstance(r.get("address"), dict) and "va" in r["address"]]
+        assert mapped, f"no function carried a va-mapped address: {rows[:2]}"
+        target_va = int(mapped[0]["address"]["va"])
+
+        strings = service.r2_strings(session_id, timeout=60.0)
+        assert strings.ok, strings.error
+        assert strings.data["parsed"] is True
+        assert any(
+            _MACHO_MARKER in str(row.get("string") or "")
+            for row in cast(list[dict[str, Any]], strings.data["items"])
+        ), "the fixture marker string did not come back from r2"
+
+        disasm = service.r2_disasm(session_id, target_va, count=4, timeout=60.0)
+        assert disasm.ok, disasm.error
+        assert disasm.data["parsed"] is True
+        ops = cast(list[dict[str, Any]], disasm.data["items"])
+        assert ops, "disasm returned no instructions at the function entry"
+        assert str(ops[0].get("opcode") or ops[0].get("disasm") or "").strip()
+        assert int(ops[0]["address"]["va"]) == target_va
+
+        xrefs = service.r2_xrefs(session_id, target_va, timeout=60.0)
+        assert xrefs.ok, xrefs.error
+        assert int(xrefs.data["address_va"]) == target_va
     finally:
         service.close_all()
