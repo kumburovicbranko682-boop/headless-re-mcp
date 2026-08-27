@@ -106,15 +106,19 @@ rpc.exports = {
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
-      return {found: false, exports: []};
+      return {found: false, exports: [], total: 0};
     }
     var all = mod.enumerateExports();
     var items = [];
-    for (var i = 0; i < all.length && items.length < limit; i++) {
+    var cap = Math.max(0, limit);
+    for (var i = 0; i < all.length && items.length < cap; i++) {
       var e = all[i];
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
-    return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
+    return {
+      found: true, module: mod.name, base: mod.base.toString(),
+      exports: items, total: all.length
+    };
   },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
@@ -377,12 +381,17 @@ class FridaClient:
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            raw = script.exports_sync.exports(module_name.strip(), capped)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
+            # enumerateExports() already walks the whole table, so all.length is
+            # in hand for free -- report it as total, like modules does, instead
+            # of only a has_more flag. A caller sizing its next limit otherwise
+            # cannot tell 64 exports (the page) from a table of thousands.
+            held = list(raw.get("exports") or [])
+            total = int(raw.get("total") or len(held))
             items = []
-            for item in page:
+            for item in held[:capped]:
                 if not isinstance(item, dict):
                     continue
                 items.append(
@@ -398,7 +407,8 @@ class FridaClient:
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
-                "has_more": has_more,
+                "total": total,
+                "has_more": total > len(items),
             }
         finally:
             with contextlib.suppress(Exception):

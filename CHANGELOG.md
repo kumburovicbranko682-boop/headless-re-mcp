@@ -355,6 +355,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
 
+### 修复（`frida.exports` 现在回 total，与 `frida.modules` 一致）
+
+- `frida.exports` 只回 `count` 与 `has_more`,不回 `total`——而兄弟接口 `frida.modules` 回 `total`。
+  脚本里 `mod.enumerateExports()` 本就把整张导出表枚举成一个数组再切页,`all.length`(全量条数)白拿,
+  却被丢掉;Python 侧只好用“多取一条”(`limit+1`)的技巧探出 `has_more`。于是一个填满 limit 的页
+  与一张几千条的导出表无从分辨,无人值守的 agent 据此没法给下一次调用定 limit。
+- 现在脚本侧 `exports` 与 `modules` 同款返回 `total: all.length`(未命中模块回 `total: 0`),Python 侧
+  改为直接读 `total`、按 `total > len(items)` 判 `has_more`,不再需要“多取一条”。因枚举本来就全量走一遍,
+  拿 total 零额外成本。`found=false`(模块名不解析)路径也带上 `total: 0`/`has_more: false`,形状与命中时一致。
+- 新增回归:25 条导出、limit 10 → count 10、total 25、has_more true;未命中模块 → found false、total 0、
+  has_more false;`frida.exports` 文档串点名 `total`。
+
 ### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
 
 - `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,

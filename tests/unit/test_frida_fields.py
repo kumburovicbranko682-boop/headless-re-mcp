@@ -80,15 +80,20 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert "has_more" in doc
 
 class _ExportApi:
-    def exports(self, name: str, count: int) -> dict[str, Any]:
+    def exports(self, name: str, limit: int) -> dict[str, Any]:
+        # A module with 25 exports: the probe enumerates all of them (total 25)
+        # and returns at most `limit` of them, exactly like enumerateExports.
+        total = 25
+        shown = min(int(limit), total)
         return {
             "found": True,
             "module": name,
             "base": "0x1",
             "exports": [
                 {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
+                for index in range(shown)
             ],
+            "total": total,
         }
 
 
@@ -115,19 +120,69 @@ class _ExportFrida:
 def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     """The catalog named found, module, base and exports, and stopped there.
 
-    Measured: 11 exports requested for a page of 10 -> count 10, has_more
-    True. An overnight pass that treated exports as the whole table had no
-    field to notice the rest.
+    Measured: a module of 25 exports, limit 10 -> count 10, total 25, has_more
+    True. total is the full export count (the probe already enumerates all of
+    them, like modules), so a caller sizing its next limit is not left guessing
+    between a 10-export page and a table of thousands.
     """
     client = FridaClient()
     client._available = True
     client._frida = _ExportFrida()
     payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
     assert payload["count"] == 10
+    assert payload["total"] == 25
     assert len(payload["exports"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "total" in doc
+
+
+class _ExportMissingApi:
+    def exports(self, name: str, limit: int) -> dict[str, Any]:
+        del name, limit
+        return {"found": False, "exports": [], "total": 0}
+
+
+class _ExportMissingScript:
+    exports_sync = _ExportMissingApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ExportMissingSession:
+    def create_script(self, source: str) -> _ExportMissingScript:
+        del source
+        return _ExportMissingScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ExportMissingFrida:
+    def attach(self, pid: int) -> _ExportMissingSession:
+        del pid
+        return _ExportMissingSession()
+
+
+def test_frida_exports_reports_a_missing_module_as_not_found() -> None:
+    """A module the probe cannot find is found False, total 0, and no page.
+
+    The not-found path must carry the same total/has_more shape as a hit, so a
+    caller reading total or has_more never trips over a missing key -- and total
+    0 with has_more False cleanly says "no such module", not "an empty page of a
+    larger table".
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportMissingFrida()
+    payload = client.exports(1, "nope.dll", allowed_pid=1, limit=10)
+    assert payload["found"] is False
+    assert payload["exports"] == []
+    assert payload["count"] == 0
+    assert payload["total"] == 0
+    assert payload["has_more"] is False
 
 
 class _Dev:
