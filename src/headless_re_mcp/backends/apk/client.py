@@ -151,6 +151,44 @@ def _page_bounds(offset: int, limit: int, *, cap: int) -> tuple[int, int]:
     return start, capped
 
 
+def _sig_flag(apk: Any, name: str) -> bool:
+    """Whether an androguard APK signing predicate is true, guarded.
+
+    ``is_signed_v2``/``is_signed_v3`` may be absent on an older androguard or
+    raise on a malformed signing block; either way the scheme is reported absent
+    rather than breaking the whole certificates answer.
+    """
+    fn = getattr(apk, name, None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cert_str(cert: Any, name: str) -> str:
+    """A stringified certificate attribute, or "" when absent/odd-shaped.
+
+    asn1crypto certificate objects vary across androguard versions, so each
+    field is read defensively -- a datetime is rendered ISO 8601, everything
+    else via str -- so one missing attribute never drops the whole certificate.
+    """
+    try:
+        value = getattr(cert, name)
+    except Exception:  # noqa: BLE001
+        return ""
+    if value is None:
+        return ""
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return str(iso())
+        except Exception:  # noqa: BLE001
+            return ""
+    return str(value)
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -385,17 +423,32 @@ class ApkClient:
                         "subject": str(getattr(cert, "subject", "")),
                         "issuer": str(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
-                        "sha256": cert.sha256_fingerprint
-                        if hasattr(cert, "sha256_fingerprint")
-                        else "",
+                        "sha1": _cert_str(cert, "sha1_fingerprint"),
+                        "sha256": _cert_str(cert, "sha256_fingerprint"),
+                        "hash_algo": _cert_str(cert, "hash_algo"),
+                        # The validity window is a strong triage signal: a
+                        # freshly minted or absurdly long-lived signer is a
+                        # malware tell, and it pins which cert to trust.
+                        "not_before": _cert_str(cert, "not_valid_before"),
+                        "not_after": _cert_str(cert, "not_valid_after"),
                     }
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        # v1 is JAR/META-INF signing; v2/v3 are the APK Signature Scheme blocks a
+        # modern app actually relies on. Reporting only v1 (from the presence of
+        # signature files) hid that a v2/v3-only app was signed at all, and hid
+        # the v1-only signing that flags a Janus-style tampering risk.
+        v1_signed = _sig_flag(apk, "is_signed_v1") or bool(names)
+        v2_signed = _sig_flag(apk, "is_signed_v2")
+        v3_signed = _sig_flag(apk, "is_signed_v3")
         return {
             "signature_files": sig_files,
             "certificates": items,
-            "v1_signed": bool(names),
+            "v1_signed": v1_signed,
+            "v2_signed": v2_signed,
+            "v3_signed": v3_signed,
+            "signed": v1_signed or v2_signed or v3_signed or _sig_flag(apk, "is_signed"),
             "has_more": certs_more or files_more,
         }
 

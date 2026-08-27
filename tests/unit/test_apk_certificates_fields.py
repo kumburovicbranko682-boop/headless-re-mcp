@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
 
 from headless_re_mcp.backends.apk.client import ApkClient
@@ -62,7 +63,65 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    # An APK with no v2/v3 predicates on the object reports those schemes false
+    # rather than raising -- a v1-only signer is still fully described.
+    assert payload["v2_signed"] is False
+    assert payload["v3_signed"] is False
+    assert payload["signed"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+class _RichCert:
+    subject = "CN=app"
+    issuer = "CN=ca"
+    serial_number = 7
+    sha1_fingerprint = "11:22"
+    sha256_fingerprint = "aa:bb"
+    hash_algo = "sha256"
+    not_valid_before = datetime(2020, 1, 1, tzinfo=UTC)
+    not_valid_after = datetime(2045, 1, 1, tzinfo=UTC)
+
+
+class _SignedApk:
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_RichCert]:
+        return [_RichCert()]
+
+    def is_signed_v1(self) -> bool:
+        return False
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+
+def test_apk_certificates_reports_scheme_versions_and_cert_detail() -> None:
+    """A v2/v3-only app was signed, and the cert's fingerprint/validity matter.
+
+    Measured: no META-INF files yet v2_signed/v3_signed True and signed True
+    (so a v1-only heuristic no longer reads it as unsigned), and the certificate
+    carries sha1, hash_algo, and ISO 8601 validity dates for triage.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _SignedApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is False
+    assert payload["v2_signed"] is True
+    assert payload["v3_signed"] is True
+    assert payload["signed"] is True
+    (cert,) = payload["certificates"]
+    assert cert["sha1"] == "11:22"
+    assert cert["sha256"] == "aa:bb"
+    assert cert["hash_algo"] == "sha256"
+    assert cert["not_before"].startswith("2020-01-01")
+    assert cert["not_after"].startswith("2045-01-01")
+    doc = _tool_docstring("apk.certificates")
+    assert "v2_signed" in doc
+    assert "sha1" in doc
