@@ -139,6 +139,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   skip),skip != pass。CI 的 `gates` job 已装 Playwright Chromium 故真机执行;本机 Chromium 151 上与
   `test_web_cdp_open_and_inspect` 一并验过。
 
+### 新增（Web 实测 Gate 再补 wasm.list：页面真的实例化一个 WASM 模块并经 CDP 列出）
+
+- 至此 Web CDP 面只剩 `web.wasm.list` 没被真机跑过:它把已解析脚本缓冲按 `language == WebAssembly` 过滤,而此前所有 CDP
+  Gate 都只加载 HTML/JS,页面从不实例化 WASM,于是这条过滤永远无物可返、其真机行为无从验证。新增
+  `test_web_cdp_lists_an_instantiated_wasm_module`:本机 `http.server` 以 `application/wasm` 回那枚最小合法模块(与 wabt 的
+  wat/info Gate 同一份字节:一个 `() -> i32` 返 42、导出为 `add`),页面 `fetch` 后 `WebAssembly.instantiate` 之,轮询
+  `wasm.list` 直到 CDP 把它作为 WebAssembly 脚本报上来,断言列表非空且每条 `language` 都是 WebAssembly——正是这条工具的
+  承诺,也是 wabt 那两条 Gate 的浏览器侧对照。未装 playwright/Chromium 时如实 skip,skip != pass。CI 的 `gates` job
+  已装 Playwright Chromium 故真机执行;本机 Chromium 151 上验过。至此 `web.*` 的读侧全部有真机实测覆盖
+  (open/navigate/scripts/script.source/console/dom.snapshot/network.list/network.get/screenshot/har.export/wasm.list)。
+
 ### 新增（Web 实测 Gate 再补 script.source / screenshot / har.export / navigate 四条真机路径）
 
 - 上一条 Gate 补齐了抓网,但 Web CDP 面里还有四条工具在真机 Chromium 上从未被跑过:`web.script.source`（`test_web_cdp_open_and_inspect`
