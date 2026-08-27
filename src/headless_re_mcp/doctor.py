@@ -206,7 +206,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_wabt(current),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1095,6 +1095,54 @@ def probe_optional_tool(
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
+def probe_wabt(settings: Settings) -> Probe:
+    """Report wabt honestly: it is two executables and ``wasm.*`` needs the right one.
+
+    ``wasm.wat`` runs ``wasm2wat`` and ``wasm.info`` runs ``wasm-objdump``. wabt
+    ships them separately and ``HEADLESS_RE_WABT`` is a single hint, so a config
+    that resolves one but not the other used to read as a plain "wabt detected"
+    (the probe only ever looked for ``wasm2wat``) -- and ``wasm.info`` then
+    answered ``capability_unavailable`` at call time with nothing in the doctor to
+    have warned. Resolve both the way the client does and say which tools run.
+    """
+    from headless_re_mcp.backends.jsre.client import resolve_wabt_tools
+
+    wasm2wat, objdump = resolve_wabt_tools(getattr(settings, "wabt", None))
+    details: dict[str, Any] = {
+        "wasm2wat": str(wasm2wat) if wasm2wat is not None else None,
+        "wasm-objdump": str(objdump) if objdump is not None else None,
+    }
+    if wasm2wat is None and objdump is None:
+        return Probe(
+            "wabt",
+            ProbeStatus.MISSING,
+            "Optional wabt tools are not installed",
+            details,
+            "Install wabt (wasm2wat + wasm-objdump) and set HEADLESS_RE_WABT.",
+        )
+    if wasm2wat is not None and objdump is not None:
+        return Probe(
+            "wabt",
+            ProbeStatus.DETECTED,
+            "wabt detected (wasm2wat + wasm-objdump)",
+            details,
+        )
+    # Exactly one resolved: half the WASM surface works, so say which half rather
+    # than letting "detected" imply both wasm.wat and wasm.info are usable.
+    details["partial"] = True
+    if wasm2wat is not None:
+        missing, unusable = "wasm-objdump", "wasm.info"
+    else:
+        missing, unusable = "wasm2wat", "wasm.wat"
+    return Probe(
+        "wabt",
+        ProbeStatus.DETECTED,
+        f"wabt is partial: {missing} is missing, so {unusable} is unavailable",
+        details,
+        f"Install the full wabt suite so {missing} is on PATH or under HEADLESS_RE_WABT.",
+    )
 
 
 def probe_python_module(name: str, module: str) -> Probe:
