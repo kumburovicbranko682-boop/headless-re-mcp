@@ -148,6 +148,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.wasm.get")
+    def web_wasm_get(session_id: str, script_id: str) -> dict[str, Any]:
+        """Fetch a live WebAssembly module's bytes to a .wasm artifact.
+
+        web.wasm.list surfaces the modules; this pulls one module's raw
+        bytecode (CDP Debugger.getWasmBytecode) and writes it to wasm_path so it
+        can be handed to wasm.wat / wasm.info for disassembly -- web.script.source
+        on a wasm id returns the engine's text, not the binary. Answers with
+        scriptId, url, bytes and wasm_path, plus artifact_id when registered.
+        The id must name a WebAssembly module (see language on web.wasm.list); a
+        JavaScript id is invalid_params. There is no source or body field.
+        """
+        return _dump(analysis.web_wasm_get(session_id, script_id))
+
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.

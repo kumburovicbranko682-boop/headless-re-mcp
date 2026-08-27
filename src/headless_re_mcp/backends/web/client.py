@@ -14,6 +14,7 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import queue
 import threading
@@ -725,6 +726,63 @@ class WebBackend:
         if spill is not None:
             result["source_path"] = str(spill)
         return result
+
+    def wasm_get(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
+        """Write a live WebAssembly module's raw bytes to a .wasm artifact.
+
+        web.wasm.list surfaces the modules but the only way to read one was
+        Debugger.getScriptSource, which for wasm returns the engine's textual
+        disassembly, not the binary -- so the module could not be fed to the
+        wasm.wat / wasm.info tools that exist to analyse it. This pulls the
+        bytecode (Debugger.getWasmBytecode) and, being binary, always spills to
+        a file rather than inlining. Session-level faults propagate with their
+        own code, as script_source does; a missing/evicted module is not_found.
+        """
+        handle = self._get(session_id)
+        with handle.lock:
+            entry = handle.scripts.get(script_id)
+        if entry is None:
+            raise WebError("not_found", "unknown script id", script_id=script_id)
+        if str(entry.get("language", "")).lower() != "webassembly":
+            raise WebError(
+                "invalid_params",
+                "script is not a WebAssembly module; see language on web.wasm.list",
+                script_id=script_id,
+            )
+        try:
+            resp = self._runner(handle).call(
+                lambda: handle.cdp.send("Debugger.getWasmBytecode", {"scriptId": script_id})
+            )
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WebError(
+                "not_found", f"cannot fetch wasm bytecode: {exc}", script_id=script_id
+            ) from exc
+        encoded = resp.get("bytecode", "") if isinstance(resp, dict) else ""
+        try:
+            payload = base64.b64decode(encoded or "", validate=False)
+        except (ValueError, TypeError) as exc:
+            raise WebError(
+                "backend_error", f"invalid wasm bytecode: {exc}", script_id=script_id
+            ) from exc
+        if len(payload) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise WebError(
+                "too_large",
+                "wasm module exceeds capture cap",
+                size=len(payload),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+                script_id=script_id,
+            )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        out = artifact_dir / f"wasm-{uuid4().hex}.wasm"
+        out.write_bytes(payload)
+        return {
+            "scriptId": script_id,
+            "url": entry.get("url"),
+            "bytes": len(payload),
+            "wasm_path": str(out),
+        }
 
     def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

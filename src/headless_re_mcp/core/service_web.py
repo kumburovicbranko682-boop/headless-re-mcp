@@ -205,6 +205,25 @@ class WebAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def web_wasm_get(self, session_id: str, script_id: str) -> Result[JsonObject]:
+        try:
+            data = self._web.wasm_get(session_id, script_id, self._web_artifact_dir(session_id))
+            spill = data.get("wasm_path")
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="web_wasm_module",
+                    source="web.wasm.get",
+                    payload=data,
+                )
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def web_dom_snapshot(self, session_id: str) -> Result[JsonObject]:
         try:
             data = self._web.dom_snapshot(session_id, self._web_artifact_dir(session_id))

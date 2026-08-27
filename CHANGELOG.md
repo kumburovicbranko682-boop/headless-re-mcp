@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -373,6 +373,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `truncate` 形参：response body / script source 是调用方要的完整数据、拿不全就该 `too_large` 报错（行为不变），
   而快照是尽力而为的视图、超限时降级成「留住容量上限那份、按字节边界切、标 truncated」而非整调用失败。
   DOM 在内联上限内时行为不变：`html` 就是整份、无 `dom_path`、`truncated=False`。
+- **`web.wasm.list` 能列出 WebAssembly 模块，却没有任何工具能把模块取出来分析——分析终点建好了、桥没搭**。
+  仓库早有 `wasm.wat`（wasm2wat）/`wasm.info`（wasm-objdump）对 `.wasm` 做反汇编与段信息，但从浏览器里
+  拿一个活模块的唯一途径是 `web.script.source` → CDP `Debugger.getScriptSource`，而它对 wasm 返回的是引擎
+  的**文本反汇编**、不是二进制字节，喂不进那两个工具。于是 `web.wasm.list` 成了半截路：看得见模块、取不出来。
+  新增只读工具 `web.wasm.get(session_id, script_id)`：走 CDP `Debugger.getWasmBytecode` 取原始字节码，base64
+  解码后——因是二进制、一律外溢成 `wasm-*.wasm` 制品（不内联），服务层登记为 `web_wasm_module` 交给 retention，
+  回 `scriptId`/`url`/`bytes`/`wasm_path`，随后可直接把 `wasm_path` 交给 `wasm.wat`/`wasm.info`。会话级故障
+  （浏览器超时/wedged/已关）带自己的 `code` 上抛（与 `web.script.source` 一致，`timeout` 可重试）；模块不存在
+  或已被清出记 `not_found`；对着一个 JavaScript scriptId 调用是 `invalid_params`；超过抓包容量上限的模块
+  `too_large`。它是 `web.script.source` 的二进制孪生（同样按 scriptId 取单个脚本的内容供分析），故归入只读；
+  工具面因此从 265 增至 266（149 只读 / 117 写）。
 - **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
