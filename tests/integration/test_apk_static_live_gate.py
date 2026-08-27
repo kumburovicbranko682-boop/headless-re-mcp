@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
+from headless_re_mcp.backends.apktool import ApktoolClient
 from headless_re_mcp.backends.jadx import JadxClient
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -966,5 +967,88 @@ def test_apk_decompile_missing_class_is_a_clean_not_found(tmp_path: Path) -> Non
         assert not result.ok and result.error is not None
         assert result.error.code != "internal_error", result.error
         assert result.error.code == "not_found", result.error
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_decode_and_repack_round_trip_with_apktool(tmp_path: Path) -> None:
+    """apktool decode -> repack must round-trip a real APK to smali and back.
+
+    apk.decode and apk.repack shell out to apktool and, like jadx, had no
+    end-to-end coverage: decode's smali/resource split, the ``-r`` no-resources
+    switch, and repack's rebuild all went unproven against a real apktool. Decode
+    a populated DEX (no_resources, since the synthetic APK carries no
+    resources.arsc), assert apktool recovered the App class's smali with both its
+    methods, then rebuild the tree and assert an unsigned APK lands on disk.
+    Decoding smali is the deliverable; with ``-r`` apktool leaves the manifest as
+    the original binary AXML, so this asserts on the smali, not the manifest text.
+    skip != pass when apktool is absent.
+    """
+    settings = Settings.load()
+    if not ApktoolClient(settings.apktool, settings.apksigner).available:
+        pytest.skip(
+            "apktool not configured (HEADLESS_RE_APKTOOL / PATH) — Gate not run (skip != pass)"
+        )
+    apk = _build_apk(tmp_path / "rebuild.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=300.0, no_resources=True)
+        assert decoded.ok and decoded.data is not None, decoded.error
+        assert "smali" in decoded.data["smali_dirs"], decoded.data
+        decoded_dir = Path(decoded.data["decoded_dir"])
+        app_smali = decoded_dir / "smali" / "com" / "example" / "App.smali"
+        assert app_smali.is_file(), sorted(str(p) for p in decoded_dir.rglob("*.smali"))
+        smali = app_smali.read_text(encoding="utf-8", errors="replace")
+        assert ".class" in smali
+        for method in _DEX_METHODS:
+            assert method in smali, (method, smali)
+
+        repacked = service.apk_repack(session_id, timeout=300.0)
+        assert repacked.ok and repacked.data is not None, repacked.error
+        assert repacked.data["signed"] is False
+        rebuilt = Path(repacked.data["apk"])
+        assert rebuilt.is_file() and rebuilt.stat().st_size > 0, repacked.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_repack_rejects_a_directory_that_is_not_a_decode_output(tmp_path: Path) -> None:
+    """Repacking a tree with no AndroidManifest.xml must be invalid_params.
+
+    apk.repack is destructive tooling pointed at a caller-influenced directory.
+    A path that is not an apktool decode output (no manifest) has to be refused
+    up front with a structured invalid_params, never handed to apktool to fail
+    opaquely or crash as internal_error.
+    """
+    settings = Settings.load()
+    if not ApktoolClient(settings.apktool, settings.apksigner).available:
+        pytest.skip(
+            "apktool not configured (HEADLESS_RE_APKTOOL / PATH) — Gate not run (skip != pass)"
+        )
+    apk = _build_apk(tmp_path / "norepack.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        # Decode first so a real (owned) session artifact directory exists, then
+        # point repack at an empty subdir of it: inside the artifact tree (passes
+        # the ownership guard) but not an apktool output (no manifest).
+        decoded = service.apk_decode(session_id, timeout=300.0, no_resources=True)
+        assert decoded.ok and decoded.data is not None, decoded.error
+        empty = Path(decoded.data["decoded_dir"]).parent / "not-a-decode"
+        empty.mkdir(parents=True, exist_ok=True)
+
+        result = service.apk_repack(session_id, decoded_dir=str(empty), timeout=300.0)
+        assert not result.ok and result.error is not None
+        assert result.error.code != "internal_error", result.error
+        assert result.error.code == "invalid_params", result.error
     finally:
         service.close_all()
