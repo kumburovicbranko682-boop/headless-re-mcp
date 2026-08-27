@@ -43,6 +43,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（batch.analyze Gate：并行建会话、坏样本按条隔离、入参校验）
+
+- `batch.analyze` 把一批二进制铺到有界线程池上、每个建一个会话，让操作者一次调用即可分诊多个样本。
+  其契约是每条各自成败——单个坏样本不能拖垮整批——且在动手前先校验入参。它唯一的端到端覆盖是
+  `test_composite_tools_gate.py::test_batch_opens_parallel_ida_sessions_and_reports`，那条走
+  `open_static=True` 依赖真 IDA 后端且被标为 Windows-only，于是在 Linux 上编排本身（并行建会话、
+  按条错误隔离、入参校验）无人证明。以 `open_static=False` 跑时这些都不需要后端。
+- 新增 `tests/integration/test_batch_analyze_gate.py`：对提交的 PE 夹具驱动 `batch.analyze` 并断言——
+  一批合法二进制各自产出真实、互异、可 `session.get` 解析的会话（且都进 `session.list`）；夹在两个
+  好样本中间的坏样本（不存在的文件）就地失败并带结构化 `file_not_found` 错误、`session_id` 为空，而
+  两个好样本照样成功、输入顺序被保留、整批仍返回 ok；空列表、越界 `max_workers`（0/9）、超过 32 条
+  的列表都被以错误信封拒绝。全程零外部工具，任何平台都不应跳过；夹具缺失时按 skip != pass 明确跳过。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
