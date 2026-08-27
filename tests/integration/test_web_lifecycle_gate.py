@@ -28,14 +28,25 @@ def _playwright_available() -> bool:
     return True
 
 
-def _this_process() -> Any:
-    """psutil if it happens to be installed; it is not a project dependency."""
+def _handle_counter() -> Any:
+    """A per-process resource counter, or None when psutil is missing.
+
+    psutil is not a project dependency, and its counter is platform-specific:
+    ``num_handles`` exists only on Windows, ``num_fds`` only on POSIX. Keying
+    the gate on ``num_handles`` alone meant the leak check silently never ran
+    on Linux -- the platform where unattended captures actually run headless --
+    so a descriptor leak there would have shipped behind a skip.
+    """
     try:
         import psutil
     except ImportError:
         return None
     process = psutil.Process()
-    return process if hasattr(process, "num_handles") else None
+    for name in ("num_handles", "num_fds"):
+        counter = getattr(process, name, None)
+        if counter is not None:
+            return counter
+    return None
 
 
 def _free_port() -> int:
@@ -154,8 +165,8 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
     """
     if not _playwright_available():
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
-    process = _this_process()
-    if process is None:
+    count_handles = _handle_counter()
+    if count_handles is None:
         pytest.skip("handle counts are not available here (skip != pass)")
 
     backend = WebBackend()
@@ -167,10 +178,10 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
 
         for _ in range(5):
             backend.navigate("loud", _LOUD)
-        settled = process.num_handles()
+        settled = count_handles()
         for _ in range(20):
             backend.navigate("loud", _LOUD)
-        after = process.num_handles()
+        after = count_handles()
 
         captured = backend.console("loud", limit=500)
         assert captured["count"] > 0, "the console must still be captured"
