@@ -61,7 +61,13 @@ jobs:
         # cancel the whole job with its logs unrecoverable; failing the step
         # instead keeps the transcript and still uploads coverage.
         timeout-minutes: 25
-        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
+        # --durations=25 prints the 25 slowest tests at the end. The Windows
+        # unit step has been observed near its timeout (1192s of a 25m budget
+        # on one run) while Linux runs the same suite in ~4 minutes, and the
+        # slowest tests here are all POSIX-only process-group cases that skip
+        # on Windows -- so the Linux log cannot say what is slow on Windows.
+        # This surfaces it in the log at no runtime cost.
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --durations=25 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
         if: always()
@@ -128,7 +134,9 @@ jobs:
         # itself, and a wedged step fails with its logs instead of the job
         # timeout cancelling the whole job and losing them.
         timeout-minutes: 20
-        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term
+        # See the Windows unit step: --durations=25 keeps the slowest tests
+        # visible in every log so a regression in test time is caught early.
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --durations=25 --cov --cov-report=term
 
       - name: Doctor and core service smoke
         run: |
