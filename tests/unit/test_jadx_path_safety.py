@@ -75,3 +75,41 @@ def test_jadx_rejects_a_sources_directory_redirected_outside_the_output(
         client.decompile(tmp_path / "app.apk", out, "com.example.Main")
 
     assert caught.value.code == "backend_error"
+
+
+def test_jadx_rejects_an_invalid_class_name_before_decompiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The static class-path check runs before the whole-APK decompile.
+
+    Otherwise a malformed class_name pays for a full jadx run (or is masked as
+    capability_unavailable when jadx is missing) only to be rejected afterward.
+    """
+    client = JadxClient(tmp_path / "jadx")
+
+    def _must_not_run(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("export_sources ran for a statically invalid class_name")
+
+    monkeypatch.setattr(client, "export_sources", _must_not_run)
+
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "com.example.\x00Main")
+
+    assert caught.value.code == "invalid_params"
+
+
+def test_jadx_valid_class_name_falls_through_to_the_missing_backend(
+    tmp_path: Path,
+) -> None:
+    """A valid class_name passes the static check and reaches the backend gate.
+
+    The jadx path is not a real file, so a valid name degrades to
+    capability_unavailable -- proving validation did not reject it (skip != pass).
+    """
+    client = JadxClient(tmp_path / "jadx")
+
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "com.example.Main")
+
+    assert caught.value.code == "capability_unavailable"
