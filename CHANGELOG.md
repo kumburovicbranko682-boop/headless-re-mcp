@@ -121,12 +121,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `export "add"`、`i32`（真的走了 type/function/export/code 段），并新增 `test_wasm_info_when_wabt_present`
   对 `wasm-objdump` 断言 Type/Function/Export/Code 四个 section 头与导出名 `add` 都在。wabt 缺失时按工具分别
   如实 skip（wasm2wat 与 wasm-objdump 各判各的），skip != pass。
-- 补上 `js.unpack_bundle` 的实测 Gate（`test_js_unpack_bundle_when_webcrack_present`）：它是 JS 侧唯一会落盘的
-  操作,其整条结果面——`_capped_file_listing`、分页字段、以及 service 侧 `js_unpack_bundle` 自建 out_dir 与
-  按 `_MAX_JSRE_UNPACK_DIRS` 修剪——此前只有单元桩覆盖。webcrack 对任何输入都至少把反混淆后的入口写进 `-o`,
-  故对现有 `obfuscated_sample.js` 跑真机 unpack,断言 `file_count>=1`、`total==file_count`、窗口非空且
-  `count==len(files)`、`has_more` 与「窗口是否覆盖全部」一致、`output_dir` 落地。CI 的 `gates` job 已装 webcrack,
-  故真机执行;本机无 webcrack 时如实 skip,skip != pass。
+### 修复（js.unpack_bundle 对现代 webcrack 完全跑不通）
+
+- `js.unpack_bundle` 在真机上必然失败:客户端先 `out_dir.mkdir(parents=True, exist_ok=True)` 建好输出目录再调
+  webcrack,而 webcrack 2.x 见 `-o` 目录已存在就报「output directory already exists」并以 exit 1 退出——于是
+  每次 unpack 都被后端映射成 `backend_error`。这条 JS 唯一会落盘的操作此前只有 mock 掉 `_run` 的单元桩,真机
+  从未跑过,bug 就一直藏着。改为只确保父目录存在、把一个尚不存在的路径交给 webcrack 自己创建(实测 webcrack
+  会新建目录并写出 `deobfuscated.js`)。同时补上实测 Gate `test_js_unpack_bundle_when_webcrack_present`:对现有
+  `obfuscated_sample.js` 跑真机 unpack,断言 `file_count>=1`、`total==file_count`、窗口非空且 `count==len(files)`、
+  `has_more` 与「窗口是否覆盖全部」一致、`output_dir` 落地——正是这条 Gate 抓出了上面的 bug。CI 的 `gates` job
+  已装 webcrack 故真机执行;本机无 webcrack 时如实 skip,skip != pass。
 
 ### 新增（JS/WASM 输入体积上限的单元回归）
 
