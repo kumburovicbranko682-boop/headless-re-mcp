@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy 导出的 HAR 现带真实请求时刻与各阶段耗时，而非导出时刻与全零瀑布）
+
+- `proxy.export_har` 没给 `har_entry` 传任何时间信息，于是每条 entry 的 `startedDateTime` 落到
+  *导出时刻*（HAR 文件写出的那一瞬），`timings` 三段（send/wait/receive）全是 -1、`time` 为 0。
+  HAR 消费端（Chrome DevTools 导入 HAR、Firefox）据此把整段抓包画成"同一时刻发起、瀑布条宽度全为
+  零"——时间线被彻底抹平。可 mitmproxy 本就在请求/响应两端各打了 `timestamp_start` / `timestamp_end`
+  时间戳。改法：抓流时（`_record`）顺手从这些时间戳推导每条流的真实起始时刻与各阶段耗时（映射与
+  mitmproxy 自带 HAR 插件一致：`send` 是客户端请求到达用时、`wait` 是到响应开始前的等待、`receive`
+  是读完响应用时），存进 summary（并在 `proxy.flows` 每行上以 `started_at` / `timings` 暴露），导出时
+  连同传给 `har_entry`。`har_entry` 新增 `timings` 入参，`time` 取各非负阶段之和；某阶段两端时间戳缺失
+  （如报错流没有响应）或倒流（连接复用、粗粒度计时导致负值）则该段落 -1、不计入 `time`；一条流若整段
+  时间戳都缺，仍如实回落到未知 timings 与导出时刻，而不是伪造零长阶段。entry 注释也随之更正：一旦测到
+  任一阶段，就不再声称"阶段耗时未采集"。单测：`har_entry` 测到的阶段填入 timings 且 `time` 为其和、未测
+  阶段落 -1 不计入、无 timings 时全 -1 且 time 0；proxy 抓流记 `started_at` / `timings` 且导出把
+  `startedDateTime` 打到请求时刻、报错流保留 send 而 wait/receive 为 -1、无时间戳流回落。新增 live gate
+  （`test_proxy_har_timings_live_gate.py`）：经真实 mitmproxy 转发一次"服务器故意延迟"的请求，再**特意
+  多等一大段**才导出，从而让请求时刻与导出时刻拉开距离，断言 entry 的 `startedDateTime` 落在请求时刻
+  （在导出前的标记之前）而非其后的导出时刻、`wait` 段确实测到了服务器的真实延迟、`time` 为各阶段非负之和；
+  并"守卫其守卫"——先断言延迟预算确实超过阈值，故通过意味着确有测量而非巧合。CI 新增 `linux-proxy-har-timings`
+  job 装 mitmproxy 跑该 gate，skip≠pass 守卫在 mitmproxy 已装却仍 skip 时判失败。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
