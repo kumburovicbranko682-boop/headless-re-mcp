@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import suppress
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -81,9 +82,20 @@ class PersonaStore:
         return data if isinstance(data, dict) else {"current": DEFAULT_PERSONA_ID, "items": {}}
 
     def _write_index(self, data: JsonObject) -> None:
-        tmp = self._index_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._index_path())
+        path = self._index_path()
+        tmp = path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(path)
+        except OSError:
+            # A failed write or rename must not strand the ``.tmp`` beside the
+            # real index; clean it up and let the caller see the failure rather
+            # than leaving a partial file that a later read might pick up.
+            with suppress(OSError):
+                tmp.unlink()
+            raise
 
     def _body_path(self, persona_id: str) -> Path:
         if _PERSONA_ID_RE.fullmatch(persona_id) is None:
