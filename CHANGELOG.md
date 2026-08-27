@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（用假 CDP 钉住 web 抓包环淘汰/dropped 记账与截断标记，及驱动进程回收守卫）
+
+- `_wire_events` 注册的四个 CDP 处理器负责填充每会话抓包环(requests/scripts/console)并维护\
+  web.status 与 HAR 导出现在上报的 `dropped` 淘汰计数,但这些处理器过去只有真实浏览器驱动 CDP 事件时才跑,\
+  其淘汰与截断分支从未被测——而 `dropped` 正是操作者判断某个环是否已开始丢历史的诚实信号。新增\
+  `test_web_capture_rings.py`,以一个记录已注册回调的假 CDP 直接驱动这些处理器,喂合成事件钉住:每个环在\
+  超上限时淘汰最旧条目并把各自 `dropped` 计数精确加上被丢弃的条数;response 更新其匹配的 request 而对\
+  从未见过的 requestId 静默忽略(不崩、不造幽灵条目);超长 url/method/mime/console 字段被标记\
+  `metadata_truncated`/`text_truncated` 而非整体入环。另钉住驱动进程回收守卫:`_playwright_driver_pid`\
+  沿私有链 `_impl_obj._connection._transport._proc.pid` 取 pid、链断或 pid 非正/非整数时返回 None;\
+  `_reap_driver_pid` 对非正 pid 直接短路(绝不先问 OS),且只对镜像形似 node/chromium 驱动的 pid 施加\
+  `terminate_pid_tree`——pid 会被系统回收,仅凭编号杀树可能误伤无关进程,故普通 python 进程被放过。\
+  web/client.py 覆盖率随之回补(抓包处理器分支与回收守卫此前未覆盖),其余未覆盖行均为需 playwright 的\
+  浏览器驱动方法。(纯测试补充,无行为变更。)
+
 ### 测试（用假 DEX 分析钉住 apk 的 external 过滤、缓存复用与原生库 ABI 解析）
 
 - apk 的 DEX 分析方法(`classes`/`methods`/`xrefs`)由分页夹紧测试通过 monkeypatch `_parsed` 驱动,而那些\
