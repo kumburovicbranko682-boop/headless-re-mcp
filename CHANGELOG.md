@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.network.list 标记失败请求，不再把失败当成"仍在飞行中"）
+
+- 一个拿不到响应的请求——DNS 解析失败、连接被重置、被拦截的追踪器、CSP/混合内容被拒——
+  在 CDP 里触发的是 `Network.loadingFailed` 而非 `Network.responseReceived`,失败原因
+  (`net::ERR_NAME_NOT_RESOLVED`、`blockedReason`)只出现在这个事件里。旧的 `_wire_events`
+  根本没接这个事件,于是该请求条目的 `status` 永远停在 null,一次失败的加载——在逆向里常常
+  正是**发现点**(页面想连却连不上的信标、被浏览器拦掉的追踪器)——读起来和一个还在飞行中的
+  请求毫无区别。现按 mitmproxy 后端标记 errored flow 的同款做法接上 `Network.loadingFailed`:
+  给命中的条目打 `failed: true`、带 `error_text`(引擎的 `net::` 原因),命名了 `blockedReason`
+  时再带 `blocked_reason`,`canceled` 为真时带 `canceled`,而 `status` 保持 null(失败不是响应)。
+  `error_text`/`blocked_reason` 照旧设界并按需打 `metadata_truncated`;未知 requestId(可能已被
+  环淘汰)的失败事件直接忽略,不会凭空复活一条被丢弃的记录。`web.network.list` 文档串说明失败请求
+  带 `failed true`/`error_text`/`blocked_reason`、`status` 仍为 null。单测新增五条(失败标记与错误
+  文本、`blockedReason` 透出、`canceled` 标记、未知 id 忽略、超长 error_text 设界)加文档串一条;
+  新增 live gate(`test_web_network_loading_failed_live_gate.py`)让真 Chromium 加载一个
+  `.invalid`(RFC 2606 保证永不解析、无需外网)子资源,断言该请求条目被标记 `failed`、`error_text`
+  以 `net::` 开头、`status` 为 null。CI 新增 `linux-web-loading-failed` job 装 playwright+Chromium
+  跑该 gate,skip≠pass 守卫在 Chromium 已装却仍 skip 时判失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
