@@ -176,8 +176,14 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
         """Push a local file to a path on the device.
 
-        Answers with local, remote and size. Files over the capture cap are
-        refused rather than copied onto the device.
+        Answers with local, remote and size (the local file's byte count sent).
+        After the transfer it stats the remote path: verified is true only when
+        the device confirms a file of the same size, device_size carries the
+        device-side byte count when readable, and verify_note explains any case
+        the push could not be confirmed (stat failed, no file landed, or a size
+        mismatch) rather than reporting the local size as a device-confirmed
+        success. Files over the capture cap are refused rather than copied onto
+        the device.
         """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 

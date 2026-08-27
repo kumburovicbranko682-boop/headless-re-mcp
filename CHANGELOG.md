@@ -355,6 +355,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
 
+### 修复（device.push 不再把本地体积当成设备已收到的成功）
+
+- `device.push` 过去只回 `size`——而那是**本地**文件的字节数,推送后直接当作设备已收到那么多字节。
+  但 adb sync 可能“干净返回却在远端留下一个短的、或根本不存在的文件”(设备磁盘满、目标只读、传输中断),
+  此时调用方会把一次并未落地的推送读成成功。`device.pull` 一侧本就会在写完后重新 stat 本地文件、按实际字节
+  报数(且对“干净拉取却没写出文件”报 `not_found`),push 一侧却是纯假设,是一处不对等。
+- 现在推送后 stat 远端路径核实:仅当设备回报同样大小的文件时 `verified` 才为 true;`device_size` 带回设备侧
+  实际字节数(可读时);无法核实的各种情形(stat 失败、远端没有文件、大小不一致)都由 `verify_note` 说明,
+  而不再把本地体积当成设备已确认的成功。`size` 始终保留为“从本地发出的字节数”,绝不臆造。核实是尽力而为:
+  stat 超时/异常不会把一次推送翻成硬失败,只标 `verified=false` 并附注。
+- 新增回归:设备回报同样大小→verified true 且带 device_size、设备回报更短→verified false 且两个尺寸都在、
+  设备回报无文件(mode 0)→verified false 且无 device_size、stat 不可用→verified false 且附注,并把
+  `device.push` 文档串点名 verified / device_size / verify_note。
+
 ### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
 
 - `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,

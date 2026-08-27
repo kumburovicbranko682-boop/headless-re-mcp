@@ -806,7 +806,50 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
-        return {"local": str(path), "remote": remote_path, "size": size}
+        # size is the *local* file's length. adb sync can report a clean push
+        # yet leave a short or absent remote file (device disk full, a
+        # read-only path, an interrupted transfer), so -- like pull, which
+        # re-stats what it wrote -- stat the remote path and report what the
+        # device actually holds rather than assuming the local size landed.
+        # verified is true only when the device confirms a file of the same
+        # size; otherwise verify_note says why it could not be confirmed, and
+        # size stays present as "bytes sent from local", never fabricated.
+        result: JsonObject = {
+            "local": str(path),
+            "remote": remote_path,
+            "size": size,
+            "verified": False,
+        }
+        sync = getattr(dev, "sync", None)
+        if sync is None:
+            result["verify_note"] = (
+                "sync channel unavailable; size is the local file's, not device-confirmed"
+            )
+            return result
+        try:
+            info = _call(sync.stat, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            result["verify_note"] = (
+                "could not stat the remote path after push; "
+                "size is the local file's, not device-confirmed"
+            )
+            return result
+        mode, device_size = _file_mode_size(info)
+        if mode == 0:
+            result["verify_note"] = (
+                "device reports no file at the remote path after push; "
+                "it may have been rejected"
+            )
+            return result
+        result["device_size"] = device_size
+        if device_size == size:
+            result["verified"] = True
+        else:
+            result["verify_note"] = (
+                "device file size differs from the local file; "
+                "the push may be short or the remote path a special file"
+            )
+        return result
 
     def ensure_frida_server(
         self,

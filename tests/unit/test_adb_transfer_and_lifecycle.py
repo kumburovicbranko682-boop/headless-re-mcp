@@ -7,7 +7,10 @@ does not justify:
   the follow-up ``pm path`` check could not run -- because a zero exit from adb
   is not proof the package is now present or gone.
 * ``pull`` / ``push`` guard the 64 MiB capture budget and refuse a directory,
-  so a single transfer cannot fill the disk or smuggle a tree onto it.
+  so a single transfer cannot fill the disk or smuggle a tree onto it. Both
+  also verify at the destination -- pull re-stats what it wrote, push stats the
+  remote path -- so a clean adb return that moved short or nothing is not
+  reported as a confirmed transfer.
 
 These paths only run through the live adbutils backend, so they are pinned here
 with an injected fake device and real temp files -- no adbutils, no emulator.
@@ -278,7 +281,12 @@ def test_push_refuses_a_local_file_over_the_cap(tmp_path: Path) -> None:
 
 
 def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
-    """A small local file pushes through and reports its size."""
+    """A small local file pushes through and reports its size.
+
+    Here the post-push stat is unavailable (stat_result=None raises), so the
+    size cannot be device-confirmed: verified is False with a verify_note, and
+    size stays the local byte count rather than being dropped.
+    """
     small = tmp_path / "small.bin"
     small.write_bytes(b"hello")
     sync = _Sync(stat_result=None)
@@ -287,3 +295,61 @@ def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
     assert payload["size"] == 5
     assert payload["remote"] == "/sdcard/small.bin"
     assert sync.pushed == (str(small), "/sdcard/small.bin")
+    assert payload["verified"] is False
+    assert "device-confirmed" in payload["verify_note"]
+    assert "device_size" not in payload
+
+
+def test_push_verifies_the_device_confirms_the_size(tmp_path: Path) -> None:
+    """A push the device stats back at the same size is verified True.
+
+    push used to return the local file's size as though the device had received
+    it. Now the remote path is stat-ed after the transfer: a matching device
+    size is the only case that reports verified True, with device_size echoing
+    what the device holds.
+    """
+    small = tmp_path / "match.bin"
+    small.write_bytes(b"hello")
+    sync = _Sync(stat_result=_StatResult(mode=stat.S_IFREG | 0o644, size=5))
+    dev = _FakeDev(sync=sync)
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/match.bin")
+    assert payload["verified"] is True
+    assert payload["device_size"] == 5
+    assert payload["size"] == 5
+    assert "verify_note" not in payload
+
+
+def test_push_flags_a_short_write_the_device_confirms(tmp_path: Path) -> None:
+    """A device file shorter than the local one is verified False with both sizes.
+
+    A truncated transfer (device disk full, interrupted push) must not read as a
+    clean success: device_size shows what actually landed, verified is False,
+    and verify_note explains the mismatch.
+    """
+    small = tmp_path / "short.bin"
+    small.write_bytes(b"hello")
+    sync = _Sync(stat_result=_StatResult(mode=stat.S_IFREG | 0o644, size=2))
+    dev = _FakeDev(sync=sync)
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/short.bin")
+    assert payload["verified"] is False
+    assert payload["device_size"] == 2
+    assert payload["size"] == 5
+    assert "differs" in payload["verify_note"]
+
+
+def test_push_flags_when_the_device_shows_no_file(tmp_path: Path) -> None:
+    """A stat that reports no file (mode 0) after a clean push is disclosed.
+
+    adb sync can return without error yet leave nothing at the remote path (a
+    rejected or dropped transfer). That must be verified False with a note, not
+    the local size reported as a device-confirmed success.
+    """
+    small = tmp_path / "gone.bin"
+    small.write_bytes(b"hello")
+    sync = _Sync(stat_result=_StatResult(mode=0, size=0))
+    dev = _FakeDev(sync=sync)
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/gone.bin")
+    assert payload["verified"] is False
+    assert "no file" in payload["verify_note"]
+    assert "device_size" not in payload
+    assert payload["size"] == 5
