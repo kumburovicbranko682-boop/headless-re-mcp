@@ -81,15 +81,18 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large or binary bodies spill).
 
-        Answers with body, base64_encoded, plus body_truncated and body_path
-        when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A binary body (base64_encoded true) is never inlined or
-        base64-written to disk: it is decoded and body_path holds the raw
-        bytes, body is empty, body_truncated is false, and body_bytes is the
-        decoded size. When CDP has no body for the request (a redirect, or a
-        body already evicted from its cache) body is empty and body_error says
-        why, while body, base64_encoded and body_truncated stay present. A
-        body over the capture cap is refused rather than written to disk.
+        Answers with body, base64_encoded and body_bytes, plus body_truncated
+        and body_path when the text was cut at the buffer. body_bytes is the
+        body's full size, so a body cut at the buffer is not read as the whole
+        thing -- body is the inline prefix and body_path holds the full text.
+        The cut flag is body_truncated, not truncated. A binary body
+        (base64_encoded true) is never inlined or base64-written to disk: it is
+        decoded and body_path holds the raw bytes, body is empty, body_truncated
+        is false, and body_bytes is the decoded size. When CDP has no body for
+        the request (a redirect, or a body already evicted from its cache) body
+        is empty and body_error says why, while body, base64_encoded and
+        body_truncated stay present. A body over the capture cap is refused
+        rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

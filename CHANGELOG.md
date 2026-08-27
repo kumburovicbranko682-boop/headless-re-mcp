@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 文本响应体交代被截断的完整大小）
+
+- `web.network.get` 的**二进制**分支早已回 `body_bytes`(解码后的真实字节数),同仓的
+  `web.script.source` 也回 `bytes`;唯独**文本**分支没有:超过内联上限(20 万字节)的文本体
+  会把前缀放进 `body`、把全文写进 `body_path`、置 `body_truncated=true`,却从不说全文到底多大。
+  于是一个被切的文本响应——不管丢了 1 KB 还是 10 MB——回来长一个样,调用方要知道少看了多少
+  只能自己去打开 `body_path`;而同一个工具的二进制分支明明就在旁边回着 `body_bytes`,前后不一致。
+- 现在文本分支也回 `body_bytes`(该体的完整 UTF-8 字节数,与 `script.source` 的算法一致,
+  `errors="replace"`):`body` 是内联前缀,`body_path` 存全文,`body_bytes` 是全量大小,三者一起
+  让「被切」不再被读成「完整」。未超上限时 `body_bytes` 即等于 `body` 的字节数。错误路径
+  (CDP 无体、base64 非法)形状不变,不带 `body_bytes`。工具描述把 `body_bytes` 提到文本与二进制
+  两条路径都点名。
+- 新增回归:小文本体回 `body_bytes` 等于全量且 `body_truncated=false`、超上限的文本体回全量
+  `body_bytes`、`body` 只留 20 万字节前缀、`body_path` 存全文,以及既有的切断测试补上 `body_bytes`
+  断言与描述点名。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

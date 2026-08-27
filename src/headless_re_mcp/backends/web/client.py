@@ -659,6 +659,12 @@ class WebBackend:
         if spill is not None:
             result["body_path"] = str(spill)
         result["base64_encoded"] = False
+        # body_bytes is the full text size, so a body cut at the buffer is not
+        # read as the whole thing: body is the inline prefix, body_path holds
+        # the rest, and their gap is body_bytes minus the prefix. The binary
+        # branch above and script_source already carry this; without it the
+        # text branch alone reads identical whether 1 KB or 10 MB was dropped.
+        result["body_bytes"] = len(body.encode("utf-8", errors="replace"))
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:

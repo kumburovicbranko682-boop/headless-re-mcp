@@ -74,6 +74,8 @@ def test_web_network_get_names_body_truncated_not_truncated(
     assert "truncated" not in payload
     assert payload["body_truncated"] is True
     assert len(payload["body"]) == _MAX_INLINE_BODY
+    # The full size rides alongside the prefix, so the cut is not read as whole.
+    assert payload["body_bytes"] == _MAX_INLINE_BODY + 25
     assert "body_path" in payload
     assert payload["body_path"] != repeated["body_path"]
     assert Path(str(payload["body_path"])).is_file()
@@ -81,6 +83,7 @@ def test_web_network_get_names_body_truncated_not_truncated(
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
+    assert "body_bytes" in doc
 
 
 def test_web_network_get_keeps_the_documented_shape_when_the_body_is_missing(

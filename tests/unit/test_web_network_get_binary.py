@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from headless_re_mcp.backends.web.client import WebBackend
+from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend
 
 
 class _Immediate:
@@ -73,3 +73,46 @@ def test_invalid_base64_body_reports_an_error_rather_than_lying(
 
     assert "body_error" in payload
     assert "body_path" not in payload
+
+
+def test_text_body_reports_full_bytes_and_is_not_truncated_when_small(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A small text body inlines whole; body_bytes equals its full size.
+
+    The binary branch and script_source already report the full size; the text
+    branch used to omit it, so a caller could not tell a cut body's real size
+    without opening body_path.
+    """
+    text = "hello world"
+    backend = _backend_returning(monkeypatch, {"body": text, "base64Encoded": False})
+
+    payload = backend.network_get("s", "r1", tmp_path)
+
+    assert payload["base64_encoded"] is False
+    assert payload["body"] == text
+    assert payload["body_truncated"] is False
+    assert payload["body_bytes"] == len(text.encode("utf-8"))
+    assert "body_path" not in payload
+
+
+def test_text_body_reports_full_bytes_when_cut_at_the_buffer(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A text body over the inline cap spills; body_bytes is the whole size.
+
+    Before, a cut text body read the same whether 1 KB or 10 MB was dropped --
+    body was the prefix and body_truncated true, but nothing said how much was
+    left on disk. body_bytes closes that, matching the binary branch.
+    """
+    text = "A" * (_MAX_INLINE_BODY + 4096)
+    backend = _backend_returning(monkeypatch, {"body": text, "base64Encoded": False})
+
+    payload = backend.network_get("s", "r1", tmp_path)
+
+    assert payload["base64_encoded"] is False
+    assert payload["body_truncated"] is True
+    assert payload["body_bytes"] == len(text.encode("utf-8"))
+    assert len(payload["body"]) == _MAX_INLINE_BODY
+    spilled = Path(payload["body_path"])
+    assert spilled.read_bytes() == text.encode("utf-8")
