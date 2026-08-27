@@ -708,7 +708,13 @@ class InMemoryAnalysisRepository:
     ) -> tuple[list[JsonObject], int]:
         with self._lock:
             items = [dict(item) for item in self._sessions.values() if not item["closed_cleanly"]]
-        ordered = sorted(items, key=lambda item: str(item["updated_at"]), reverse=True)
+        # (updated_at, id) descending, matching the sqlite store so both backends
+        # page a batch of same-timestamp unclean sessions in the same order.
+        ordered = sorted(
+            items,
+            key=lambda item: (str(item["updated_at"]), str(item["id"])),
+            reverse=True,
+        )
         window = max(1, min(int(limit), 1000))
         start = max(0, int(offset))
         return ordered[start : start + window], len(ordered)

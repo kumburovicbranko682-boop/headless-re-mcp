@@ -373,9 +373,17 @@ class SessionStore:
             total = int(
                 conn.execute("SELECT COUNT(*) FROM sessions WHERE closed_cleanly=0").fetchone()[0]
             )
+            # id DESC breaks updated_at ties into a total order. On startup
+            # mark_unclean_open_sessions rewrites every still-open session's
+            # updated_at in one UPDATE, so after a crash the rows this lists all
+            # share one timestamp -- exactly the tool a caller reaches for then.
+            # SQLite leaves equal-key rows in an unspecified order, and each page
+            # is its own LIMIT/OFFSET query, so without the tie-break two pages
+            # could drop a session from both or return it in both. id is the
+            # primary key; the closed-session trim already orders this way.
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE closed_cleanly=0"
-                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (window, start),
             ).fetchall()
             return [dict(row) for row in rows], total

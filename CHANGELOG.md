@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`sessions.unclean` 分页在崩溃后成批同刻时可能漏读或重复）
+
+- `list_unclean_sessions` 只按 `updated_at DESC` 排序，没有决定性的二级键。而
+  `mark_unclean_open_sessions` 在启动时用一条 `UPDATE` 把所有仍处于打开态的会话的
+  `updated_at` 一次性改写成同一时刻——于是崩溃重启后，这个「恰恰是崩溃后要查的」工具列出的
+  行会整批共用同一个时间戳。SQLite 对 `ORDER BY` 键相等的行不保证顺序，而每一页都是独立的
+  `LIMIT/OFFSET` 查询，于是两页可能对某个会话的位置各执一词，导致它两页都没有（漏读）或两页都有
+  （重复）——文档串里描述的 3000 条待查会话正是这种规模。现补上 `id` 作为二级键（`updated_at
+  DESC, id DESC`），与关闭会话裁剪已用的全序一致；内存版仓库的对应排序也补上 `id`，让两种后端
+  对同一批同刻会话给出相同顺序。新增按后端参数化的测试：以同刻批量建若干未清理会话，断言整表读取
+  按 `id` 降序、且分页拼接与整表读取逐项一致（不漏不重）。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
