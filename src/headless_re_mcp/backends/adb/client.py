@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -444,11 +445,50 @@ class AdbBackend:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"connect failed: {exc}", endpoint=endpoint) from exc
-        return {
+        connected = "connected" in str(message).lower() or "already" in str(message).lower()
+        result: JsonObject = {
             "endpoint": endpoint,
             "result": str(message),
-            "connected": "connected" in str(message).lower() or "already" in str(message).lower(),
+            "connected": connected,
         }
+        if connected:
+            # adb answers "connected to host:port" the instant the TCP transport
+            # is up, but the device can still be offline or unauthorized and
+            # reject every command until it finishes booting or the adb RSA key
+            # is accepted. connected true then reads as "ready", so a caller
+            # fires info/screenshot/install at a device that only errors. Read
+            # the transport state to separate a usable device from one that is
+            # merely connected. Best-effort: a probe that fails or stalls must
+            # never turn a real connection into a reported failure.
+            state = self._connected_state(client, endpoint)
+            if state:
+                result["state"] = state
+                result["ready"] = state == "device"
+                if state != "device":
+                    result["note"] = (
+                        f"transport connected but the device state is {state!r}, not "
+                        "'device'; it will reject commands until it is ready (still "
+                        "booting, or the adb RSA key is unauthorized)"
+                    )
+        return result
+
+    def _connected_state(self, client: Any, endpoint: str) -> str | None:
+        """Best-effort transport state right after connect, for readiness only.
+
+        Bounded and silent: it runs only to disclose whether a freshly connected
+        endpoint is usable, so a probe failure or a stalled adb server returns
+        None rather than adding latency past the probe ceiling or converting a
+        good connection into an error.
+        """
+        try:
+            dev = client.device(serial=endpoint)
+        except Exception:  # noqa: BLE001
+            return None
+        dev = _bind_open_transport(dev, _ADB_PROBE_TIMEOUT_S)
+        with suppress(Exception):
+            state = _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S)
+            return str(state or "").strip() or None
+        return None
 
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)

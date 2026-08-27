@@ -82,6 +82,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（device.connect 不再把"连上但未就绪"的设备谎报为可用）
+
+- `device.connect` 过去只回 `endpoint`/`result`/`connected`。adb 在 TCP 传输一建立就回
+  "connected to host:port",但设备此刻可能仍是 `offline` 或 `unauthorized`——还在开机,或 adb
+  的 RSA 授权没点——会拒掉之后的每一条命令。只看 `connected=true` 就读成"已就绪",无人值守的
+  调用方于是立刻对一台只会报错的设备发 `info`/`screenshot`/`install`。现在连上后补一次有界、
+  best-effort 的传输状态探测,回 `state` 与 `ready`(仅当 `state=='device'` 为真);非 `device`
+  时附 `note`,点明它在就绪前会拒命令。探测被 `_ADB_PROBE_TIMEOUT_S` 封顶且吞掉一切异常:探测失
+  败或 adb server 卡住只是不回 `state`,绝不把一次真实连接翻转成失败信封。这一层与既有的
+  "拒绝的 TCP 连接是失败信封、而非 connected=false"正交——信封成功仍以 `connected`(传输层)为
+  准,`ready` 只做就绪性披露,与 `device.list` 早已强调的 offline/unauthorized 区分同构。回归测试
+  覆盖 offline/unauthorized/device/无探测/探测抛错/被拒六种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
