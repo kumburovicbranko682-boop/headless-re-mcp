@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install the optional *portable* reverse-engineering backends on Linux x86_64:
 #   radare2   cross-platform disassembler (r2 track)
-#   mingw-w64 Windows PE cross-compiler    (r2 PE-portability gate fixture)
+#   mingw-w64 Windows PE cross-compiler    (r2 / UPX PE-portability gate fixtures)
+#   upx       UPX packer/unpacker CLI      (portable UPX unpack gate)
 #   wabt      wasm2wat / wasm-objdump      (Web WASM track)
 #   webcrack  JavaScript deobfuscation     (Web JS track)
 #   apktool   APK decode/rebuild           (Android repackaging track)
@@ -267,9 +268,26 @@ install_mingw() {
   fi
 }
 
+install_upx() {
+  # The portable UPX gate packs a mingw-built PE and drives unpack.upx.* against
+  # it; the official CLI ships as upx-ucl on Debian/Ubuntu (binary name: upx).
+  if command -v upx >/dev/null 2>&1; then
+    echo "upx: already present ($(command -v upx))"
+    return 0
+  fi
+  echo "upx: installing via apt…"
+  if apt_install upx-ucl; then
+    echo "upx: $(upx --version 2>/dev/null | head -1)"
+  else
+    echo "  ! upx install failed; the UPX portability gate will skip" >&2
+    return 1
+  fi
+}
+
 echo "Installing non-PE RE backends…"
 install_radare2 || failures=$((failures + 1))
 install_mingw || failures=$((failures + 1))
+install_upx || failures=$((failures + 1))
 install_wabt || failures=$((failures + 1))
 install_webcrack || failures=$((failures + 1))
 install_apktool || failures=$((failures + 1))
