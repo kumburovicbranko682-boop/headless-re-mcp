@@ -109,6 +109,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   跑 `aflj`/`pdj`/`axj`,断言函数/反汇编/xref 都解析成功且地址是纯 va(显式断言 ELF 上不出现 rva/module)。
   没有 r2 或没有编译器时如实 skip(skip 不等于 pass),不落任何提交产物。
 
+### 新增（原生二进制会话：ELF/Mach-O 现在能开会话，r2 工具面才真正可达）
+
+- **portable-static 名义上是非 PE 线,实际上却连 ELF/Mach-O 都开不了会话**:`classify_target` 把一切
+  未识别的东西(包括 ELF)都归到 PE,而 PE 会话创建会读 MZ 头,于是原生二进制被 `not a PE file` 直接顶回,
+  `r2.open`/`r2.functions`/`r2.strings`/`r2.imports`/`r2.exports`/`r2.disasm`/`r2.xrefs` 这整条工具面在
+  Linux/macOS 上——正是这些格式的老家——通过正常「建会话→调工具」的路子根本够不着(上面那条 ELF Gate 只能
+  绕过会话、直接压 `R2Client` 就是因为这个)。新增 `TargetKind.NATIVE`:`classify_target` 按魔数认出 ELF
+  (`\x7fELF`)与 Mach-O 瘦二进制(feedface/feedfacf,大小端四种;fat 的 0xCAFEBABE 因与 Java `.class` 撞
+  魔数而有意不认),归为原生会话;会话创建走既有的非 PE 分支(不跑 MZ 校验、只绑定文件与 sha256),于是
+  `require_binary()`——继而所有 r2 工具——直接可用,而 PE 专属调试器(x64dbg/WinDbg/IDA、`dynamic.launch`
+  等)照旧经 `require_pe()` 以 `target_mismatch` 干净拒绝,绝不把调试器放到非 PE 镜像上。新增
+  `test_r2_tool_surface_reachable_for_a_native_elf_session`(现编 ELF→建原生会话→`r2.open`/`functions`/
+  `strings`/`imports` 逐个断言拿回夹具里造进去的函数/格式串/printf 导入,并断言 `dynamic.launch` 被拒),
+  加单测钉住 ELF/Mach-O 魔数分类、fat/未知字节仍回落 PE、以及原生会话是文件绑定但 `require_pe()` 仍拒。
+
 ### 新增（抓包代理实测 Gate：真的录到流量、也真的能重放）
 
 - 代理线过去只有 `test_proxy_lifecycle_gate` 验证「起得来、端口占用被拒、停得掉、端口回收」,但代理的

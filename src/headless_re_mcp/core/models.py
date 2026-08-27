@@ -42,14 +42,18 @@ class TargetKind(StrEnum):
     """What kind of artifact a session is bound to.
 
     The debugger-oriented tools assume a local PE with a known machine type.
-    Android and browser targets share the session lifecycle, artifacts and
-    knowledge store but cannot answer PE questions, so every tool that needs a
-    PE says so explicitly rather than failing deep inside a backend.
+    Android, browser and native (ELF/Mach-O) targets share the session
+    lifecycle, artifacts and knowledge store but cannot answer PE questions, so
+    every tool that needs a PE says so explicitly rather than failing deep
+    inside a backend. ``NATIVE`` is the portable-static path: r2 reads ELF and
+    Mach-O the same way it reads a PE, so these sessions back ``r2.*`` (and other
+    format-agnostic readers) while the PE-only debuggers reject them cleanly.
     """
 
     PE = "pe"
     APK = "apk"
     WEB = "web"
+    NATIVE = "native"
 
 
 class TargetMismatch(RuntimeError):
@@ -181,7 +185,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.APK, TargetKind.NATIVE),
                 actual=self.target,
             )
         return self.binary

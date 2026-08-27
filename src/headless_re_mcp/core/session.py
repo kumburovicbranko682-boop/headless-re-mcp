@@ -361,6 +361,15 @@ _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".ha
 _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
+# Mach-O thin binaries, 32/64-bit, both byte orders. The fat magic 0xCAFEBABE
+# is deliberately left out: it collides with a Java .class file, and a single
+# `cc` compile (what the r2 gate builds) emits a thin Mach-O, not a fat one.
+_MACHO_MAGICS = (
+    b"\xcf\xfa\xed\xfe",  # 64-bit little-endian
+    b"\xce\xfa\xed\xfe",  # 32-bit little-endian
+    b"\xfe\xed\xfa\xcf",  # 64-bit big-endian
+    b"\xfe\xed\xfa\xce",  # 32-bit big-endian
+)
 
 
 def is_http_url(reference: str) -> bool:
@@ -371,8 +380,9 @@ def classify_target(reference: str | Path) -> TargetKind:
     """Infer the target kind so existing callers keep their one-argument create.
 
     Extension first because it is the caller's stated intent, then magic bytes
-    for files named without one. Anything unrecognised stays PE, which keeps the
-    original "not a PE file" error rather than inventing a vaguer one.
+    for files named without one. ELF and Mach-O images are recognised as native
+    (portable-static) targets; anything still unrecognised stays PE, which keeps
+    the original "not a PE file" error rather than inventing a vaguer one.
     """
 
     text = str(reference).strip()
@@ -395,6 +405,11 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
+    # ELF / Mach-O: r2 reads these natively, so bind them to a portable-static
+    # session instead of the PE fallback (which would reject them as "not a PE
+    # file" and leave the whole r2 tool surface unreachable on Linux/macOS).
+    if magic.startswith(b"\x7fELF") or magic[:4] in _MACHO_MAGICS:
+        return TargetKind.NATIVE
     return TargetKind.PE
 
 

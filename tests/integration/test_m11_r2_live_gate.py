@@ -9,6 +9,11 @@ fixture was a Windows PE, so a regression in the non-PE (va-only) mapping would
 have sailed through every green run there. It compiles a tiny fixture with the
 system C compiler so it needs no committed binary; skip != pass when neither r2
 nor a compiler is present.
+
+A third gate drives the r2 *service* surface (``r2.open`` / ``functions`` /
+``strings`` / ``imports``) through a real session created from that ELF -- the
+path that was impossible before the native target kind, because an ELF was
+classified PE and rejected as "not a PE file".
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.r2.client import R2Client
+from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -137,3 +143,58 @@ def test_m11_r2_live_elf_maps_functions_disasm_and_xrefs(tmp_path: Path) -> None
     xrefs = client.xrefs(fixture, va, timeout=60.0)
     assert xrefs.get("parsed") is True
     assert xrefs.get("address", {}).get("va") == va
+
+
+@pytest.mark.integration
+def test_r2_tool_surface_reachable_for_a_native_elf_session(tmp_path: Path) -> None:
+    """The whole point of the native target kind: r2 tools work end to end.
+
+    The gate above drives ``R2Client`` directly because, until the native target
+    kind, an ELF could not even get a session -- ``classify_target`` mapped it to
+    PE and creation rejected it as "not a PE file", so ``r2.open`` /
+    ``r2.functions`` / ``r2.strings`` / ``r2.imports`` were unreachable for the
+    binary format Linux/macOS actually ship. This drives that service surface:
+    a session is created straight from the ELF, and each tool must return the
+    facts the fixture was built with (the gate functions, the format string, the
+    printf import). A PE-only tool on the same session must still be refused, so
+    the kind does not quietly turn every debugger loose on a non-PE image.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip != pass)")
+    fixture = _build_elf_fixture(tmp_path)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(fixture))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+        # The ELF must be bound as a native (portable-static) session.
+        assert created.data["session"]["target"] == "native"
+
+        opened = service.r2_open(session_id)
+        assert opened.ok, opened.error
+        assert opened.data.get("opened") is True
+
+        funcs = service.r2_functions(session_id)
+        assert funcs.ok, funcs.error
+        assert funcs.data["count"] >= 1
+        names = {str(item.get("name", "")) for item in funcs.data["items"]}
+        assert any("r2_gate" in name for name in names), names
+
+        strings = service.r2_strings(session_id)
+        assert strings.ok, strings.error
+        found = [str(item.get("string", "")) for item in strings.data["items"]]
+        assert any("r2-gate" in text for text in found), found
+
+        imports = service.r2_imports(session_id)
+        assert imports.ok, imports.error
+        imported = {str(item.get("name", "")) for item in imports.data["items"]}
+        assert any("printf" in name for name in imported), imported
+
+        # A PE-only tool must reject the native session with target_mismatch,
+        # not crash inside the debugger backend.
+        launched = service.dynamic_launch(session_id)
+        assert not launched.ok
+        assert launched.error.code == "target_mismatch"
+    finally:
+        service.close_all()

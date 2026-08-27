@@ -34,7 +34,7 @@ def test_require_pe_accepts_a_pe_session_and_returns_its_binary(tmp_path: Path) 
     assert session.require_target(TargetKind.PE) == binary
 
 
-@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB])
+@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB, TargetKind.NATIVE])
 def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     wrong: TargetKind, tmp_path: Path
 ) -> None:
@@ -49,6 +49,21 @@ def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     assert error.details["expected_targets"] == [TargetKind.PE.value]
 
 
+def test_require_binary_serves_a_native_session_but_require_pe_still_refuses_it(
+    tmp_path: Path,
+) -> None:
+    """A native (ELF/Mach-O) session is file-backed like a PE for the r2 tools,
+    yet must still be rejected by the PE-only debuggers."""
+    binary = tmp_path / "a.out"
+    session = _session(TargetKind.NATIVE, binary=binary)
+
+    assert session.require_binary() == binary
+
+    with pytest.raises(TargetMismatch) as caught:
+        session.require_pe()
+    assert caught.value.details["actual_target"] == TargetKind.NATIVE.value
+
+
 def test_require_binary_explains_a_locator_only_session() -> None:
     """A web session has no local file; asking for one is a mismatch, not None."""
     session = _session(TargetKind.WEB, locator="https://example.com/app")
@@ -58,10 +73,11 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE or an APK is the thing that would have a local file.
+    # A PE, an APK or a native binary is the thing that would have a local file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.APK.value,
+        TargetKind.NATIVE.value,
     }
 
 
