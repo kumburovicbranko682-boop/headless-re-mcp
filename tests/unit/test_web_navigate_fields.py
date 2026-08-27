@@ -38,8 +38,12 @@ class _Immediate:
 class _Page:
     url = "https://old/"
 
-    def goto(self, url: str, timeout: float = 0, wait_until: str = "") -> None:
+    def __init__(self, response: Any = None) -> None:
+        self._response = response
+
+    def goto(self, url: str, timeout: float = 0, wait_until: str = "") -> Any:
         self.url = url
+        return self._response
 
     def title(self) -> str:
         return "Example"
@@ -63,3 +67,35 @@ def test_web_navigate_puts_the_result_in_url_and_title(monkeypatch: Any) -> None
     doc = _tool_docstring("web.navigate")
     assert "Answers with url" in doc
     assert "title" in doc
+    assert "status" in doc
+
+
+def test_web_navigate_surfaces_the_http_status_so_an_error_page_is_visible(
+    monkeypatch: Any,
+) -> None:
+    """A 404/500 page still navigates; the status is how a caller sees it.
+
+    page.goto returns the main-frame response, which carries the HTTP status.
+    Dropping it reported an error page as a clean load -- the same partial
+    success this campaign has been surfacing elsewhere.
+    """
+    backend = WebBackend()
+    page = _Page(response=SimpleNamespace(status=404))
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=page))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.navigate("s", "https://example/missing")
+    assert payload["status"] == 404
+    assert payload["url"] == "https://example/missing"
+
+
+def test_web_navigate_omits_status_when_the_navigation_returned_none(
+    monkeypatch: Any,
+) -> None:
+    """A same-document/about:blank navigation has no response; do not invent one."""
+    backend = WebBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(page=_Page(response=None))
+    )
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.navigate("s", "https://example/app")
+    assert "status" not in payload

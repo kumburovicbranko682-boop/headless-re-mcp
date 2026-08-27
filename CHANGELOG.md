@@ -77,6 +77,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   新增 `dropped`（为塞进上限而丢弃的条目数，与 proxy.export_har 一致），描述也补齐 `truncated` /
   `dropped` / `size`：`dropped` 非零即表示 HAR 只是会话的一部分。
 
+### 修复（web.navigate 回报主帧 HTTP 状态，错误页不再冒充加载成功）
+
+- `web.navigate` 过去丢弃 `page.goto` 返回的主帧响应，只回 `url` 与 `title`。可 4xx/5xx 的页面照样
+  “导航成功”——`goto` 不抛异常，于是调用方（尤其是无人值守的 agent）把一个 404/500 错误页读成
+  正常加载。现载荷在导航确有响应时补 `status`（主帧 HTTP 状态；same-document 或 about:blank 无响应
+  时按实省略而非编造），描述同步点名 `status`：4xx/5xx 落在 `status` 里，而不是靠“调用失败”体现。
+  仍不加 `ok` 字段（沿用既有约定）。补测:命中响应回 `status=404`、响应为 None 时不含 `status`、
+  描述点名 `status`。
+
 ### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
 
 - `device.pull` 过去在 adb sync“干净返回却没写出本地文件”时（远端路径不存在，较旧 adbutils 不抛异常，

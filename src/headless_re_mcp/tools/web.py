@@ -47,7 +47,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url and title. There is no navigated, ok or page field.
+        Answers with url and title, plus status (the main-frame HTTP status)
+        when the navigation returned a response. There is no navigated, ok or
+        page field: a 4xx or 5xx shows up in status, not as a failed call, so an
+        error page is not read as a clean load.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 

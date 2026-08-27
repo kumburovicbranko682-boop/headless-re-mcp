@@ -469,13 +469,23 @@ class WebBackend:
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
+            # page.goto returns the main-frame response, or None for a
+            # same-document or about:blank navigation. A 4xx/5xx page still
+            # navigates, so without the status a caller reads an error page as a
+            # clean load. Report it when known rather than fabricate one.
+            status = getattr(response, "status", None) if response is not None else None
+            if isinstance(status, int):
+                result["status"] = status
+            return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
