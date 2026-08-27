@@ -1050,6 +1050,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   16KiB 摘要;小输出原样不变。`RESULT_BUDGET_BYTES` 以常量镜像 `ResourcePolicy.max_result_bytes` 并由单测钉死防漂移;另加
   单测喂 1MiB 输出、断言过 `bounded_tool_result` 后仍带 `code`、不带 `summary`(修前 400KB 必被摘要),原「按原始字节截」的
   单测改成按编码体积断言。已在 wabt 1.0.36 上跑通 WASM live gate(干净小输出照旧原样回)。
+- **`web.network.get`/`web.script.source`/`web.dom.snapshot` 的内联字段也栽在同一处、且更值得担心——这些正文是页面(可能是恶意页)
+  自己控制的**。上一条曾说 web 的 `_spill_text` 用 200000 的较低上限「压在预算之下」——其实没有:200000 **原始字节** 的正文一样能
+  编码到 262144 以上(实测 200000 字符+适量转义即 263220),更别提它旁边还挂着一个可达 16KiB 的 `url`;一旦触网,连指向落盘副本的
+  `body_path`/`source_path` 都随整条结果一起被摘要吞掉,agent 既拿不到正文、也找不到那份文件。`dom.snapshot` 更糟:`html` 只按
+  字符截到 200000、根本不落盘,超预算就是整条没了。现三处都过 `fit_json_text` 按编码体积再兜一层(web 侧余量取 32KiB,够容下
+  16KiB 的 url 加其余标量,不像 jsre 那样需要为 stderr 留 64KiB)。`_spill_text` 的语义收紧为「只要内联被裁——无论是原始上限还是
+  编码上限——就必落盘」,于是 `truncated` 永远伴随一个 `*_path` 指向完整正文;干净的小正文照旧整条内联、不落盘(200000 全 `x` 编码
+  仅 200002<预算,行为不变)。新增单测:①编码上限单独触发时也落盘并裁内联;②一条带 16KiB url 的大 `network_get` 结果过
+  `bounded_tool_result` 后仍带 `body_path`、不被摘要;③`dom.snapshot` 的 `html` 按编码体积裁并置 `truncated`。既有 spill/字段单测
+  全绿(原始上限作为第一道界不变)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
