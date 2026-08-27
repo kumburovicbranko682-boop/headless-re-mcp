@@ -505,6 +505,103 @@ class TestPeOnlyToolsRefuseApkSessions:
             service.close_all()
 
 
+class TestApkToolsRefuseNonApkSessions:
+    """The mirror of TestPeOnlyToolsRefuseApkSessions: an APK tool aimed at a
+    PE/web session must answer ``target_mismatch`` -- the actionable "you are on
+    the wrong session" -- and never ``capability_unavailable``, which would send
+    the caller off to install androguard/jadx/apktool they do not even need.
+
+    The load-bearing part is that the target check runs *before* the backend's
+    capability gate: this service is built with jadx/apktool/apksigner disabled
+    (and hosted quality has no androguard either), so every one of these tools
+    *would* report ``capability_unavailable`` if the target guard did not win
+    first. Sessions are adopted straight into the registry so the check does not
+    depend on a real PE/APK file existing on disk.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(
+            Settings.load(),
+            artifact_root=tmp_path / "artifacts",
+            jadx=None,
+            apktool=None,
+            apksigner=None,
+        )
+        return AnalysisService(settings)
+
+    @staticmethod
+    def _adopt(service: Any, target: TargetKind) -> str:
+        from headless_re_mcp.core.models import Session, SessionState
+
+        locator = "https://example.com/app" if target is TargetKind.WEB else None
+        binary = None if target is TargetKind.WEB else Path("/tmp/not-an.apk")
+        session = Session(
+            target=target, locator=locator, binary=binary, state=SessionState.READY
+        )
+        return service.registry.adopt(session).id
+
+    @pytest.mark.parametrize("wrong", [TargetKind.WEB, TargetKind.PE])
+    def test_androguard_tools_report_mismatch_not_missing_androguard(
+        self, wrong: TargetKind, tmp_path: Path
+    ) -> None:
+        service = self._service(tmp_path)
+        try:
+            sid = self._adopt(service, wrong)
+            calls = {
+                "apk.open": lambda: service.apk_open(sid),
+                "apk.manifest": lambda: service.apk_manifest(sid),
+                "apk.permissions": lambda: service.apk_permissions(sid),
+                "apk.certificates": lambda: service.apk_certificates(sid),
+                "apk.components": lambda: service.apk_components(sid),
+                "apk.native_libs": lambda: service.apk_native_libs(sid),
+                "apk.classes": lambda: service.apk_classes(sid),
+                "apk.methods": lambda: service.apk_methods(sid, "La/B;"),
+                "apk.xrefs": lambda: service.apk_xrefs(sid, "La/B;->c()V"),
+                "apk.strings": lambda: service.apk_strings(sid),
+            }
+            for name, call in calls.items():
+                result = call()
+                assert result.ok is False, f"{name} unexpectedly succeeded"
+                assert result.error is not None
+                assert result.error.code == "target_mismatch", (
+                    f"{name} on a {wrong.value} session returned "
+                    f"{result.error.code}, not target_mismatch"
+                )
+        finally:
+            service.close_all()
+
+    @pytest.mark.parametrize("wrong", [TargetKind.WEB, TargetKind.PE])
+    def test_jadx_and_apktool_tools_report_mismatch_not_missing_tool(
+        self, wrong: TargetKind, tmp_path: Path
+    ) -> None:
+        service = self._service(tmp_path)
+        try:
+            sid = self._adopt(service, wrong)
+            calls = {
+                "apk.decompile": lambda: service.apk_decompile(sid, "a.B"),
+                "apk.export_sources": lambda: service.apk_export_sources(sid),
+                "apk.decode": lambda: service.apk_decode(sid),
+                "apk.repack": lambda: service.apk_repack(sid),
+                "apk.sign": lambda: service.apk_sign(sid),
+            }
+            for name, call in calls.items():
+                result = call()
+                assert result.ok is False, f"{name} unexpectedly succeeded"
+                assert result.error is not None
+                assert result.error.code == "target_mismatch", (
+                    f"{name} on a {wrong.value} session returned "
+                    f"{result.error.code}, not target_mismatch"
+                )
+        finally:
+            service.close_all()
+
+
 def _adb_with_shell(output: str) -> AdbBackend:
     """An AdbBackend whose device shell always returns ``output``.
 

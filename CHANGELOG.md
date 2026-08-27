@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 APK 工具在非 APK 会话上报 target_mismatch 而非 capability_unavailable：别叫人去装其实用不上的依赖）
+
+- 已有 `TestPeOnlyToolsRefuseApkSessions` 钉住了 PE→APK 方向(在 APK 会话上调 detect/dotnet/unpack/static/dynamic\
+  得 `target_mismatch`,且注明“托管环境没有 UPX,目标检查也必须先赢”)。对称的反向此前没测:在 PE/web 会话上调\
+  APK 工具应答 `target_mismatch`——可操作的“你选错会话了”——而绝不能是 `capability_unavailable`,后者会把调用方\
+  支去装它根本不需要的 androguard/jadx/apktool。关键在于目标检查跑在后端能力闸**之前**:所有 `apk_*` 方法都先\
+  过 `_apk_binary`(即 `require_target(APK)`)再构造后端 client。新增 `TestApkToolsRefuseNonApkSessions`,把 service\
+  的 jadx/apktool/apksigner 全设为 None(托管环境也没有 androguard),于是这些工具若目标闸没先赢**本会**报\
+  `capability_unavailable`;会话直接 adopt 进 registry(WEB 与 PE 两种错目标),故不依赖磁盘上真有 PE/APK 文件。\
+  覆盖 androguard 面(open/manifest/permissions/certificates/components/native_libs/classes/methods/xrefs/strings)\
+  与 jadx+apktool 面(decompile/export_sources/decode/repack/sign),两种错目标各一遍,全部必须是 `target_mismatch`。\
+  (纯测试补充,无行为变更。)
+
 ### 测试（钉住 _pids_for_package 的三态：device.force_stop 是否成功全靠它，别把“没读到”当成“已停”）
 
 - `device.force_stop` 之所以能诚实作答,全靠 `_pids_for_package` 在一台它无法尽信的设备上区分三种结局:\
