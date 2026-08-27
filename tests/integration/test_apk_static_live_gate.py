@@ -453,10 +453,158 @@ def _build_two_class_dex() -> bytes:
     return bytes(buf)
 
 
-def _build_apk(path: Path, *, dex: bytes | None = None) -> Path:
+def _build_single_class_dex(
+    *,
+    class_desc: str,
+    method_name: str,
+    method_is_static: bool,
+    calls: tuple[str, str] | None = None,
+) -> bytes:
+    """A valid DEX 035 defining exactly one class with one method.
+
+    If ``calls`` is given, the method ``invoke-virtual``s that (class, method)
+    reference -- whose target class need NOT be defined in this DEX. That is what
+    lets a caller DEX live in ``classes.dex`` while its callee is defined in
+    ``classes2.dex``: the reference is a method-id, resolved across DEX files by
+    androguard's merged analysis. String/type/method tables are emitted in the
+    sorted order the DEX spec mandates so androguard parses it as-is.
+    """
+    no_index = 0xFFFFFFFF
+    obj_desc = "Ljava/lang/Object;"
+    void = "V"
+    type_descs = {class_desc, obj_desc, void}
+    names = {method_name}
+    if calls is not None:
+        type_descs.add(calls[0])
+        names.add(calls[1])
+    all_strings = sorted(type_descs | names)  # DEX orders strings by code point
+    sidx = {text: i for i, text in enumerate(all_strings)}
+    n_str = len(all_strings)
+
+    types_sorted = sorted(type_descs, key=lambda d: sidx[d])  # and type-ids by string idx
+    tidx = {desc: i for i, desc in enumerate(types_sorted)}
+    n_type = len(types_sorted)
+
+    methods = [(class_desc, method_name)]
+    if calls is not None:
+        methods.append(calls)
+    methods_sorted = sorted(methods, key=lambda cm: (tidx[cm[0]], sidx[cm[1]]))  # (class,name)
+    midx = {cm: i for i, cm in enumerate(methods_sorted)}
+    n_method = len(methods_sorted)
+    n_proto = 1
+    n_class = 1
+
+    string_ids_off = 0x70
+    type_ids_off = string_ids_off + 4 * n_str
+    proto_ids_off = type_ids_off + 4 * n_type
+    method_ids_off = proto_ids_off + 12 * n_proto
+    class_defs_off = method_ids_off + 8 * n_method
+    data_off = class_defs_off + 32 * n_class
+
+    data = bytearray()
+
+    def cursor() -> int:
+        return data_off + len(data)
+
+    def align4() -> None:
+        while (data_off + len(data)) % 4:
+            data.append(0)
+
+    str_data_off: list[int] = []
+    for text in all_strings:
+        str_data_off.append(cursor())
+        data += _uleb128(len(text)) + text.encode("ascii") + b"\x00"
+
+    align4()
+    code_off = cursor()
+    if calls is not None:
+        # const/4 v0, 0; invoke-virtual {v0}, <callee>; return-void
+        insns = [0x0012, 0x106E, midx[calls], 0x0000, 0x000E]
+        registers, outs = 1, 1
+    else:
+        insns = [0x000E]  # return-void
+        registers, outs = 0, 0
+    data += struct.pack("<HHHHII", registers, 0, outs, 0, 0, len(insns))
+    data += b"".join(struct.pack("<H", unit) for unit in insns)
+
+    class_data_off = cursor()
+    defined = _uleb128(midx[(class_desc, method_name)])
+    if method_is_static:
+        data += _uleb128(0) + _uleb128(0) + _uleb128(1) + _uleb128(0)  # 1 direct method
+        data += defined + _uleb128(0x9) + _uleb128(code_off)  # public static
+    else:
+        data += _uleb128(0) + _uleb128(0) + _uleb128(0) + _uleb128(1)  # 1 virtual method
+        data += defined + _uleb128(0x1) + _uleb128(code_off)  # public
+
+    align4()
+    map_off = cursor()
+    entries = [
+        (0x0000, 1, 0),
+        (0x0001, n_str, string_ids_off),
+        (0x0002, n_type, type_ids_off),
+        (0x0003, n_proto, proto_ids_off),
+        (0x0005, n_method, method_ids_off),
+        (0x0006, n_class, class_defs_off),
+        (0x2002, n_str, str_data_off[0]),
+        (0x2001, 1, code_off),
+        (0x2000, 1, class_data_off),
+        (0x1000, 1, map_off),
+    ]
+    data += struct.pack("<I", len(entries))
+    for typ, count, off in entries:
+        data += struct.pack("<HHII", typ, 0, count, off)
+
+    data_size = len(data)
+    file_size = data_off + data_size
+
+    buf = bytearray(data_off)
+    for i, off in enumerate(str_data_off):
+        struct.pack_into("<I", buf, string_ids_off + 4 * i, off)
+    for i, desc in enumerate(types_sorted):
+        struct.pack_into("<I", buf, type_ids_off + 4 * i, sidx[desc])
+    struct.pack_into("<III", buf, proto_ids_off, sidx[void], tidx[void], 0)
+    for i, (cls, name) in enumerate(methods_sorted):
+        struct.pack_into("<HHI", buf, method_ids_off + 8 * i, tidx[cls], 0, sidx[name])
+    struct.pack_into(
+        "<IIIIIIII",
+        buf,
+        class_defs_off,
+        tidx[class_desc],
+        0x1,
+        tidx[obj_desc],
+        0,
+        no_index,
+        0,
+        class_data_off,
+        0,
+    )
+    buf += data
+
+    buf[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", buf, 32, file_size)
+    struct.pack_into("<I", buf, 36, 0x70)
+    struct.pack_into("<I", buf, 40, 0x12345678)  # endian tag
+    struct.pack_into("<I", buf, 52, map_off)
+    struct.pack_into("<II", buf, 56, n_str, string_ids_off)
+    struct.pack_into("<II", buf, 64, n_type, type_ids_off)
+    struct.pack_into("<II", buf, 72, n_proto, proto_ids_off)
+    struct.pack_into("<II", buf, 80, 0, 0)  # no fields
+    struct.pack_into("<II", buf, 88, n_method, method_ids_off)
+    struct.pack_into("<II", buf, 96, n_class, class_defs_off)
+    struct.pack_into("<II", buf, 104, data_size, data_off)
+    buf[12:32] = hashlib.sha1(bytes(buf[32:])).digest()  # noqa: S324 - DEX spec uses SHA-1
+    struct.pack_into("<I", buf, 8, zlib.adler32(bytes(buf[12:])) & 0xFFFFFFFF)
+    return bytes(buf)
+
+
+def _build_apk(
+    path: Path, *, dex: bytes | None = None, extra_dexes: dict[str, bytes] | None = None
+) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("AndroidManifest.xml", _build_manifest_axml())
         archive.writestr("classes.dex", dex if dex is not None else _build_empty_dex())
+        for name, payload in (extra_dexes or {}).items():
+            archive.writestr(name, payload)
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("lib/x86_64/libhello.so", b"\x7fELFplaceholder")
     return path
@@ -638,5 +786,60 @@ def test_apk_dex_readers_resolve_a_cross_class_xref(tmp_path: Path) -> None:
         back = service.apk_xrefs(session_id, _DEX_CROSS_CALLER)
         assert back.ok and back.data is not None, back.error
         assert back.data["callers"] == []
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_readers_merge_classes_across_secondary_dex(tmp_path: Path) -> None:
+    """Classes and xrefs must span classes.dex + classes2.dex, not just the first.
+
+    Real apps routinely exceed one DEX's 64K method limit and ship
+    classes.dex/classes2.dex/... A reader that analysed only the primary DEX
+    would silently miss every class and call in the secondaries. Here App (in
+    classes.dex) calls Helper.greet, but Helper is defined only in classes2.dex,
+    so both the merged class list and the cross-DEX xref prove the whole-APK
+    analysis path an agent depends on.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    caller_dex = _build_single_class_dex(
+        class_desc=_DEX_APP_SMALI,
+        method_name=_DEX_CROSS_CALLER,
+        method_is_static=True,
+        calls=(_DEX_HELPER_SMALI, _DEX_CROSS_CALLEE),
+    )
+    callee_dex = _build_single_class_dex(
+        class_desc=_DEX_HELPER_SMALI,
+        method_name=_DEX_CROSS_CALLEE,
+        method_is_static=False,
+    )
+    apk = _build_apk(
+        tmp_path / "multidex.apk", dex=caller_dex, extra_dexes={"classes2.dex": callee_dex}
+    )
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        classes = service.apk_classes(session_id, limit=50)
+        assert classes.ok and classes.data is not None, classes.error
+        # App lives in classes.dex, Helper only in classes2.dex; both must appear.
+        assert set(classes.data["classes"]) == {_DEX_APP_SMALI, _DEX_HELPER_SMALI}
+
+        # The callee is defined in the secondary DEX yet its caller is in the
+        # primary one -- the xref only resolves if the analysis merged both.
+        cross = service.apk_xrefs(session_id, _DEX_CROSS_CALLEE)
+        assert cross.ok and cross.data is not None, cross.error
+        assert cross.data["count"] == 1, cross.data
+        caller = cross.data["callers"][0]
+        assert caller["class"] == _DEX_APP_SMALI, caller
+        assert caller["method"] == _DEX_CROSS_CALLER, caller
+
+        # And the caller's own methods are reachable from the primary DEX.
+        methods = service.apk_methods(session_id, "com.example.App")
+        assert methods.ok and methods.data is not None, methods.error
+        assert [m["name"] for m in methods.data["methods"]] == [_DEX_CROSS_CALLER]
     finally:
         service.close_all()
