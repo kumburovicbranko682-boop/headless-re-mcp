@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -420,15 +421,24 @@ class ExtAnalysisMixin(UiDriveMixin):
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
             project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
             data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
-            session = self.registry.get(session_id)
-            if session.state in {
-                SessionState.CLOSING,
-                SessionState.CLOSED,
-                SessionState.FAILED,
-            }:
-                raise InvalidStateTransition(
-                    f"ghidra.analyze cannot run in {session.state.value} state"
-                )
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"ghidra.analyze cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a project written
+                # after that is invisible to the next close and to artifacts.gc,
+                # exactly like the jadx/apktool trees the apk tools reap here.
+                with suppress(OSError):
+                    if project.is_dir():
+                        shutil.rmtree(project)
+                raise
             _record_backend(self, session_id, "ghidra", endpoint=str(project))
             _timeline_append(self, session_id, "ghidra.analyze", "ghidra analyze finished")
             return _success(data, session_id=session_id, backend="ghidra")
@@ -1168,15 +1178,24 @@ def _ghidra_export(
             data = client.decompile(session.require_binary(), project, address, timeout=timeout)
         else:
             raise GhidraError("invalid_params", "unknown ghidra export mode", mode=mode)
-        session = service.registry.get(session_id)
-        if session.state in {
-            SessionState.CLOSING,
-            SessionState.CLOSED,
-            SessionState.FAILED,
-        }:
-            raise InvalidStateTransition(
-                f"ghidra.{mode} cannot run in {session.state.value} state"
-            )
+        try:
+            session = service.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"ghidra.{mode} cannot run in {session.state.value} state"
+                )
+        except BaseException:
+            # close already ran _forget_session_work_dirs; a project (and its
+            # export json) written after that is invisible to the next close and
+            # to artifacts.gc, like the jadx/apktool trees the apk tools reap.
+            with suppress(OSError):
+                if project.is_dir():
+                    shutil.rmtree(project)
+            raise
         _record_backend(service, session_id, "ghidra", endpoint=str(project))
         _timeline_append(service, session_id, f"ghidra.{mode}", f"ghidra {mode} export")
         export_path = data.get("export_path")
