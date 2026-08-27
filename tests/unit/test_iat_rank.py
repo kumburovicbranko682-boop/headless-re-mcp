@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from headless_re_mcp.unpack.iat_rank import (
     analyze_import_entries,
     gate_iat_rebuild,
@@ -104,6 +106,36 @@ def test_rank_dedupes_overlap_and_penalizes_high_rva_ime() -> None:
     ime = next(c for c in ranked["candidates"] if c["iat_va"] == 0x431678)
     assert "alt_kinds" in ime
     assert "ime_dominated" in (ime.get("noise_tags") or [])
+
+
+@pytest.mark.parametrize(
+    ("analysis", "reason_fragment"),
+    [
+        ({"layout": "fragmented", "api_count": 20}, "layout=fragmented"),
+        ({"layout": "empty", "api_count": 20}, "layout=empty"),
+        ({"layout": "junk", "api_count": 20}, "layout=junk"),
+        ({"layout": "dense", "api_count": 3}, "api_count=3"),
+        ({"layout": "half_sparse", "api_count": 20, "ime_dominated": True}, "ime_dominated"),
+    ],
+)
+def test_gate_is_fail_closed_against_a_rebuild_allowed_analysis(
+    analysis: dict[str, object], reason_fragment: str
+) -> None:
+    """The gate re-derives permission; it never trusts an analysis dict's own flag.
+
+    ``analyze_import_entries`` clears ``rebuild_allowed`` for these shapes, but the
+    gate takes an ``analysis`` dict that a direct or stale caller can hand over
+    with the flag still set to True. A rebuild attempted on junk, an empty or
+    fragmented table, an IME-only stub, or too few imports corrupts the dump it
+    claims to repair, so the gate must recompute the block from the layout and
+    counts rather than pass the optimistic flag through.
+    """
+    poisoned = {"rebuild_allowed": True, "ime_dominated": False, **analysis}
+
+    gate = gate_iat_rebuild(poisoned)
+
+    assert gate["rebuild_allowed"] is False
+    assert any(reason_fragment in reason for reason in gate["reasons"])
 
 
 def test_stub_ratio_forces_vm_coupled() -> None:
