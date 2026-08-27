@@ -540,6 +540,14 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            # A wedged, timed-out, or closed runner raises WebError. Folding it
+            # into body_error the way a real getResponseBody miss is folded would
+            # answer ok=True for a dead session -- the caller reads a request that
+            # "succeeded but had no body" when the browser stopped responding.
+            # script_source already re-raises here; a body that CDP genuinely
+            # cannot return still arrives as a plain Exception below and degrades.
+            raise
         except Exception as exc:  # noqa: BLE001
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
