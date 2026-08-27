@@ -31,6 +31,45 @@ def _timeline_lock(path: Path) -> Lock:
     return _STRIPES[hash(str(path)) % len(_STRIPES)]
 
 
+def _dropped_sidecar(path: Path) -> Path:
+    """Tiny companion holding how many entries trimming has dropped.
+
+    The timeline file only holds what survives the byte cap, so its own line
+    count cannot say a session ever had more. Trimming is rare (it runs at the
+    8 MiB high-water mark), so a small counter beside the log is a cheaper,
+    simpler record of cumulative loss than a marker woven into the JSONL stream
+    that the next trim would itself drop. Lives in the session directory, so it
+    is removed with the session it belongs to.
+    """
+    return path.parent / (path.name + ".dropped")
+
+
+def _read_dropped(path: Path) -> int:
+    try:
+        text = _dropped_sidecar(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    try:
+        return max(0, int(text or "0"))
+    except ValueError:
+        return 0
+
+
+def _bump_dropped(path: Path, dropped: int) -> None:
+    """Add ``dropped`` to the cumulative counter. Never fails the trim.
+
+    A diagnostic counter is not worth failing the trim that already succeeded,
+    so a sidecar it cannot write leaves the log correct and the count merely
+    low -- an under-count of loss, never a phantom one.
+    """
+    if dropped <= 0:
+        return
+    with suppress(OSError):
+        _dropped_sidecar(path).write_text(
+            str(_read_dropped(path) + dropped), encoding="utf-8"
+        )
+
+
 def session_timeline_path(artifact_root: Path, session_id: str) -> Path:
     if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
         raise ValueError("invalid session id for timeline path")
@@ -138,13 +177,20 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
     if start:
         newline = tail.find(b"\n")
         tail = tail[newline + 1 :] if newline >= 0 else b""
-    for raw in reversed(tail.splitlines(keepends=True)):
+    all_lines = tail.splitlines(keepends=True)
+    for raw in reversed(all_lines):
         if total + len(raw) > budget or len(kept) >= _MAX_LINES - 1:
             break
         kept.append(raw)
         total += len(raw)
     kept.reverse()
     payload = b"".join(kept)
+    # Every complete line in the file that this rewrite did not carry over is an
+    # entry the session had and the log no longer holds. Counting it lets the
+    # reader report loss instead of passing the survivors off as the whole
+    # history. A partial first line (start > 0) was already stripped above, so
+    # it is not miscounted as a dropped entry.
+    dropped = max(0, len(all_lines) - len(kept))
     # Unique per trim. Nothing serialises appends to one session, so two that
     # cross the cap together would otherwise share this path, and on Windows
     # replacing a file the other still holds open is a sharing violation.
@@ -156,6 +202,9 @@ def _trim_timeline(path: Path, *, reserve: int) -> int:
         with suppress(OSError):
             partial.unlink()
         raise
+    # Only after the replace actually landed, so the count can never run ahead
+    # of a trim that failed and left the file whole.
+    _bump_dropped(path, dropped)
     return len(payload)
 
 
@@ -206,6 +255,7 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
         "offset": offset,
         "limit": limit,
         "has_more": False,
+        "dropped_total": 0,
     }
     with _timeline_lock(path):
         if not path.is_file():
@@ -219,9 +269,14 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
                 raw = stream.read(_MAX_BYTES + 1)
         except OSError as exc:
             return {**empty, "read_failed": f"{type(exc).__name__}: {exc}", "path": str(path)}
+        # total below counts only what the file still holds; dropped_total is
+        # what trimming has already removed. Read under the lock beside raw so a
+        # concurrent trim cannot land between them and desync the two.
+        dropped_total = _read_dropped(path)
         if len(raw) > _MAX_BYTES:
             return {
                 **empty,
+                "dropped_total": dropped_total,
                 "read_failed": f"timeline exceeds {_MAX_BYTES} bytes",
                 "path": str(path),
             }
@@ -243,5 +298,9 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
         "offset": offset,
         "limit": limit,
         "has_more": offset + len(chunk) < total,
+        # Entries trimming has removed to hold the byte cap. total is the
+        # surviving count; a nonzero dropped_total says it is not the session's
+        # whole history, so a caller does not read a capped log as complete.
+        "dropped_total": dropped_total,
         "path": str(path),
     }
