@@ -425,6 +425,20 @@ class AgentStore:
             ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 
+    def count_messages(self, thread_id: str) -> int:
+        """How many messages the thread holds, window or no window.
+
+        list_messages returns only the most recent slice that fits its count
+        and byte budgets, so a caller cannot tell a whole short thread from the
+        tail of a long one. This is the number that says which it is.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def create_run(self, thread_id: str, *, provider_profile: str, model: str | None, deadline_seconds: float) -> AgentRun:
         if self.get_thread(thread_id) is None:
             raise KeyError(thread_id)
@@ -587,6 +601,21 @@ class AgentStore:
                 (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def count_thread_events(self, thread_id: str) -> int:
+        """How many events exist across the thread's retained runs.
+
+        list_thread_events caps to the newest window; this is the total it is
+        drawn from, so a partial history can be named as one.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM run_events e"
+                "  JOIN runs r ON r.id = e.run_id"
+                "  WHERE r.thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> RunEvent:
