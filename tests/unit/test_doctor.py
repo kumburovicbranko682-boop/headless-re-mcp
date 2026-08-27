@@ -547,3 +547,61 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+class _FakePlaywrightSpec:
+    origin = "/fake/site-packages/playwright/__init__.py"
+
+
+class TestPlaywrightProbeChecksForABrowser:
+    """web.open needs a browser binary, not just the playwright package.
+
+    The capabilities catalog maps web.cdp to this probe, so reporting detected
+    on the module alone advertised a capability that failed at launch whenever
+    the browser was never installed or its cache was wiped. The probe now keys
+    on Playwright's own INSTALLATION_COMPLETE marker, so it stays honest without
+    launching (or even importing) a browser.
+    """
+
+    def test_missing_module_reports_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda name: None)
+        probe = doctor_module.probe_playwright()
+        assert probe.status is ProbeStatus.MISSING
+
+    def test_module_without_a_browser_is_missing_with_remediation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            doctor_module.importlib.util, "find_spec", lambda name: _FakePlaywrightSpec()
+        )
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))  # empty: no browser
+        probe = doctor_module.probe_playwright()
+        assert probe.status is ProbeStatus.MISSING
+        assert probe.remediation is not None and "install" in probe.remediation
+
+    def test_installed_chromium_is_detected(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            doctor_module.importlib.util, "find_spec", lambda name: _FakePlaywrightSpec()
+        )
+        # Both the full chromium and the headless-shell build carry this marker;
+        # the headless-shell name is the one chromium.launch(headless=True) uses.
+        browser = tmp_path / "chromium_headless_shell-1234"
+        browser.mkdir()
+        (browser / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        probe = doctor_module.probe_playwright()
+        assert probe.status is ProbeStatus.DETECTED
+
+    def test_a_browser_dir_without_the_completion_marker_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A half-finished download must not read as ready."""
+        monkeypatch.setattr(
+            doctor_module.importlib.util, "find_spec", lambda name: _FakePlaywrightSpec()
+        )
+        (tmp_path / "chromium-1234").mkdir()  # present but no INSTALLATION_COMPLETE
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        probe = doctor_module.probe_playwright()
+        assert probe.status is ProbeStatus.MISSING

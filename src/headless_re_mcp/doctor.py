@@ -203,7 +203,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
         probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
+        probe_playwright("playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
@@ -1106,6 +1106,94 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def _playwright_browsers_root() -> Path | None:
+    """Where Playwright keeps installed browsers, or None if not cheaply knowable.
+
+    Mirrors Playwright's own resolution: ``PLAYWRIGHT_BROWSERS_PATH`` wins when
+    set to a real path; ``0`` means the browsers live next to the package and
+    are not cheaply locatable here; otherwise the per-OS cache directory.
+    """
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        if env == "0":
+            return None
+        return Path(env).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "ms-playwright"
+        profile = os.environ.get("USERPROFILE")
+        return Path(profile) / "AppData" / "Local" / "ms-playwright" if profile else None
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def _has_installed_chromium(root: Path) -> bool:
+    """True when a chromium browser finished installing under ``root``.
+
+    Keys on the ``INSTALLATION_COMPLETE`` sentinel Playwright writes when a
+    browser download finished, and on the ``chromium`` name prefix so both the
+    full ``chromium-<rev>`` and the ``chromium_headless_shell-<rev>`` builds
+    (either of which ``chromium.launch`` may use) count.
+    """
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return False
+    return any(
+        entry.is_dir()
+        and entry.name.startswith("chromium")
+        and (entry / "INSTALLATION_COMPLETE").is_file()
+        for entry in entries
+    )
+
+
+def probe_playwright(name: str = "playwright") -> Probe:
+    """Report the Web CDP line ready only when a browser is actually installed.
+
+    The plain module probe reported ``detected`` whenever the ``playwright``
+    package imported, but ``web.open`` needs a browser binary too; a fresh
+    install (or a wiped browser cache) then advertised a capability that failed
+    at launch. This distinguishes "module present, browser installed" from
+    "module present, run ``playwright install`` first".
+    """
+    spec = importlib.util.find_spec("playwright")
+    if spec is None:
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            "Optional Python module playwright is not installed",
+            remediation="pip install 'headless-re-mcp[browser]'",
+        )
+    root = _playwright_browsers_root()
+    if root is None:
+        # PLAYWRIGHT_BROWSERS_PATH=0 keeps browsers next to the package; the
+        # module is present but the install cannot be verified cheaply, so name
+        # the remaining step rather than claim readiness outright.
+        return Probe(
+            name,
+            ProbeStatus.DETECTED,
+            "playwright module detected; browser install not verified",
+            {"origin": spec.origin},
+            remediation="ensure a browser is installed: python -m playwright install chromium",
+        )
+    if _has_installed_chromium(root):
+        return Probe(
+            name,
+            ProbeStatus.DETECTED,
+            "playwright and a chromium browser detected",
+            {"origin": spec.origin, "browsers_path": str(root)},
+        )
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        "playwright is installed but no chromium browser is present",
+        {"origin": spec.origin, "browsers_path": str(root)},
+        remediation="install the browser: python -m playwright install chromium",
     )
 
 
