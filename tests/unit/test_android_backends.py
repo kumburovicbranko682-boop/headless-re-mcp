@@ -13,7 +13,13 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    AdbBackend,
+    AdbError,
+    _check_forward_spec,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -70,6 +76,48 @@ class TestAdbArgumentValidation:
     @pytest.mark.parametrize("package", ["com.example.app", "a.b", "com.foo_bar.baz2"])
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
+
+    @pytest.mark.parametrize("spec", ["tcp:1", "tcp:5555", "tcp:65535", "localabstract:my.sock-1"])
+    def test_valid_local_forward_specs_pass(self, spec: str) -> None:
+        # A well-formed endpoint validates on both sides: the call returns
+        # without raising (the validator has no return value to assert on).
+        _check_forward_spec(spec, side="local")
+        _check_forward_spec(spec, side="remote", allow_jdwp=True)
+
+    @pytest.mark.parametrize("spec", ["tcp:0", "tcp:65536", "tcp:70000", "tcp:99999"])
+    def test_out_of_range_tcp_ports_are_refused_at_the_boundary(self, spec: str) -> None:
+        """tcp:0 and >65535 are the leak-prone edges the port check exists to stop.
+
+        The five-digit regex admits tcp:70000, and adb reads a local tcp:0 as
+        "allocate a free port" whose reply adbutils discards -- a forward that
+        can never be matched for release, leaking a server listener and pinning a
+        slot. Both must be refused as a parameter error, not handed to adb.
+        """
+        for side, allow_jdwp in (("local", False), ("remote", True)):
+            with pytest.raises(AdbError) as info:
+                _check_forward_spec(spec, side=side, allow_jdwp=allow_jdwp)
+            assert info.value.code == "invalid_params"
+            assert "1..65535" in info.value.message
+
+    @pytest.mark.parametrize(
+        "spec",
+        ["", "tcp:", "tcp:-1", "tcp: 80", "udp:53", "localabstract:", "localabstract:bad name",
+         "tcp:80;rm", "jdwp:abc"],
+    )
+    def test_malformed_forward_specs_are_refused(self, spec: str) -> None:
+        with pytest.raises(AdbError) as info:
+            _check_forward_spec(spec, side="remote", allow_jdwp=True)
+        assert info.value.code == "invalid_params"
+        assert "forward spec" in info.value.message
+
+    def test_jdwp_is_a_remote_only_endpoint(self) -> None:
+        """jdwp names a debuggable process on the device, so it is a remote target
+        only: adb cannot bind a local jdwp listener. The local side must refuse it
+        even though the remote side (allow_jdwp) accepts it."""
+        _check_forward_spec("jdwp:123", side="remote", allow_jdwp=True)
+        with pytest.raises(AdbError) as info:
+            _check_forward_spec("jdwp:123", side="local")
+        assert info.value.code == "invalid_params"
 
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()
