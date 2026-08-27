@@ -138,6 +138,22 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_extract_native_lib(session_id, entry))
 
+    @tools.tool(name="apk.extract_file")
+    def apk_extract_file(session_id: str, entry: str) -> dict[str, Any]:
+        """Extract any one APK entry (asset, resource, dex, manifest) to a file.
+
+        entry is the exact archive path apk.files lists; only an entry
+        androguard already lists is accepted, so an arbitrary zip member or a
+        path outside the archive is rejected. This is the general reader --
+        apk.extract_native_lib is the .so-only specialisation. Writes the entry
+        to the session artifact tree and answers with entry, name, category,
+        path, size, sha256, and artifact_id (register it once, then open path).
+        A bundled config, JS or hidden dex lived behind a full apktool decode
+        before this. An entry over the capture cap is refused rather than
+        written. There is no bytes, data or contents field.
+        """
+        return _dump(analysis.apk_extract_file(session_id, entry))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

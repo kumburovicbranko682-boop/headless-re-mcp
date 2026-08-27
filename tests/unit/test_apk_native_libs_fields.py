@@ -215,6 +215,63 @@ def test_apk_files_paginates_and_flags_more(tmp_path: Path) -> None:
     assert last["has_more"] is False
 
 
+_ASSET_BYTES = b'{"endpoint":"https://api.example.com","flag":true}'
+
+
+class _FilesApk:
+    def get_files(self) -> list[str]:
+        return ["assets/config/app.json", "classes.dex", "META-INF/CERT.RSA"]
+
+    def get_file(self, name: str) -> bytes:
+        if name == "assets/config/app.json":
+            return _ASSET_BYTES
+        if name == "classes.dex":
+            return b"dexbytes"
+        raise KeyError(name)
+
+
+def test_apk_extract_file_writes_any_entry_flattened(tmp_path: Path) -> None:
+    """extract_native_lib only handled .so; extract_file pulls any listed entry.
+
+    Pull a nested asset and assert the bytes on disk are the real member, the
+    output name is flattened (no subdirectory created, so a nested entry cannot
+    escape the artifact dir), and size/sha256/category/name are reported.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FilesApk()  # type: ignore[method-assign]
+    out = client.extract_file(Path("dummy.apk"), "assets/config/app.json", tmp_path)
+    written = Path(out["path"])
+    assert written.parent == tmp_path  # flattened into out_dir, no nested dirs
+    assert written.name == "assets_config_app.json"
+    assert written.read_bytes() == _ASSET_BYTES
+    assert out["size"] == len(_ASSET_BYTES)
+    assert out["sha256"] == hashlib.sha256(_ASSET_BYTES).hexdigest()
+    assert out["category"] == "asset"
+    assert out["name"] == "app.json"
+    assert out["entry"] == "assets/config/app.json"
+    assert "bytes" not in out and "data" not in out
+
+
+def test_apk_extract_file_rejects_unlisted_and_empty(tmp_path: Path) -> None:
+    """Only a listed entry, and not an empty one -- and nothing lands on reject."""
+    client = ApkClient()
+    client._apk = lambda _path: _FilesApk()  # type: ignore[method-assign]
+    with pytest.raises(ApkError) as missing:
+        client.extract_file(Path("dummy.apk"), "assets/nope.bin", tmp_path)
+    assert missing.value.code == "not_found"
+    with pytest.raises(ApkError) as empty:
+        client.extract_file(Path("dummy.apk"), "   ", tmp_path)
+    assert empty.value.code == "invalid_params"
+    assert not list(tmp_path.iterdir())
+
+
+def test_apk_extract_file_docstring_names_fields() -> None:
+    doc = _tool_docstring("apk.extract_file")
+    assert "category" in doc
+    assert "sha256" in doc
+    assert "artifact_id" in doc
+
+
 def test_apk_entry_category_buckets_paths() -> None:
     assert _apk_entry_category("AndroidManifest.xml") == "manifest"
     assert _apk_entry_category("META-INF/MANIFEST.MF") == "signature"

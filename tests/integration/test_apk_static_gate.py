@@ -453,6 +453,24 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert listing.data["categories"]["dex"] == 1
         assert listing.data["total"] == len(rows)
 
+        # apk.extract_file pulls a non-.so member (the bundled asset) straight
+        # out of the zip; assert the bytes on disk are the exact member the
+        # fixture wrote, the metadata matches, and it registered as an artifact.
+        expected_asset = b'{"k":1}'
+        asset = service.apk_extract_file(session_id, "assets/config.json")
+        assert asset.ok, asset.error
+        asset_on_disk = Path(asset.data["path"])
+        assert asset_on_disk.is_file()
+        assert asset_on_disk.read_bytes() == expected_asset
+        assert asset.data["size"] == len(expected_asset)
+        assert asset.data["sha256"] == hashlib.sha256(expected_asset).hexdigest()
+        assert asset.data["category"] == "asset"
+        assert asset.data["artifact_id"]
+        # An entry androguard does not list is refused, not written.
+        ghost = service.apk_extract_file(session_id, "assets/ghost.bin")
+        assert not ghost.ok
+        assert ghost.error is not None and ghost.error.code == "not_found"
+
         # Pull one .so straight out of the zip for the binary line and confirm
         # the bytes on disk are the real member (the fixture wrote this exact
         # payload), the metadata matches, and it registered as an artifact.

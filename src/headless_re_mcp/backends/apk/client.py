@@ -62,6 +62,20 @@ def _apk_entry_category(name: str) -> str:
         return "asset"
     return "other"
 
+
+def _safe_entry_filename(entry: str) -> str:
+    """Flatten an archive path into a single safe output filename.
+
+    The entry is already constrained to something androguard lists, but the
+    output name is still flattened: separators become underscores so a nested
+    entry cannot climb out of the artifact dir, and leading dots are dropped so
+    no ``..`` fragment survives as a traversal. The length is capped so a
+    pathological name cannot blow past the filesystem limit.
+    """
+    cleaned = entry.replace("\\", "/").strip("/")
+    flat = cleaned.replace("/", "_").lstrip(".")
+    return (flat or "entry")[:200]
+
 # Manifest attributes live in the Android resource namespace; the AXML decoder
 # androguard hands back keeps that URI, so component attributes read as
 # ``{http://schemas.android.com/apk/res/android}exported`` etc.
@@ -714,6 +728,58 @@ class ApkClient:
             "entry": target,
             "abi": abi,
             "name": name,
+            "path": str(out),
+            "size": size,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+
+    @_guard_androguard
+    def extract_file(self, path: Path, entry: str, out_dir: Path) -> JsonObject:
+        """Pull any one archive entry out of the APK to a file.
+
+        ``apk.files`` lists what is inside; this fetches a single member -- a
+        bundled asset (config, JS, a hidden dex/APK), a resource, the manifest,
+        a signer file -- which otherwise needed a full ``apktool`` decode of the
+        whole package. ``extract_native_lib`` is the .so-only specialisation;
+        this is the general reader.
+
+        The entry must be one androguard already lists, so a caller cannot name
+        an arbitrary zip member or a path outside the archive; the output name
+        is flattened so a nested entry cannot climb out of ``out_dir``. A member
+        over the capture cap is refused before anything lands on disk.
+        """
+        apk = self._apk(path)
+        target = (entry or "").strip()
+        if not target:
+            raise ApkError("invalid_params", "entry is required")
+        files = {str(name) for name in (apk.get_files() or [])}
+        if target not in files:
+            raise ApkError("not_found", "entry not in apk", entry=target)
+        try:
+            blob = apk.get_file(target)
+        except Exception as exc:  # noqa: BLE001 - androguard raises FileNotPresent etc.
+            raise ApkError(
+                "not_found", f"could not read {target}: {exc}", entry=target
+            ) from exc
+        if not isinstance(blob, bytes | bytearray):
+            raise ApkError("backend_error", "apk entry was not raw bytes", entry=target)
+        data = bytes(blob)
+        size = len(data)
+        if size > _MAX_EXTRACT_BYTES:
+            raise ApkError(
+                "too_large",
+                "apk entry exceeds capture cap",
+                entry=target,
+                size=size,
+                cap=_MAX_EXTRACT_BYTES,
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / _safe_entry_filename(target)
+        out.write_bytes(data)
+        return {
+            "entry": target,
+            "name": target.rsplit("/", 1)[-1],
+            "category": _apk_entry_category(target),
             "path": str(out),
             "size": size,
             "sha256": hashlib.sha256(data).hexdigest(),
