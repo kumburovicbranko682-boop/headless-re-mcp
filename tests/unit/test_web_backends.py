@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from headless_re_mcp.backends.web.client import (
     _MAX_NAV_TIMEOUT_S,
     _bound_nav_timeout,
     _Runner,
+    _WebSession,
 )
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
@@ -53,6 +55,45 @@ class TestWebSessionScoping:
         backend = WebBackend()
         with pytest.raises(WebError):
             backend.script_source("never-opened", "1", tmp_path)
+
+    def test_every_read_tool_rejects_a_never_opened_session(self, tmp_path: Path) -> None:
+        """All read tools funnel through _get; a never-opened session must be
+        invalid_state on every one, not a crash on a missing handle. Only two
+        tools had this pinned -- exercising the whole surface catches a newly
+        added read tool that dereferences the session without going through _get.
+        """
+        backend = WebBackend()
+        out = tmp_path / "out.bin"
+        calls: dict[str, Callable[[], object]] = {
+            "navigate": lambda: backend.navigate("nope", "http://127.0.0.1/"),
+            "network_list": lambda: backend.network_list("nope"),
+            "network_get": lambda: backend.network_get("nope", "req", tmp_path),
+            "console": lambda: backend.console("nope"),
+            "scripts": lambda: backend.scripts("nope"),
+            "script_source": lambda: backend.script_source("nope", "1", tmp_path),
+            "dom_snapshot": lambda: backend.dom_snapshot("nope"),
+            "screenshot": lambda: backend.screenshot("nope", out),
+            "har_export": lambda: backend.har_export("nope", out),
+        }
+        for name, call in calls.items():
+            with pytest.raises(WebError) as info:
+                call()
+            assert info.value.code == "invalid_state", name
+
+    def test_network_get_unknown_request_id_is_not_found(self, tmp_path: Path) -> None:
+        """With a browser open but the id unknown, network.get must report
+        not_found. The id is checked under the session lock before any CDP call,
+        so a fake open session with an empty request map reaches the exact
+        production branch without launching Chromium; a regression that dropped
+        the None check would raise on the CDP send and be filed as an
+        internal_error incident instead.
+        """
+        backend = WebBackend()
+        backend._sessions["s"] = _WebSession(None, None, None, None, None)
+        with pytest.raises(WebError) as info:
+            backend.network_get("s", "no-such-req", tmp_path)
+        assert info.value.code == "not_found"
+        assert info.value.details.get("request_id") == "no-such-req"
 
 
 class TestWebTargetClassification:
