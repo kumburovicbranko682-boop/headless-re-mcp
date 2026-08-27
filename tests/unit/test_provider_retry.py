@@ -163,6 +163,19 @@ async def test_cancellation_is_not_treated_as_a_retryable_fault() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_nonpositive_attempt_budget_streams_nothing() -> None:
+    """A zero/negative attempt budget makes the retry loop empty, so the stream
+    yields nothing and never touches the inner provider rather than looping."""
+    inner = ScriptedProvider([])
+    provider = RetryingProvider(inner, max_attempts=0, sleep=_no_sleep)
+
+    events = await _drain(provider)
+
+    assert events == []
+    assert inner.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_list_models_passes_through() -> None:
     provider = RetryingProvider(ScriptedProvider([]), sleep=_no_sleep)
     assert await provider.list_models() == ["fake"]
