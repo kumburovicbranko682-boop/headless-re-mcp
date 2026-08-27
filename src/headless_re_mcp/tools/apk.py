@@ -197,13 +197,16 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         keystore: str = "",
         keystore_password: str = "",
         key_alias: str = "",
+        key_password: str = "",
         timeout: Annotated[float, Field(gt=0, le=1800.0)] = 300.0,
     ) -> dict[str, Any]:
         """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore).
 
         Answers with apk, size, signed, keystore, and debug_keystore.
         signed is true only after apksigner verify succeeds. There is no
-        output, path or signed_apk field.
+        output, path or signed_apk field. Pass key_password only when the key
+        inside the keystore has its own password; left empty it falls back to
+        keystore_password, which is the usual case and every debug keystore.
         """
         return _dump(
             analysis.apk_sign(
@@ -212,6 +215,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
                 keystore=keystore,
                 keystore_password=keystore_password,
                 key_alias=key_alias,
+                key_password=key_password,
                 timeout=timeout,
             )
         )
