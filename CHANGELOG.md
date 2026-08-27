@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（windbg dump 命令把 cdb 失败读成空列表）
+
+- WinDbg/cdb 的 dump 路径与 live 路径不对称:`_run_process`(live)在 cdb 非零退出(不属
+  {0,1})且 stdout 为空时抛 `backend_error`,而 `_run_dump`(dump)不判断退出码,原样返回。
+  cdb 打不开/读不了的 dump(损坏、符号错误、路径无效)于是被包成一次干净成功,`windbg.threads`
+  / `windbg.modules` / `windbg.disasm` 回一个空的线程/模块/反汇编列表,调用方无从知道命令根本
+  没跑成。此外这三个 dump 包装器(及对应的 `live_*`)只取 `output` 改名转发,把 `_run_dump` /
+  `_run_process` 已算出的 `exit_code`(与 `stderr`)丢掉,连"退出码非零但 stdout 有错误横幅"这种
+  未 fail-closed 的情形也看不到退出码。现在 `_run_dump` 与 `_run_process` 一致 fail-closed,
+  六个 threads/modules/disasm 包装器都带上 `exit_code`;`open_dump` 原本就透出退出码,行为不变。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.windbg.client import WindbgClient
+import pytest
+
+import headless_re_mcp.backends.windbg.client as windbg_module
+from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.tools.windbg import build_windbg_tools
+
+
+def _completed(returncode: int, stdout: bytes, stderr: bytes = b"") -> Any:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 def _tool_docstring(name: str) -> str:
@@ -285,3 +293,57 @@ def test_windbg_open_dump_does_not_call_an_omitted_command_list_a_triage_set(
     assert "lm" in doc
     assert "triage set" not in doc
     assert "!analyze" in doc
+
+
+def test_windbg_dump_command_fails_closed_when_cdb_could_not_process_it(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A dump cdb never processed must not read as an empty thread list.
+
+    _run_process (live) already raises when cdb exits nonzero with no output,
+    but _run_dump did not: a dump cdb could not open or read came back as a
+    clean success, and threads/modules/disasm answered ok with an empty
+    listing. _run_dump now mirrors the live path and raises backend_error.
+    """
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(
+        windbg_module,
+        "run_bounded",
+        lambda *args, **kwargs: _completed(2, b"", b"cannot open dump"),
+    )
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    with pytest.raises(WindbgError) as excinfo:
+        WindbgClient(cdb).threads(dump)
+    assert excinfo.value.code == "backend_error"
+    assert excinfo.value.details.get("exit_code") == 2
+
+
+def test_windbg_dump_wrappers_carry_the_cdb_exit_code(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """threads/modules/disasm dropped the exit_code _run_dump computed.
+
+    A nonzero exit with output on stdout (cdb printed an error banner but did
+    not fail closed) came back renamed to threads/modules/disasm with no exit
+    code, so a caller reading the renamed field could not see cdb had errored.
+    The wrappers now carry exit_code.
+    """
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    monkeypatch.setattr(
+        windbg_module,
+        "run_bounded",
+        lambda *args, **kwargs: _completed(1, b"error: symbols missing"),
+    )
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    client = WindbgClient(cdb)
+    assert client.threads(dump)["exit_code"] == 1
+    assert client.modules(dump)["exit_code"] == 1
+    assert client.disasm(dump, "0x1000")["exit_code"] == 1
