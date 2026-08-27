@@ -31,6 +31,7 @@ _ALLOWED = frozenset(
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_AXTJ_COMMAND = re.compile(r"axtj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -48,6 +49,8 @@ def _require_allowed_command(command: str) -> None:
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AXTJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -101,6 +104,32 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = dict(data)
+        data["address"] = address
+        return enrich_r2_payload(data, binary=binary)
+
+    def xrefs_to(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """References that target ``address`` (``axtj``), not the global graph.
+
+        ``xrefs`` runs ``axj``, whose list is the same regardless of the seek --
+        it answers "every cross-reference in the binary", so the address the
+        caller passed is only echoed back, never used to filter. That is the
+        wrong tool for "who calls this function". ``axtj`` seeks to ``address``
+        and returns only the references pointing at it: each item carries the
+        call/data site in ``from`` (mapped to ``from_address``) and the
+        enclosing function in ``fcn_addr``/``fcn_name``, so a caller can walk
+        the graph inbound one address at a time.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"axtj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

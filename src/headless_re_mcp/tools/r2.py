@@ -130,4 +130,22 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.xrefs_to")
+    def r2_xrefs_to(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """References that target address (radare2 axtj), inbound only.
+
+        Unlike r2.xrefs, whose axj list is the whole binary's graph and ignores
+        the address for filtering, this answers "who references this address":
+        items carry from, type, from_address, and the enclosing function in
+        fcn_addr and fcn_name, plus address (va/rva/module) and address_va (the
+        integer that was asked). Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no integer
+        address, xrefs, truncated or has_more field.
+        """
+        return _dump(analysis.r2_xrefs_to(session_id, address, timeout=timeout))
     return tools.bindings

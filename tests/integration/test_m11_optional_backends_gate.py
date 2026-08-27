@@ -23,6 +23,7 @@ _PLANNED_TOOLS = {
         "r2.exports",
         "r2.disasm",
         "r2.xrefs",
+        "r2.xrefs_to",
     },
     "ghidra.headless": {
         "ghidra.analyze",
@@ -97,6 +98,7 @@ def test_m11_capabilities_and_missing_backends() -> None:
             lambda: service.r2_open(session_id),
             lambda: service.r2_disasm(session_id, 0x1000, count=8),
             lambda: service.r2_xrefs(session_id, 0x1000),
+            lambda: service.r2_xrefs_to(session_id, 0x1000),
         ):
             result = call()
             if not result.ok:
