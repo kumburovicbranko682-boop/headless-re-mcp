@@ -326,6 +326,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+- 新增回归(补齐 `_bounded_headers` 里普通 `dict` 夹具照不到的几处):既有测试用纯 `dict`,只钉了
+  **条数**(150 个单字节头)与**单值**(一个 16 KiB 值),`dict` 既表达不出「总量超标而单值、条数都合规」,
+  也没有重复名——于是**总量** 64 KiB 这条独立上限、以及 mitmproxy 真实 `Headers` 才有的
+  `items(multi=True)` 语义都是 inert 的。补:40 个各 3 KiB 的头(单值 <4 KiB、条数 <100)只能被总量闸拦下,
+  钉住保留字节 ≤64 KiB 且打 `truncated`;重复名折叠为**最后一个**(`items(multi=True)` 返回全部重复,
+  `out[name]=text` 取最后);已见过的名字重复**不占**去重后的条数预算(100 个不同名 + 一串 `d0` 重复 →
+  仍 100 条、不误报截断、`d0` 取最后值),而第 101 个**新**名字仍照常触发条数上限;胜出的那个值仍受单值上限裁剪;
+  头部不可迭代(半解析/损坏块)时回 `({}, True)` 而非崩溃或静默丢流。四处变异(删总量闸、去掉 `name not in out`
+  子句、折叠改「首个胜出」、异常分支标志翻 False)各由相应新测试捕获,既有 `flow.get` 头部测试仍全绿。
 ### 修复（`web.network.get` 取不到响应体时仍保持形状）
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
