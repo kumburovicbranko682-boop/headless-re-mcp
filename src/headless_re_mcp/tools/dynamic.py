@@ -310,13 +310,16 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Break on an API and capture its integer arguments on each hit.
 
         Give either expression (for example kernel32.CreateFileW) or a runtime
-        address. Answers with hits (instruction_pointer and arguments), hit_count,
-        truncated, stopped_elsewhere, resume_failed, resume_error, convention,
-        architecture, target and max_hits. There is no top-level arguments, rip
-        or ok field. A short trace (hit_count below max_hits) ended either at
-        another address (stopped_elsewhere) or because a resume could not
-        continue (resume_failed, resume_error naming why); it is not a bare
-        count of calls. The breakpoint is removed when the trace ends.
+        address. Answers with hits (instruction_pointer, verified and arguments),
+        hit_count, truncated, stopped_elsewhere, resume_failed, resume_error,
+        unverified_hits, convention, architecture, target and max_hits. There is
+        no top-level arguments, rip or ok field. A short trace (hit_count below
+        max_hits) ended either at another address (stopped_elsewhere) or because
+        a resume could not continue (resume_failed, resume_error naming why); it
+        is not a bare count of calls. A hit with verified=false had unreadable
+        registers and a null instruction_pointer, so it is not a confirmed call;
+        unverified_hits counts those. The breakpoint is removed when the trace
+        ends.
         """
         return _dump(
             analysis.trace_api_arguments(
