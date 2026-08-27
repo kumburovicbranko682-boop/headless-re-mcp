@@ -8,15 +8,18 @@ degradation on a bare machine; a second, genuinely androguard-parseable APK
 permissions, every component type, and the DEX code surface (classes, methods,
 strings, xrefs) -- skipping only where the ``android`` extra is absent. When
 jadx or apktool are configured, further gates decompile that same DEX back to
-Java, disassemble it to smali, and run the decode -> repack loop to rebuild a
-re-openable APK -- asserting the class, its methods, and an embedded constant
-come back out, and that the rebuilt archive re-opens under androguard. Parts
-that need a real device / adbutils are asserted only for a structured envelope,
-never a crash (skip != pass for the live-device parts).
+Java, disassemble it to smali, and run the decode -> repack -> sign loop to
+rebuild a re-openable, apksigner-signed APK -- asserting the class, its methods,
+and an embedded constant come back out, and that the rebuilt/signed archive
+re-opens under androguard. Parts that need a real device / adbutils are asserted
+only for a structured envelope, never a crash (skip != pass for the live-device
+parts).
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -292,6 +295,87 @@ def test_android_apktool_repack_roundtrip(tmp_path: Path) -> None:
         # The real test: androguard opens the rebuilt APK as a fresh target and
         # reads the same package back. A corrupt repackage fails here.
         reopened_id = service.create_session(str(rebuilt)).data["session"]["id"]
+        reopened = service.apk_open(reopened_id)
+        assert reopened.ok, reopened.error
+        assert reopened.data["package"] == EXPECTED["package"]
+    finally:
+        service.close_all()
+
+
+def _ensure_debug_keystore() -> bool:
+    """Create the standard Android debug keystore if absent; report usability.
+
+    ``apk.sign`` defaults to ``~/.android/debug.keystore`` (alias
+    ``androiddebugkey``, password ``android``) -- the well-known keystore every
+    Android build tool auto-creates. Making it here when missing keeps the gate
+    self-contained on a fresh runner without depending on a prior SDK install.
+    """
+    keystore = Path.home() / ".android" / "debug.keystore"
+    if keystore.is_file():
+        return True
+    keytool = shutil.which("keytool")
+    if keytool is None:
+        return False
+    keystore.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        [
+            keytool, "-genkeypair", "-v", "-keystore", str(keystore),
+            "-storepass", "android", "-keypass", "android",
+            "-alias", "androiddebugkey", "-keyalg", "RSA", "-keysize", "2048",
+            "-validity", "10000", "-dname", "CN=Android Debug,O=Android,C=US",
+        ],
+        capture_output=True,
+    )
+    return completed.returncode == 0 and keystore.is_file()
+
+
+@pytest.mark.integration
+def test_android_apktool_sign_produces_a_signed_apk(tmp_path: Path) -> None:
+    """Close the modify loop: decode -> repack -> sign yields a signed APK.
+
+    ``apk.repack`` deliberately leaves the rebuilt APK unsigned, so on its own it
+    is not installable. ``apk.sign`` is the final step, and it is the only one
+    that shells out to apksigner -- unit tests stub that CLI, so nothing else
+    proves a real signature comes out. The service verifies with ``apksigner
+    verify`` before returning ``signed=True``, and here androguard re-opens the
+    signed APK as a fresh target: a v1 (JAR) signature really lands in META-INF
+    and the package still reads. Skips (skip != pass) where apktool, apksigner,
+    the ``android`` extra, or a usable debug keystore is absent.
+    """
+    pytest.importorskip("androguard")
+    settings = Settings.load()
+    if settings.apktool is None:
+        pytest.skip("apktool not configured — Android sign Gate not run (skip != pass)")
+    if settings.apksigner is None:
+        pytest.skip("apksigner not configured — Android sign Gate not run (skip != pass)")
+    if not _ensure_debug_keystore():
+        pytest.skip("no debug keystore and no keytool — Android sign Gate not run (skip != pass)")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+        assert service.apk_decode(session_id, no_resources=True).ok
+        assert service.apk_repack(session_id).ok
+
+        signed = service.apk_sign(session_id)
+        assert signed.ok, signed.error
+        # signed=True is only returned after the service's own apksigner-verify
+        # step passes, so this already means the signature validates.
+        assert signed.data["signed"] is True, signed.data
+        assert signed.data["debug_keystore"] is True, signed.data
+        out = Path(signed.data["apk"])
+        assert zipfile.is_zipfile(out), out
+        with zipfile.ZipFile(out) as archive:
+            names = archive.namelist()
+        # The v1 signature is a .RSA/.SF pair under META-INF; a cosmetic "sign"
+        # that copied bytes without signing would not produce it.
+        assert any(n.startswith("META-INF/") and n.endswith(".RSA") for n in names), names
+        assert any(n.startswith("META-INF/") and n.endswith(".SF") for n in names), names
+
+        # androguard re-opens the signed APK and still reads the package: the
+        # signature did not corrupt the archive.
+        reopened_id = service.create_session(str(out)).data["session"]["id"]
         reopened = service.apk_open(reopened_id)
         assert reopened.ok, reopened.error
         assert reopened.data["package"] == EXPECTED["package"]
