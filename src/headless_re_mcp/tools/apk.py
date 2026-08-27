@@ -97,6 +97,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.class_hierarchy")
+    def apk_class_hierarchy(session_id: str, class_name: str) -> dict[str, Any]:
+        """Walk a class's superclass chain to its root (dotted or Lsmali/form).
+
+        Where apk.class_info names one class's immediate superclass, this
+        follows the whole chain: MainActivity -> AppCompatActivity -> ... ->
+        Landroid/app/Activity;. It steps through classes defined in the APK
+        (including bundled support-library bases) and stops at the first parent
+        not shipped here -- a framework class such as Landroid/app/Activity; or
+        Ljava/lang/Object; -- which becomes root. The starting class must be
+        defined in the APK, so an unknown or external-only name is not_found.
+        Answers with class_name, ancestors (immediate superclass first, root
+        last), depth, root, root_in_apk (false for the usual framework/Object
+        stop) and truncated (the walk is cycle-guarded and capped at 128 levels).
+        """
+        return _dump(analysis.apk_class_hierarchy(session_id, class_name))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

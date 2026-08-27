@@ -22,6 +22,9 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# A superclass chain is normally a handful deep; this only guards against a
+# malformed DEX with a parentage cycle, so the walk can never spin forever.
+_MAX_HIERARCHY_DEPTH = 128
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -347,6 +350,65 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
+        }
+
+    def class_hierarchy(self, path: Path, class_name: str) -> JsonObject:
+        """Walk a class's superclass chain from itself up to its root.
+
+        apk.class_info names one class's immediate superclass; this follows the
+        chain: MainActivity -> AppCompatActivity -> ... -> Landroid/app/Activity;.
+        The walk continues through classes defined in the APK (including bundled
+        support-library bases) and stops at the first parent not shipped here --
+        a framework class such as Landroid/app/Activity; or Ljava/lang/Object; --
+        which becomes root. The starting class must be defined in the APK (its
+        parentage is only knowable from its own class def), so an unknown or
+        external-only name is not_found; accepts the dotted or Lsmali/form.
+        Answers with class_name, ancestors (immediate superclass first, root
+        last), depth (len of ancestors), root, and root_in_apk (whether root is
+        itself an APK class -- false for the usual framework/Object stop). The
+        walk is cycle-guarded and capped at 128 levels with truncated set when
+        the cap was hit.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        index: dict[str, Any] = {}
+        start_klass = None
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            index[str(klass.name)] = klass
+            if str(klass.name) in (smali, target):
+                start_klass = klass
+        if start_klass is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        ancestors: list[str] = []
+        seen = {str(start_klass.name)}
+        current = start_klass
+        truncated = False
+        while True:
+            if len(ancestors) >= _MAX_HIERARCHY_DEPTH:
+                truncated = True
+                break
+            parent = str(current.extends)
+            ancestors.append(parent)
+            if parent in seen:  # defensive: a cycle should not exist in a valid DEX
+                break
+            seen.add(parent)
+            parent_klass = index.get(parent)
+            if parent_klass is None:
+                break
+            current = parent_klass
+        root = ancestors[-1] if ancestors else str(start_klass.name)
+        return {
+            "class_name": str(start_klass.name),
+            "ancestors": ancestors,
+            "depth": len(ancestors),
+            "root": root,
+            "root_in_apk": root in index,
+            "truncated": truncated,
         }
 
     def methods(
