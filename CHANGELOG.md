@@ -244,6 +244,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （超捕获上限则拒绝）。活体门用一个真的 `add(i32,i32)->i32` 模块跑通：`web.wasm.list` 找到它、`web.script.source`
   取回与页面实际实例化**逐字节一致**的字节、并在装了 wabt 时把 `wasm_path` 喂给 `wasm.wat` 反汇编出可读模块
   （缺浏览器 / wabt 时 skip≠pass）；另加不依赖浏览器的单测用 mock 的 CDP `bytecode` 锁住该行为。
+- **`web.console` 丢掉页面未捕获异常**。捕获只订阅 `Runtime.consoleAPICalled`（即 `console.*` 调用），而未捕获的
+  JS 异常/Promise 拒绝走的是 `Runtime.exceptionThrown`——于是页面抛出的未处理错误与其调用栈（往往是分析一个页面
+  时最有价值的一行）被整份丢弃、`web.console` 里看不到。现在同时订阅 `Runtime.exceptionThrown`，把异常按 `type`
+  为 `error`、`source` 为 `exception` 记进同一 console 环（正文取 `exceptionDetails.exception.description` 的完整栈、
+  按 console 文本上限截断；畸形事件忽略而非崩溃）。活体门用顶层 `throw` 的页面断言异常被捕获、且前后的普通
+  `console.log` 仍在；单测用 mock 的 `exceptionThrown` 锁住入环行为。
 - **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
   但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
   移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**

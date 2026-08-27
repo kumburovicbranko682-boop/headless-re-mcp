@@ -102,6 +102,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         filled the limit is not read as the whole buffer, and ring
         eviction is visible. A line longer than the per-message cap is
         cut and marked text_truncated.
+
+        Uncaught page exceptions are captured too, as entries with type
+        error and source exception (they never arrive as console.* calls),
+        so an unhandled error and its stack are not silently lost.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 

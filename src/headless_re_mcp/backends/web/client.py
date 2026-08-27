@@ -479,6 +479,15 @@ class WebBackend:
                     handle.scripts.popitem(last=False)
                     handle.scripts_dropped += 1
 
+        def _append_console(entry: JsonObject) -> None:
+            with handle.lock:
+                if (
+                    handle.console.maxlen is not None
+                    and len(handle.console) == handle.console.maxlen
+                ):
+                    handle.console_dropped += 1
+                handle.console.append(entry)
+
         def on_console(params: JsonObject) -> None:
             text, text_truncated = _clip_console_text(params)
             entry: JsonObject = {
@@ -487,13 +496,26 @@ class WebBackend:
             }
             if text_truncated:
                 entry["text_truncated"] = True
-            with handle.lock:
-                if (
-                    handle.console.maxlen is not None
-                    and len(handle.console) == handle.console.maxlen
-                ):
-                    handle.console_dropped += 1
-                handle.console.append(entry)
+            _append_console(entry)
+
+        def on_exception(params: JsonObject) -> None:
+            # Uncaught errors never come through consoleAPICalled; dropping them
+            # meant web.console hid every unhandled exception and stack trace,
+            # which is often the most useful line on the page for an analyst.
+            details = params.get("exceptionDetails")
+            if not isinstance(details, dict):
+                return
+            exception = details.get("exception")
+            raw = ""
+            if isinstance(exception, dict):
+                raw = str(exception.get("description") or exception.get("value") or "")
+            if not raw:
+                raw = str(details.get("text") or "Uncaught exception")
+            text, text_truncated = _bounded_metadata(raw, _MAX_CONSOLE_TEXT)
+            entry: JsonObject = {"type": "error", "text": text, "source": "exception"}
+            if text_truncated:
+                entry["text_truncated"] = True
+            _append_console(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
@@ -504,6 +526,7 @@ class WebBackend:
         # on a page logging 60 lines, growing for as long as the session lived.
         # The same information arrives here as plain data.
         cdp.on("Runtime.consoleAPICalled", on_console)
+        cdp.on("Runtime.exceptionThrown", on_exception)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)

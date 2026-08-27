@@ -457,6 +457,86 @@ def test_web_cdp_extracts_wasm_bytecode_for_offline_analysis() -> None:
             service.close_all()
 
 
+_ERROR_PAGE = (
+    b"<!doctype html><html><head><title>err-gate</title>"
+    b"<script>console.log('before-throw');</script>"
+    b"<script>throw new Error('gate-uncaught-boom');</script>"
+    b"<script>console.log('after-throw');</script>"
+    b"</head><body>x</body></html>"
+)
+
+
+@contextmanager
+def _error_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_ERROR_PAGE)))
+            self.end_headers()
+            self.wfile.write(_ERROR_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_uncaught_exceptions() -> None:
+    """Uncaught page errors were dropped -- web.console only saw console.* calls.
+
+    An unhandled exception (and its stack) is frequently the single most useful
+    line on a page under analysis, and it never arrives via consoleAPICalled.
+    Drive a page that throws at top level and assert web.console surfaces it as
+    an error entry tagged source exception, while ordinary console.log around it
+    still comes through.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web exception Gate not run (skip != pass)")
+    with _error_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _exception_entry() -> dict[str, Any] | None:
+                console = service.web_console(session_id, limit=200)
+                assert console.ok, console.error
+                for entry in console.data["console"]:
+                    if entry.get("source") == "exception":
+                        return entry
+                return None
+
+            entry = _poll(_exception_entry)
+            assert entry is not None, "the uncaught exception was never captured"
+            assert entry["type"] == "error"
+            assert "gate-uncaught-boom" in str(entry["text"])
+
+            texts = [
+                str(e.get("text", ""))
+                for e in service.web_console(session_id, limit=200).data["console"]
+            ]
+            assert any("before-throw" in t for t in texts), "ordinary console.log was lost"
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

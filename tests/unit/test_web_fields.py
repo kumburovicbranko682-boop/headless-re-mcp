@@ -171,6 +171,51 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+def test_web_uncaught_exception_lands_in_the_console_ring() -> None:
+    """Runtime.exceptionThrown must be captured; console.* is not the only source.
+
+    Wire the events and fire an exceptionThrown the way Chromium does (the error
+    lives in exceptionDetails.exception.description), then assert it enters the
+    console ring as an error entry tagged source exception with the stack text,
+    and that a details-less event is ignored rather than crashing the handler.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    assert "Runtime.exceptionThrown" in cdp.handlers
+    cdp.handlers["Runtime.exceptionThrown"](
+        {
+            "exceptionDetails": {
+                "text": "Uncaught",
+                "exception": {"description": "Error: boom\n    at http://x/app.js:1:1"},
+            }
+        }
+    )
+    cdp.handlers["Runtime.exceptionThrown"]({})  # malformed: must be ignored
+
+    captured = list(handle.console)
+    assert len(captured) == 1
+    entry = captured[0]
+    assert entry["type"] == "error"
+    assert entry["source"] == "exception"
+    assert "boom" in entry["text"]
+    doc = _tool_docstring("web.console")
+    assert "exception" in doc
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:
