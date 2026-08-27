@@ -37,7 +37,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `create_session`→`web_open` 的真实路径起一次 Chromium——CDP gate 在浏览器装上却起不来时会
   第二次 skip，纯导入自检抓不到，这一步让浏览器起不来时 job 直接失败而非静默丢掉 CDP 覆盖。
   `pytest -rs` 打印每条 skip 原因，保持
-  skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：15 通过、1 跳过（仅 Windows 才有的 OS
+  skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：16 通过、1 跳过（仅 Windows 才有的 OS
   句柄泄漏检查，POSIX 下诚实 skip）。r2 与 frida 的现场 gate 依赖 Windows PE 夹具，在 Linux 只会
   skip，故仍留在 Windows job。
 - 配套加强 WASM 现场 gate：`test_web_re_gate.py` 过去只把 magic+version 的空模块喂给 wasm2wat、
@@ -50,6 +50,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   夹具把 `"H3adl3ss"` 藏在 `\x` 转义的字符串数组里、经 `["split"]`/`["push"]` 计算成员访问调用方法；
   gate 要求还原出的字符串出现、且计算成员访问被简化成点号（`.split(` 在、`["split"]` 不在），这是
   webcrack 的核心反混淆，纯重排打印过不了。
+- 修复并加现场 gate：`js.unpack_bundle` 在 webcrack 2.x 上 100% 失败。服务层会先建好输出目录再交给
+  webcrack，而 webcrack 2.x 对已存在的 `-o` 目录直接报 `output directory already exists` 退出 1、不写
+  任何文件，于是每次解包都被上抛成 `backend_error`。此前 JS 只有 `js.deobfuscate` 的冒烟（走 stdout、
+  从不碰 `-o`），这条 `-o` 路径无任何现场覆盖，故长期没被发现。修复：解包命令加 `-f`（覆盖已存在目录，
+  对新目录也接受）；并新增 `test_js_unpack_bundle_when_webcrack_present` 真跑 webcrack 解包、断言
+  `file_count>=1` 与 `output_dir`——去掉 `-f` 该 gate 即以原始报错失败（已验证），是真正的回归护栏。
 - 新增 `.github/linux-gates-constraints.txt` 并在工作流以 `pip install -c` 应用：把 pip 解析的 RE
   后端（frida、androguard、adbutils、mitmproxy、playwright）钉到本 gate 验证过的确切版本，避免定时跑
   时悄悄拉到改了后端 API 的上游新版（正是 frida 17 删掉 `Memory.readByteArray` 那类漂移）。只钉叶子

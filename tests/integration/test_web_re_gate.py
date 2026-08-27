@@ -93,6 +93,32 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         service.close_all()
 
 
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    # js.unpack_bundle had no live gate. The JS smoke path only exercised
+    # js.deobfuscate, which streams to stdout and never touches -o. unpack_bundle
+    # takes the -o path: the service pre-creates the output directory and then
+    # hands it to webcrack, but webcrack 2.x aborts with "output directory
+    # already exists" on an existing -o dir unless -f is passed, so every unpack
+    # failed unseen behind a deobfuscate-only smoke test. Drive the real path end
+    # to end so that regression fails here rather than in production.
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        # webcrack wrote into the pre-created directory instead of aborting on it,
+        # which is the whole point: file_count>=1 means the -o/-f path produced
+        # output rather than failing the "already exists" check.
+        assert result.data["file_count"] >= 1
+        assert result.data["output_dir"]
+        assert isinstance(result.data["files"], list)
+    finally:
+        service.close_all()
+
+
 def _wasm_module_with_a_function_and_exports() -> bytes:
     """A hand-assembled module that is more than magic + version.
 
