@@ -249,10 +249,14 @@ def _poisoned_report(*, ready: bool):
     )
     if not ready:
         return DoctorReport(probes=(leaky,))
-    # Ready needs every required probe present and READY.
+    # Ready needs every required probe present and READY. The required set is
+    # platform-dependent -- Linux wants {platform, python}, Windows adds
+    # ida_idalib and x64dbg_headless_binaries -- so cover the union here to keep
+    # the fixture ready on whichever host runs it.
     return DoctorReport(
         probes=(
             leaky,
+            Probe("platform", ProbeStatus.READY, "ready"),
             Probe("python", ProbeStatus.READY, "ready"),
             Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
         )
