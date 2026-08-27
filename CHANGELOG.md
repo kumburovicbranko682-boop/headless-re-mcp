@@ -213,6 +213,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 新增（WASM 实机 gate：wabt 真解码真模块，而非空模块魔数走过场）
+
+- `wasm.wat` / `wasm.info` 此前唯一的集成覆盖是 web-RE gate 里对**空模块**(`\0asm\x01\x00\x00\x00`,
+  只有魔数与版本、无任何段)调一次 `wasm.wat`,断言 wat 里含 "module";`wasm.info`(wasm-objdump)
+  从未被真机跑过。绿灯几乎只证明了四个魔数字节能原样穿过,函数体与段恢复一概未验。
+- 新增 `tests/integration/test_wasm_wabt_live_gate.py`:测时用 `wat2wasm` 把一段含两个函数、
+  一块内存、一个导出 global 与一段 data 的 WAT 现编成真 `.wasm`(~107 字节),再驱动真实
+  `wasm.*` 服务路径。于是绿灯意味着 `wasm2wat` 真的解回了函数体(`i32.add` / `i32.mul` 与
+  memory / global)、`wasm-objdump` 真的列出了每种段(Type/Function/Memory/Global/Export/Code/Data)、
+  导出名(`mem`/`add`/`mul`/`answer`)与 data 段里的字节串 "hello wasm gate"。敌意输入在服务层
+  也一并钉死:非 wasm 文件在**起工具之前**被魔数门拦成 `invalid_params`(若是起了工具才失败会是
+  `backend_error`,借此区分「拦在启动前」),缺失路径回 `not_found`,魔数后接垃圾则要么结构化
+  `backend_error`、要么带 `tool_failed` + 非零 `exit_code` 如实交代——两者都算诚实。
+- 任一 wabt 二进制缺席时整套 gate 按 skip != pass 明确跳过(点名缺哪个),裸机无法冒充通过。
+- CI 增 `.github/workflows/wasm-gate.yml`:按路径触发(仅 jsre 后端 / `service_jsre.py` /
+  `tools/js_wasm.py` / 该 gate / 工作流自身变更时才跑),apt 装 wabt 并装 `.[test,dev]`,
+  先 sanity 校验 wat2wasm/wasm2wat/wasm-objdump 三件套齐全且 `WasmClient().available` 为真
+  (缺则当场硬失败,不让坏 runner 静默全跳),再跑该 gate。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
