@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -515,3 +516,182 @@ def test_add_remote_device_reuses_a_device_already_registered() -> None:
     assert first["id"] == "10.0.0.1:27042"
     assert second["id"] == "10.0.0.1:27042"
     assert client._frida.manager.added == 0
+
+
+class _HangLoadScript:
+    def __init__(self, release: Event) -> None:
+        self._release = release
+
+    def load(self) -> None:
+        self._release.wait(2.0)
+
+
+class _DetachFailHangSession:
+    def __init__(self, release: Event) -> None:
+        self._release = release
+
+    def create_script(self, source: str) -> _HangLoadScript:
+        del source
+        return _HangLoadScript(self._release)
+
+    def detach(self) -> None:
+        raise RuntimeError("cannot detach after timeout")
+
+
+def test_frida_hook_template_surfaces_a_detach_failure_during_timeout_cleanup() -> None:
+    """When the post-timeout detach fails, the session outlived the timeout.
+
+    A plain timeout implies nothing was left behind; here the cleanup detach
+    raised, so the session is still resident and the caller must be told.
+    """
+    release = Event()
+
+    class _Frida:
+        def attach(self, pid: int) -> _DetachFailHangSession:
+            del pid
+            return _DetachFailHangSession(release)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    try:
+        with pytest.raises(FridaError) as caught:
+            client.hook_template(1, "noop", allowed_pid=1, timeout=0.1)
+        assert caught.value.code == "frida_detach_failed"
+        assert caught.value.details["pid"] == 1
+        assert caught.value.details["failed_count"] >= 1
+    finally:
+        release.set()
+
+
+def test_frida_hook_template_device_surfaces_a_detach_failure_during_timeout_cleanup() -> None:
+    release = Event()
+
+    class _Device:
+        def attach(self, pid: int) -> _DetachFailHangSession:
+            del pid
+            return _DetachFailHangSession(release)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    try:
+        with pytest.raises(FridaError) as caught:
+            client.hook_template_device("usb", 1, "noop", allowed_pids={1}, timeout=0.1)
+        assert caught.value.code == "frida_detach_failed"
+        assert caught.value.details["pid"] == 1
+        assert caught.value.details["failed_count"] >= 1
+    finally:
+        release.set()
+
+
+def test_frida_java_enumerate_surfaces_a_detach_failure_during_timeout_cleanup() -> None:
+    release = Event()
+
+    class _Device:
+        def attach(self, pid: int) -> _DetachFailHangSession:
+            del pid
+            return _DetachFailHangSession(release)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    try:
+        with pytest.raises(FridaError) as caught:
+            client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", timeout=0.1)
+        assert caught.value.code == "frida_detach_failed"
+        assert caught.value.details["pid"] == 1
+        assert caught.value.details["failed_count"] >= 1
+    finally:
+        release.set()
+
+
+def test_frida_hook_template_timeout_without_cleanup_failure_stays_a_plain_timeout() -> None:
+    """A timeout whose cleanup detach succeeds must not masquerade as a leak."""
+    release = Event()
+
+    class _Session:
+        def create_script(self, source: str) -> _HangLoadScript:
+            del source
+            return _HangLoadScript(release)
+
+        def detach(self) -> None:
+            return None
+
+    class _Frida:
+        def attach(self, pid: int) -> _Session:
+            del pid
+            return _Session()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    try:
+        with pytest.raises(FridaError) as caught:
+            client.hook_template(1, "noop", allowed_pid=1, timeout=0.1)
+        assert caught.value.code == "timeout"
+    finally:
+        release.set()
+
+
+def test_frida_spawn_surfaces_a_kill_failure_during_timeout_cleanup() -> None:
+    """A spawned pid that cannot be killed after a timeout is left running."""
+    release = Event()
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            release.wait(2.0)
+
+        def kill(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("cannot kill after timeout")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    try:
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", "com.example.app", timeout=0.1)
+        assert caught.value.code == "frida_spawn_cleanup_failed"
+        assert caught.value.details["package"] == "com.example.app"
+        assert caught.value.details["pid"] == 4242
+    finally:
+        release.set()
+
+
+def test_frida_spawn_surfaces_a_kill_failure_when_rolling_back_a_failed_resume() -> None:
+    """resume failing then kill failing strands the process; report both."""
+
+    class _Device:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("resume boom")
+
+        def kill(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("kill boom")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app", timeout=1.0)
+
+    assert caught.value.code == "frida_spawn_cleanup_failed"
+    assert caught.value.details["pid"] == 4242
+    assert "resume boom" in caught.value.details["resume_error"]
+    assert "kill boom" in caught.value.details["kill_error"]
