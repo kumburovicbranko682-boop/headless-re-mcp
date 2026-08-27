@@ -186,8 +186,14 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses to write into a directory that already exists (it
+        # exits non-zero with "output directory already exists"), but we create
+        # out_dir here (and the service hands us an existing session artifact
+        # dir), so every unpack would fail without --force telling webcrack to
+        # overwrite it. The mocked unit tests never caught this because the fake
+        # webcrack binary does not enforce the check the real CLI does.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "--force"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )

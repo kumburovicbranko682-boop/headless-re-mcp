@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+修复 webcrack bundle 拆包对真实 CLI 全数失败的问题，并补上其 live 覆盖。webcrack 的招牌能力——把打包
+后的 JS 拆回各个模块（`js.n` / `unpack_bundle`）——过去只对一个假 webcrack 二进制跑过单测，而那个 mock
+掩盖了一个真 bug：客户端会先建好输出目录，但真实 webcrack 拒绝写入已存在的目录（报 "output directory
+already exists" 非零退出），除非传 `--force`；于是对真 CLI 的每次拆包都失败，mock（不做该检查）却一直
+green。修复：`unpack_bundle` 的 webcrack 调用加上 `--force`。新增
+`tests/integration/test_webcrack_unpack_live_gate.py`：以一个自包含的 webpack 风格双模块 bundle 为输入，
+真跑拆包（无网络、无需打包工具链），再把拆出的模块读回，断言各模块的独特载荷（`ALPHA_MODULE` /
+`BETA_PAYLOAD_XYZ`）各自落到自己的文件、且模块间 require 在拆分后保留；输出目录特意预先建好，正是真
+webcrack 不带 `--force` 会拒绝的既存目录场景，green 即证明修复生效。新增 `linux-webcrack-unpack` CI job：
+装 Node 22 + webcrack、跑该 gate 并解析 junitxml，webcrack 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
