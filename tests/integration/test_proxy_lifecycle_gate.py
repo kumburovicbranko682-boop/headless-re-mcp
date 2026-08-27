@@ -264,6 +264,30 @@ def test_proxy_captures_a_real_request_and_reads_it_back(tmp_path: Path) -> None
         assert post_detail["request"]["size"] == len(payload_sent)
         assert post_detail["request"].get("body") == payload_sent.decode()
 
+        # Filters must narrow the *real* capture, not just the unit fixtures: two
+        # flows are held (one GET, one POST, both 200 to /probe). Each filter is
+        # asserted against that live mitmproxy capture so a version drift in the
+        # summary fields the filter reads would trip here.
+        only_post = backend.flows(session, method="POST")
+        assert only_post["filtered"] is True
+        assert only_post["captured"] >= 2
+        assert only_post["total"] >= 1
+        assert all(f["method"] == "POST" for f in only_post["flows"])
+        assert any("/probe" in f.get("url", "") for f in only_post["flows"])
+        assert all(f["method"] != "GET" for f in only_post["flows"])
+
+        only_get = backend.flows(session, method="get")  # case-insensitive
+        assert only_get["total"] >= 1
+        assert all(f["method"] == "GET" for f in only_get["flows"])
+
+        by_url = backend.flows(session, url_contains="/PROBE")  # case-insensitive
+        assert by_url["total"] >= 2
+
+        ok_range = backend.flows(session, status_min=200, status_max=299)
+        assert ok_range["total"] >= 2
+        assert all(200 <= f["status"] <= 299 for f in ok_range["flows"])
+        assert backend.flows(session, status_min=400)["total"] == 0
+
         har_path = tmp_path / "capture.har"
         har = backend.export_har(session, har_path)
         assert har["entry_count"] >= 2, har

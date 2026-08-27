@@ -1299,6 +1299,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   POST 的 postData 与二进制响应体 base64 往返、queryString 解析、body 未保留时两条精简 entry 不丢流。实机 gate(`test_proxy_lifecycle_gate.py`)对真实 mitmproxy 捕获的 POST
   读回 HAR,断言其请求头、postData 正文与源站响应体都在——证明富 HAR 来自真实 flow 而非摘要。
 
+- **`proxy.flows` 只能按 offset/limit 翻页,无法在一次繁忙抓包里挑出关心的那几条,分诊全靠把整个环翻一遍。** 现给 `proxy.flows` 增加四类可选过滤(彼此 AND):
+  `method`(大小写不敏感精确匹配,如 POST)、`host_contains`/`url_contains`(大小写不敏感子串)、`status_min`/`status_max`(闭区间状态码,均 100..599——故 `status_min` 400 单用即所有
+  错误响应,`status_min` 404 配 `status_max` 404 即精确 404)。状态区间会排除没有响应的 flow(status 为 None):既然按状态过滤,它就没有状态可比。空白过滤串按「无过滤」处理,既不匹配
+  全部也不匹配空。过滤在整段抓包上先做、再对命中集分页,故 `total` 变为命中数、`has_more` 针对命中集翻页;此外新增 `filtered`(为真)与 `captured`(过滤前环内条数),让「命中数」与
+  「抓到多少」不被混为一谈。`dropped` 仍是抓包环已淘汰的条数(抓包属性,与过滤无关)。工具描述补上这些过滤与 `filtered`/`captured` 语义。单测(`test_proxy_flow_filters.py`):method
+  精确/大小写、host/url 子串、状态区间选错误与精确码、状态区间排除无响应流、多过滤 AND、空白串忽略、命中集分页与 `dropped` 不受过滤影响。实机 gate(`test_proxy_lifecycle_gate.py`)对真实
+  mitmproxy 捕获的 GET/POST 用各过滤读回,证明过滤读的正是真实抓包的摘要字段。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

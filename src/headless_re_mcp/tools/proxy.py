@@ -55,6 +55,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        method: str | None = None,
+        host_contains: str | None = None,
+        url_contains: str | None = None,
+        status_min: Annotated[int | None, Field(ge=100, le=599)] = None,
+        status_max: Annotated[int | None, Field(ge=100, le=599)] = None,
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
@@ -67,8 +72,30 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         the requested limit when the result-size budget trimmed the page (each
         url can be 16 KiB), so read count, not limit, and page on has_more.
         metadata_truncated marks bounded oversized summary fields.
+
+        Optional filters narrow a busy capture and are ANDed: method is an exact
+        case-insensitive match (e.g. POST); host_contains and url_contains are
+        case-insensitive substrings; status_min and status_max are an inclusive
+        status-code range (both 100..599), so status_min 400 alone is every
+        error and status_min 404 with status_max 404 is exactly 404. A status
+        bound excludes any flow with no response captured. When a filter is
+        active the reply adds filtered true and captured (the pre-filter ring
+        size), and total becomes the number of matching flows, so page on
+        has_more against the filtered view. An empty or whitespace-only filter
+        string is ignored rather than matching everything or nothing.
         """
-        return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.proxy_flows(
+                session_id,
+                offset=offset,
+                limit=limit,
+                method=method,
+                host_contains=host_contains,
+                url_contains=url_contains,
+                status_min=status_min,
+                status_max=status_max,
+            )
+        )
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:

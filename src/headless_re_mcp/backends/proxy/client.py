@@ -428,6 +428,58 @@ def _har_entry_from_flow(flow: Any) -> JsonObject:
     }
 
 
+def _norm_str_filter(value: str | None) -> str | None:
+    """A stripped filter string, or None when it was absent or only whitespace.
+
+    Treating an empty/whitespace value as "no filter" keeps ``flows`` forgiving:
+    an empty ``url_contains`` would match every row (the empty substring is in
+    everything) and an empty ``method`` would match none, both surprising. This
+    also lets ``flows`` decide honestly whether a filter is actually active when
+    it sets the ``filtered`` flag.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _flow_matches(
+    summary: JsonObject,
+    *,
+    method: str | None,
+    host_contains: str | None,
+    url_contains: str | None,
+    status_min: int | None,
+    status_max: int | None,
+) -> bool:
+    """True when a flow summary passes every active filter (filters are ANDed).
+
+    Substring filters (host/url) are case-insensitive; ``method`` is an exact
+    case-insensitive match. A status bound only matches a row that actually has
+    an integer status, so a flow with no response captured is excluded whenever
+    any status bound is set -- you asked for a status range and it has none.
+    """
+    if method is not None and _har_str(summary.get("method")).casefold() != method.casefold():
+        return False
+    if host_contains is not None and host_contains.casefold() not in _har_str(
+        summary.get("host")
+    ).casefold():
+        return False
+    if url_contains is not None and url_contains.casefold() not in _har_str(
+        summary.get("url")
+    ).casefold():
+        return False
+    if status_min is not None or status_max is not None:
+        status = summary.get("status")
+        if not isinstance(status, int) or isinstance(status, bool):
+            return False
+        if status_min is not None and status < status_min:
+            return False
+        if status_max is not None and status > status_max:
+            return False
+    return True
+
+
 def _har_entry_from_summary(summary: JsonObject) -> JsonObject:
     """A lean HAR entry for a flow whose body/headers were not retained.
 
@@ -790,12 +842,53 @@ class ProxyBackend:
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
 
-    def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def flows(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        method: str | None = None,
+        host_contains: str | None = None,
+        url_contains: str | None = None,
+        status_min: int | None = None,
+        status_max: int | None = None,
+    ) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
+        method_f = _norm_str_filter(method)
+        host_f = _norm_str_filter(host_contains)
+        url_f = _norm_str_filter(url_contains)
+        filtered = (
+            method_f is not None
+            or host_f is not None
+            or url_f is not None
+            or status_min is not None
+            or status_max is not None
+        )
+        # Filter the whole capture first, then paginate the matches, so total and
+        # has_more describe the filtered view the caller is actually paging. dropped
+        # stays a property of the capture ring (what it already evicted), not of the
+        # filter, and captured reports how many were in the ring before the filter.
+        matched = (
+            [
+                row
+                for row in items
+                if _flow_matches(
+                    row,
+                    method=method_f,
+                    host_contains=host_f,
+                    url_contains=url_f,
+                    status_min=status_min,
+                    status_max=status_max,
+                )
+            ]
+            if filtered
+            else items
+        )
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        window = matched[start : start + cap]
         # Bound the page by its JSON-encoded size, not just the row count: each
         # summary carries a url of up to 16 KiB, so a 1000-row window can run to
         # megabytes and be discarded whole for a ~16 KiB summary. Trimming before
@@ -805,14 +898,20 @@ class ProxyBackend:
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
-        return {
+        result: JsonObject = {
             "flows": window,
             "count": len(window),
-            "total": len(items),
+            "total": len(matched),
             "offset": start,
-            "has_more": start + len(window) < len(items),
+            "has_more": start + len(window) < len(matched),
             "dropped": dropped,
         }
+        if filtered:
+            # total now counts only matches, so surface both the flag and the
+            # pre-filter ring size to keep the narrowing visible and honest.
+            result["filtered"] = True
+            result["captured"] = len(items)
+        return result
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)
