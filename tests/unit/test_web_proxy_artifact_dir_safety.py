@@ -60,8 +60,12 @@ def test_dotdot_session_ids_are_rejected_by_the_segment_guard(tmp_path: Path) ->
                 with pytest.raises(error_type) as info:
                     helper(segment)
                 assert info.value.code == "invalid_params"
-                # The guard fires before any category directory is created,
-                # and "<category>/.." never collapses onto the artifact root.
-                assert not (root / category / segment).exists()
+                # The guard fires before any category directory is created.
+                # Probe the category directory itself, not "<category>/<segment>":
+                # Windows stat() normalizes "web/.." lexically to the artifact
+                # root -- which exists -- so the joined probe reports a hit on
+                # a machine where the guard worked. An absent category directory
+                # is the stronger fact: nothing below it can exist either.
+                assert not (root / category).exists()
     finally:
         service.close_all()
