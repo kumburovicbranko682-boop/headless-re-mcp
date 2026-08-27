@@ -24,6 +24,47 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（非 PE 线真机 gate 与两处后端修复）
+
+把 PE 之外几条线（Ghidra、Android 重打包、frida、web、proxy、radare2、wasm/js）补齐真后端集成
+gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 gate 遵守 `skip != pass`：缺后端时明确
+打印 skip 原因，不伪装成通过。
+
+- **Ghidra 后端首次拿到真机 gate，并换掉在现代 Ghidra 上跑不起来的导出脚本。** 导出脚本原是
+  Jython 的 `ExportJson.py`——Ghidra 11.3 起不再自带 Jython，`analyzeHeadless -postScript` 会以
+  “not started with PyGhidra”失败，导出永远拿不到 JSON。重写为 Gson 版的 `ExportJson.java`
+  GhidraScript：Java 是 Ghidra 原生脚本语言，不依赖任何解释器扩展，在 11.3+/12.x 上都能跑。
+  同时把 launcher 发现改为平台感知（POSIX 取无扩展名的 `analyzeHeadless`，Windows 取 `.bat`），
+  否则 Linux 会挑到不可执行的 `.bat` 而 `PermissionError`。新增 `test_ghidra_live_gate.py` 对本地
+  编出的 ELF 跑 functions/symbols 提取与具名函数反编译。
+- **`web.network_get` 把 `WebError` 原样上抛，而不是吞成软 `body_error`。** CDP 取不到某条请求的
+  响应体（重定向、缓存已淘汰）本该降级为 `body_error` 说明；但同一个 `except` 连会话已卡死/超时
+  抛出的 `WebError` 也一并吞了，于是浏览器线程整个 wedge 时，调用方看到的是“这条请求没有 body”的
+  200 形态，而不是“浏览器无响应，请 `web.close`”的健康信号。改为像 `script_source` 那样先
+  `except WebError: raise`，无人值守的调用方据此能恢复。
+- **`js.unpack_bundle` 不再预建输出目录。** webcrack 2.x 拒绝一个已存在的 `-o` 目录（报“output
+  directory already exists”并退 1），而客户端过去用 `exist_ok=True` 先把目录建好，导致对 webcrack 2.x
+  的每次 unpack 必失败。改为只确保父目录存在，把最终目录留给 webcrack 自己创建。新增
+  `js.unpack_bundle` 实测 gate 复现并守住此路径。
+- **可移植 frida 本地 gate（Linux 上真跑）。** `test_frida_live_gate.py` spawn 一个本地 python 子进程，
+  经 `FridaClient` 覆盖本地路径（attach/modules/exports/`memory.read`/hook 模板/单 pid 授权拒绝）与
+  设备路径（`enumerate_devices`、`_authorize` 授权**集合**、以 `local` 设备加载 `noop` hook）。
+  `memory.read` 断言读回目标 ELF 魔数 `7f454c46`；授权集边界与模板校验都在任何 attach 之前裁决，
+  故与本机 ptrace 是否放行无关。
+- **Android 重打包与内容操作真机 gate。** `test_android_repack_gate.py`：apktool decode↔build 往返一枚
+  真 APK（自带默认 framework，不需 Android SDK），apksigner 用默认调试 keystore 签名并独立验签。
+  `test_android_re_gate.py` 补上对手搓的最小合法 DEX 跑 classes/methods/strings/xrefs，以及 jadx 反
+  编译该 DEX 到 Java。
+- **proxy 抓包 gate。** `test_proxy_capture_gate.py` 把一条真 HTTP 请求经 mitmproxy 路由，断言抓到 flow、
+  能取回 body、能导出 HAR、能重放。
+- **radare2 ELF 与 web CDP gate 面加厚。** r2 侧补 `pdj` 反汇编（含带方括号内存操作数的解析）与 `izj`
+  字符串到 `vaddr` 的映射；web 侧补 CDP 网络抓取/取体、`script.source`、截图、HAR 导出、导航、
+  `wasm.list`，以及 wasm `wat`/`info`。
+- **`.github/workflows/linux-integration.yml`。** ubuntu-latest 上每次 push/PR 真跑上述非 PE gate：`gates`
+  job 装 radare2/wabt/webcrack/jadx/apktool/apksigner + Playwright 自带 Chromium 与 mitmproxy，跑整个
+  `tests/integration`（conftest 按名 skip Windows-only gate）；`ghidra-gate` job 单独缓存 ~570 MB 的
+  Ghidra 下载、配 JDK 21，只收 Ghidra gate 文件。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
