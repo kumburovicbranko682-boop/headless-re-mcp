@@ -179,6 +179,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
   循环。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放。
+- **同一缺陷还有更深一层：`master.run()` 返回本身并不关监听 socket**。mitmproxy 的
+  `Proxyserver` 没有 `done()` 钩子——mitmdump 靠进程退出来释放端口，嵌入长驻服务的
+  DumpMaster 于是把已绑定的 socket 永久留在进程里，内核层面持续 accept，收拾挂起任务也够不着它。
+  Linux 上跑 lifecycle gate 抓到：stop 后线程干净退出、端口却 10 秒后仍在接受连接。现在
+  `master.run()` 返回后、循环收尾之前，显式 `servers.update([])`（有界 5s）逐个停掉监听实例；
+  端口即刻可复绑。真实起停仍由 lifecycle gate 证明，托管 CI 不装 mitmproxy，另有免依赖的
+  单元测试钉住这次 teardown 必须请求 proxyserver 清空全部 mode。
+- **被杀的孤儿进程现在会被收割，而不是留成僵尸**。服务进程在 Linux 上登记为
+  `PR_SET_CHILD_SUBREAPER`：工具树被杀时（超时、清理、关会话），被 init 方向收养的孤儿改为
+  收养到本进程，`terminate_process_tree` / `terminate_pid_tree` / `terminate_process_group`
+  在击杀后逐个 `waitpid` 收尸。正常宿主机上 init 也会收，但无人值守的目标形态是容器——pid 1
+  不收尸的容器里，每杀一棵工具树就漏一个僵尸，跑一整夜就是一堆。这套机制曾在一次合并事故中
+  被整段抹掉且无测试失败（正是因为宿主 init 会兜底），现已恢复并加了注册与端到端收割的守护
+  测试；diec / Exeinfo PE / upx 正常退出后遗留的 helper 也重新按会话组回收。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
