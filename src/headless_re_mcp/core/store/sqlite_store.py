@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS knowledge (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (session_id, kind, key)
 );
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at);
@@ -511,11 +515,22 @@ class SessionStore:
                 self._audit_writes = 0
                 # Ordered the same way list_audit reads, so what survives is what
                 # a caller would have been able to see.
-                conn.execute(
+                trimmed = conn.execute(
                     "DELETE FROM audit WHERE id IN ("
                     " SELECT id FROM audit ORDER BY at DESC, id DESC LIMIT -1 OFFSET ?)",
                     (self.audit_retained_rows,),
                 )
+                dropped = int(trimmed.rowcount or 0)
+                if dropped > 0:
+                    # The audit log is a single global stream, so its loss count
+                    # is one cumulative number, persisted so list_audit can say
+                    # the table is not the whole history rather than passing the
+                    # survivors off as complete across a restart.
+                    conn.execute(
+                        "INSERT INTO meta(key, value) VALUES('audit_dropped', ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value = value + excluded.value",
+                        (dropped,),
+                    )
             conn.commit()
 
     def list_audit(
@@ -542,6 +557,10 @@ class SessionStore:
                     "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
+            dropped_row = conn.execute(
+                "SELECT value FROM meta WHERE key='audit_dropped'"
+            ).fetchone()
+        dropped_total = int(dropped_row["value"]) if dropped_row is not None else 0
         items = []
         for row in rows:
             item = dict(row)
@@ -558,6 +577,10 @@ class SessionStore:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(items) < int(total),
+            # Rows trimming has removed from the (global) audit log. total counts
+            # only what the table still holds; dropped_total > 0 says it is not
+            # the log's whole history, even filtered to one session.
+            "dropped_total": dropped_total,
         }
 
     def record_knowledge(
