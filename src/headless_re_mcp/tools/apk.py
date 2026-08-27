@@ -71,6 +71,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.meta_data")
+    def apk_meta_data(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
+    ) -> dict[str, Any]:
+        """List <meta-data> entries declared in the manifest.
+
+        meta-data is where apps and bundled SDKs stash configuration in the
+        clear: Maps / Firebase / Facebook keys, backend URLs, feature flags, so
+        it is a first-pass secrets and third-party-SDK triage step. Gathers every
+        <meta-data> under <application> and each component. Each row carries name,
+        value (truncated with value_truncated when long) and resource (the raw
+        @resId when the value points at a resource rather than an inline literal;
+        resolving it needs resources.arsc, not read here), plus owner_type
+        (application or the component tag) and owner (application or the resolved
+        component class). Parsed from the manifest, so no DEX analysis.
+        Answers with meta_data, package, count, total, offset, and has_more;
+        total is the entry count capped at 256 with scan_capped when more exist.
+        """
+        return _dump(
+            analysis.apk_meta_data(session_id, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.

@@ -12,8 +12,15 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
+from xml.etree import ElementTree as ET
 
 JsonObject = dict[str, Any]
+
+# The manifest namespace every android:* attribute lives under; ElementTree
+# reports those attributes as {uri}name once the doc's xmlns:android is parsed.
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+# The manifest tags that own <meta-data> and declare an app entry point.
+_COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -302,6 +309,58 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
+    def meta_data(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List <meta-data> entries declared in the manifest.
+
+        meta-data is where apps and their bundled SDKs stash configuration in the
+        clear: Google Maps / Firebase / Facebook keys, backend URLs, feature
+        flags. Collecting it is a first-pass secrets and third-party-SDK triage
+        step. This gathers every <meta-data> under <application> and under each
+        component. Each row carries name (android:name), value (android:value,
+        truncated with value_truncated when long) and resource (android:resource,
+        the raw @resId reference when the value points at a resource instead of
+        an inline literal -- resolving that id needs resources.arsc, which this
+        does not read), plus owner_type (application or the component tag) and
+        owner (application or the component class resolved against the package).
+        Parsed from the manifest, so no DEX analysis. Rows sort by (owner, name);
+        total is the entry count capped at 256 with scan_capped when more exist.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        try:
+            xml = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise ApkError("backend_error", f"failed to parse manifest: {exc}") from exc
+        application = root.find("application")
+        rows: list[JsonObject] = []
+        if application is not None:
+            for md in application.findall("meta-data"):
+                rows.append(_meta_row(md, "application", "application"))
+            for elem in application:
+                if elem.tag not in _COMPONENT_TAGS:
+                    continue
+                owner = _resolve_component(_android_attr(elem, "name") or "", package)
+                for md in elem.findall("meta-data"):
+                    rows.append(_meta_row(md, elem.tag, owner))
+        rows.sort(key=lambda r: (r["owner"], r["name"]))
+        scan_more = len(rows) > _MAX_COMPONENT_NAMES
+        rows = rows[:_MAX_COMPONENT_NAMES]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENT_NAMES)
+        window = rows[start : start + cap]
+        return {
+            "package": package,
+            "meta_data": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
@@ -457,3 +516,41 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _android_attr(elem: ET.Element, name: str) -> str | None:
+    return elem.get(f"{{{_ANDROID_NS}}}{name}")
+
+
+def _resolve_component(name: str, package: str) -> str:
+    """Resolve a manifest android:name to a fully qualified class.
+
+    Manifest names are relative to the package: a leading '.' or a bare name
+    with no dot both mean "under the package", while an already-dotted name is
+    absolute. Resolving here means callers can feed the result straight to
+    apk.methods / apk.xrefs without re-implementing the rule.
+    """
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return f"{package}.{name}" if package else name
+    return name
+
+
+def _meta_row(md: ET.Element, owner_type: str, owner: str) -> JsonObject:
+    """Build one <meta-data> row with a bounded value."""
+    value = _android_attr(md, "value")
+    value_truncated = False
+    if value is not None and len(value) > _MAX_STRING_LEN:
+        value = value[:_MAX_STRING_LEN]
+        value_truncated = True
+    return {
+        "name": _android_attr(md, "name") or "",
+        "value": value,
+        "resource": _android_attr(md, "resource"),
+        "owner_type": owner_type,
+        "owner": owner,
+        "value_truncated": value_truncated,
+    }
