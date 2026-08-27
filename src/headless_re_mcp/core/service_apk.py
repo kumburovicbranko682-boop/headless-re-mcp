@@ -71,7 +71,14 @@ class ApkAnalysisMixin:
         return session.require_target(TargetKind.APK)
 
     def _jadx_out_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        # Fail-closed on the id itself: the single-component check alone lets
+        # ``..`` through, which would resolve artifact_root/jadx/<id> back to
+        # artifact_root and let jadx write outside the jadx subtree. Callers
+        # gate a bogus id at registry.get first, but the guard must not depend
+        # on that -- the canonical check rejects the dot segments explicitly.
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve()
         return root / "jadx" / session_id
@@ -251,7 +258,13 @@ class ApkAnalysisMixin:
         )
 
     def _repack_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        # Fail-closed on the id itself: the single-component check alone lets
+        # ``..`` through, which would collapse artifact_root/apktool/<id> onto
+        # artifact_root before mkdir. The canonical guard rejects the dot
+        # segments explicitly, matching the artifact-ownership traversal fix.
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve() / "apktool" / session_id
         root.mkdir(parents=True, exist_ok=True)
