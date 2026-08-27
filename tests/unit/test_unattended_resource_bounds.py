@@ -3533,6 +3533,44 @@ class TestFridaServerEnsureIsHonest:
         result = backend.ensure_frida_server("emulator-5554")
         assert result == {"running": True, "pushed": False, "port": 27042}
 
+    def test_a_remote_path_with_shell_metacharacters_is_refused_before_any_shell(
+        self,
+    ) -> None:
+        """remote_path is interpolated into ``su -c 'nohup {remote_path} ...'``.
+
+        The pattern guard runs before the first shell call, so a path carrying
+        a metacharacter is rejected as invalid_params and never reaches the
+        device -- nothing an attacker planted in it can execute.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                raise AssertionError("no shell may run for a rejected remote_path")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.ensure_frida_server(
+                "emulator-5554", remote_path="/data/local/tmp/fs; rm -rf /"
+            )
+        assert caught.value.code == "invalid_params"
+
+    def test_a_relative_remote_path_is_refused(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del args, timeout
+                raise AssertionError("no shell may run for a rejected remote_path")
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.ensure_frida_server("emulator-5554", remote_path="frida-server")
+        assert caught.value.code == "invalid_params"
+
 
 class TestDeviceLaunchIsHonest:
     def test_monkey_without_the_app_in_foreground_is_not_reported_launched(self) -> None:
