@@ -74,6 +74,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的本意正是让路径守卫最先执行;把 `session_id` 校验挪到平台判断之前,契约在 Windows 与 Linux 上
   一致。回归由既有 `test_ui_capture_path_safety.py` 固定(两参数均在 Linux 收集时转红)。
 
+### 修复（缺 playwright 时整个集成套件无法收集）
+
+- **`tests/integration/test_agent_browser_smoke.py` 不再在缺 playwright 的机器上让整条集成套件
+  收集失败**。它此前在模块顶层 `from playwright.sync_api import ...`,而 playwright 是可选的
+  `browser` extra;机器上没有它时,这一条 import 让该模块收集报错,而 pytest 默认「任一模块收集出错
+  即整场中断」——于是 crackme 端到端、地址同步等根本不需要浏览器的 gate 也一起没跑成,整条
+  `tests/integration` 在裸机上直接 0 收集。这正是仓库到处强调的「裸机上要诚实地 skip」被破坏的样子。
+  改为像兄弟 web gate 那样:用 `importlib.util.find_spec` 在模块级判定 playwright/uvicorn 是否可用并
+  `pytest.mark.skipif` 掉整模块,真正用到的导入推迟进用例体内。现在裸 Linux 上 `tests/integration`
+  能完整收集(87 项),该 gate 如实 skip(`skip != pass`),其余可运行 gate 照常执行。
+
 ### 修复（守卫与源码漂移:README / 能力目录 / 配置生成 / 监控台取文件）
 
 - 四处每次运行强制的一致性守卫在多 PR 合并后与源码脱节,Linux CI 的 unit job 会照实转红。均系
