@@ -254,6 +254,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   该 flow 被列出且 method/status/url 正确、`flow.get` 取回的响应体带预期 marker、HAR 落一条、flow 能 replay。
   已针对 mitmproxy 12.2.3 跑通、连跑五次稳定；无 mitmproxy 时干净跳过（skip != pass）。这条链路本身健全
   （早前的端口释放修复仍生效），本次是补覆盖而非修 bug。
+- **代理启动前摘掉 mitmproxy 的 `keepserving` addon,消除偶发的 `No such option: rfile` 启动错**。
+  `keepserving.running()` 会无条件读 `ctx.options.rfile`(该选项属 readfile addon)以及重放选项;当这次读取
+  在启动期先于选项可见时,就抛 `AttributeError: No such option: rfile`——曾以代理 gate 的偶发失败出现过一次。
+  该 addon 对"实时拦截代理"完全无用:它只在启动时请求了文件回放或流量重放时才排任务,而本嵌入式代理从不这么做;
+  更糟的是,它一旦触发,会在一次 replay 排空后把代理关掉,杀死长驻抓包。故在 `master.run()` 前移除它,既删掉了
+  那处脆弱读取,也去掉了这个潜在的自动关闭;行为不变(`replay.client` 命令来自仍保留的 clientplayback addon)。
+  新增一个 CI 可跑的单测钉住这次移除;实时代理 gate(抓包 + replay)仍通过。该竞态很罕见(130+ 次起停循环
+  未复现),故这是"按机理加固"——移除确切抛错的代码并验证不回归抓包/replay,而非可复现验证的修复。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
