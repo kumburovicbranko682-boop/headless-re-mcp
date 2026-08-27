@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -30,7 +31,11 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axtj (references *to*) and axfj (references *from*) at a bounded address.
+# Plain ``axj`` is deliberately not accepted: in modern radare2 it is a write
+# command ("add jmp reference"), not a listing, so xrefs uses the per-address
+# ``ax[tf]j`` list commands instead.
+_AXTF_COMMAND = re.compile(r"ax[tf]j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -47,9 +52,16 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AXTF_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
+
+
+def _xref_entries(value: object) -> list[JsonObject]:
+    """The dict entries of a parsed ax*j array, dropping anything malformed."""
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
 
 
 class R2Client:
@@ -100,13 +112,32 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
-        data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        # Modern radare2's ``axj`` is a write ("add jmp reference"), not a
+        # listing, so references are gathered with the per-address list commands:
+        # ``axtj`` for references *to* the address and ``axfj`` for references
+        # *from* it. They are run as separate analyses so an empty side stays an
+        # empty list instead of being swallowed by the other command's output.
+        to_raw = self._exec(binary, ["aa", f"axtj @ {address}"], timeout=timeout)
+        from_raw = self._exec(binary, ["aa", f"axfj @ {address}"], timeout=timeout)
+        merged: list[JsonObject] = []
+        for entry in _xref_entries(parse_r2_json(to_raw.decode("utf-8", errors="replace"))):
+            item = dict(entry)
+            # axtj names only the source; the queried address is the target.
+            item.setdefault("to", address)
+            merged.append(item)
+        for entry in _xref_entries(parse_r2_json(from_raw.decode("utf-8", errors="replace"))):
+            item = dict(entry)
+            item.setdefault("from", address)
+            merged.append(item)
+        payload: JsonObject = {
+            "raw": json.dumps(merged),
+            "commands": [f"axtj @ {address}", f"axfj @ {address}"],
+            "address": address,
+        }
+        return enrich_r2_payload(payload, binary=binary)
 
-    def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+    def _exec(self, binary: Path, commands: list[str], *, timeout: float) -> bytes:
+        """Run whitelisted r2 commands one-shot and return raw stdout, or raise."""
         if not self.available or self.executable is None:
             raise R2Error("capability_unavailable", "radare2/rizin is not installed")
         if not binary.is_file():
@@ -144,16 +175,19 @@ class R2Client:
                 "backend_error",
                 f"failed to launch {self.executable}: {exc}",
             ) from exc
-        produced = len(completed.stdout)
-        out = completed.stdout[:_MAX_OUTPUT]
-        err = completed.stderr[:_MAX_OUTPUT]
         if completed.returncode != 0:
             raise R2Error(
                 "backend_error",
                 "r2 exited non-zero",
                 exit_code=completed.returncode,
-                stderr=err.decode("utf-8", errors="replace")[:2000],
+                stderr=completed.stderr[:_MAX_OUTPUT].decode("utf-8", errors="replace")[:2000],
             )
+        return completed.stdout
+
+    def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        stdout = self._exec(binary, commands, timeout=timeout)
+        produced = len(stdout)
+        out = stdout[:_MAX_OUTPUT]
         payload: JsonObject = {
             "raw": out.decode("utf-8", errors="replace"),
             "commands": commands,
