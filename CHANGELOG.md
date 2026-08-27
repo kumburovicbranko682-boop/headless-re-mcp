@@ -72,6 +72,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
+### 修复（proxy.flow.get 对出错的流丢掉了出错原因）
+
+- 承接上一类抓包修复：mitmproxy 跑不完的流（TLS 握手被拒、上游不可达、请求中途连接被重置）经
+  error 钩子记进环形缓冲，`proxy.flows` 的摘要行如实带 `error=true`/`error_msg`、状态为 null，
+  且这种流与普通流一样留在 raw 存储里、可被 `proxy.flow.get` 取回。但 `flow_get` 只拼 `request`/
+  `response`，从不读 `flow.error`——于是调用方顺着列表里标了 error 的行去看详情时，拿到的是状态
+  null、响应体为空的一条记录，和一个真正 0 字节的 200 完全无法区分，出错原因被默默丢掉。现让
+  `flow_get` 与摘要行同形：`flow.error` 在场时补顶层 `error=true` 与 `error_msg`（按 `_MAX_METADATA_BYTES`
+  夹取，超长则加 `metadata_truncated`），响应侧仍如实回 null 状态与空体、不落盘任何制品；正常完成
+  的流绝不长出 `error` 字段。工具文档串同步说明，新增三条直测钉住：出错流带出错原因、超长原因被
+  夹取且标记、完成流无 error 字段。
+
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、
