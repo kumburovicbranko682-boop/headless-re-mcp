@@ -13,6 +13,8 @@ Windows-built fixture when that exists but falls back to the committed PE.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -27,12 +29,50 @@ _COMMITTED_FIXTURE = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.p
 # tool re-imports, so give the JVM real headroom on a shared CI box.
 _TIMEOUT = 300.0
 
+# A named, un-inlinable function so the ELF cross-format gate can find it by name
+# and check the decompiled body -- no committed binary blob, built on demand.
+_ELF_SOURCE = (
+    "int re_mcp_triple(int x) { return x * 3 + 1; }\n"
+    "int main(void) { return re_mcp_triple(7); }\n"
+)
+
 
 def _client() -> GhidraClient:
     client = GhidraClient(home=getattr(Settings.load(), "ghidra_home", None))
     if not client.available:
         pytest.skip("Ghidra analyzeHeadless not configured — live Gate not run (skip != pass)")
     return client
+
+
+def _build_elf_fixture(tmp_path: Path) -> Path:
+    """Compile a tiny ELF with the host C compiler, or skip (skip != pass).
+
+    Ghidra is the *portable* backend the non-PE lines lean on, but the rest of
+    this gate only proves a PE. A native ELF -- the most common non-PE target --
+    is compiled here at -O0 (no inlining) rather than committed as a binary blob,
+    so a regression that broke ELF import/analysis while leaving PE intact is
+    caught on any box with a compiler.
+    """
+    compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if compiler is None:
+        pytest.skip("no C compiler (cc/gcc/clang) — ELF cross-format Gate not run (skip != pass)")
+    source = tmp_path / "re_mcp_probe.c"
+    source.write_text(_ELF_SOURCE, encoding="utf-8")
+    out = tmp_path / "re_mcp_probe.elf"
+    try:
+        completed = subprocess.run(
+            [compiler, "-O0", "-o", str(out), str(source)],
+            capture_output=True,
+            timeout=120.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - host dependent
+        pytest.skip(f"C compiler unusable ({exc}) — ELF cross-format Gate not run (skip != pass)")
+    if completed.returncode != 0 or not out.is_file():
+        pytest.skip(
+            "C compiler produced no ELF "
+            f"({completed.stderr.decode('utf-8', 'replace')[:200]}) — skip != pass"
+        )
+    return out
 
 
 def _gate_fixture() -> Path:
@@ -118,3 +158,37 @@ def test_ghidra_decompile_and_xrefs_at_a_non_function_address_stay_empty(tmp_pat
     assert xrefs["count"] == 0
     assert xrefs["items"] == []
     assert xrefs["has_more"] is False
+
+
+@pytest.mark.integration
+def test_ghidra_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
+    """The portable backend must handle a non-PE format, not just the PE fixture.
+
+    Ghidra is what the non-PE lines use for ELF/Mach-O/raw analysis, but every
+    other test here feeds it a PE. This builds a native ELF and drives the same
+    functions -> decompile -> xrefs surface against it: the named function is
+    recovered, its decompiled C carries the *3+1 arithmetic, and the call from
+    main resolves as a reference to its entry. A drift that broke ELF import
+    while PE kept working would surface only here.
+    """
+    client = _client()
+    elf = _build_elf_fixture(tmp_path)
+
+    funcs = client.functions(elf, tmp_path / "fn", limit=256, timeout=_TIMEOUT)
+    assert funcs.get("count", 0) >= 1
+    by_name = {item["name"]: item for item in funcs.get("items", [])}
+    assert "re_mcp_triple" in by_name, sorted(by_name)
+    triple_entry = by_name["re_mcp_triple"]["entry"]
+
+    decompiled = client.decompile(elf, tmp_path / "dc", triple_entry, timeout=_TIMEOUT)
+    assert decompiled.get("function") == "re_mcp_triple"
+    assert decompiled.get("truncated") is False
+    body = decompiled.get("decompiled") or ""
+    # Ghidra names the parameter itself, but the arithmetic is stable: x*3+1.
+    assert "* 3" in body and "+ 1" in body, body[:200]
+
+    xrefs = client.xrefs(elf, tmp_path / "xr", triple_entry, limit=32, timeout=_TIMEOUT)
+    assert isinstance(xrefs.get("items"), list)
+    assert xrefs.get("count", 0) >= 1, "expected the call from main to reference re_mcp_triple"
+    for ref in xrefs["items"]:
+        assert set(ref) >= {"from", "to", "type"}
