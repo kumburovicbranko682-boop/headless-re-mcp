@@ -445,6 +445,14 @@ def _parse_imports(data: bytes, layout: _Layout) -> ImportSummary:
                 if api.casefold() in _SUSPICIOUS_APIS:
                     suspicious.add(api)
             thunk_offset += pointer_size
+        else:
+            # The lookup table ran to the end of its mapped span without the
+            # null thunk that ends a well-formed import list, so this library's
+            # functions were cut off at the section boundary and function_count
+            # undercounts. The descriptor and TLS loops flag the same run-off;
+            # without this the summary reported a complete count it could not
+            # stand behind.
+            truncated = True
         if truncated:
             break
         descriptor_offset += 20
