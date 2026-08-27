@@ -17,7 +17,9 @@ import pytest
 
 from headless_re_mcp.backends.adb.client import AdbError
 from headless_re_mcp.backends.apk.client import ApkError
+from headless_re_mcp.backends.apktool.client import ApktoolError
 from headless_re_mcp.backends.frida.client import FridaError
+from headless_re_mcp.backends.jadx.client import JadxError
 from headless_re_mcp.backends.jsre.client import JsReError
 from headless_re_mcp.backends.proxy.client import ProxyError
 from headless_re_mcp.backends.web.client import WebError
@@ -148,6 +150,38 @@ def test_a_wrapped_backend_permanent_fault_is_not_retryable(as_rpc, error_cls) -
         assert result.error is not None
         assert result.error.code == code
         assert result.error.retryable is False, code
+
+
+# The primary path is a service method catching its backend error and routing it
+# through _as_rpc; but a method that forgets to name a type in its except tuple
+# would hand the raw backend error to _failure. That must still yield the
+# structured code -- not an internal_error incident that hides it -- so _failure
+# recognises every non-PE backend error type directly as a backstop.
+_RAW_BACKEND_ERRORS = [
+    pytest.param(AdbError, id="adb"),
+    pytest.param(ApkError, id="apk"),
+    pytest.param(ApktoolError, id="apktool"),
+    pytest.param(FridaError, id="frida"),
+    pytest.param(JadxError, id="jadx"),
+    pytest.param(JsReError, id="jsre"),
+    pytest.param(ProxyError, id="proxy"),
+    pytest.param(WebError, id="web"),
+]
+
+
+@pytest.mark.parametrize("error_cls", _RAW_BACKEND_ERRORS)
+def test_a_raw_backend_error_keeps_its_code_instead_of_internal_error(error_cls) -> None:  # type: ignore[no-untyped-def]
+    """A forgotten except tuple must degrade to the structured envelope, not incident."""
+    timed_out = _failure(error_cls("timeout", "backend stalled", package="com.x"))
+    assert timed_out.error is not None
+    assert timed_out.error.code == "timeout"
+    assert timed_out.error.retryable is True
+    assert timed_out.error.details["package"] == "com.x"
+
+    permanent = _failure(error_cls("capability_unavailable", "tool missing"))
+    assert permanent.error is not None
+    assert permanent.error.code == "capability_unavailable"
+    assert permanent.error.retryable is False
 
 
 def test_an_unmapped_exception_becomes_a_redacted_internal_error(

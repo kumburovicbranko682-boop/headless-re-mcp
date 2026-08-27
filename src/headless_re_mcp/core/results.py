@@ -10,8 +10,16 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from headless_re_mcp.backends.adb.client import AdbError
+from headless_re_mcp.backends.apk.client import ApkError
+from headless_re_mcp.backends.apktool.client import ApktoolError
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
+from headless_re_mcp.backends.frida.client import FridaError
 from headless_re_mcp.backends.ida.client import IdaWorkerError
+from headless_re_mcp.backends.jadx.client import JadxError
+from headless_re_mcp.backends.jsre.client import JsReError
+from headless_re_mcp.backends.proxy.client import ProxyError
+from headless_re_mcp.backends.web.client import WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
 from headless_re_mcp.core.addressing import AddressSyncError
@@ -125,6 +133,27 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=str(exc),
             details={**details, **exc.details},
             retryable=exc.retryable,
+        )
+    elif isinstance(
+        exc,
+        (AdbError, ApkError, ApktoolError, FridaError, JadxError, JsReError, ProxyError, WebError),
+    ):
+        # The non-PE backend errors (adb/apk/apktool/frida/jadx/jsre/proxy/web)
+        # carry code/message/details but no retryable of their own; each track's
+        # _as_rpc converts them and derives retryable before _failure sees them.
+        # That leaves the mapping resting on every one of ~40 service methods
+        # naming the right error types in its except tuple -- miss one and a
+        # structured backend fault dropped into the internal_error fallback,
+        # minting a false incident and discarding the code/details/retryable the
+        # backend set (the very miscasting the branches above were added to stop).
+        # Recognise them here too and derive retryable exactly as _as_rpc does, so
+        # a forgotten except tuple degrades to the correct structured envelope and
+        # both paths agree by construction.
+        error = RpcError(
+            code=exc.code,
+            message=str(exc),
+            details={**details, **exc.details},
+            retryable=backend_error_is_retryable(exc.code),
         )
     elif isinstance(exc, SessionNotFound):
         # Only this type. Any KeyError used to become session_not_found, so a

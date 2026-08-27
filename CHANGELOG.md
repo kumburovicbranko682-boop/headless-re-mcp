@@ -297,6 +297,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`js.unpack_bundle` 的 `offset` 少了下界声明**。同类分页工具（`apk.*`、`web.*`、`proxy.flows`）的
   `offset` 都声明为 `Annotated[int, Field(ge=0)]`，唯独它写成裸 `int`——后端本就 `max(0, offset)` 兜底、
   功能上无碍，但 MCP schema 这份给 Agent/客户端看的契约独此一条没有下界。现在补齐 `ge=0`，与兄弟工具一致。
+- **非 PE 后端异常靠每个 except 元组「记得写全」才不被误报成 internal_error**。`_failure` 早就直接认
+  x64dbg/IDA 那族结构化异常（`StealthError`/`IdaWorkerError`/`XdbgRpcError`，取 `.code`/`.retryable`），
+  但 adb/apk/apktool/frida/jadx/jsre/proxy/web 这八种后端异常不在其中——它们只在服务方法先经各自
+  `_as_rpc` 裹成 `XdbgRpcError` 时才被认得。于是整套映射系在约 40 个服务方法各自的 `except (...)` 元组
+  把可能抛出的后端异常类型一个不落地列全上；漏一个，一个本可被调用方按 `code`/`retryable` 处理的结构化
+  故障就会跌进 `internal_error` 兜底，凭空记一条事故、还把后端精心设好的 `code`/`details`/`retryable` 丢掉——
+  正是上面那些分支当初被加进来要杜绝的误判。现在 `_failure` 也直接识别这八种后端异常，并按 `_as_rpc`
+  同一套 `backend_error_is_retryable` 推导 `retryable`：漏写 except 元组的方法退化成正确的结构化信封而非
+  假事故，两条路径由构造保证给出一致的信封。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时
