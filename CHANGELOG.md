@@ -567,6 +567,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包环形缓冲按条数封顶，但每条仍可带着整份报文体**。两千条各几十 MB 的响应照样能把
   内存吃光。超过 2 MB 的请求/响应体不再留在 `_raw` 里，列表上回 `body_omitted`，取正文或
   重放会如实报 `too_large`。
+- **`proxy.flow.get` 把二进制正文当成半坏的文本回**。内联（≤200000 字节）的响应体此前用
+  `errors="replace"` 解成 UTF-8：抓包里大量非 UTF-8 的响应（图片、protobuf、加密块，或还
+  压着 gzip/br 的正文）因此回来一串 U+FFFD，既丢字节又不说它本来是字节。兄弟工具
+  `web.network.get` 早已回 `base64_encoded`；`flow.get` 现在一致——字节不是合法 UTF-8 时按
+  原样 base64 回并置 `base64_encoded: True`，是合法文本时回文本并置 `False`。回的还是记录器
+  里那份原始字节，不解压，因而不引入解压炸弹面。
 - **`web.network.get` / `web.script.source` 会把 CDP 送来的整份正文写进产物目录**。超过
   内联上限就落盘，没有捕获上限；一条媒体响应就能在 retention 跑起来之前把磁盘写满。超过
   捕获上限改为拒绝，不写文件。console 单行同样封顶，超长回 `text_truncated`。

@@ -517,7 +517,20 @@ class ProxyBackend:
             out.write_bytes(body)
             result["response"]["body_path"] = str(out)
         else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+            try:
+                result["response"]["body"] = body.decode("utf-8")
+                result["response"]["base64_encoded"] = False
+            except UnicodeDecodeError:
+                # A binary or still-compressed body decoded with
+                # errors="replace" comes back as a string full of U+FFFD:
+                # unusable and silently lossy, with nothing to say it was ever
+                # bytes. Return the exact bytes base64-encoded and flag it, the
+                # way web.network.get already reports base64_encoded, so the
+                # caller can round-trip the body instead of reading garbage.
+                import base64
+
+                result["response"]["body"] = base64.b64encode(body).decode("ascii")
+                result["response"]["base64_encoded"] = True
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
