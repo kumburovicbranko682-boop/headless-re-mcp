@@ -170,6 +170,48 @@ class TestFridaTargetAuthorization:
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
 
+class TestFridaSpawnValidationPrecedesAvailability:
+    """A malformed package is rejected before the device is resolved.
+
+    frida.spawn drives the Android path (device_id="usb"), where resolving the
+    device is a multi-second USB probe or a capability_unavailable when frida is
+    absent. The package regex is the injection guard, so it must run first:
+    force frida unavailable and confirm a hostile package still surfaces
+    invalid_params rather than the capability_unavailable that would mask it, on
+    any host (skip != pass).
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        client = FridaClient()
+        client._available = False
+        client._frida = None
+        return client
+
+    @pytest.mark.parametrize(
+        "package",
+        [
+            "com.example; rm -rf /",
+            "com.example && id",
+            "../../etc/passwd",
+            "not a package",
+            "nodots",
+            "",
+            "   ",
+        ],
+    )
+    def test_spawn_rejects_a_bad_package_without_frida(self, package: str) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.spawn("usb", package)
+        assert info.value.code == "invalid_params"
+
+    def test_spawn_of_a_valid_package_still_reports_the_missing_backend(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.spawn("usb", "com.example.app")
+        assert info.value.code == "capability_unavailable"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False

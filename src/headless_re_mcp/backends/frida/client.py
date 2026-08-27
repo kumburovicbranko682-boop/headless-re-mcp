@@ -570,7 +570,11 @@ class FridaClient:
         *,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        device = self._resolve_device(device_id)
+        # Validate the package before resolving the device. The regex is the
+        # injection guard, and _resolve_device is either a multi-second USB /
+        # remote round trip or a capability_unavailable when frida is missing --
+        # both of which would otherwise mask a malformed package behind the
+        # wrong error on the Android path (device_id="usb").
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
@@ -580,6 +584,7 @@ class FridaClient:
                 "package must be an Android package id",
                 package=pkg,
             )
+        device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
 
