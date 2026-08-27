@@ -965,6 +965,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (skip≠pass)。夹具用 apktool 3.0.3 构建(`apktool b` 把 smali 汇成 `classes.dex`、经 aapt2 把 manifest 编成
   二进制 AXML),可读的 smali/manifest 源一并committed 在旁。已在 androguard 4.1.4 + apktool 3.0.3(JDK 21)
   实测通过,两面都解得出,故客户端无需改动。
+- **androguard 的 loguru DEBUG 洪流灌爆无人值守服务的日志**。androguard 默认经 loguru 在 DEBUG 级输出——
+  实测一个只含单类的 1KB APK,每次 `AnalyzeAPK` 就吐约 150 行(每个 basic block 一行),真实应用则成千上万。
+  代码树里没有任何 androguard 日志配置,于是 `apk.classes`/`methods`/`strings`/`xrefs` 每调一次都把这堆
+  DEBUG 灌到 stderr,把服务自己的日志埋掉。分析问题本就以结构化结果上报,故 `ApkClient` 现在构造时一次性用
+  `loguru.disable("androguard")` 关掉 androguard 的日志记录——这是嵌入方该用的做法:只按包名过滤掉 androguard
+  的记录,不动任何 handler、不碰宿主 app 自己的日志;而 `androguard.util.set_log` 会 `logger.remove(0)` 删掉
+  loguru 默认 handler 再全局加一个 stderr handler(等于重配整个 logger,不只是 androguard)。实测一次
+  `classes()` 的 androguard stderr 行数 155→0。新增单测钉住这次 disable 调用(只需 loguru、不需真 APK),live
+  gate 也加断言:真跑一次 `AnalyzeAPK` 不产生任何 androguard 记录;gate 里旧的、会全局重配的 `set_log` 辅助已移除。
 
 ### 变更（Android 后端清理）
 
